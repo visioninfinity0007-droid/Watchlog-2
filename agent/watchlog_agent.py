@@ -550,10 +550,19 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true",
                     help="delete local identity and spool, then exit")
     ap.add_argument("--list-drivers", action="store_true")
+    ap.add_argument("--find", nargs="?", const="", metavar="SUBNET",
+                    help="sweep this PC's local network for recorders and "
+                         "report their addresses; needs no config")
     ap.add_argument("--scan", metavar="IP",
                     help="scan an address for a recorder and report what "
                          "answers; needs no config at all")
     args = ap.parse_args()
+
+    if args.find is not None:
+        print()
+        discover.sweep_report(discover.sweep(args.find or None, log=print),
+                              log=print)
+        return
 
     if args.scan:
         host = discover.host_of(args.scan)

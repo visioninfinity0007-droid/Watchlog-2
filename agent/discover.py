@@ -146,6 +146,120 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
     return res
 
 
+# A short list for sweeping a whole subnet - 254 hosts x 13 ports is slow
+# and mostly pointless. These six catch every recorder we can support plus
+# the two families we cannot, so an unsupported unit still gets named.
+SWEEP_PORTS = [80, 8000, 8080, 554, 37777, 34567]
+SWEEP_TIMEOUT = 0.4
+
+
+def local_ipv4() -> str | None:
+    """
+    This machine's LAN address, without shelling out to ipconfig.
+
+    Opens a UDP socket toward a public address and reads back which local
+    interface the OS chose. No packets are actually sent - UDP connect()
+    only sets the default peer.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
+    """
+    Find recorders on the local /24. Returns [(ip, [open ports]), ...].
+
+    This exists because the single most common failure is not a broken
+    driver - it is nobody knowing the recorder's address. Sites are run
+    from a phone app over the vendor's cloud, so the local IP has often
+    never been written down.
+    """
+    me = local_ipv4()
+    if subnet:
+        base = ".".join(subnet.split(".")[:3])
+    elif me:
+        base = ".".join(me.split(".")[:3])
+    else:
+        log("  could not work out this PC's network; pass one, e.g. "
+            "--find 192.168.100.0")
+        return []
+
+    if me:
+        log(f"  this PC is {me}")
+    log(f"  sweeping {base}.1-254 on ports "
+        f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
+
+    def probe(args):
+        ip, port = args
+        try:
+            with socket.create_connection((ip, port), timeout=SWEEP_TIMEOUT):
+                return ip, port
+        except Exception:                                # noqa: BLE001
+            return None
+
+    targets = [(f"{base}.{h}", p) for h in range(1, 255) for p in SWEEP_PORTS]
+    found: dict[str, list[int]] = {}
+    with ThreadPoolExecutor(max_workers=256) as pool:
+        for hit in pool.map(probe, targets):
+            if hit:
+                found.setdefault(hit[0], []).append(hit[1])
+    return sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])
+
+
+def sweep_report(hits: list[tuple[str, list[int]]], log=print) -> None:
+    if not hits:
+        log("")
+        log("  Nothing on this network answered on any recorder port.")
+        log("  Either the recorder is on a different network to this PC,")
+        log("  or it is switched off.")
+        log("")
+        return
+
+    log("")
+    log("  ADDRESS            OPEN PORTS        LOOKS LIKE")
+    log("  -------            ----------        ----------")
+    candidates = []
+    for ip, ports in hits:
+        ports = sorted(ports)
+        guess = ""
+        if 37777 in ports:
+            guess = "Dahua-family recorder"
+        elif 34567 in ports:
+            guess = "Xiongmai recorder - NOT SUPPORTED"
+        elif 554 in ports:
+            guess = "something streaming video (camera or recorder)"
+        elif ports == [80]:
+            guess = "web device - could be the router"
+        if 37777 in ports or 34567 in ports or 554 in ports:
+            candidates.append((ip, ports, guess))
+        log(f"  {ip:<18} {', '.join(str(p) for p in ports):<17} {guess}")
+
+    log("")
+    if candidates:
+        log("  LIKELY RECORDER(S)")
+        for ip, ports, guess in candidates:
+            web = [p for p in ports if p in (80, 8000, 8080)]
+            if web:
+                log(f"    {ip} - set  nvr_url = http://{ip}:{web[0]}"
+                    + ("  (port 80 is the default)" if web[0] == 80 else ""))
+                if web[0] == 80:
+                    log(f"           or simply  nvr_url = http://{ip}")
+            else:
+                log(f"    {ip} - recorder is there, but no web port is open.")
+                log(f"           Enable HTTP on it: Main Menu > Network > Port")
+        log("")
+    else:
+        log("  Nothing looks like a recorder. The devices above are probably")
+        log("  the router and PCs.")
+        log("")
+
+
 def scan(target: str, log=print) -> list[PortResult]:
     host = host_of(target)
     log(f"\n  scanning {host} on {len(PORTS)} common recorder ports...\n")
