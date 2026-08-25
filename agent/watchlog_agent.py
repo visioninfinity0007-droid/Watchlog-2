@@ -620,6 +620,19 @@ def main() -> None:
         for line in str(e).splitlines():
             if line.strip():
                 log(f"WARNING: NVR not identified: {line.strip()[:200]}")
+        # Run the scan automatically, once, at startup. Telling someone to
+        # "go and run --probe" assumes they will read the log, be at that
+        # machine, and try again. They usually just run it the same way
+        # again, and we learn nothing. Fifteen seconds spent here answers
+        # the question the first time.
+        if cfg.nvr_url:
+            try:
+                host = discover.host_of(cfg.nvr_url)
+                discover.report(host,
+                                discover.scan(cfg.nvr_url, log=log),
+                                log=log)
+            except Exception as se:                    # noqa: BLE001
+                log(f"scan failed: {type(se).__name__}: {se}")
 
     if state:
         log(f"already enrolled as {state['agent_id']} - skipping enrollment")
