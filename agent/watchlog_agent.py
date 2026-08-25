@@ -55,6 +55,7 @@ from pathlib import Path
 
 import requests
 
+import discover
 from drivers import DRIVERS, DriverError, autodetect, build
 
 AGENT_VERSION = "0.2.0-prototype"
@@ -336,7 +337,14 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
                     log(f"WARNING: spool over capacity, dropped {dropped} "
                         f"oldest events")
         except (DriverError, requests.RequestException, RuntimeError) as e:
-            log(f"ERROR: driver: {str(e).splitlines()[0][:200]}")
+            # Log every line. The first line alone is "no driver recognised
+            # the device", which tells whoever is reading the log nothing
+            # they can act on; the per-driver reasons are the diagnosis.
+            for line in str(e).splitlines():
+                if line.strip():
+                    log(f"ERROR: driver: {line.strip()[:200]}")
+            log("run  watchlog-agent.exe --probe  to find out what is at "
+                "that address")
         except SystemExit as e:
             # open_driver() exits on missing config. In a thread that would
             # end the thread silently, leaving an agent that heartbeats
@@ -408,12 +416,14 @@ def cmd_probe(cfg: Config) -> None:
         for line in (lines[1:] if lines[0].startswith("no driver recognised")
                      else lines):
             if line.strip():
-                print("   ", line.strip()[:160])
-        print("\n  Check, in this order:")
-        print("    - is the address right, and reachable? try it in a browser")
-        print("    - is nvr_username / nvr_password correct?")
-        print("    - is the recorder's HTTP/web interface enabled?")
-        print("    - some units use a non-standard port, e.g. http://IP:8000")
+                print("   ", line.strip()[:200])
+
+        # Do not stop at "it did not work". Find out what IS there: a
+        # closed port, a web interface moved to 8080, an unsupported
+        # protocol and a wrong IP all look identical above, and they have
+        # four different fixes.
+        host = discover.host_of(cfg.nvr_url)
+        discover.report(host, discover.scan(cfg.nvr_url, log=print), log=print)
         raise SystemExit(1) from None
     print()
     print(f"  driver     {driver.name}"
@@ -526,7 +536,15 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true",
                     help="delete local identity and spool, then exit")
     ap.add_argument("--list-drivers", action="store_true")
+    ap.add_argument("--scan", metavar="IP",
+                    help="scan an address for a recorder and report what "
+                         "answers; needs no config at all")
     args = ap.parse_args()
+
+    if args.scan:
+        host = discover.host_of(args.scan)
+        discover.report(host, discover.scan(args.scan, log=print), log=print)
+        return
 
     if args.list_drivers:
         for name, cls in DRIVERS.items():
@@ -585,7 +603,9 @@ def main() -> None:
         finally:
             driver.close()
     except (DriverError, SystemExit) as e:
-        log(f"WARNING: NVR not identified: {str(e).splitlines()[0][:160]}")
+        for line in str(e).splitlines():
+            if line.strip():
+                log(f"WARNING: NVR not identified: {line.strip()[:200]}")
 
     if state:
         log(f"already enrolled as {state['agent_id']} - skipping enrollment")
