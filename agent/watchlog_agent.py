@@ -180,6 +180,20 @@ class Config:
                 " (copy watchlog.ini.example).")
 
     def require_nvr(self) -> None:
+        # 37777/37778 are Dahua's binary SDK ports and 34567 is Xiongmai's.
+        # None of them speak HTTP, so pointing the agent at one produces a
+        # confusing timeout rather than an obvious "wrong port".
+        for bad, why in ((":37777", "Dahua's binary SDK port"),
+                         (":37778", "Dahua's binary SDK port"),
+                         (":34567", "Xiongmai's binary port"),
+                         (":554",   "the RTSP video port")):
+            if self.nvr_url.endswith(bad):
+                raise SystemExit(
+                    f"FATAL: nvr_url points at port {bad[1:]}, which is "
+                    f"{why} - not a web interface.\n"
+                    f"WatchLog needs the recorder's HTTP port, usually 80. "
+                    f"Find it on the recorder itself under "
+                    f"Main Menu > Network > Port.")
         if not self.nvr_url:
             raise SystemExit(
                 "FATAL: no nvr_url. Point it at the recorder on the local "

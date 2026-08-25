@@ -191,6 +191,33 @@ def report(host: str, results: list[PortResult], log=print) -> None:
     log("")
     web = [r for r in openp if r.kind in ("http", "https") and r.status]
     unsupported = [r for r in openp if r.port in (34567, 9000)]
+    dahua_sdk = [r for r in openp if r.port in (37777, 37778)]
+    rtsp = [r for r in openp if r.port == 554]
+
+    # 37777 is Dahua's private binary SDK protocol, not HTTP. Its presence
+    # identifies the vendor family with near certainty - but we cannot
+    # talk to it, and pointing nvr_url at it will never work. What we need
+    # is the same box's HTTP interface.
+    if dahua_sdk and not web:
+        log("  WHAT TO DO NEXT")
+        log("    Port 37777 is open. That is Dahua's private SDK port, so")
+        log("    this is almost certainly a Dahua-family recorder - Dahua")
+        log("    itself, or CP Plus / Imou / another Dahua-based badge.")
+        log("    Good news: that is a driver we already have.")
+        log("")
+        log("    But 37777 speaks a binary protocol, not HTTP. We need the")
+        log("    same recorder's WEB interface, which did not answer on any")
+        log("    port tried. Do one of these:")
+        log("")
+        log("      1. On the recorder: Main Menu > Network > Port. Read the")
+        log("         'HTTP Port' value. If it is not 80, tell us the number.")
+        log("      2. If HTTP is disabled there, enable it and save.")
+        log("      3. Then set  nvr_url = http://<ip>:<that http port>")
+        log("")
+        log("    Do NOT set nvr_url to :37777 - it is not a web port and")
+        log("    will never work.")
+        log("")
+        return
 
     if web:
         best = web[0]
@@ -201,6 +228,12 @@ def report(host: str, results: list[PortResult], log=print) -> None:
             log(f"    address is right. The driver still did not recognise it")
             log(f"    - most likely wrong username/password, or a model we")
             log(f"    have not seen. Check nvr_username / nvr_password first.")
+        elif dahua_sdk:
+            log(f"    The web interface is on port {best.port}, and port")
+            log(f"    37777 is open too - that is Dahua's SDK port, so this")
+            log(f"    is a Dahua-family recorder. Set this and re-probe:")
+            log("")
+            log(f"        nvr_url = {scheme}://{host}:{best.port}")
         else:
             log(f"    The web interface is on port {best.port}, not 80.")
             log(f"    Set this in watchlog.ini and run --probe again:")
