@@ -16,7 +16,8 @@ from typing import Iterator
 
 import requests
 
-from .base import Channel, DeviceInfo, DriverError, Event, NvrDriver
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
+                   explain)
 
 POLL_SECONDS = 10
 PAGE_SIZE = 200
@@ -52,7 +53,7 @@ class MockDriver(NvrDriver):
             r.raise_for_status()
             return r.json()
         except requests.RequestException as e:
-            raise DriverError(f"{self.base_url}{path}: {e}") from e
+            raise DriverError(f"{self.base_url}{path}: {explain(e)}") from e
 
     def probe(self) -> DeviceInfo:
         d = self._get("/api/device-info")

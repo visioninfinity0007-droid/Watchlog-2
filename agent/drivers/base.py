@@ -97,6 +97,40 @@ class DriverError(RuntimeError):
     """Device unreachable, refused credentials, or spoke an unexpected dialect."""
 
 
+def explain(e: Exception) -> str:
+    """
+    Turn a requests/urllib3 exception into something a person can act on.
+
+    This distinction is the whole diagnosis in the field and the raw
+    message buries it under a wall of connection-pool detail:
+
+      refused  -> the host IS there, nothing is listening on that port.
+                  Almost always the web interface is on another port.
+      timeout  -> nothing answered at all. Wrong address, wrong subnet,
+                  or a firewall in between.
+
+    Those have completely different fixes, so they must not both read as
+    "Max retries exceeded".
+    """
+    low = str(e).lower()
+    if "refused" in low:
+        return ("connection refused - something is at that address but "
+                "nothing is listening on this port")
+    if "no route to host" in low or "unreachable" in low:
+        return ("no route to host - this PC cannot reach that network at "
+                "all (different subnet?)")
+    if "timed out" in low or "timeout" in low:
+        return ("timed out - no reply at all (wrong address, different "
+                "network, or a firewall)")
+    if "getaddrinfo" in low or "name or service not known" in low             or "name resolution" in low:
+        return "hostname could not be resolved"
+    if "certificate" in low or "ssl" in low:
+        return "TLS/SSL rejected - try http:// instead of https://"
+    if "connection reset" in low:
+        return "connection reset by the device"
+    return str(e).splitlines()[0][:160]
+
+
 class NvrDriver:
     """Base class. Subclasses must set `name` and implement the three methods."""
 

@@ -41,7 +41,8 @@ from urllib.parse import urlparse
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import Channel, DeviceInfo, DriverError, Event, NvrDriver
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
+                   explain)
 
 _TAG = re.compile(r"\{.*?\}")
 
@@ -149,7 +150,7 @@ class OnvifDriver(NvrDriver):
                                      "application/soap+xml; charset=utf-8"},
                             timeout=timeout or self.timeout)
         except requests.RequestException as e:
-            raise DriverError(f"{url}: {e}") from e
+            raise DriverError(f"{url}: {explain(e)}") from e
 
         if r.status_code >= 400:
             fault = re.search(rb"<[^>]*Text[^>]*>(.*?)</", r.content, re.S)

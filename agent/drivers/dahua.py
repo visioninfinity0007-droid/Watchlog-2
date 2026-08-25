@@ -33,7 +33,8 @@ from typing import Iterator
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import Channel, DeviceInfo, DriverError, Event, NvrDriver
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
+                   explain)
 
 # Dahua event codes -> our vocabulary.
 EVENT_CODE_MAP = {
@@ -92,7 +93,7 @@ class DahuaDriver(NvrDriver):
         try:
             r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
         except requests.RequestException as e:
-            raise DriverError(f"{url}: {e}") from e
+            raise DriverError(f"{url}: {explain(e)}") from e
         if r.status_code == 401:
             self.s.auth = HTTPBasicAuth(self.username, self.password)
             r = self.s.get(url, timeout=self.timeout, **kw)
