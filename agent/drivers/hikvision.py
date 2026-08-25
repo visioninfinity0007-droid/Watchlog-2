@@ -86,6 +86,11 @@ EVENT_TYPE_MAP = {
 # 500 for a single person walking past a camera.
 BURST_WINDOW_SECONDS = 30
 
+# A camera that will not produce a still must not stall the event loop.
+SNAPSHOT_TIMEOUT = 10
+JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
+
+
 
 class HikvisionDriver(NvrDriver):
     name = "hikvision-isapi"
@@ -165,6 +170,29 @@ class HikvisionDriver(NvrDriver):
             out = [Channel(channel=str(i), name=f"Channel {i}")
                    for i in range(1, n + 1)]
         return out
+
+    def get_snapshot(self, channel: str) -> bytes | None:
+        """
+        ISAPI still image.
+
+        Channel numbering here is the awkward part: the streaming API
+        uses <channel><stream> concatenated, so channel 2 main stream is
+        201, not 2. Getting this wrong returns someone else's camera,
+        which on a security system is worse than returning nothing.
+        """
+        try:
+            ch = int(str(channel))
+        except (TypeError, ValueError):
+            return None
+        for path in (f"/ISAPI/Streaming/channels/{ch}01/picture",
+                     f"/ISAPI/Streaming/channels/{ch}/picture"):
+            try:
+                r = self._get(path, timeout=SNAPSHOT_TIMEOUT)
+            except DriverError:
+                continue
+            if r.content[:2] == JPEG_MAGIC:     # JPEG magic
+                return r.content
+        return None
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         """

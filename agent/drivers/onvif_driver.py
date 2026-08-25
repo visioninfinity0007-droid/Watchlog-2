@@ -39,6 +39,7 @@ from typing import Iterator
 from urllib.parse import urlparse
 
 import requests
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
 from .base import Channel, DeviceInfo, DriverError, Event, NvrDriver
 
@@ -76,6 +77,9 @@ TOPIC_MAP = [
 ]
 
 BURST_WINDOW_SECONDS = 30
+SNAPSHOT_TIMEOUT = 10
+JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
+
 PULL_TIMEOUT = "PT30S"
 PULL_LIMIT = 100
 SUBSCRIPTION_MINUTES = 10
@@ -119,6 +123,7 @@ class OnvifDriver(NvrDriver):
         self._sub_address: str | None = None
         self._sub_expires: datetime | None = None
         self._source_to_channel: dict[str, str] = {}
+        self._profile_tokens: dict[str, str] = {}
         self._last_emitted: dict[tuple[str, str], datetime] = {}
 
     # -- SOAP -----------------------------------------------------------
@@ -216,6 +221,9 @@ class OnvifDriver(NvrDriver):
             channel = str(idx)
             if token:
                 self._source_to_channel[token] = channel
+            tok = prof.get("token") or prof.findtext("token")
+            if tok:
+                self._profile_tokens[channel] = tok
             out.append(Channel(
                 channel=channel,
                 name=(name_node.text.strip()
@@ -324,6 +332,42 @@ class OnvifDriver(NvrDriver):
             payload={"vendor": "onvif", "topic": topic,
                      "source": source, "data": data},
         )
+
+    def get_snapshot(self, channel: str) -> bytes | None:
+        """
+        ONVIF GetSnapshotUri, then fetch the URI it hands back.
+
+        The URI often needs HTTP auth of its own, and devices frequently
+        advertise it on an address they cannot actually be reached at, so
+        it goes through the same rehosting as the service endpoints.
+        """
+        token = self._profile_tokens.get(str(channel))
+        if not token or not self.media_service:
+            return None
+        try:
+            root = self._call(
+                self.media_service,
+                f"<trt:GetSnapshotUri><trt:ProfileToken>{token}"
+                f"</trt:ProfileToken></trt:GetSnapshotUri>")
+        except DriverError:
+            return None
+
+        node = root.find(".//Uri")
+        if node is None or not node.text:
+            return None
+        try:
+            r = self.s.get(self._rehost(node.text.strip()),
+                           auth=HTTPDigestAuth(self.username, self.password),
+                           timeout=SNAPSHOT_TIMEOUT)
+            if r.status_code == 401:
+                r = self.s.get(self._rehost(node.text.strip()),
+                               auth=HTTPBasicAuth(self.username, self.password),
+                               timeout=SNAPSHOT_TIMEOUT)
+        except requests.RequestException:
+            return None
+        if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
+            return r.content
+        return None
 
     def close(self) -> None:
         self.s.close()

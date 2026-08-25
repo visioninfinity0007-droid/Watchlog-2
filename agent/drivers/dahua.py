@@ -58,6 +58,9 @@ EVENT_CODE_MAP = {
 SUBSCRIBE_CODES = ",".join(EVENT_CODE_MAP.keys())
 
 BURST_WINDOW_SECONDS = 30
+SNAPSHOT_TIMEOUT = 10
+JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
+
 
 _KV = re.compile(r"^([^=]+)=(.*)$")
 
@@ -141,6 +144,24 @@ class DahuaDriver(NvrDriver):
             out = [Channel(channel=str(i), name=f"Channel {i}")
                    for i in range(1, n + 1)]
         return sorted(out, key=lambda c: int(c.channel))
+
+    def get_snapshot(self, channel: str) -> bytes | None:
+        """
+        Dahua still image. The CGI is 1-based here, unlike the event
+        stream's `index`, which is 0-based. Same device, two conventions.
+        """
+        try:
+            ch = int(str(channel))
+        except (TypeError, ValueError):
+            return None
+        url = f"{self.base_url}/cgi-bin/snapshot.cgi?channel={ch}"
+        try:
+            r = self.s.get(url, timeout=SNAPSHOT_TIMEOUT)
+        except requests.RequestException:
+            return None
+        if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
+            return r.content
+        return None
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         """

@@ -25,7 +25,7 @@ agent, so a dropped internet link buffers instead of losing data.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Iterator
 
@@ -65,9 +65,13 @@ class Event:
     device_ts: datetime
     device_event_id: str | None = None
     payload: dict = field(default_factory=dict)
+    # base64 JPEG, attached by the agent after the driver yields the
+    # event. Kept off the driver so a slow or broken camera snapshot can
+    # never delay or lose the event itself.
+    snapshot_b64: str | None = None
 
     def to_json(self, agent_ts: datetime) -> dict:
-        return {
+        out = {
             "channel": str(self.channel),
             "event_type": self.event_type,
             "device_event_id": self.device_event_id,
@@ -75,6 +79,12 @@ class Event:
             "agent_ts": _iso(agent_ts),
             "payload": self.payload,
         }
+        if self.snapshot_b64:
+            out["snapshot_b64"] = self.snapshot_b64
+        return out
+
+    def with_snapshot(self, b64: str | None) -> "Event":
+        return replace(self, snapshot_b64=b64) if b64 else self
 
 
 def _iso(dt: datetime) -> str:
@@ -110,6 +120,35 @@ class NvrDriver:
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         raise NotImplementedError
+
+    def get_snapshot(self, channel: str) -> bytes | None:
+        """
+        A still JPEG from `channel`, right now.
+
+        This is what makes an incident report readable: a line saying
+        "motion, Loading Bay, 02:14" is nearly useless on its own, and a
+        still costs ~150 KB against a site uplink that a video clip would
+        saturate. Return None if the device cannot produce one - a
+        missing image must never cost us the event itself.
+        """
+        return None
+
+    def get_clip(self, channel: str, start: datetime, end: datetime) -> bytes | None:
+        """
+        Recorded video covering an incident window.
+
+        Deliberately NOT called automatically. Clips run 5-50 MB; pulling
+        one per event would swamp a site's connection and the storage
+        budget. This exists to be driven on demand by an operator asking
+        for one specific incident.
+
+        Unimplemented on every driver until it can be tested against real
+        hardware - the playback and download APIs are the least
+        consistent part of both vendors' interfaces, and guessing at them
+        would produce code that looks finished and silently returns
+        corrupt files.
+        """
+        return None
 
     def close(self) -> None:
         pass

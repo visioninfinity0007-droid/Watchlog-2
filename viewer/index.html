@@ -68,6 +68,22 @@
   input, button, select { padding: .4rem .55rem; font: inherit; }
   button { cursor: pointer; }
   .muted { color: var(--dim); }
+
+  .shots { display: grid; gap: .6rem; margin-top: .5rem;
+           grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  .shot { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .shot img { display: block; width: 100%; aspect-ratio: 16/9;
+              object-fit: cover; background: var(--line); }
+  .shot .meta { padding: .35rem .5rem; font-size: .78rem; }
+  .shot .meta b { font-weight: 600; }
+  .shot .when { color: var(--dim); }
+  .thumb { width: 68px; height: 38px; object-fit: cover; border-radius: 3px;
+           border: 1px solid var(--line); background: var(--line);
+           cursor: zoom-in; display: block; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0;
+           background: Canvas; color: CanvasText; max-width: 92vw; }
+  dialog img { display: block; max-width: 88vw; max-height: 76vh; }
+  dialog .meta { padding: .5rem .7rem; font-size: .85rem; }
 </style>
 
 <header>
@@ -110,6 +126,9 @@
     </div>
   </div>
 
+  <h2>Recent incidents <span class="muted">(captured stills)</span></h2>
+  <div id="shots"></div>
+
   <div class="cols">
     <div>
       <h2>Activity by hour <span class="muted">(site local time)</span></h2>
@@ -121,6 +140,11 @@
     </div>
   </div>
 </main>
+
+<dialog id="lightbox">
+  <img id="lightbox-img" alt="">
+  <div class="meta" id="lightbox-meta"></div>
+</dialog>
 
 <p class="err" id="err"></p>
 
@@ -179,6 +203,8 @@ async function refresh() {
       ["Camera", "Events"], (stats.by_camera || []).map((r) => [r.camera, r.count]));
     $("byhour").innerHTML = hourTable(stats.by_hour || []);
     $("events").innerHTML = eventsTable(events || []);
+    renderShots(events || []);
+    hydrate();
     $("stamp").textContent = "updated " + new Date().toLocaleTimeString();
     const mock = (fleet || []).some((a) => a.device_driver === "mock");
     $("banner-note").textContent = mock ? "· includes simulated devices" : "";
@@ -284,9 +310,61 @@ function hourTable(byHour) {
 }
 
 function eventsTable(events) {
-  return table(["Time", "Camera", "Type"], events.map((e) => `<tr>
+  return table(["Time", "Camera", "Type", ""], events.map((e) => `<tr>
       <td>${new Date(e.device_ts).toLocaleString()}</td>
       <td>${esc(e.camera)}</td>
-      <td>${esc(e.event_type)}</td></tr>`));
+      <td>${esc(e.event_type)}</td>
+      <td>${e.has_snapshot
+        ? `<img class="thumb" data-event="${e.event_id}" alt="still from ${esc(e.camera)}">`
+        : '<span class="muted">—</span>'}</td></tr>`));
 }
+
+// Images are fetched one at a time and cached, not bundled into the
+// event feed: a page of 25 stills would be several MB on every refresh,
+// and the feed refreshes every 10 seconds.
+const shotCache = new Map();
+
+async function loadShot(eventId) {
+  if (shotCache.has(eventId)) return shotCache.get(eventId);
+  const d = await rpc("wl_get_snapshot", { p_event_id: Number(eventId) });
+  const src = d && d.image_b64
+    ? `data:${d.content_type || "image/jpeg"};base64,${d.image_b64}` : null;
+  shotCache.set(eventId, src);
+  return src;
+}
+
+function renderShots(events) {
+  const withShots = events.filter((e) => e.has_snapshot).slice(0, 8);
+  if (!withShots.length) {
+    $("shots").innerHTML =
+      '<p class="muted">no stills captured yet</p>';
+    return;
+  }
+  $("shots").innerHTML = `<div class="shots">${withShots.map((e) => `
+    <div class="shot">
+      <img data-event="${e.event_id}" alt="still from ${esc(e.camera)}">
+      <div class="meta"><b>${esc(e.camera)}</b> · ${esc(e.event_type)}<br>
+        <span class="when">${new Date(e.device_ts).toLocaleString()}</span></div>
+    </div>`).join("")}</div>`;
+  hydrate();
+}
+
+// One pass over every <img data-event> that has no src yet.
+function hydrate() {
+  document.querySelectorAll("img[data-event]:not([src])").forEach(async (img) => {
+    const src = await loadShot(img.dataset.event);
+    if (src) img.src = src;
+  });
+}
+
+document.addEventListener("click", async (e) => {
+  const img = e.target.closest("img[data-event]");
+  if (!img || !img.src) return;
+  $("lightbox-img").src = img.src;
+  $("lightbox-meta").textContent = img.alt;
+  $("lightbox").showModal();
+});
+document.getElementById("lightbox").addEventListener("click", (e) => {
+  if (e.target.id === "lightbox") e.target.close();
+});
 </script>

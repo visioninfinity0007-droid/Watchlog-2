@@ -68,6 +68,16 @@ class MockDriver(NvrDriver):
                         enabled=c.get("enabled", True))
                 for c in self._get("/api/cameras").get("channels", [])]
 
+    def get_snapshot(self, channel: str) -> bytes | None:
+        try:
+            r = self.s.get(self.base_url + "/api/snapshot",
+                           params={"channel": str(channel)}, timeout=10)
+        except requests.RequestException:
+            return None
+        if r.status_code == 200 and r.content[:2] == bytes([0xFF, 0xD8]):
+            return r.content
+        return None
+
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         while not stop.is_set():
             # Drain the backlog by paging forward. A device that returns

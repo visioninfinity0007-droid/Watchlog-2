@@ -42,6 +42,7 @@ Requires: requests
 from __future__ import annotations
 
 import argparse
+import base64
 import configparser
 import json
 import os
@@ -64,6 +65,19 @@ UPLOAD_BATCH = 200
 HTTP_TIMEOUT = 30
 DRIVER_RETRY_SECONDS = 20
 ONCE_COLLECT_SECONDS = 25
+
+# Incident stills. One per camera at most every SNAPSHOT_MIN_INTERVAL
+# seconds: a busy gate can fire every few seconds, and an image per event
+# would flood both the site uplink and the storage budget for no extra
+# information.
+SNAPSHOT_MIN_INTERVAL = 60
+SNAPSHOT_MAX_BYTES = 2_000_000
+# Faults where the camera is, by definition, not producing a usable
+# picture. Asking anyway just blocks the event loop on a timeout.
+NO_SNAPSHOT_EVENTS = {"video_loss", "disk_error", "disk_full"}
+# Uploads are capped by BYTES as well as count - 200 events carrying
+# stills would be a ~40 MB request.
+UPLOAD_MAX_BYTES = 4_000_000
 
 
 # --- helpers -----------------------------------------------------------
@@ -140,6 +154,10 @@ class Config:
         self.nvr_username = get("nvr_username") or ""
         self.nvr_password = get("nvr_password") or ""
         self.nvr_driver = (get("nvr_driver") or "auto").strip().lower()
+        self.snapshots = (str(get("snapshots") or "true").strip().lower()
+                          not in ("0", "false", "no", "off"))
+        self.snapshot_min_interval = int(
+            get("snapshot_min_interval") or SNAPSHOT_MIN_INTERVAL)
 
         state_dir = Path(get("state_dir") or default_state_dir())
         self.state_path = Path(get("state_file") or (state_dir / "agent_state.json"))
@@ -285,9 +303,33 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
                 log(f"NOTE: driver '{driver.name}' has not been verified against "
                     f"real hardware. Treat its output as unproven.")
 
+            last_shot: dict[str, float] = {}
+
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+
+                # The image is best-effort and strictly secondary. A
+                # camera that hangs, refuses auth or returns junk must
+                # cost us the picture, never the incident record.
+                if cfg.snapshots and ev.event_type not in NO_SNAPSHOT_EVENTS:
+                    clock = time.monotonic()
+                    if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
+                        last_shot[ev.channel] = clock
+                        try:
+                            raw = driver.get_snapshot(ev.channel)
+                        except Exception as e:              # noqa: BLE001
+                            raw = None
+                            log(f"snapshot ch{ev.channel} failed: "
+                                f"{type(e).__name__}: {str(e)[:120]}")
+                        if raw and len(raw) <= SNAPSHOT_MAX_BYTES:
+                            ev = ev.with_snapshot(
+                                base64.b64encode(raw).decode("ascii"))
+                            log(f"snapshot ch{ev.channel} {len(raw) // 1024} KB")
+                        elif raw:
+                            log(f"snapshot ch{ev.channel} discarded: "
+                                f"{len(raw) // 1024} KB exceeds cap")
+
                 spool.add(ev.to_json(now_utc()))
                 dropped = spool.trim()
                 if dropped:
@@ -314,12 +356,28 @@ def upload_once(cloud: Cloud, state: dict, spool) -> int:
     ids, events = spool.take(UPLOAD_BATCH)
     if not ids:
         return 0
+
+    # Trim the batch by payload size. Events carrying stills are ~200 KB
+    # each, so a full count-based batch would be a multi-megabyte POST on
+    # a site uplink. Always keep at least one, or a single oversized row
+    # would wedge the queue forever.
+    total, cut = 0, len(events)
+    for i, ev in enumerate(events):
+        total += len(ev.get("snapshot_b64") or "") + 512
+        if total > UPLOAD_MAX_BYTES and i > 0:
+            cut = i
+            break
+    ids, events = ids[:cut], events[:cut]
+
     res = cloud.call("wl_ingest_events", p_agent_id=state["agent_id"],
                      p_agent_key=state["agent_key"], p_events=events)
     # Only acknowledge after the server has committed.
     spool.ack(ids)
+    shots = res.get("snapshots") or 0
     log(f"uploaded {res['received']}: {res['inserted']} new, "
-        f"{res['skipped']} already stored; {spool.count()} left in spool")
+        f"{res['skipped']} already stored"
+        + (f", {shots} image(s)" if shots else "")
+        + f"; {spool.count()} left in spool")
     return res["inserted"]
 
 

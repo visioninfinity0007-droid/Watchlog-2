@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from digest_auth import DigestMixin, make_nonce            # noqa: E402
+from sample_frames import frame                            # noqa: E402
 
 NS = 'xmlns="http://www.hikvision.com/ver20/XMLSchema"'
 
@@ -141,6 +142,13 @@ class Handler(DigestMixin, BaseHTTPRequestHandler):
                       '<statusString>Invalid Operation</statusString>'
                       '</ResponseStatus>', status=403)
 
+        elif path.startswith("/ISAPI/Streaming/channels/") and path.endswith("/picture"):
+            # Real ISAPI numbers these <channel><stream>, e.g. 201 for
+            # channel 2 main stream. Decode that back to a channel.
+            raw = path.split("/")[4]
+            ch = raw[:-2] if len(raw) > 2 and raw.endswith(("01", "02")) else raw
+            self._jpeg(frame(ch))
+
         elif path == "/ISAPI/Event/notification/alertStream":
             self._alert_stream()
 
@@ -149,6 +157,13 @@ class Handler(DigestMixin, BaseHTTPRequestHandler):
                       f'<ResponseStatus {NS}><statusCode>3</statusCode>'
                       '<statusString>Invalid URL</statusString>'
                       '</ResponseStatus>', status=404)
+
+    def _jpeg(self, raw: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
 
     def _alert_stream(self):
         """Long-lived multipart/mixed push, exactly as a real NVR does."""

@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from digest_auth import DigestMixin, make_nonce            # noqa: E402
+from sample_frames import frame                            # noqa: E402
 
 CHANNELS = ["Main Gate", "Loading Bay", "Rear Perimeter", "Server Room"]
 
@@ -93,6 +94,15 @@ class Handler(DigestMixin, BaseHTTPRequestHandler):
                     for i, n in enumerate(CHANNELS)))
             else:
                 self._text("Error", status=400)
+
+        elif url.path == "/cgi-bin/snapshot.cgi":
+            ch = (qs.get("channel") or ["1"])[0]
+            raw = frame(ch)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
 
         elif url.path == "/cgi-bin/eventManager.cgi" and action == "attach":
             self._attach(qs)

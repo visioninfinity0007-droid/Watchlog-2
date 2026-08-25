@@ -37,9 +37,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sim'))
+from sample_frames import frame                            # noqa: E402
 
 # --- device identity ---------------------------------------------------
 
@@ -147,6 +152,14 @@ class Handler(BaseHTTPRequestHandler):
 
         elif url.path == "/api/cameras":
             self._send({"channels": CAMERAS})
+
+        elif url.path == "/api/snapshot":
+            raw = frame((qs.get("channel") or ["1"])[0])
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
 
         elif url.path == "/api/events":
             since = _parse_since(qs.get("since", [None])[0])

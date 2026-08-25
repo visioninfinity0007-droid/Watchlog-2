@@ -23,3 +23,6 @@ ship/
 *.spec
 __pycache__/
 *.pyc
+
+# scratch images pulled during testing
+tests/shots/
