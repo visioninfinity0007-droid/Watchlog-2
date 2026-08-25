@@ -1,0 +1,50 @@
+; WatchLog site agent — configuration
+;
+; Copy to watchlog.ini and fill in. Place it beside watchlog_agent.py,
+; or beside watchlog-agent.exe once frozen.
+;
+; SECRETS GATE: watchlog.ini holds the NVR password and a one-time
+; enrollment code. It is gitignored. Never commit it, never paste its
+; contents into chat or a log.
+;
+; Every setting can also be supplied as an environment variable named
+; WATCHLOG_<KEY_IN_UPPERCASE>, which takes precedence over this file.
+
+[watchlog]
+
+; --- cloud -----------------------------------------------------------
+supabase_url = https://YOUR-PROJECT.supabase.co
+
+; The PUBLISHABLE key (sb_publishable_...). Public by design — it grants
+; nothing on its own. Every table is behind RLS with no policies; the
+; agent reaches the database only through SECURITY DEFINER functions and
+; proves identity with the per-agent secret minted at enrollment.
+; Never put a secret key (sb_secret_...) in this file.
+supabase_publishable_key = sb_publishable_REPLACE_ME
+
+; One-time enrollment code. Consumed on first run; ignored afterwards.
+; Each machine needs its own code.
+enrollment_code = WL-PROTO-DEV-0001
+
+; --- the recorder on the local LAN -----------------------------------
+; The installer types their own NVR details here. These credentials never
+; leave the site: only event metadata is sent upward.
+nvr_url      = http://192.168.1.108
+nvr_username = admin
+nvr_password = REPLACE_ME
+
+; auto | hikvision-isapi | dahua-cgi | onvif | mock
+;   hikvision-isapi  Hikvision, HiLook
+;   dahua-cgi        Dahua, Imou, CP Plus and other Dahua-OEM recorders
+;   onvif            Uniview, Tiandy, and most other ONVIF-conformant units
+;   mock             the bundled test device, for dry runs
+; 'auto' probes them in that order and keeps the first that answers.
+; Run `watchlog-agent.exe --probe` to see what it detects before enrolling.
+nvr_driver = auto
+
+; --- optional --------------------------------------------------------
+; state_dir         = C:\ProgramData\WatchLog
+; state_file        = C:\ProgramData\WatchLog\agent_state.json
+; spool_file        = C:\ProgramData\WatchLog\spool.sqlite
+; heartbeat_seconds = 60
+; upload_seconds    = 15

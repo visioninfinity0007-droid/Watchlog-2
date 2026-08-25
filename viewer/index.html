@@ -1,0 +1,292 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WatchLog</title>
+<!--
+  WatchLog — operator view.
+
+  One static file, no build step. Reads through SECURITY DEFINER
+  functions using the PUBLISHABLE key; no table is directly reachable.
+
+  Requires migrations 0005 (viewer API) and 0006 (analytics).
+
+  PROTOTYPE. Anyone holding the publishable key — which is public by
+  design — can read this data. The delivered multi-tenant portal reads
+  through an authenticated, tenant-scoped session instead.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --line: #8883;
+    --dim: color-mix(in srgb, currentColor 55%, transparent);
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+  }
+  body { font: 14px/1.55 ui-sans-serif, system-ui, sans-serif;
+         margin: 2rem auto; max-width: 1200px; padding: 0 1rem; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  h2 { font-size: .82rem; text-transform: uppercase; letter-spacing: .06em;
+       opacity: .6; margin: 2.2rem 0 .6rem; font-weight: 600; }
+  header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+  .sub { font-size: .85rem; color: var(--dim); }
+
+  .tiles { display: grid; gap: .75rem; margin-top: 1rem;
+           grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .tile { border: 1px solid var(--line); border-radius: 10px; padding: .7rem .9rem; }
+  .tile .n { font-size: 1.6rem; font-weight: 650; line-height: 1.2;
+             font-variant-numeric: tabular-nums; }
+  .tile .l { font-size: .76rem; color: var(--dim); text-transform: uppercase;
+             letter-spacing: .04em; }
+
+  .cols { display: grid; gap: 1.5rem; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .4rem .55rem; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { font-weight: 600; color: var(--dim); font-size: .74rem;
+       text-transform: uppercase; letter-spacing: .04em; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* Proportional bar drawn behind the row - no chart library. */
+  td.bar { position: relative; width: 40%; }
+  td.bar span { display: block; height: .55rem; border-radius: 3px;
+                background: color-mix(in srgb, currentColor 22%, transparent); }
+
+  .pill { display: inline-block; padding: .08rem .5rem; border-radius: 999px;
+          font-size: .76rem; font-weight: 600; }
+  .online  { background: color-mix(in srgb, var(--ok) 14%, transparent);  color: var(--ok); }
+  .stale   { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .offline { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+  .never   { background: var(--line); }
+
+  .banner { border: 1px solid var(--line); border-left: 3px solid var(--warn);
+            border-radius: 8px; padding: .6rem .9rem; margin-top: 1rem; }
+  .banner.clear { border-left-color: var(--ok); }
+  .banner ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+
+  .err { color: var(--bad); white-space: pre-wrap; }
+  form { display: grid; gap: .5rem; max-width: 34rem; margin-top: 1rem; }
+  input, button, select { padding: .4rem .55rem; font: inherit; }
+  button { cursor: pointer; }
+  .muted { color: var(--dim); }
+</style>
+
+<header>
+  <h1>WatchLog</h1>
+  <span class="sub" id="stamp"></span>
+  <span class="sub" id="banner-note"></span>
+  <span style="margin-left:auto">
+    <select id="range">
+      <option value="1">last 24 hours</option>
+      <option value="7" selected>last 7 days</option>
+      <option value="30">last 30 days</option>
+    </select>
+  </span>
+</header>
+
+<div id="setup" hidden>
+  <p>No connection configured for this browser.</p>
+  <form id="cfgform">
+    <input id="cfgurl" placeholder="https://YOUR-PROJECT.supabase.co" required>
+    <input id="cfgkey" placeholder="publishable key (sb_publishable_...)" required>
+    <button>Save</button>
+  </form>
+</div>
+
+<main id="main" hidden>
+  <div id="health"></div>
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Sites &amp; agents</h2>
+  <div id="agents"></div>
+
+  <div class="cols">
+    <div>
+      <h2>Event types</h2>
+      <div id="bytype"></div>
+    </div>
+    <div>
+      <h2>Busiest cameras</h2>
+      <div id="bycamera"></div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>Activity by hour <span class="muted">(site local time)</span></h2>
+      <div id="byhour"></div>
+    </div>
+    <div>
+      <h2>Latest events</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+</main>
+
+<p class="err" id="err"></p>
+
+<script>
+// ---- config ----------------------------------------------------------
+const SUPABASE_URL = "";
+const PUBLISHABLE_KEY = "";
+
+const cfg = {
+  url: SUPABASE_URL || localStorage.getItem("wl_url") || "",
+  key: PUBLISHABLE_KEY || localStorage.getItem("wl_key") || "",
+};
+const $ = (id) => document.getElementById(id);
+
+if (!cfg.url || !cfg.key) {
+  $("setup").hidden = false;
+  $("cfgform").addEventListener("submit", (e) => {
+    e.preventDefault();
+    localStorage.setItem("wl_url", $("cfgurl").value.trim().replace(/\/$/, ""));
+    localStorage.setItem("wl_key", $("cfgkey").value.trim());
+    location.reload();
+  });
+} else {
+  $("main").hidden = false;
+  $("range").addEventListener("change", refresh);
+  refresh();
+  setInterval(refresh, 10000);
+}
+
+async function rpc(fn, params = {}) {
+  const r = await fetch(`${cfg.url}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}`,
+               "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!r.ok) throw new Error(`${fn} → HTTP ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+async function refresh() {
+  const days = Number($("range").value);
+  try {
+    const [fleet, events, stats, health] = await Promise.all([
+      rpc("wl_fleet"),
+      rpc("wl_recent_events", { p_limit: 15 }),
+      rpc("wl_analytics", { p_days: days }),
+      rpc("wl_site_health", { p_silent_hours: 24 }),
+    ]);
+    $("health").innerHTML = healthBanner(health);
+    $("tiles").innerHTML = tiles(stats, fleet || []);
+    $("agents").innerHTML = agentsTable(fleet || []);
+    $("bytype").innerHTML = barTable(
+      ["Type", "Events"], (stats.by_type || []).map((r) => [r.event_type, r.count]));
+    $("bycamera").innerHTML = barTable(
+      ["Camera", "Events"], (stats.by_camera || []).map((r) => [r.camera, r.count]));
+    $("byhour").innerHTML = hourTable(stats.by_hour || []);
+    $("events").innerHTML = eventsTable(events || []);
+    $("stamp").textContent = "updated " + new Date().toLocaleTimeString();
+    const mock = (fleet || []).some((a) => a.device_driver === "mock");
+    $("banner-note").textContent = mock ? "· includes simulated devices" : "";
+    $("err").textContent = "";
+  } catch (e) {
+    $("err").textContent = String(e.message || e);
+  }
+}
+
+// ---- helpers ---------------------------------------------------------
+const esc = (v) => String(v ?? "—").replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function liveness(lastSeen) {
+  if (!lastSeen) return ["never", "never seen"];
+  const age = (Date.now() - Date.parse(lastSeen)) / 1000;
+  if (age < 180)  return ["online",  "online"];
+  if (age < 1800) return ["stale",   "stale"];
+  return ["offline", "offline"];
+}
+
+function ago(ts) {
+  if (!ts) return "—";
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 1000));
+  if (s < 60)   return s + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+function table(headers, rows) {
+  if (!rows.length) return '<p class="muted">nothing yet</p>';
+  return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>
+    </thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+// ---- sections --------------------------------------------------------
+function healthBanner(h) {
+  const silent = h.silent_cameras || [];
+  const offline = h.offline_agents || [];
+  const faults = h.faults_24h || [];
+  const items = [];
+  offline.forEach((a) => items.push(
+    `<strong>${esc(a.site)}</strong> — agent on ${esc(a.hostname)} last seen ${ago(a.last_seen_at)}`));
+  silent.forEach((c) => items.push(
+    `<strong>${esc(c.site)}</strong> — camera ${esc(c.camera)} silent for ${esc(c.hours_silent)}h`));
+  faults.forEach((f) => items.push(
+    `${esc(f.event_type)} on ${esc(f.camera)} — ${f.count} in 24h`));
+
+  if (!items.length)
+    return '<div class="banner clear">Nothing needs attention.</div>';
+  return `<div class="banner"><strong>${items.length} thing(s) need attention</strong>
+    <ul>${items.slice(0, 8).map((i) => `<li>${i}</li>`).join("")}</ul>
+    ${items.length > 8 ? `<p class="muted">and ${items.length - 8} more</p>` : ""}</div>`;
+}
+
+function tiles(stats, fleet) {
+  const t = stats.totals || {}, a = stats.agents || {};
+  const online = fleet.filter((f) => liveness(f.last_seen_at)[0] === "online").length;
+  const cells = [
+    [t.events ?? 0, `events · ${stats.window_days}d`],
+    [t.cameras ?? 0, "cameras reporting"],
+    [`${online}/${a.total ?? fleet.length}`, "agents online"],
+    [esc(t.busiest_camera ?? "—"), "busiest camera"],
+  ];
+  return cells.map(([n, l]) =>
+    `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+}
+
+function agentsTable(fleet) {
+  return table(["Site", "Host", "Status", "Last seen", "Events", "Recorder", "Driver"],
+    fleet.map((a) => {
+      const [cls, label] = liveness(a.last_seen_at);
+      const device = [a.device_vendor, a.device_model].filter(Boolean).join(" ");
+      return `<tr>
+        <td>${esc(a.site)}</td><td>${esc(a.hostname)}</td>
+        <td><span class="pill ${cls}">${label}</span></td>
+        <td>${ago(a.last_seen_at)}</td>
+        <td class="n">${esc(a.event_count)}</td>
+        <td class="muted">${esc(device || null)}</td>
+        <td class="muted">${esc(a.device_driver)}</td></tr>`;
+    }));
+}
+
+function barTable(headers, pairs) {
+  const max = Math.max(1, ...pairs.map(([, n]) => n));
+  return table([...headers, ""], pairs.map(([label, n]) =>
+    `<tr><td>${esc(label)}</td><td class="n">${n}</td>
+     <td class="bar"><span style="width:${Math.round((n / max) * 100)}%"></span></td></tr>`));
+}
+
+function hourTable(byHour) {
+  const counts = new Array(24).fill(0);
+  byHour.forEach((r) => { counts[r.hour] = r.count; });
+  const max = Math.max(1, ...counts);
+  // Only show hours that actually saw something, plus their neighbours,
+  // so a quiet site does not render 24 empty rows.
+  const rows = counts.map((n, h) => [h, n]).filter(([, n]) => n > 0);
+  if (!rows.length) return '<p class="muted">nothing yet</p>';
+  return table(["Hour", "Events", ""], rows.map(([h, n]) =>
+    `<tr><td>${String(h).padStart(2, "0")}:00</td><td class="n">${n}</td>
+     <td class="bar"><span style="width:${Math.round((n / max) * 100)}%"></span></td></tr>`));
+}
+
+function eventsTable(events) {
+  return table(["Time", "Camera", "Type"], events.map((e) => `<tr>
+      <td>${new Date(e.device_ts).toLocaleString()}</td>
+      <td>${esc(e.camera)}</td>
+      <td>${esc(e.event_type)}</td></tr>`));
+}
+</script>
