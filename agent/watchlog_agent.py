@@ -56,6 +56,8 @@ from pathlib import Path
 import requests
 
 import discover
+import setup_wizard
+import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 
 AGENT_VERSION = "0.2.0-prototype"
@@ -550,6 +552,9 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true",
                     help="delete local identity and spool, then exit")
     ap.add_argument("--list-drivers", action="store_true")
+    ap.add_argument("--setup", action="store_true",
+                    help="run the setup wizard: find the recorder, ask for "
+                         "its login, test it, and write watchlog.ini")
     ap.add_argument("--find", nargs="?", const="", metavar="SUBNET",
                     help="sweep this PC's local network for recorders and "
                          "report their addresses; needs no config")
@@ -558,7 +563,28 @@ def main() -> None:
                          "answers; needs no config at all")
     args = ap.parse_args()
 
+    # The wizard runs on request, and automatically when there is no
+    # recorder configured yet. Someone who double-clicks the exe for the
+    # first time should be walked through it, not shown an error.
+    needs_setup = args.setup or (not cfg.nvr_url and not args.status
+                                 and not args.reset and not args.list_drivers
+                                 and args.find is None and not args.scan)
+    if needs_setup:
+        ini_path = base_dir() / "watchlog.ini"
+        values = setup_wizard.run(ini_path, cfg.supabase_url,
+                                  cfg.publishable_key, cfg.enrollment_code)
+        if not values:
+            setup_wizard.pause()
+            return
+        setup_wizard.write_config(ini_path, values)
+        cfg = Config()          # re-read what we just wrote
+        print()
+
     if args.find is not None:
+        print()
+        # Ask the network first, then fall back to sweeping it.
+        found = wsdiscovery.discover(log=print)
+        wsdiscovery.report(found, log=print)
         print()
         discover.sweep_report(discover.sweep(args.find or None, log=print),
                               log=print)
