@@ -1,9 +1,0 @@
-[watchlog]
-supabase_url = https://oyvgubyxmjlijiczjona.supabase.co
-supabase_publishable_key = sb_publishable_youzetQUn5SDsOhh75qiXw_XIJg-yDE
-enrollment_code = WL-PROTO-DEV-0001
-nvr_url = http://127.0.0.1:8420
-nvr_username =
-nvr_password =
-nvr_driver = auto
-state_dir = ../tests/live

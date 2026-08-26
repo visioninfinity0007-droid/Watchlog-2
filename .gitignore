@@ -26,3 +26,7 @@ __pycache__/
 
 # scratch images pulled during testing
 tests/shots/
+
+# stray config backups
+*.bak
+*.ini.bak
