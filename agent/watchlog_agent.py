@@ -563,23 +563,8 @@ def main() -> None:
                          "answers; needs no config at all")
     args = ap.parse_args()
 
-    # The wizard runs on request, and automatically when there is no
-    # recorder configured yet. Someone who double-clicks the exe for the
-    # first time should be walked through it, not shown an error.
-    needs_setup = args.setup or (not cfg.nvr_url and not args.status
-                                 and not args.reset and not args.list_drivers
-                                 and args.find is None and not args.scan)
-    if needs_setup:
-        ini_path = base_dir() / "watchlog.ini"
-        values = setup_wizard.run(ini_path, cfg.supabase_url,
-                                  cfg.publishable_key, cfg.enrollment_code)
-        if not values:
-            setup_wizard.pause()
-            return
-        setup_wizard.write_config(ini_path, values)
-        cfg = Config()          # re-read what we just wrote
-        print()
-
+    # These need no configuration at all - they are the tools you reach
+    # for precisely when the configuration is wrong.
     if args.find is not None:
         print()
         # Ask the network first, then fall back to sweeping it.
@@ -602,6 +587,22 @@ def main() -> None:
         return
 
     cfg = Config()
+
+    # The wizard runs on request, and automatically when no recorder is
+    # configured yet. Someone who double-clicks the exe for the first time
+    # should be walked through setup, not shown an error about a missing
+    # nvr_url they have never heard of.
+    if args.setup or (not cfg.nvr_url and not args.status and not args.reset):
+        ini_path = base_dir() / "watchlog.ini"
+        values = setup_wizard.run(ini_path, cfg.supabase_url,
+                                  cfg.publishable_key, cfg.enrollment_code)
+        if not values:
+            setup_wizard.pause()
+            return
+        setup_wizard.write_config(ini_path, values)
+        cfg = Config()          # re-read what we just wrote
+        print()
+
     log(f"watchlog-agent {AGENT_VERSION} on {platform.node()} "
         f"({platform.system()} {platform.release()})")
     log(f"state file: {cfg.state_path}")
