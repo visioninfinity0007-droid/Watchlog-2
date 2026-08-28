@@ -1,0 +1,86 @@
+{
+  "font": {
+    "family": {
+      "sans": {
+        "value": "Geist, Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif",
+        "comment": "Geometric grotesque, per the chosen direction. Geist first (Vercel's, the reference point for this territory), Inter as the fallback that is already installed everywhere. Both carry tabular figures - this product is mostly numbers, and figures that change width as they update look broken."
+      },
+      "mono": {
+        "value": "JetBrains Mono, ui-monospace, Cascadia Mono, Consolas, monospace",
+        "comment": "Timestamps, IDs, IP addresses, log output. Anything an operator may need to read character by character."
+      }
+    },
+    "size": {
+      "xs": {
+        "value": "0.76rem"
+      },
+      "sm": {
+        "value": "0.875rem"
+      },
+      "base": {
+        "value": "1rem"
+      },
+      "lg": {
+        "value": "1.125rem"
+      },
+      "xl": {
+        "value": "1.375rem"
+      },
+      "2xl": {
+        "value": "1.75rem"
+      },
+      "3xl": {
+        "value": "2.25rem"
+      },
+      "4xl": {
+        "value": "3rem"
+      },
+      "5xl": {
+        "value": "3.75rem",
+        "comment": "Hero only. One per page."
+      }
+    },
+    "weight": {
+      "regular": {
+        "value": "400"
+      },
+      "medium": {
+        "value": "500"
+      },
+      "semibold": {
+        "value": "600"
+      },
+      "bold": {
+        "value": "700",
+        "comment": "Headlines only. Weight carries hierarchy here, not colour - colour is reserved for status."
+      }
+    },
+    "leading": {
+      "tight": {
+        "value": "1.15",
+        "comment": "Headlines."
+      },
+      "normal": {
+        "value": "1.55",
+        "comment": "Body."
+      },
+      "relaxed": {
+        "value": "1.7",
+        "comment": "Long-form editorial."
+      }
+    },
+    "tracking": {
+      "tight": {
+        "value": "-0.035em",
+        "comment": "Display and the wordmark. Tighter than before: the chosen direction sets the wordmark at noticeably negative tracking."
+      },
+      "normal": {
+        "value": "0"
+      },
+      "wide": {
+        "value": "0.06em",
+        "comment": "Small uppercase labels and eyebrows."
+      }
+    }
+  }
+}

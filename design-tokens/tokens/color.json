@@ -1,0 +1,84 @@
+{
+  "color": {
+    "violet": {
+      "value": "#5B21FF",
+      "comment": "THE brand colour, chosen from The Modern Standard board. One colour, used decisively. 6.76:1 on white so it is safe for text and for solid buttons carrying white. Do NOT use it on dark - 2.91:1 on ink; use violet-bright there."
+    },
+    "violet-bright": {
+      "value": "#8B6BFF",
+      "comment": "The brand colour ON DARK. DERIVED, not a second brand colour. 5.28:1 on ink and 4.79:1 on panel, but only 3.72:1 on white - never text on a light surface."
+    },
+    "violet-deep": {
+      "value": "#4413CC",
+      "comment": "Hover and pressed states for solid violet controls on light. 9.50:1 with white. DERIVED."
+    },
+    "ink": {
+      "value": "#0B0B0F",
+      "comment": "Near-black, from the chosen board. Body text on light surfaces at 19.64:1, and the deepest dark surface."
+    },
+    "canvas": {
+      "value": "#101017",
+      "comment": "The dark product page background. DERIVED from ink."
+    },
+    "panel": {
+      "value": "#17171F",
+      "comment": "Dark cards and panels, one step up from canvas so elevation reads without a shadow. DERIVED. White on it is 17.82:1."
+    },
+    "surface": {
+      "value": "#FFFFFF",
+      "comment": "The marketing site's page surface. The site is light and the product is dark - a deliberate split, not an inconsistency."
+    },
+    "surface-subtle": {
+      "value": "#F7F7FA",
+      "comment": "Alternating light sections. DERIVED: violet tinted a few percent over white so it stays in the brand's temperature rather than going grey."
+    },
+    "white": {
+      "value": "#FFFFFF",
+      "comment": "Text and surfaces on dark blocks. Same value as surface; kept as a separate role so intent is readable in templates."
+    },
+    "muted": {
+      "value": "#5C5C6B",
+      "comment": "Secondary text on light surfaces. 6.57:1 on white."
+    },
+    "muted-dark": {
+      "value": "#9A9AAB",
+      "comment": "Secondary text on dark surfaces. 7.09:1 on ink. Never on white - 2.77:1."
+    },
+    "line": {
+      "value": "rgba(11,11,15,0.12)",
+      "comment": "Hairline borders on light surfaces."
+    },
+    "line-dark": {
+      "value": "rgba(255,255,255,0.12)",
+      "comment": "Hairline borders on dark surfaces."
+    },
+    "status-ok": {
+      "value": "#0F7A3D",
+      "comment": "Healthy, on LIGHT surfaces. 5.42:1 on white. STATUS ONLY - never decorative, or the meaning erodes."
+    },
+    "status-ok-dark": {
+      "value": "#1F9D55",
+      "comment": "Healthy, ON DARK. From the identity sheet. 5.62:1 on near-black. Only 3.49:1 on white - never use on the light site."
+    },
+    "status-warn": {
+      "value": "#8F5300",
+      "comment": "Attention, on LIGHT surfaces. 6.17:1 on white. STATUS ONLY."
+    },
+    "status-warn-dark": {
+      "value": "#C98900",
+      "comment": "Attention, ON DARK. From the identity sheet. 6.61:1 on near-black. Only 2.97:1 on white."
+    },
+    "status-bad": {
+      "value": "#C22B2B",
+      "comment": "Fault, on LIGHT surfaces. 5.72:1 on white. STATUS ONLY, and rationed - a dashboard that is often red trains people to ignore red."
+    },
+    "status-bad-dark": {
+      "value": "#D14343",
+      "comment": "Fault, ON DARK. From the identity sheet. 4.30:1 on near-black - acceptable for a pill with its word beside it, and it carries an icon and a label, never colour alone."
+    },
+    "cool-gray": {
+      "value": "#E9E9EE",
+      "comment": "Supporting neutral from the identity sheet - borders, dividers, light UI. 1.21:1 on white, so it is a SURFACE colour and never text."
+    }
+  }
+}

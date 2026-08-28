@@ -1,0 +1,11 @@
+{
+  "motion": {
+    "ease": { "value": "cubic-bezier(.22,.61,.36,1)", "comment": "ONE easing curve across both properties. Multiple curves are the fastest way to make two codebases feel like two different products." },
+    "duration": {
+      "control": { "value": "160ms", "comment": "Buttons, links, inputs." },
+      "surface": { "value": "220ms", "comment": "Cards, panels, interface state." },
+      "reveal":  { "value": "420ms", "comment": "Section reveal on scroll." }
+    },
+    "translate": { "value": "8px", "comment": "Maximum movement for a reveal, and never from zero opacity. More than this reads as a slideshow." }
+  }
+}

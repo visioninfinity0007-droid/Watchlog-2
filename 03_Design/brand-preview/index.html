@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WatchLog — brand and design system</title>
+
+<!--
+  Live proof of the token pipeline.
+
+  This page imports the GENERATED stylesheet, not a hand-written copy. If
+  a value here is wrong, the fix is in design-tokens/tokens/*.json
+  followed by `npm run build` - never in this file. That is the whole
+  point: the marketing site and the portal will import the same file, so
+  they cannot drift.
+-->
+<link rel="stylesheet" href="../../design-tokens/build/css/tokens.css">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font-family-sans);
+    font-size: var(--font-size-base);
+    line-height: var(--font-leading-normal);
+    color: var(--color-ink);
+    background: var(--color-surface);
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: var(--layout-max-width); margin: 0 auto;
+          padding: 0 var(--layout-gutter); }
+  section { padding: var(--space-8) 0; border-bottom: 1px solid var(--color-line); }
+  h1 { font-size: var(--font-size-4xl); font-weight: var(--font-weight-bold);
+       line-height: var(--font-leading-tight); letter-spacing: var(--font-tracking-tight);
+       margin: 0 0 var(--space-3); }
+  h2 { font-size: var(--font-size-xs); text-transform: uppercase;
+       letter-spacing: var(--font-tracking-wide); color: var(--color-muted);
+       font-weight: var(--font-weight-semibold); margin: 0 0 var(--space-5); }
+  h3 { font-size: var(--font-size-lg); font-weight: var(--font-weight-semibold);
+       margin: 0 0 var(--space-2); }
+  p  { max-width: var(--layout-measure); margin: 0 0 var(--space-4); }
+  .lede { font-size: var(--font-size-lg); color: var(--color-muted); }
+  code { font-family: var(--font-family-mono); font-size: var(--font-size-sm); }
+
+  .grid { display: grid; gap: var(--space-4);
+          grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+
+  .sw { border: 1px solid var(--color-line); border-radius: var(--radius-surface);
+        overflow: hidden; }
+  .sw .chip { height: 76px; display: flex; align-items: flex-end; padding: var(--space-2); }
+  .sw .meta { padding: var(--space-3); font-size: var(--font-size-xs); }
+  .sw .name { font-family: var(--font-family-mono); display: block; }
+  .sw .ratio { color: var(--color-muted); }
+
+  .btn { display: inline-flex; align-items: center; gap: var(--space-2);
+         border-radius: var(--radius-control); padding: 10px 18px;
+         font-weight: var(--font-weight-semibold); font-size: var(--font-size-sm);
+         border: 1px solid transparent; cursor: pointer; text-decoration: none;
+         transition: background var(--motion-duration-control) var(--motion-ease),
+                     border-color var(--motion-duration-control) var(--motion-ease); }
+  .btn-primary { background: var(--color-teal-deep); color: var(--color-white); }
+  .btn-primary:hover { background: var(--color-teal); }
+  .btn-secondary { background: transparent; color: var(--color-ink);
+                   border-color: var(--color-line); }
+  .btn-secondary:hover { border-color: var(--color-teal); color: var(--color-teal); }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px;
+          border-radius: var(--radius-pill); padding: 3px 11px;
+          font-size: var(--font-size-xs); font-weight: var(--font-weight-semibold); }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 999px;
+                  background: currentColor; }
+  .ok   { color: var(--color-status-ok);   background: color-mix(in srgb, var(--color-status-ok) 13%, transparent); }
+  .warn { color: var(--color-status-warn); background: color-mix(in srgb, var(--color-status-warn) 13%, transparent); }
+  .bad  { color: var(--color-status-bad);  background: color-mix(in srgb, var(--color-status-bad) 13%, transparent); }
+  .unk  { color: var(--color-muted);       background: color-mix(in srgb, var(--color-muted) 13%, transparent); }
+
+  .card { border: 1px solid var(--color-line); border-radius: var(--radius-surface);
+          padding: var(--space-5); box-shadow: var(--elevation-raised); }
+  .stat { font-size: var(--font-size-3xl); font-weight: var(--font-weight-bold);
+          line-height: 1.1; }
+  .stat-label { font-size: var(--font-size-xs); text-transform: uppercase;
+                letter-spacing: var(--font-tracking-wide); color: var(--color-muted); }
+
+  /* The dashboard is dark on purpose - see BRAND_GUIDELINES section 5. */
+  .dark { background: var(--color-slate); color: var(--color-white);
+          border-radius: var(--radius-surface); padding: var(--space-6);
+          margin-top: var(--space-4); }
+  .dark h3 { color: var(--color-white); }
+  .dark .muted { color: var(--color-muted-dark); }
+  .dark .live { color: var(--color-teal-bright); font-weight: var(--font-weight-semibold); }
+  .dark table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
+  .dark th { text-align: left; font-size: var(--font-size-xs); text-transform: uppercase;
+             letter-spacing: var(--font-tracking-wide); color: var(--color-muted-dark);
+             font-weight: var(--font-weight-semibold); padding: var(--space-2) var(--space-3); }
+  .dark td { padding: var(--space-3); border-top: 1px solid var(--color-line-dark); }
+  .mono { font-family: var(--font-family-mono); }
+
+  .type-row { display: flex; align-items: baseline; gap: var(--space-5);
+              padding: var(--space-2) 0; border-bottom: 1px solid var(--color-line); }
+  .type-row .tag { font-family: var(--font-family-mono); font-size: var(--font-size-xs);
+                   color: var(--color-muted); width: 130px; flex: none; }
+
+  .banned li { color: var(--color-muted); }
+  .banned li b { color: var(--color-ink); }
+</style>
+
+<div class="wrap">
+
+  <section>
+    <h2>WatchLog</h2>
+    <h1>Your cameras already see everything.<br>WatchLog tells you what they saw.</h1>
+    <p class="lede">Design system, generated from
+      <code>design-tokens/tokens/*.json</code>. This page imports the built
+      stylesheet — change a token, rebuild, and everything below moves.</p>
+    <p>
+      <a class="btn btn-primary" href="#">See a sample report</a>
+      <a class="btn btn-secondary" href="#">How it works</a>
+    </p>
+  </section>
+
+  <section>
+    <h2>Colour — brand</h2>
+    <div class="grid" id="brand"></div>
+  </section>
+
+  <section>
+    <h2>Colour — status</h2>
+    <p>Green, amber and red mean healthy, attention and fault. They are never
+       used for anything else, and never appear without a word beside them.</p>
+    <p>
+      <span class="pill ok">online</span>
+      <span class="pill warn">silent 26h</span>
+      <span class="pill bad">video loss</span>
+      <span class="pill unk">never seen</span>
+    </p>
+    <div class="grid" id="status"></div>
+  </section>
+
+  <section>
+    <h2>Type scale</h2>
+    <div id="type"></div>
+    <p style="margin-top:var(--space-5)">Live figures use tabular numerals so they
+      do not jitter as they update:
+      <span class="mono">1,248 events · 09:04:17 · 192.168.100.80</span></p>
+  </section>
+
+  <section>
+    <h2>Components — light</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="stat">1,248</div>
+        <div class="stat-label">events · 7 days</div>
+      </div>
+      <div class="card">
+        <div class="stat">4</div>
+        <div class="stat-label">cameras reporting</div>
+      </div>
+      <div class="card">
+        <div class="stat">3/4</div>
+        <div class="stat-label">sites online</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Components — dashboard (dark)</h2>
+    <p>The marketing site is light; the dashboard is dark. Operators read it for
+       long stretches, and camera stills sit better on a dark canvas.</p>
+    <div class="dark">
+      <h3>Sites <span class="live">· live</span></h3>
+      <table>
+        <thead><tr><th>Site</th><th>Status</th><th>Last seen</th><th>Events</th><th>Recorder</th></tr></thead>
+        <tbody>
+          <tr><td>Karachi — Head Office</td><td><span class="pill ok">online</span></td>
+              <td class="mono">4s ago</td><td class="mono">804</td>
+              <td class="muted">Dahua NVR4208</td></tr>
+          <tr><td>Lahore — Warehouse</td><td><span class="pill warn">stale</span></td>
+              <td class="mono">22m ago</td><td class="mono">311</td>
+              <td class="muted">Hikvision DS-7608</td></tr>
+          <tr><td>Faisalabad — Plant</td><td><span class="pill bad">offline</span></td>
+              <td class="mono">2d ago</td><td class="mono">0</td>
+              <td class="muted">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Spacing, radius, motion</h2>
+    <div class="grid" id="scale"></div>
+  </section>
+
+  <section class="banned">
+    <h2>Banned</h2>
+    <ul>
+      <li><b>Exclamation marks</b> in product copy.</li>
+      <li><b>Red</b> as anything other than a fault.</li>
+      <li><b>Blinking or pulsing</b> anything, anywhere.</li>
+      <li><b>Stock imagery</b> of intruders, padlocks, shields, glowing globes.</li>
+      <li><b>Unlabelled demo data</b> — a sample frame must say it is a sample.</li>
+      <li><b>Unmeasured accuracy claims.</b> No percentage until it is tested on real footage.</li>
+    </ul>
+  </section>
+
+</div>
+
+<script>
+// Read the values back out of the generated stylesheet rather than
+// hardcoding them, so this page cannot quietly disagree with the tokens.
+const css = getComputedStyle(document.documentElement);
+const v = (n) => css.getPropertyValue(n).trim();
+
+function luminance(hex) {
+  const h = hex.replace("#", "");
+  if (h.length !== 6) return null;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const f = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+function ratio(a, b) {
+  const la = luminance(a), lb = luminance(b);
+  if (la === null || lb === null) return null;
+  const hi = Math.max(la, lb), lo = Math.min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function swatches(target, names) {
+  document.getElementById(target).innerHTML = names.map((n) => {
+    const hex = v(`--color-${n}`);
+    const onWhite = ratio(hex, "#ffffff");
+    const onSlate = ratio(hex, v("--color-slate"));
+    const light = onWhite !== null && onWhite < 3;
+    const note = onWhite === null ? "—"
+      : `${onWhite.toFixed(2)}:1 on white · ${onSlate.toFixed(2)}:1 on slate`;
+    return `<div class="sw">
+      <div class="chip" style="background:${hex};color:${light ? "#0D1B21" : "#fff"}">
+        <span style="font-size:11px;font-family:var(--font-family-mono)">${hex}</span>
+      </div>
+      <div class="meta"><span class="name">color.${n}</span>
+        <span class="ratio">${note}</span></div>
+    </div>`;
+  }).join("");
+}
+
+swatches("brand", ["ink", "slate", "slate-2", "teal", "teal-deep",
+                   "teal-bright", "muted", "muted-dark", "surface-subtle"]);
+swatches("status", ["status-ok", "status-warn", "status-bad"]);
+
+document.getElementById("type").innerHTML =
+  ["5xl", "4xl", "3xl", "2xl", "xl", "lg", "base", "sm", "xs"].map((s) =>
+    `<div class="type-row">
+       <span class="tag">font.size.${s}</span>
+       <span style="font-size:var(--font-size-${s});font-weight:var(--font-weight-semibold);
+                    line-height:1.2">Incident at the loading bay</span>
+     </div>`).join("");
+
+document.getElementById("scale").innerHTML = [
+  ["space.5", v("--space-5")], ["space.7", v("--space-7")],
+  ["radius.control", v("--radius-control")], ["radius.surface", v("--radius-surface")],
+  ["layout.max-width", v("--layout-max-width")], ["layout.measure", v("--layout-measure")],
+  ["motion.ease", v("--motion-ease")], ["motion.duration.surface", v("--motion-duration-surface")],
+].map(([k, val]) => `<div class="card"><div class="stat-label">${k}</div>
+   <div class="mono" style="font-size:var(--font-size-sm);margin-top:6px">${val}</div></div>`).join("");
+</script>
+</html>

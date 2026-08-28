@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WatchLog — identity directions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../design-tokens/build/css/tokens.css">
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  body{margin:0;font-family:Inter,var(--font-family-sans);background:var(--color-surface);
+       color:var(--color-ink);font-variant-numeric:tabular-nums;line-height:1.55}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 var(--layout-gutter) var(--space-9)}
+  header{padding:var(--space-8) 0 var(--space-6);border-bottom:1px solid var(--color-line)}
+  h1{font-size:var(--font-size-3xl);font-weight:800;letter-spacing:-.03em;
+     line-height:1.08;margin:0 0 var(--space-3)}
+  .lede{color:var(--color-muted);max-width:var(--layout-measure);margin:0}
+  h2{font-size:var(--font-size-xs);text-transform:uppercase;letter-spacing:.07em;
+     color:var(--color-muted);font-weight:600;margin:var(--space-8) 0 var(--space-4)}
+  .research{background:var(--color-surface-subtle);border:1px solid var(--color-line);
+            border-radius:var(--radius-surface);padding:var(--space-5);
+            margin-top:var(--space-6)}
+  .research ul{margin:var(--space-3) 0 0;padding-left:1.1rem}
+  .research li{margin-bottom:6px;font-size:var(--font-size-sm);color:var(--color-muted)}
+  .research li b{color:var(--color-ink)}
+
+  .opt{border:1px solid var(--color-line);border-radius:var(--radius-surface);
+       overflow:hidden;margin-bottom:var(--space-6)}
+  .head{display:flex;align-items:baseline;gap:var(--space-4);flex-wrap:wrap;
+        padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--color-line)}
+  .head b{font-size:var(--font-size-lg);font-weight:700}
+  .head .tag{font-size:var(--font-size-xs);text-transform:uppercase;letter-spacing:.06em;
+             background:var(--color-teal-deep);color:#fff;padding:2px 9px;
+             border-radius:var(--radius-pill);font-weight:600}
+  .why{padding:var(--space-4) var(--space-5);font-size:var(--font-size-sm);
+       color:var(--color-muted);max-width:var(--layout-measure);
+       border-bottom:1px solid var(--color-line)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--color-line)}
+  @media(max-width:860px){.row{grid-template-columns:1fr}}
+  .cell{background:var(--color-surface);padding:var(--space-6) var(--space-5)}
+  .cell.dark{background:var(--color-slate)}
+  .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+       color:var(--color-muted);margin-bottom:var(--space-5)}
+  .cell.dark .lbl{color:var(--color-muted-dark)}
+
+  .wm{display:flex;align-items:baseline;gap:.42em;line-height:1;white-space:nowrap}
+  .wm .txt{line-height:1}
+  .wm svg{display:block;overflow:visible}
+  .wm .txt{font-weight:700;letter-spacing:-.035em}
+
+  .ctx{margin-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)}
+  .ctx .strip{display:flex;align-items:center;gap:10px;font-size:12px;
+              border:1px solid var(--color-line);border-radius:6px;padding:8px 10px}
+  .cell.dark .strip{border-color:var(--color-line-dark);color:#fff}
+  .ctx .caption{font-size:10px;color:var(--color-muted);letter-spacing:.05em;
+                text-transform:uppercase}
+  .cell.dark .caption{color:var(--color-muted-dark)}
+  .favrow{display:flex;align-items:flex-end;gap:var(--space-5);margin-top:var(--space-5)}
+  .fav{display:flex;flex-direction:column;align-items:center;gap:6px}
+  .fav small{font-size:10px;color:var(--color-muted);font-family:var(--font-family-mono)}
+  .cell.dark .fav small{color:var(--color-muted-dark)}
+  .chip{display:grid;place-items:center;border-radius:22%;background:var(--color-slate-2)}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>WatchLog — identity directions</h1>
+  <p class="lede">Rebuilt after checking the research. The first set was
+  icon-led; that was the wrong starting point for this category.</p>
+
+  <div class="research">
+    <b style="font-size:var(--font-size-sm)">What the research changed</b>
+    <ul>
+      <li><b>The wordmark is the hero, not the icon.</b> In B2B SaaS the name is
+        the primary identifier — a clean wordmark generally outperforms a
+        complex symbol. The icon exists for the favicon and the app tile, and
+        is derived from the wordmark rather than invented separately.</li>
+      <li><b>It must survive the favicon.</b> Anything that only works large is
+        decoration, not identity.</li>
+      <li><b>Blue signals trust in security.</b> Our teal sits in that family
+        while staying off the default corporate blue everyone else uses.</li>
+      <li><b>Don't default to dull because it's B2B.</b> One deliberate
+        letterform idea is what separates a designed wordmark from typed text.</li>
+      <li><b>Your buyer is not a designer.</b> A facility manager sees this in a
+        WhatsApp header and an email at 8am, small and in a hurry — so the
+        contexts below are shown at real size, not blown up.</li>
+    </ul>
+  </div>
+</header>
+
+<div id="out"></div>
+
+<h2>Recommendation</h2>
+<p class="lede"><b>Option 1 — Signal W.</b> The W of WatchLog is already a
+zigzag, and a zigzag is already an event trace. Replacing that one letter makes
+the wordmark carry the meaning without illustrating anything, and it gives a
+favicon that is genuinely derived from the name rather than bolted on. Option 3
+is the safe fallback if you want something more conventional.</p>
+
+<h2>Honest limitations</h2>
+<p class="lede">The text here is live Inter from Google Fonts. For production
+the wordmark must be <b>converted to outlines</b> so it renders identically
+everywhere without a font dependency — that is a step for whoever finalises it.
+The custom W is already a vector path and needs no font.</p>
+</div>
+
+<script>
+// The custom W, sized to sit INSIDE the word rather than beside it.
+//
+// Two things measured wrong on the first pass and are corrected here:
+//
+//   1. The viewBox is tight to the visual stroke (0.5 0.5 25 21), not the
+//      drawing canvas. With padding in the box, a CSS gap means something
+//      different from what it says, and the letter floats away from the
+//      word.
+//   2. Height is set in em against Inter's cap height (0.727 of font
+//      size), with 2% overshoot. Pointed shapes need a little overshoot to
+//      look level with flat-topped letters - the same reason a typeface
+//      draws A and V slightly taller than H. The first version overshot by
+//      about 6%, which reads as a mistake rather than as optical correction.
+const CAP = 0.727;          // Inter cap height as a fraction of font size
+// `mult` is a multiple of the PARENT font size, not a pixel value: the
+// mark is a letter, so it must scale with the type around it.
+const W = (mult, colour, sw) => `
+  <svg style="color:${colour};height:${(mult * CAP * 1.02).toFixed(3)}em;
+              width:${(mult * CAP * 1.02 * 25 / 21).toFixed(3)}em"
+       viewBox="0.5 0.5 25 21" aria-hidden="true">
+    <path d="M2 4 L7.5 20 L13 2 L18.5 20 L24 4" fill="none" stroke="currentColor"
+          stroke-width="${sw || 3}" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+
+const OPTS = [
+  {
+    n: "1", name: "Signal W", tag: "recommended",
+    why: "The W is redrawn as a signal trace with a tall centre spike — the letter and the meaning are the same shape. Everything else is Inter Bold at tight tracking, so the mark does one job and the typography does the rest. The W alone becomes the favicon, so the icon is genuinely derived from the name.",
+    lock: (c) => `<div class="wm" style="font-size:34px;gap:.02em">${W(1, c)}
+      <span class="txt">atchLog</span></div>`,
+    small: (c) => `<div class="wm" style="font-size:16px;gap:.02em">${W(1, c, 3.4)}
+      <span class="txt">atchLog</span></div>`,
+    fav: (c) => `<span style="font-size:26px;display:block">${W(1, c, 3.6)}</span>`
+  },
+  {
+    n: "2", name: "Lowercase, tick above", tag: "",
+    why: "All-lowercase for approachability — a current trend and a good fit for a buyer who is not a technology person. A small teal tick sits above the word like a marker on a timeline. Friendlier than option 1, but the tick is a separate element rather than part of a letter, so it is decoration rather than idea.",
+    lock: (c) => `<div style="display:inline-block;position:relative">
+        <svg width="26" height="10" viewBox="0 0 26 10" style="color:${c};position:absolute;top:-9px;left:2px">
+          <path d="M1 8 L6 8 L9 2 L12 9 L15 5 L25 5" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="txt" style="font-size:34px;letter-spacing:-.03em">watchlog</span></div>`,
+    small: (c) => `<div style="display:inline-block;position:relative">
+        <svg width="14" height="6" viewBox="0 0 26 10" style="color:${c};position:absolute;top:-5px;left:1px">
+          <path d="M1 8 L6 8 L9 2 L12 9 L15 5 L25 5" fill="none" stroke="currentColor"
+                stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="txt" style="font-size:16px;letter-spacing:-.03em">watchlog</span></div>`,
+    fav: (c) => `<svg height="20" viewBox="0 0 26 14" style="color:${c}">
+        <path d="M1 11 L6 11 L9 3 L13 13 L16 7 L25 7" fill="none" stroke="currentColor"
+              stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+  },
+  {
+    n: "3", name: "Two-tone wordmark", tag: "safe",
+    why: "No custom letterform at all: Watch in ink, Log in teal. This is the most common shape in B2B SaaS, which is both the argument for it and against it. It is instantly legible at any size and impossible to get wrong — but it says nothing the name does not already say.",
+    lock: (c, big, dark) => `<span class="txt" style="font-size:34px">
+        <span style="color:${dark ? '#fff' : 'var(--color-ink)'}">Watch</span><span style="color:${c}">Log</span></span>`,
+    small: (c, _b, dark) => `<span class="txt" style="font-size:16px">
+        <span style="color:${dark ? '#fff' : 'var(--color-ink)'}">Watch</span><span style="color:${c}">Log</span></span>`,
+    fav: (c) => `<span style="font-family:Inter;font-weight:800;font-size:19px;
+        letter-spacing:-.04em;color:${c}">WL</span>`
+  },
+  {
+    n: "4", name: "Stacked log", tag: "",
+    why: "Three rules of unequal length beside the name — a written record with one entry standing out. Reads as 'log' more literally than the others and stays very clear when small. Weakest link to 'watching', and it needs the word beside it to mean anything at all.",
+    lock: (c) => `<div class="wm">
+        <svg height="26" viewBox="0 0 20 24" style="color:${c}">
+          <g stroke="currentColor" stroke-width="3" stroke-linecap="round">
+            <path d="M2 5 H18"/><path d="M2 12 H11" opacity=".45"/><path d="M2 19 H15"/></g>
+        </svg><span class="txt" style="font-size:34px">WatchLog</span></div>`,
+    small: (c) => `<div class="wm">
+        <svg height="13" viewBox="0 0 20 24" style="color:${c}">
+          <g stroke="currentColor" stroke-width="3.4" stroke-linecap="round">
+            <path d="M2 5 H18"/><path d="M2 12 H11" opacity=".45"/><path d="M2 19 H15"/></g>
+        </svg><span class="txt" style="font-size:16px">WatchLog</span></div>`,
+    fav: (c) => `<svg height="18" viewBox="0 0 20 24" style="color:${c}">
+        <g stroke="currentColor" stroke-width="3.4" stroke-linecap="round">
+          <path d="M2 5 H18"/><path d="M2 12 H11" opacity=".45"/><path d="M2 19 H15"/></g></svg>`
+  }
+];
+
+function cell(o, dark) {
+  const accent = dark ? "var(--color-teal-bright)" : "var(--color-teal-deep)";
+  const ink = dark ? "#fff" : "var(--color-ink)";
+  return `<div class="cell${dark ? " dark" : ""}">
+    <div class="lbl">${dark ? "on slate" : "on white"}</div>
+    <div style="color:${ink}">${o.lock(accent, true, dark)}</div>
+
+    <div class="ctx">
+      <div>
+        <div class="caption">as it appears in an email header</div>
+        <div class="strip" style="margin-top:6px">
+          <span style="color:${ink}">${o.small(accent, false, dark)}</span>
+          <span style="margin-left:auto;color:${dark ? "var(--color-muted-dark)" : "var(--color-muted)"}">
+            Daily report · 26 Aug</span>
+        </div>
+      </div>
+      <div>
+        <div class="caption">favicon and app tile</div>
+        <div class="favrow">
+          ${[32, 24, 16].map((s) => `<div class="fav">
+            <div class="chip" style="width:${s}px;height:${s}px">
+              <span style="transform:scale(${s / 32});display:grid;place-items:center">
+                ${o.fav("var(--color-teal-bright)")}</span></div>
+            <small>${s}</small></div>`).join("")}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+document.getElementById("out").innerHTML = OPTS.map((o) => `
+  <div class="opt">
+    <div class="head"><b>${o.n} — ${o.name}</b>
+      ${o.tag ? `<span class="tag">${o.tag}</span>` : ""}</div>
+    <div class="why">${o.why}</div>
+    <div class="row">${cell(o, false)}${cell(o, true)}</div>
+  </div>`).join("");
+</script>
+</html>

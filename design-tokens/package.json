@@ -1,0 +1,12 @@
+{
+  "name": "@vision-infinity/watchlog-tokens",
+  "version": "0.1.0",
+  "description": "WatchLog design tokens. One source for the marketing site and the customer portal.",
+  "private": true,
+  "scripts": {
+    "build": "style-dictionary build --config style-dictionary.config.js"
+  },
+  "devDependencies": {
+    "style-dictionary": "^4.0.0"
+  }
+}

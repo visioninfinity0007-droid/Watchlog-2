@@ -1,32 +1,28 @@
-# --- credentials: never commit -----------------------------------------
-watchlog.ini
+# --- credentials: never commit ------------------------------------------
 .env
 *.env
+!.env.example
+*.pem
+*.key
 
-# --- runtime state -----------------------------------------------------
-agent_state.json
-*.tmp
-spool.sqlite*
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
+# --- internal working notes, not client deliverables --------------------
+# Commercial context, security incident detail and open questions live
+# here. This repo is in the client's GitHub org; these do not belong in it.
+_memory/
+AGENTS.md
+router.md
 
-# --- local test scratch ------------------------------------------------
-tests/live/
-tests/hik/
-tests/*.json
-
-# --- build output ------------------------------------------------------
+# --- dependencies and build output --------------------------------------
+node_modules/
+.next/
+out/
 build/
 dist/
-ship/
-*.spec
+.turbo/
 __pycache__/
 *.pyc
 
-# scratch images pulled during testing
-tests/shots/
-
-# stray config backups
+# --- scratch -------------------------------------------------------------
+.tmp/
+*.tmp
 *.bak
-*.ini.bak

@@ -1,0 +1,100 @@
+{
+  "sources": 14,
+  "cluster": 7,
+  "ratio": 1.4138,
+  "agreement_mean": 95.73,
+  "agreement_min": 93.37,
+  "cluster_self_agreement": 93.17,
+  "monogram": {
+    "master_px": [
+      2048,
+      1449
+    ],
+    "contours": 2,
+    "points": 421
+  },
+  "app_icon": {
+    "sizes": [
+      1024,
+      512,
+      192,
+      180,
+      32,
+      16
+    ],
+    "radius_pct": 12.2,
+    "mark_width_pct": 67.6
+  },
+  "ui_icons": {
+    "count": 8,
+    "source": "sheet-05.png",
+    "note": "one copy each; traced at source resolution, ~130px",
+    "icons": [
+      {
+        "file": "icon-01",
+        "px": [
+          177,
+          158
+        ]
+      },
+      {
+        "file": "icon-02",
+        "px": [
+          165,
+          145
+        ]
+      },
+      {
+        "file": "icon-03",
+        "px": [
+          115,
+          158
+        ]
+      },
+      {
+        "file": "icon-04",
+        "px": [
+          130,
+          156
+        ]
+      },
+      {
+        "file": "icon-05",
+        "px": [
+          158,
+          145
+        ]
+      },
+      {
+        "file": "icon-06",
+        "px": [
+          150,
+          150
+        ]
+      },
+      {
+        "file": "icon-07",
+        "px": [
+          126,
+          151
+        ]
+      },
+      {
+        "file": "icon-08",
+        "px": [
+          139,
+          144
+        ]
+      }
+    ]
+  },
+  "component": {
+    "file": "portal/app/mark.js",
+    "viewbox": [
+      1414,
+      1000
+    ],
+    "paths": 2,
+    "bytes": 5602
+  }
+}
