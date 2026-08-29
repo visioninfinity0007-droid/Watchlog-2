@@ -9,6 +9,8 @@
 
 if (!defined('ABSPATH')) { exit; }
 
+require_once get_template_directory() . '/icons.php';
+
 function watchlog_setup() {
     add_theme_support('title-tag');
     add_theme_support('post-thumbnails');
@@ -28,6 +30,13 @@ function watchlog_assets() {
         [], null);
     wp_enqueue_style('watchlog', get_stylesheet_uri(), ['watchlog-fonts'],
         wp_get_theme()->get('Version'));
+
+    // Home page composition, loaded only where it is used.
+    if (is_front_page()) {
+        wp_enqueue_style('watchlog-home',
+            get_template_directory_uri() . '/home.css', ['watchlog'],
+            wp_get_theme()->get('Version'));
+    }
 }
 add_action('wp_enqueue_scripts', 'watchlog_assets');
 
