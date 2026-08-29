@@ -40,7 +40,10 @@ services:
       retries: 10
 
   wordpress:
-    image: wordpress:6-php8.3-apache
+    # Built from ./wordpress/Dockerfile: stock WordPress plus the
+    # WatchLog theme, so the site design lives in git.
+    build:
+      context: ./wordpress
     restart: unless-stopped
     depends_on:
       watchlog-db:
