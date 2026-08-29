@@ -63,6 +63,16 @@ $portal = get_option('watchlog_portal_url', '#');
       </div>
 
       <div>
+        <?php if (watchlog_has_img('recorder-label')) : ?>
+          <figure class="shot" style="margin-bottom:22px">
+            <?php echo watchlog_img('recorder-label',
+              'A hand holding a small recorder, showing the printed barcode label on its underside.',
+              1400, 1000); ?>
+            <figcaption>This label. A photo of it is usually enough for us to
+              tell you yes or no.</figcaption>
+          </figure>
+        <?php endif; ?>
+
         <aside class="callout">
           <span class="ico-badge bad"><?php echo watchlog_icon('alert'); ?></span>
           <h3>What is not supported</h3>

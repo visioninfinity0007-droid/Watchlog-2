@@ -25,7 +25,13 @@ $portal = get_option('watchlog_portal_url', '#');
 ?>
 
 <!-- 1 ── Hero ────────────────────────────────────────────────────── -->
-<section class="hero">
+<section class="hero<?php echo watchlog_has_img('hero-premises') ? ' hero-photo' : ''; ?>">
+  <?php if (watchlog_has_img('hero-premises')) : ?>
+    <!-- Decorative: the headline beside it carries the meaning, so the
+         alt is deliberately empty rather than describing a warehouse. -->
+    <div class="hero-bg" aria-hidden="true"
+         style="background-image:url('<?php echo esc_url(watchlog_img_url('hero-premises')); ?>')"></div>
+  <?php endif; ?>
   <div class="hero-glow" aria-hidden="true"></div>
   <div class="wrap hero-grid">
     <div class="hero-copy">
@@ -87,6 +93,14 @@ $portal = get_option('watchlog_portal_url', '#');
         is not the same as somebody knowing what it saw.</p>
     </div>
 
+    <?php if (watchlog_has_img('unwatched-monitor')) : ?>
+      <figure class="shot">
+        <?php echo watchlog_img('unwatched-monitor',
+          'A CCTV monitor showing four camera views, lit in an empty office at night. The chair in front of it is empty.',
+          1600, 1200); ?>
+        <figcaption>The recorder worked all night. Nobody was in the room.</figcaption>
+      </figure>
+    <?php else : ?>
     <!-- A night on a real site: things happened, nobody was told. -->
     <figure class="night" aria-label="A night of activity nobody saw: eleven events between 6pm and 6am.">
       <div class="night-head"><?php echo watchlog_icon('moon', 16); ?> Last night, unreviewed</div>
@@ -105,6 +119,7 @@ $portal = get_option('watchlog_portal_url', '#');
       </div>
       <figcaption>11 events. None seen until somebody went looking.</figcaption>
     </figure>
+    <?php endif; ?>
   </div>
 </section>
 
@@ -137,6 +152,31 @@ $portal = get_option('watchlog_portal_url', '#');
           nobody notices for weeks.</p>
       </div>
     </div>
+
+    <?php if (watchlog_has_img('still-gate')) : ?>
+      <figure class="stills">
+        <div class="stills-grid">
+          <?php
+          $frames = [
+            ['still-gate',    'A person walking through a factory gate at night, seen from a camera mounted above. Their face is blurred.', 'person', 'Main gate 01:47'],
+            ['still-vehicle', 'A delivery van parked at a loading bay at night with its rear doors open. The number plate is blurred.', 'vehicle', 'Loading bay 03:11'],
+            ['still-empty',   'An empty yard at night in the rain, with no people or vehicles.', 'discarded', 'Rear yard 02:14'],
+          ];
+          foreach ($frames as [$f, $alt, $kind, $label]) : ?>
+            <figure class="still<?php echo $kind === 'discarded' ? ' is-out' : ''; ?>">
+              <?php echo watchlog_img($f, $alt, 1280, 720); ?>
+              <figcaption>
+                <span class="pill pill-<?php echo $kind === 'discarded' ? 'muted' : ($kind === 'vehicle' ? 'warn' : 'violet'); ?>"><?php echo esc_html($kind); ?></span>
+                <?php echo esc_html($label); ?>
+              </figcaption>
+            </figure>
+          <?php endforeach; ?>
+        </div>
+        <p class="stills-note">The third frame is rain on an empty yard. Your
+          recorder logged it as motion; WatchLog discarded it at the site and
+          you never heard about it. Example frames, not a customer&rsquo;s site.</p>
+      </figure>
+    <?php endif; ?>
 
     <!-- The portal, rebuilt in CSS from the same tokens the product uses. -->
     <figure class="ui-shot">
@@ -305,7 +345,11 @@ $portal = get_option('watchlog_portal_url', '#');
 </section>
 
 <!-- 9 ── Close ───────────────────────────────────────────────────── -->
-<section class="close">
+<section class="close<?php echo watchlog_has_img('close-dusk') ? ' close-photo' : ''; ?>">
+  <?php if (watchlog_has_img('close-dusk')) : ?>
+    <div class="close-bg" aria-hidden="true"
+         style="background-image:url('<?php echo esc_url(watchlog_img_url('close-dusk')); ?>')"></div>
+  <?php endif; ?>
   <div class="wrap center">
     <h2>Find out what your cameras have been seeing</h2>
     <p class="lede center-lede">Fourteen days, no card. If it does not work with

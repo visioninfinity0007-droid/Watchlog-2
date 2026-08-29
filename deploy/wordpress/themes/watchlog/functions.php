@@ -68,3 +68,34 @@ add_filter('pings_open', '__return_false', 20, 2);
 remove_action('wp_head', 'wp_generator');
 remove_action('wp_head', 'wlwmanifest_link');
 remove_action('wp_head', 'rsd_link');
+
+/**
+ * A theme image, or nothing.
+ *
+ * Every photograph on this site is optional. The layouts were built to
+ * stand up without them - segment tiles fall back to an icon, the hero
+ * to a gradient - so a missing or not-yet-supplied file degrades the
+ * page rather than breaking it. That also means the site can ship before
+ * the photography exists, which is what happened.
+ */
+function watchlog_has_img($name) {
+    return file_exists(get_template_directory() . "/img/$name.jpg");
+}
+
+function watchlog_img_url($name) {
+    return get_template_directory_uri() . "/img/$name.jpg";
+}
+
+/**
+ * `alt` is required, never decorative-by-accident. Pass '' deliberately
+ * for images that repeat adjacent text - a screen reader announcing a
+ * filename is worse than silence.
+ */
+function watchlog_img($name, $alt, $w, $h, $class = '') {
+    if (!watchlog_has_img($name)) { return ''; }
+    return sprintf(
+        '<img src="%s" alt="%s" width="%d" height="%d" class="%s" '
+        . 'loading="lazy" decoding="async">',
+        esc_url(watchlog_img_url($name)), esc_attr($alt),
+        $w, $h, esc_attr($class));
+}

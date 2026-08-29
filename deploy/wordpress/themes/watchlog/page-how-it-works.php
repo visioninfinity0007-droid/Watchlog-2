@@ -49,6 +49,16 @@ $portal = get_option('watchlog_portal_url', '#');
       </div>
     </div>
 
+    <?php if (watchlog_has_img('site-pc')) : ?>
+      <figure class="shot wide">
+        <?php echo watchlog_img('site-pc',
+          'An ordinary older desktop PC under a desk in a small office, with a network cable plugged in.',
+          1600, 1000); ?>
+        <figcaption>This is the whole hardware requirement. It does not need
+          to be new, or fast, or dedicated &mdash; only switched on.</figcaption>
+      </figure>
+    <?php endif; ?>
+
     <div class="note">
       <?php echo watchlog_icon('lock', 20); ?>
       <p><strong>The arrows only point one way.</strong> The site program opens a

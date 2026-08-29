@@ -26,3 +26,7 @@ __pycache__/
 .tmp/
 *.tmp
 *.bak
+
+# Raw supplied images. Only the processed output in themes/watchlog/img/
+# is version-controlled.
+_drop/
