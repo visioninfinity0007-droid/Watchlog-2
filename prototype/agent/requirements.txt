@@ -1,1 +1,15 @@
+# Core — the agent will not run without these.
 requests>=2.31
+
+# False-alarm filtering (Milestone 1). Without these the agent still runs,
+# logs that the filter is disabled, and reports every motion event
+# unfiltered — see agent/vision.py, which fails open on purpose.
+#
+# SIZE WARNING: ultralytics pulls in torch, which is well over 1 GB. That
+# is fine on a site PC installed with pip, but it makes a one-file
+# PyInstaller exe impractical. For the Milestone 4 NSIS installer, either
+# install these with pip at install time, or move to a yolov8n.onnx model
+# behind onnxruntime (~15 MB) — the Detector in vision.py is the only
+# place that would change.
+Pillow>=10.0
+ultralytics>=8.2

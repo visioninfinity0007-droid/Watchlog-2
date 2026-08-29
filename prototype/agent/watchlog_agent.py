@@ -57,6 +57,7 @@ import requests
 
 import discover
 import setup_wizard
+import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 
@@ -161,6 +162,17 @@ class Config:
                           not in ("0", "false", "no", "off"))
         self.snapshot_min_interval = int(
             get("snapshot_min_interval") or SNAPSHOT_MIN_INTERVAL)
+
+        # Local false-alarm filtering. On by default: an unfiltered DVR
+        # produces hundreds of motion events a night and the daily report
+        # becomes unreadable, which defeats the point of the product.
+        # Detection runs on this machine - no frame is ever sent to a
+        # cloud model.
+        self.detect = (str(get("detect") or "true").strip().lower()
+                       not in ("0", "false", "no", "off"))
+        self.detect_model = (get("detect_model") or "").strip() or None
+        self.detect_confidence = (get("detect_confidence") or "").strip() or None
+        self.detect_classes = (get("detect_classes") or "").strip() or None
 
         state_dir = Path(get("state_dir") or default_state_dir())
         self.state_path = Path(get("state_file") or (state_dir / "agent_state.json"))
@@ -310,6 +322,9 @@ def enroll(cfg: Config, cloud: Cloud, device) -> dict:
 
 def collector(cfg: Config, spool, stop: threading.Event) -> None:
     """Driver thread. Never dies: on error it backs off and re-opens."""
+    # Built once, outside the reconnect loop: loading the weights costs
+    # seconds, and a flapping NVR must not re-pay that on every retry.
+    detector = vision.build(cfg, log)
     while not stop.is_set():
         driver = None
         try:
@@ -329,6 +344,7 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
                 # The image is best-effort and strictly secondary. A
                 # camera that hangs, refuses auth or returns junk must
                 # cost us the picture, never the incident record.
+                raw = None
                 if cfg.snapshots and ev.event_type not in NO_SNAPSHOT_EVENTS:
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
@@ -346,6 +362,23 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
                         elif raw:
                             log(f"snapshot ch{ev.channel} discarded: "
                                 f"{len(raw) // 1024} KB exceeds cap")
+                            raw = None
+
+                # False-alarm filter. Only events that carry a frame can be
+                # judged; faults and video-loss arrive without one and are
+                # always kept, because those are precisely the events that
+                # say a camera has stopped working.
+                if detector is not None and ev.event_type not in NO_SNAPSHOT_EVENTS:
+                    keep, found = detector.classify_event(raw)
+                    if not keep:
+                        log(f"discarded ch{ev.channel} {ev.event_type}: "
+                            f"no person/vehicle in frame")
+                        continue
+                    if found:
+                        ev.payload["objects"] = [d.as_dict() for d in found]
+                        ev.payload["detector"] = detector.model_name
+                        log(f"kept ch{ev.channel}: "
+                            f"{', '.join(sorted({d.label for d in found}))}")
 
                 spool.add(ev.to_json(now_utc()))
                 dropped = spool.trim()

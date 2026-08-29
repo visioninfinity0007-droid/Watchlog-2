@@ -42,6 +42,26 @@ nvr_password = REPLACE_ME
 ; Run `watchlog-agent.exe --probe` to see what it detects before enrolling.
 nvr_driver = auto
 
+; --- false-alarm filtering -------------------------------------------
+; Every event that carries a still is shown to YOLOv8n on THIS machine
+; before it is sent. If the frame holds no person, car or motorcycle it
+; is treated as a false alarm and discarded at the site — rain, headlights
+; on a wall, a cat, an IR lamp cutting in at dusk. Without this a single
+; recorder produces hundreds of events a night and the morning report is
+; unreadable.
+;
+; No frame ever leaves the building for detection. Only stills attached to
+; events that already passed the filter are uploaded.
+;
+; If ultralytics is not installed, or the weights cannot load, the filter
+; disables itself and EVERY event is reported. It never fails closed —
+; a missed incident is invisible, an extra one is only noise.
+;
+; detect            = true
+; detect_model      = yolov8n.pt      ; downloaded on first run if absent
+; detect_confidence = 0.35            ; below this, an object is a guess
+; detect_classes    = person,car,motorcycle   ; the scope covers these three
+
 ; --- optional --------------------------------------------------------
 ; state_dir         = C:\ProgramData\WatchLog
 ; state_file        = C:\ProgramData\WatchLog\agent_state.json
