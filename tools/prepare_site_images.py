@@ -185,6 +185,32 @@ def save(img: Image.Image, name: str, dry: bool) -> None:
 # identifying which supplied image is which
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# MANIFEST
+#
+# The shape-and-tone classifier below was written first and is kept for
+# a fresh batch, but it is NOT what produced the current assets. With
+# thirteen supplied files - four variants of the dawn street, three of
+# the CCTV sheet, two of the recorder - it mixed up the hero with a
+# contact sheet, because both are 16:9 and the difference between "dusk"
+# and "night" is a judgement it cannot make.
+#
+# Guessing was the wrong tool. The panel boundaries were measured
+# instead, from the pale gutters, and written down:
+#
+#   CCTV sheet   1672x941   row gutter 463-467
+#                           bottom band split at column 833-837
+#   segments     1536x1024  row gutter 510-515
+#                           top band split at column 764-771
+#                           bottom band at 502-509 and 1026-1033
+#
+# Rerun with a NEW batch: use --dry-run first and check every line. If it
+# guesses wrong again, measure and hardcode rather than tuning the
+# heuristic - the heuristic will always be wrong on some future image,
+# and a wrong crop is silent.
+# ---------------------------------------------------------------------
+
+
 def classify(img: Image.Image) -> str:
     """
     Work out what a supplied image is from its shape and tone.
