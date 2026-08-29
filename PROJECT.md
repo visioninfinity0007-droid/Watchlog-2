@@ -52,9 +52,11 @@ passed the filter.
 All three `running:healthy`, all on `main`, all with real Let's Encrypt
 certificates.
 
-**Two known gaps.** Auto-deploy webhooks are not enabled, so a push does
-not yet trigger a rebuild — deploys are triggered through the Coolify
-API. And the viewer's data calls now fail by design: it read the
+**Marketing site is production-ready** as of 29 Aug: working CTAs (every
+button reaches the portal's /signup/ or /login/), favicon, meta, OG card,
+JSON-LD, a differentiation ledger and an honest trust band, working mobile
+nav. **Known gap:** auto-deploy webhooks are not enabled, so a push does
+not yet trigger a rebuild — deploys are triggered through the Coolify API. And the viewer's data calls now fail by design: it read the
 anon-accessible functions that were closed in migration 0010. It needs
 retiring or moving to authenticated access.
 
