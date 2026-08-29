@@ -1,0 +1,70 @@
+# WatchLog marketing site — WordPress, deployed by Coolify from git.
+#
+# SECURITY NOTE, learned the hard way on 2026-08-28.
+# An earlier deployment published WordPress on 0.0.0.0 with the installer
+# un-run. Bots scan for /wp-admin/install.php constantly; within two days
+# an unknown party had run the installer, taken the admin account, and
+# activated wp-file-manager — full filesystem read/write through wp-admin.
+# That instance was destroyed and rebuilt.
+#
+# What is different here:
+#   1. No port is published to the host. Coolify's proxy is the only way
+#      in, and it terminates TLS, so wp-admin credentials are never sent
+#      in clear text. The earlier stack ran plain HTTP.
+#   2. WordPress is already installed in the data volume, so there is no
+#      open installer to find. Verify after any migration:
+#      /wp-admin/install.php must say "Already Installed".
+#   3. DISALLOW_FILE_EDIT blocks the theme/plugin editor in wp-admin, so a
+#      stolen admin session cannot trivially write PHP.
+#
+# NO CREDENTIALS IN THIS FILE. Every value below comes from Coolify's
+# environment variables for this resource. The older
+# docker-compose.wordpress.yml had passwords inline, which is why it is
+# gitignored and this one replaces it.
+
+services:
+  watchlog-db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${WORDPRESS_DB_NAME}
+      MARIADB_USER: ${WORDPRESS_DB_USER}
+      MARIADB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${WORDPRESS_DB_ROOT_PASSWORD}
+    volumes:
+      - watchlog_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  wordpress:
+    image: wordpress:6-php8.3-apache
+    restart: unless-stopped
+    depends_on:
+      watchlog-db:
+        condition: service_healthy
+    environment:
+      - SERVICE_FQDN_WORDPRESS_80
+      - WORDPRESS_DB_HOST=watchlog-db:3306
+      - WORDPRESS_DB_NAME=${WORDPRESS_DB_NAME}
+      - WORDPRESS_DB_USER=${WORDPRESS_DB_USER}
+      - WORDPRESS_DB_PASSWORD=${WORDPRESS_DB_PASSWORD}
+      # WP_HOME/WP_SITEURL are driven by the proxy's FQDN so the site does
+      # not need a database edit every time the hostname changes.
+      - WORDPRESS_CONFIG_EXTRA=define('WP_MEMORY_LIMIT','256M'); define('DISALLOW_FILE_EDIT',true); if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO']) && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') { $$_SERVER['HTTPS'] = 'on'; }
+    volumes:
+      - watchlog_wp:/var/www/html
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  watchlog_db:
+  watchlog_wp:
