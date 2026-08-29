@@ -31,6 +31,13 @@ function watchlog_assets() {
     wp_enqueue_style('watchlog', get_stylesheet_uri(), ['watchlog-fonts'],
         wp_get_theme()->get('Version'));
 
+    // Inner-page furniture: header band, prose, tables, TOC.
+    if (!is_front_page()) {
+        wp_enqueue_style('watchlog-pages',
+            get_template_directory_uri() . '/pages.css', ['watchlog'],
+            wp_get_theme()->get('Version'));
+    }
+
     // Home page composition, loaded only where it is used.
     if (is_front_page()) {
         wp_enqueue_style('watchlog-home',

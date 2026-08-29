@@ -1,0 +1,170 @@
+/* =====================================================================
+   Inner pages.
+   The home page is a composition; these are documents. They need
+   different furniture: a header band that orients you, prose that is
+   comfortable to read at length, and a way to scan a long page without
+   reading it.
+   ===================================================================== */
+
+/* --- page header band ------------------------------------------------ */
+.page-hero {
+  position: relative; overflow: hidden;
+  padding: 64px 0 56px;
+  background: var(--color-surface-subtle);
+  border-bottom: 1px solid var(--color-line);
+}
+.page-hero::after {
+  content: ""; position: absolute; inset: auto -10% -60% 40%;
+  height: 300px; pointer-events: none;
+  background: radial-gradient(50% 60% at 50% 50%,
+              rgba(91,33,255,.10), transparent 70%);
+}
+.page-hero .wrap { position: relative; z-index: 1; }
+.page-hero h1 { max-width: 18ch; margin-bottom: .3em; }
+.page-hero .lede { font-size: 1.2rem; margin-bottom: 0; }
+
+.crumbs { display: flex; gap: 8px; align-items: center; margin-bottom: 16px;
+          font-size: .86rem; color: var(--color-muted); }
+.crumbs a { color: var(--color-muted); text-decoration: none; }
+.crumbs a:hover { color: var(--color-violet); }
+.crumbs span { opacity: .5; }
+
+/* --- prose ------------------------------------------------------------ */
+.prose { padding: 60px 0 88px; }
+.prose-grid { display: grid; grid-template-columns: 220px 1fr; gap: 56px;
+              align-items: start; }
+.prose-body { max-width: 68ch; font-size: 1.03rem; }
+.prose-body > h2 {
+  font-size: 1.55rem; margin: 2.2em 0 .6em; padding-top: 1.4em;
+  border-top: 1px solid var(--color-line);
+}
+.prose-body > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.prose-body > h3 { margin: 1.8em 0 .5em; }
+.prose-body p { margin: 0 0 1.1em; }
+.prose-body ul, .prose-body ol { padding-left: 0; margin: 0 0 1.4em; }
+.prose-body ul { list-style: none; }
+.prose-body ul li {
+  position: relative; padding-left: 28px; margin-bottom: .6em;
+}
+/* A small violet rule instead of a bullet: quieter than a dot and it
+   lines up with the tick used elsewhere. */
+.prose-body ul li::before {
+  content: ""; position: absolute; left: 4px; top: .72em;
+  width: 12px; height: 2px; border-radius: 2px;
+  background: var(--color-violet); opacity: .7;
+}
+.prose-body ol { counter-reset: n; list-style: none; }
+.prose-body ol li { position: relative; padding-left: 40px; margin-bottom: .9em;
+                    counter-increment: n; }
+.prose-body ol li::before {
+  content: counter(n);
+  position: absolute; left: 0; top: -1px;
+  width: 26px; height: 26px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(91,33,255,.10); color: var(--color-violet);
+  font-size: .82rem; font-weight: 700;
+}
+.prose-body strong { font-weight: 700; }
+.prose-body table { width: 100%; border-collapse: separate; border-spacing: 0;
+                    margin: 1.6em 0; font-size: .97rem;
+                    border: 1px solid var(--color-line);
+                    border-radius: var(--r); overflow: hidden; }
+.prose-body th { background: var(--color-surface-subtle); font-weight: 700;
+                 text-align: left; }
+.prose-body th, .prose-body td { padding: 13px 16px;
+                                 border-bottom: 1px solid var(--color-line); }
+.prose-body tr:last-child td { border-bottom: 0; }
+
+/* --- on-page navigation ----------------------------------------------- */
+.toc { position: sticky; top: 96px; font-size: .92rem; }
+.toc-title { font-size: .74rem; font-weight: 700; letter-spacing: .12em;
+             text-transform: uppercase; color: var(--color-muted);
+             margin-bottom: 12px; }
+.toc ul { list-style: none; padding: 0; margin: 0;
+          border-left: 2px solid var(--color-line); }
+.toc li a { display: block; padding: 7px 0 7px 14px; margin-left: -2px;
+            border-left: 2px solid transparent;
+            color: var(--color-muted); text-decoration: none; line-height: 1.35; }
+.toc li a:hover { color: var(--color-ink); border-left-color: var(--color-line); }
+
+/* --- shared page furniture -------------------------------------------- */
+.cta-band { background: var(--color-ink); color: #fff; padding: 64px 0; }
+.cta-band h2 { color: #fff; margin-bottom: .35em; }
+.cta-band .lede { color: var(--color-muted-dark); margin: 0 auto 26px; }
+
+.feature-block { padding: 72px 0; border-bottom: 1px solid var(--color-line); }
+.feature-block:last-of-type { border-bottom: 0; }
+.feature-head { display: flex; gap: 16px; align-items: flex-start;
+                margin-bottom: 26px; }
+.feature-head .ico-badge { margin-bottom: 0; flex: none; }
+.feature-head h2 { margin-bottom: .25em; }
+.feature-head .lede { font-size: 1.08rem; margin: 0; }
+
+.checklist { list-style: none; padding: 0; margin: 0; display: grid;
+             gap: 12px; }
+.checklist li { display: flex; gap: 11px; align-items: flex-start; }
+.checklist .ico { color: var(--color-ok); flex: none; margin-top: 3px; }
+.checklist.warn .ico { color: var(--color-bad); }
+
+/* --- pricing ----------------------------------------------------------- */
+.plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px;
+             align-items: stretch; }
+.plan-grid .plan { padding: 30px 28px; }
+.plan-grid .plan .btn { margin-top: auto; }
+.plan-foot { margin-top: 22px; padding-top: 20px;
+             border-top: 1px solid var(--color-line); }
+.compare th:first-child { width: 40%; }
+.compare td { text-align: center; }
+.compare td:first-child { text-align: left; }
+.compare .yes { color: var(--color-ok); font-weight: 700; }
+.compare .no  { color: var(--color-muted); }
+
+.faq { display: grid; gap: 0; margin-top: 8px; }
+.faq details { border-bottom: 1px solid var(--color-line); padding: 18px 0; }
+.faq summary { cursor: pointer; font-weight: 600; font-size: 1.03rem;
+               list-style: none; display: flex; justify-content: space-between;
+               gap: 20px; align-items: center; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; color: var(--color-violet);
+                      font-size: 1.3rem; font-weight: 400; line-height: 1; }
+.faq details[open] summary::after { content: "–"; }
+.faq p { margin: 12px 0 0; color: var(--color-muted); max-width: 70ch; }
+
+/* --- segments ---------------------------------------------------------- */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 48px;
+       align-items: center; padding: 56px 0;
+       border-bottom: 1px solid var(--color-line); }
+.seg:nth-child(even) .seg-media { order: -1; }
+.seg:last-child { border-bottom: 0; }
+.seg-media { background: var(--color-surface-subtle);
+             border: 1px solid var(--color-line); border-radius: var(--r);
+             aspect-ratio: 3 / 2; display: flex; align-items: center;
+             justify-content: center; color: var(--color-violet);
+             opacity: .85; overflow: hidden; }
+.seg-media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.seg-media .ico { width: 56px; height: 56px; opacity: .35; }
+.seg h3 { font-size: 1.4rem; }
+.seg .tag-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.seg .tag-row span { font-size: .82rem; font-weight: 600; padding: 4px 11px;
+                     border-radius: 999px; background: rgba(91,33,255,.09);
+                     color: var(--color-violet); }
+
+/* --- contact ----------------------------------------------------------- */
+.contact-grid { display: grid; grid-template-columns: repeat(3, 1fr);
+                gap: 22px; }
+.contact-card { background: #fff; border: 1px solid var(--color-line);
+                border-radius: var(--r); padding: 28px; }
+.contact-card h3 { margin-bottom: .3em; }
+.contact-card p { color: var(--color-muted); margin-bottom: 1em; }
+.contact-card a { font-weight: 600; }
+
+/* --- responsive -------------------------------------------------------- */
+@media (max-width: 980px) {
+  .prose-grid { grid-template-columns: 1fr; gap: 32px; }
+  .toc { position: static; order: -1; }
+  .toc ul { display: flex; flex-wrap: wrap; gap: 4px 16px; border-left: 0; }
+  .toc li a { padding: 4px 0; border-left: 0; }
+  .plan-grid, .contact-grid { grid-template-columns: 1fr; }
+  .seg { grid-template-columns: 1fr; gap: 26px; }
+  .seg:nth-child(even) .seg-media { order: 0; }
+}
