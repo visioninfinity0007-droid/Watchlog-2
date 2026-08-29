@@ -11,7 +11,7 @@
  */
 if (!defined('ABSPATH')) { exit; }
 get_header();
-$portal = get_option('watchlog_portal_url', '#');
+$portal = watchlog_signup_url();
 ?>
 
 <section class="page-hero">

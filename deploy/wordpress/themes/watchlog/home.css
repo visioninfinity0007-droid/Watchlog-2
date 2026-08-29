@@ -269,3 +269,42 @@
   .stills-grid { grid-template-columns: 1fr; }
   .hero-bg { background-position: 60% 42%; }
 }
+
+/* =====================================================================
+   Comparison — "you might already have…"
+   Objection handling. A two-column ledger, not a feature grid: the left
+   is what they own, the right is the gap it leaves. The right column is
+   the argument, so it carries the weight.
+   ===================================================================== */
+.vs { border: 1px solid var(--color-line); border-radius: var(--r);
+      overflow: hidden; }
+.vs-row { display: grid; grid-template-columns: 1fr 1.2fr; gap: 0;
+          border-top: 1px solid var(--color-line); }
+.vs-row:first-child { border-top: 0; }
+.vs-row > div { padding: 20px 24px; }
+.vs-row > div:first-child { background: var(--color-surface-subtle);
+                            border-right: 1px solid var(--color-line); }
+.vs-row > div:first-child strong { display: block; }
+.vs-row > div:first-child span { color: var(--color-muted); font-size: .92rem; }
+.vs-row > div:last-child { display: flex; align-items: center;
+                           color: var(--color-ink); }
+.vs-head { font-size: .78rem; font-weight: 700; letter-spacing: .08em;
+           text-transform: uppercase; }
+.vs-head > div { padding: 14px 24px; color: var(--color-muted); }
+.vs-head > div:last-child { color: var(--color-violet); }
+
+/* =====================================================================
+   Trust band — honest signals, no fake logos or testimonials.
+   ===================================================================== */
+.trust { gap: 28px; }
+.trust-item { display: flex; gap: 16px; align-items: flex-start; }
+.trust-item .ico-badge { flex: none; margin-bottom: 0; }
+.trust-item h3 { margin-bottom: .3em; }
+.trust-item p { margin: 0; color: var(--color-muted); }
+
+@media (max-width: 720px) {
+  .vs-row { grid-template-columns: 1fr; }
+  .vs-row > div:first-child { border-right: 0;
+                              border-bottom: 1px solid var(--color-line); }
+  .vs-head { display: none; }
+}

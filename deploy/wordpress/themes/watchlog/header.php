@@ -13,14 +13,19 @@
     <a class="brand" href="<?php echo esc_url(home_url('/')); ?>">
       <?php echo watchlog_mark(); ?><span>WatchLog</span>
     </a>
-    <nav class="nav">
+    <button class="nav-toggle" aria-label="Menu" aria-expanded="false"
+            aria-controls="site-nav" onclick="var n=document.getElementById('site-nav');var o=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',!o);n.classList.toggle('open')">
+      <?php echo watchlog_icon('menu', 24); ?>
+    </button>
+    <nav class="nav" id="site-nav">
       <?php
       if (has_nav_menu('primary')) {
           wp_nav_menu(['theme_location' => 'primary', 'container' => false,
                        'items_wrap' => '%3$s', 'depth' => 1]);
       }
       ?>
-      <a class="btn btn-primary" href="<?php echo esc_url(get_option('watchlog_portal_url', '#')); ?>">Sign in</a>
+      <a class="nav-signin" href="<?php echo esc_url(watchlog_login_url()); ?>">Sign in</a>
+      <a class="btn btn-primary" href="<?php echo esc_url(watchlog_signup_url()); ?>">Start free</a>
     </nav>
   </div>
 </header>

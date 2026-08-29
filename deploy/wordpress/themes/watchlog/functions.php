@@ -70,6 +70,69 @@ remove_action('wp_head', 'wlwmanifest_link');
 remove_action('wp_head', 'rsd_link');
 
 /**
+ * Where the portal lives, and the two doors into it.
+ *
+ * Every CTA on this site used to point at "#" because this option was
+ * never set — the "no registration button" the buttons were there, they
+ * just went nowhere. The base URL is an option so it can move without a
+ * code change; the paths are split so "Sign in" and "Start a trial" go to
+ * the right door instead of the same one.
+ */
+function watchlog_portal_base() {
+    return rtrim(get_option('watchlog_portal_url',
+        'https://watchlog.161.97.175.15.sslip.io'), '/');
+}
+function watchlog_signup_url() { return watchlog_portal_base() . '/signup/'; }
+function watchlog_login_url()  { return watchlog_portal_base() . '/login/'; }
+
+/**
+ * Head: icons, and the meta a link needs to look like anything when it is
+ * pasted into WhatsApp, LinkedIn or a search result. Without these the
+ * site had no favicon, no description, and shared as a bare URL.
+ */
+function watchlog_head() {
+    $t = get_template_directory_uri();
+    $desc = 'WatchLog reads the CCTV recorder you already own, filters out '
+          . 'false alarms on site, and sends a daily summary on WhatsApp. '
+          . 'Works with Hikvision, Dahua and most ONVIF recorders.';
+    $title = wp_get_document_title();
+    $url = home_url(add_query_arg([], $GLOBALS['wp']->request ?? ''));
+    $og  = "$t/img/og-card.png";
+    ?>
+    <link rel="icon" href="<?php echo esc_url("$t/img/favicon.ico"); ?>" sizes="16x16 32x32 48x48">
+    <link rel="icon" href="<?php echo esc_url("$t/img/icon.svg"); ?>" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="<?php echo esc_url("$t/img/apple-touch-icon.png"); ?>">
+    <meta name="description" content="<?php echo esc_attr($desc); ?>">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="WatchLog">
+    <meta property="og:title" content="<?php echo esc_attr($title); ?>">
+    <meta property="og:description" content="<?php echo esc_attr($desc); ?>">
+    <meta property="og:image" content="<?php echo esc_url($og); ?>">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="<?php echo esc_attr($title); ?>">
+    <meta name="twitter:description" content="<?php echo esc_attr($desc); ?>">
+    <meta name="twitter:image" content="<?php echo esc_url($og); ?>">
+    <script type="application/ld+json"><?php echo wp_json_encode([
+        '@context' => 'https://schema.org',
+        '@type' => 'SoftwareApplication',
+        'name' => 'WatchLog',
+        'applicationCategory' => 'SecurityApplication',
+        'operatingSystem' => 'Windows',
+        'description' => $desc,
+        'offers' => [
+            '@type' => 'Offer', 'price' => '6000',
+            'priceCurrency' => 'PKR',
+            'description' => 'Per site, per month. 14-day free trial.',
+        ],
+        'publisher' => ['@type' => 'Organization', 'name' => 'Vision Infinity'],
+    ], JSON_UNESCAPED_SLASHES); ?></script>
+    <?php
+}
+add_action('wp_head', 'watchlog_head', 1);
+
+/**
  * A theme image, or nothing.
  *
  * Every photograph on this site is optional. The layouts were built to

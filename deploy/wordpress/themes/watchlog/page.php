@@ -83,7 +83,7 @@ while (have_posts()) : the_post();
     <p class="lede center-lede">If WatchLog does not work with your recorder
       you will know within ten minutes.</p>
     <div class="hero-actions center-actions">
-      <a class="btn btn-primary" href="<?php echo esc_url(get_option('watchlog_portal_url', '#')); ?>">Start a trial</a>
+      <a class="btn btn-primary" href="<?php echo esc_url(watchlog_signup_url()); ?>">Start a trial</a>
       <a class="btn btn-ghost" href="/contact/">Talk to us</a>
     </div>
   </div>

@@ -21,7 +21,7 @@
  */
 if (!defined('ABSPATH')) { exit; }
 get_header();
-$portal = get_option('watchlog_portal_url', '#');
+$portal = watchlog_signup_url();
 ?>
 
 <!-- 1 ── Hero ────────────────────────────────────────────────────── -->
@@ -253,8 +253,52 @@ $portal = get_option('watchlog_portal_url', '#');
   </div>
 </section>
 
-<!-- 6 ── Compatibility, with the exclusion in the open ───────────── -->
+<!-- 5b ── You might already have… (honest differentiation) ───────── -->
 <section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Why this, when you already have cameras</div>
+      <h2>You have probably tried one of these already</h2>
+      <p class="lede">WatchLog is not a replacement for any of them. It is the
+        part every one of them leaves out: somebody actually reading what the
+        cameras saw.</p>
+    </div>
+
+    <div class="vs">
+      <div class="vs-row vs-head">
+        <div>What you already have</div>
+        <div>What it still leaves you missing</div>
+      </div>
+      <div class="vs-row">
+        <div><strong>A recorder that keeps 30 days</strong>
+          <span>The footage is there if you go and look.</span></div>
+        <div>Recording is not monitoring. Nobody opens it until after
+          something has already gone wrong.</div>
+      </div>
+      <div class="vs-row">
+        <div><strong>The camera vendor's phone app</strong>
+          <span>Live view whenever you open it.</span></div>
+        <div>It shows you the cameras on demand. It never tells you something
+          happened while you were not looking.</div>
+      </div>
+      <div class="vs-row">
+        <div><strong>Guards on site</strong>
+          <span>Someone physically present.</span></div>
+        <div>Guards cover what they can see, on shift. The cameras already
+          cover everything, always — if only someone read them.</div>
+      </div>
+      <div class="vs-row">
+        <div><strong>A monitoring contract</strong>
+          <span>A control room watching your feeds.</span></div>
+        <div>Many times the price, and it usually means replacing the cameras
+          you already paid for.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 6 ── Compatibility, with the exclusion in the open ───────────── -->
+<section class="alt">
   <div class="wrap split">
     <div>
       <div class="eyebrow">Compatibility</div>
@@ -300,6 +344,54 @@ $portal = get_option('watchlog_portal_url', '#');
         <div><b>Not a way to prevent anything.</b>
           <span>It observes and reports. Prevention is what guards, gates and
             lighting are for.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 7b ── Why you can trust it (honest signals, no fake logos) ────── -->
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Built to be trusted with your cameras</div>
+      <h2>The things that would worry us, in your position</h2>
+    </div>
+    <div class="grid g2 trust">
+      <div class="trust-item">
+        <span class="ico-badge"><?php echo watchlog_icon('lock'); ?></span>
+        <div>
+          <h3>Nothing of yours is put on the internet</h3>
+          <p>No port forwarding, no VPN, no inbound connection. Your recorder's
+            password stays in a file on your own PC. We could not log into your
+            cameras if we wanted to — there is no route in.</p>
+        </div>
+      </div>
+      <div class="trust-item">
+        <span class="ico-badge"><?php echo watchlog_icon('people'); ?></span>
+        <div>
+          <h3>One customer can never see another's</h3>
+          <p>Accounts are separated at the database level, and an automated
+            test fails the release if that separation ever weakens. It is
+            checked on every deploy, not assumed.</p>
+        </div>
+      </div>
+      <div class="trust-item">
+        <span class="ico-badge"><?php echo watchlog_icon('camera'); ?></span>
+        <div>
+          <h3>Your footage never leaves the building</h3>
+          <p>We receive an event record and one still per real incident.
+            We cannot browse your recordings, and the frames that were false
+            alarms are discarded on your machine.</p>
+        </div>
+      </div>
+      <div class="trust-item">
+        <span class="ico-badge"><?php echo watchlog_icon('check'); ?></span>
+        <div>
+          <h3>You will know in ten minutes if it fits</h3>
+          <p>Priced in rupees, per site, no card for the trial. If your
+            recorder is not supported the setup tells you before you have
+            spent anything.</p>
+        </div>
+      </div>
     </div>
   </div>
 </section>
