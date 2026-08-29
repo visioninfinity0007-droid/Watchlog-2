@@ -30,3 +30,6 @@ __pycache__/
 # Raw supplied images. Only the processed output in themes/watchlog/img/
 # is version-controlled.
 _drop/
+dist-installer/
+prototype/models/
+prototype/build_out.log

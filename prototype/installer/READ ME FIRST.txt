@@ -1,0 +1,67 @@
+WatchLog — installing on your site PC
+=====================================
+
+Thank you. This takes about ten minutes, and most of that is the program
+finding your recorder.
+
+WHAT YOU NEED
+-------------
+  1. This PC on the SAME network as your CCTV recorder, and left switched on.
+  2. Your recorder's admin username and password.
+  3. The one-time setup code we sent you (unless it is already filled in).
+
+You do NOT need to know any IP addresses, and nothing about your network
+has to be changed. WatchLog only ever connects OUTWARD, like a web browser.
+
+
+HOW TO INSTALL
+--------------
+  1. Right-click  "Install WatchLog.cmd"  and choose  "Run as administrator".
+       (Windows needs this to install the program and to start it
+        automatically each time the PC turns on.)
+
+  2. If Windows shows a blue "Windows protected your PC" box, click
+       "More info"  ->  "Run anyway".
+       This appears because the program is new, not because anything is
+       wrong. (Ask us if you would rather check first.)
+
+  3. Follow the prompts. The program will:
+       - search your network and find your recorder,
+       - ask for the recorder's admin password,
+       - ask for the setup code (if it is not already filled in),
+       - test everything, then start monitoring.
+
+  4. When it says "WatchLog is installed and running", you are done.
+     You can close the window. Your site will show up in the WatchLog
+     portal within a minute.
+
+
+AFTER INSTALLING
+----------------
+  - WatchLog starts by itself every time this PC boots. You do not need to
+    open anything or log in on this PC.
+  - It runs quietly in the background. There is no window to keep open.
+  - If you ever want to check it, the activity log is at:
+        C:\ProgramData\WatchLog\agent.log
+
+
+IF THE RECORDER IS NOT FOUND
+----------------------------
+  - Make sure this PC and the recorder are on the same network (the same
+    router/switch), not a guest wifi.
+  - Make sure the recorder is switched on.
+  - You can type the recorder's IP address by hand when asked, if you
+    know it (it is on the recorder's own screen under Menu > Network).
+  - Still stuck? Send us a photo of the label on the recorder and we will
+    help.
+
+
+TO REMOVE IT
+------------
+  Right-click  "Uninstall-WatchLog.ps1"  ->  "Run with PowerShell"
+  (as administrator), or just ask us.
+
+
+Your recorder's password and your video never leave this building. We
+receive only a short record of each event and one still image. We cannot
+watch your cameras live or browse your recordings.

@@ -224,13 +224,161 @@ class Detector:
                 f"{s['errors']} errors, {avg:.0f}ms avg")
 
 
+class OnnxDetector:
+    """
+    YOLOv8n via onnxruntime — the backend the shipped exe uses.
+
+    Why not ultralytics in production: ultralytics drags in torch, over a
+    gigabyte, which makes a one-file installer impractical. onnxruntime is
+    ~15 MB and the model file is ~12 MB. Same model, same three classes,
+    a fraction of the size.
+
+    Same contract as Detector, including FAIL OPEN: if onnxruntime is
+    missing, the model will not load, or inference throws, every event is
+    kept and the reason is logged once. A broken filter must never
+    silently swallow real incidents.
+
+    The decode is written out rather than pulled from a library because
+    the whole point of this path is to avoid the heavy library. YOLOv8's
+    export produces one output tensor shaped (1, 4+classes, 8400): the
+    first four rows are box centre-x, centre-y, width, height in the
+    letterboxed 640-space, the rest are per-class scores.
+    """
+
+    def __init__(self, model_path, confidence=DEFAULT_CONFIDENCE,
+                 image_size=DEFAULT_IMAGE_SIZE, classes=None, log=print):
+        self.model_name = str(model_path)
+        self.confidence = float(confidence)
+        self.image_size = int(image_size)
+        self.classes = dict(classes or COCO_KEEP)
+        self._log = log
+        self._sess = None
+        self._unavailable = None
+        self._warned = False
+        self._lock = threading.Lock()
+        self.stats = {"seen": 0, "kept": 0, "discarded": 0, "errors": 0,
+                      "ms_total": 0.0}
+
+    @property
+    def available(self):
+        return self._unavailable is None
+
+    def _load(self):
+        if self._sess is not None or self._unavailable:
+            return self._sess
+        import os
+        if not os.path.exists(self.model_name):
+            self._fail(f"model file not found: {self.model_name}")
+            return None
+        try:
+            import onnxruntime as ort           # noqa: PLC0415
+            self._np = __import__("numpy")
+            t0 = time.monotonic()
+            so = ort.SessionOptions()
+            so.log_severity_level = 3
+            self._sess = ort.InferenceSession(
+                self.model_name, sess_options=so,
+                providers=["CPUExecutionProvider"])
+            self._inp = self._sess.get_inputs()[0].name
+            self._log(f"vision: loaded {self.model_name} via onnxruntime in "
+                      f"{time.monotonic() - t0:.1f}s "
+                      f"(classes: {', '.join(sorted(self.classes.values()))})")
+        except Exception as e:                   # noqa: BLE001
+            self._fail(f"onnxruntime unavailable or model invalid: "
+                       f"{type(e).__name__}: {str(e)[:160]}")
+            return None
+        return self._sess
+
+    def _fail(self, reason):
+        self._unavailable = reason
+        if not self._warned:
+            self._warned = True
+            self._log(f"vision: DISABLED - {reason}")
+            self._log("vision: every event will be kept unfiltered. False "
+                      "alarms will reach the report.")
+
+    def _letterbox(self, img):
+        np = self._np
+        s = self.image_size
+        w, h = img.size
+        scale = min(s / w, s / h)
+        nw, nh = int(round(w * scale)), int(round(h * scale))
+        from PIL import Image                     # noqa: PLC0415
+        resized = img.resize((nw, nh), Image.BILINEAR)
+        canvas = Image.new("RGB", (s, s), (114, 114, 114))
+        px, py = (s - nw) // 2, (s - nh) // 2
+        canvas.paste(resized, (px, py))
+        arr = np.asarray(canvas, dtype=np.float32) / 255.0
+        arr = arr.transpose(2, 0, 1)[None, ...]   # NCHW
+        return np.ascontiguousarray(arr), scale, px, py
+
+    def detect(self, jpeg):
+        sess = self._load()
+        if sess is None:
+            return None
+        np = self._np
+        try:
+            import io
+            from PIL import Image                 # noqa: PLC0415
+            img = Image.open(io.BytesIO(jpeg))
+            img.load()
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+        except Exception as e:                     # noqa: BLE001
+            self.stats["errors"] += 1
+            self._log(f"vision: unreadable frame ({type(e).__name__}); keeping event")
+            return None
+
+        t0 = time.monotonic()
+        try:
+            blob, scale, px, py = self._letterbox(img)
+            with self._lock:
+                out = sess.run(None, {self._inp: blob})[0]
+        except Exception as e:                     # noqa: BLE001
+            self.stats["errors"] += 1
+            self._log(f"vision: inference failed ({type(e).__name__}: "
+                      f"{str(e)[:120]}); keeping event")
+            return None
+        self.stats["ms_total"] += (time.monotonic() - t0) * 1000
+
+        # out: (1, 4+C, 8400) -> (8400, 4+C)
+        pred = out[0].transpose(1, 0)
+        boxes = pred[:, :4]
+        scores_all = pred[:, 4:]
+        wanted = sorted(self.classes)
+        found = []
+        for cls in wanted:
+            col = scores_all[:, cls]
+            idx = self._np.where(col >= self.confidence)[0]
+            for i in idx:
+                cx, cy, bw, bh = boxes[i]
+                x1 = (cx - bw / 2 - px) / scale
+                y1 = (cy - bh / 2 - py) / scale
+                x2 = (cx + bw / 2 - px) / scale
+                y2 = (cy + bh / 2 - py) / scale
+                found.append(Detection(self.classes[cls], float(col[i]),
+                                       (x1, y1, x2, y2)))
+        return found
+
+    # classify_event / summary are identical to Detector's, so reuse them.
+    classify_event = Detector.classify_event
+    summary = Detector.summary
+
+
 def build(cfg, log=print):
     """
     Detector from config, or None when the operator has turned it off.
 
+    Backend choice, in order:
+      1. An ONNX model (onnxruntime) - what the shipped exe uses, because
+         it avoids torch. Chosen when detect_model ends in .onnx, or a
+         yolov8n.onnx sits next to the agent, and onnxruntime is present.
+      2. ultralytics (.pt) - the development path.
+      3. Neither - fail open, every event reported.
+
     Reads, all optional:
         detect            true/false  (default true)
-        detect_model      yolov8n.pt
+        detect_model      yolov8n.onnx  (or .pt for the ultralytics path)
         detect_confidence 0.35
         detect_classes    person,car,motorcycle
     """
@@ -252,7 +400,34 @@ def build(cfg, log=print):
             log("vision: detect_classes left nothing to detect; disabling filter")
             return None
 
+    conf = float(getattr(cfg, "detect_confidence", None) or DEFAULT_CONFIDENCE)
+    model = getattr(cfg, "detect_model", None)
+
+    # Find a model to use. Prefer an explicit .onnx, then a yolov8n.onnx
+    # sitting beside the agent (which is how the installer ships it), then
+    # fall back to the ultralytics .pt path.
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    onnx_candidates = []
+    if model and str(model).lower().endswith(".onnx"):
+        onnx_candidates.append(model)
+    onnx_candidates += [os.path.join(here, "yolov8n.onnx"),
+                        os.path.join(os.getcwd(), "yolov8n.onnx")]
+    onnx_model = next((p for p in onnx_candidates if os.path.exists(p)), None)
+
+    if onnx_model:
+        return OnnxDetector(onnx_model, confidence=conf, classes=mapping, log=log)
+
+    # No ONNX model on disk. If onnxruntime is here but the model is not,
+    # say so plainly - this is the common installer state until the model
+    # is dropped in - then fall through to ultralytics (dev) or fail open.
+    try:
+        import onnxruntime  # noqa: F401,PLC0415
+        log("vision: onnxruntime is present but no yolov8n.onnx was found; "
+            "false-alarm filtering is OFF until the model is added. Data "
+            "still flows - every event is reported unfiltered.")
+    except Exception:       # noqa: BLE001
+        pass
+
     return Detector(
-        model=getattr(cfg, "detect_model", None) or DEFAULT_MODEL,
-        confidence=float(getattr(cfg, "detect_confidence", None) or DEFAULT_CONFIDENCE),
-        classes=mapping, log=log)
+        model=model or DEFAULT_MODEL, confidence=conf, classes=mapping, log=log)
