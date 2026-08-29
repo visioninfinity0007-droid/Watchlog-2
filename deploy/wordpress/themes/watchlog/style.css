@@ -99,6 +99,12 @@ a  { color: var(--color-violet); text-underline-offset: 3px; }
 .nav a { color: var(--color-ink); text-decoration: none; font-size: .95rem;
          font-weight: 500; opacity: .8; }
 .nav a:hover { opacity: 1; }
+/* `.nav a` outranks `.btn-primary` on specificity, so without this the
+   header button rendered ink-on-violet at 2.91:1 and failed WCAG while
+   the identical buttons further down the page passed at 6.76:1. */
+.nav a.btn { opacity: 1; }
+.nav a.btn-primary { color: var(--color-white); }
+.nav a.btn-ghost { color: var(--color-ink); }
 .nav-toggle { display: none; }
 
 /* --- buttons --------------------------------------------------------- */
