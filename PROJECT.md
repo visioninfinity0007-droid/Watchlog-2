@@ -47,7 +47,7 @@ passed the filter.
 |---|---|---|---|
 | Customer portal | https://watchlog.161.97.175.15.sslip.io | `watchlog-portal-git` | `/portal`, Dockerfile |
 | Marketing site | https://watchlogsite.161.97.175.15.sslip.io | `watchlog-website-git` | `/deploy`, docker-compose |
-| Agent dashboard | https://watchlog-viewer.161.97.175.15.sslip.io | `watchlog-viewer` | `/prototype/viewer`, Dockerfile |
+| Recorder-push bridge | https://watchlog-push.161.97.175.15.sslip.io | `watchlog-push-bridge` | `/prototype/bridge`, Dockerfile |
 
 All three `running:healthy`, all on `main`, all with real Let's Encrypt
 certificates.
@@ -57,8 +57,12 @@ button reaches the portal's /signup/ or /login/), favicon, meta, OG card,
 JSON-LD, a differentiation ledger and an honest trust band, working mobile
 nav. **Known gap:** auto-deploy webhooks are not enabled, so a push does
 not yet trigger a rebuild — deploys are triggered through the Coolify API. And the viewer's data calls now fail by design: it read the
-anon-accessible functions that were closed in migration 0010. It needs
-retiring or moving to authenticated access.
+anon-accessible functions that were closed in migration 0010. It has now been retired.
+
+**Recorder-push (PC-free) mode is live:** a site with no always-on PC can
+have its recorder POST events straight to the bridge above (token per
+site), which forwards to `wl_ingest_push`. Proven end to end with a
+Hikvision alarm. Dahua/ONVIF push is model-dependent — validate per unit.
 
 ---
 
