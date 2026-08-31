@@ -32,4 +32,7 @@ __pycache__/
 _drop/
 dist-installer/
 prototype/models/
+# ...but the exported production model IS committed, so the AI build is
+# reproducible on any machine with onnxruntime (no torch/ultralytics needed).
+!prototype/models/yolov8n.onnx
 prototype/build_out.log
