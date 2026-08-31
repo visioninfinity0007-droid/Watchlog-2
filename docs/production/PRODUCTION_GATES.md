@@ -59,7 +59,8 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Installer (P9/P10)
 | Gate | Check | Status |
 |---|---|---|
-| INS-1 NSIS builds | `WatchLog-Setup.exe` produced from `.nsi` | ⏳ |
+| INS-0 contract tech = NSIS | a real `.nsi` exists (not Inno/zip) | ✅ (prototype/installer/nsis/watchlog.nsi + build_windows_release.ps1) |
+| INS-1 NSIS builds | `WatchLog-Setup.exe` produced from `.nsi` | ⏳ ENV-BLOCKED here: makensis couldn't be obtained in this sandbox (winget needs interactive elevation; sourceforge downloads blocked). One command on a build box — `winget install NSIS.NSIS` then `tools/build_windows_release.ps1` — produces it. Source + automation are done. |
 | INS-2 lifecycle | install→enroll→start; uninstall; reinstall | 🔵 (clean Win VM) |
 | INS-3 signed | signtool with a real cert | 🔵 (cert) |
 
