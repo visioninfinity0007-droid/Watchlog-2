@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
-import Mark from "../mark";
+import { Nav } from "../shell";
 
 const REFRESH_MS = 10000;
 
@@ -76,11 +76,6 @@ export default function Dashboard() {
       .slice(0, 8).forEach((e) => loadShot(e.event_id));
   }, [data]);
 
-  async function signOut() {
-    await supabase().auth.signOut();
-    location.replace("/login/");
-  }
-
   if (!data && !error) {
     return <div className="center"><p className="muted">Loading your sites...</p></div>;
   }
@@ -101,24 +96,19 @@ export default function Dashboard() {
 
   return (
     <div className="shell">
-      <header className="topbar">
-        <Mark size={26} />
-        <b>WatchLog</b>
-        <span className="muted hide-sm" style={{ fontSize: "var(--font-size-sm)" }}>
-          {data?.tenant?.name}
-        </span>
-        <span className="spacer" />
-        <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>
-          updated {stamp}
-        </span>
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))}
-                style={{ width: "auto", margin: 0 }}>
-          <option value={1}>24 hours</option>
-          <option value={7}>7 days</option>
-          <option value={30}>30 days</option>
-        </select>
-        <button className="ghost small" onClick={signOut}>Sign out</button>
-      </header>
+      <Nav active="Overview" email={email} right={
+        <>
+          <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>
+            updated {stamp}
+          </span>
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+                  style={{ width: "auto", margin: 0 }}>
+            <option value={1}>24 hours</option>
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+          </select>
+        </>
+      } />
 
       <main className="main">
         {error && <div className="err">{error}</div>}
@@ -226,7 +216,7 @@ export default function Dashboard() {
                     <td>
                       <span style={{
                         display: "block", height: 8, borderRadius: 3,
-                        background: "var(--color-teal-bright)", opacity: .8,
+                        background: "var(--color-violet-bright)", opacity: .8,
                         width: `${Math.round((t.count / maxType) * 100)}%`,
                       }} />
                     </td>

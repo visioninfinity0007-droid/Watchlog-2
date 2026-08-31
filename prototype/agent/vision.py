@@ -407,12 +407,22 @@ def build(cfg, log=print):
     # sitting beside the agent (which is how the installer ships it), then
     # fall back to the ultralytics .pt path.
     import os
+    import sys
     here = os.path.dirname(os.path.abspath(__file__))
     onnx_candidates = []
     if model and str(model).lower().endswith(".onnx"):
         onnx_candidates.append(model)
     onnx_candidates += [os.path.join(here, "yolov8n.onnx"),
                         os.path.join(os.getcwd(), "yolov8n.onnx")]
+    # When frozen (PyInstaller), the model is bundled next to the exe and/or
+    # inside the one-file extraction dir. Look in both so the shipped build
+    # finds it.
+    if getattr(sys, "frozen", False):
+        onnx_candidates.append(
+            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "yolov8n.onnx"))
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            onnx_candidates.append(os.path.join(meipass, "yolov8n.onnx"))
     onnx_model = next((p for p in onnx_candidates if os.path.exists(p)), None)
 
     if onnx_model:

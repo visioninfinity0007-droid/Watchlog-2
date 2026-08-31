@@ -5,6 +5,22 @@ Format: Decision · Reason · Evidence · Rollback.
 
 ---
 
+### 2026-09-01 · P2 — Ship the AI filter via onnxruntime; commit the exported model
+- **Decision:** the shippable agent build (`build_exe.ps1 -WithAI`) bundles **onnxruntime + numpy +
+  PIL + `prototype/models/yolov8n.onnx`** and excludes torch/ultralytics. The exported model is
+  **committed to git** (un-ignored) so the AI build is reproducible on any machine with onnxruntime —
+  no torch/ultralytics needed at build time.
+- **Reason:** torch is >1 GB and (here) fails to unpack under Windows' 260-char path limit; onnxruntime
+  is ~15 MB and the model ~12 MB. The `OnnxDetector` already implements the full YOLOv8 decode. Model
+  is a fixed official artifact, so committing it is safe and makes releases deterministic.
+- **Evidence:** audit proved the shipped exe carried no runtime/model (strings scan). Torch install
+  failed with a long-path OSError; a venv at `C:\wlv` (short root) installs torch fine — used only to
+  export the model once, never shipped.
+- **Verification:** `--selftest` runs the model through onnxruntime on a junk frame and must discard it
+  (exit 0); `tools/verify_agent_ai.py` runs it against the frozen exe. Proof by execution, not strings.
+- **Rollback:** the lean build (default) still works — the filter fails open — so reverting is just
+  building without `-WithAI`.
+
 ### 2026-08-31 · P0 — Merge audit PR #1 into main before building
 - **Decision:** merge the docs-only audit PR into `main`, branch `production/watchlog-end-to-end` from it.
 - **Reason:** the audit is the agreed baseline; every phase references it. Keeping it on `main` makes

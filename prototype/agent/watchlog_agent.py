@@ -449,6 +449,73 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
 
 # --- commands ----------------------------------------------------------
 
+def cmd_selftest() -> int:
+    """
+    Prove the on-site AI false-alarm filter is packaged and working in THIS
+    build. Used by tools/verify_agent_ai.py against the frozen exe, so that
+    "the filter ships" is verified by running it, not by scanning strings.
+
+    Exit codes (read by the verifier):
+      0  PASS       — ONNX runtime + model loaded, inference ran, a junk
+                      frame with no objects was discarded as a false alarm.
+      3  FAIL-OPEN  — the runtime or model is not packaged; every event is
+                      kept unfiltered (correct, safe behaviour — but this is
+                      NOT the shippable AI build).
+      2  INCONCLUSIVE / 1 error.
+
+    Optional: WATCHLOG_SELFTEST_MODEL points at a model when running from
+    source (the frozen exe finds the bundled model automatically);
+    WATCHLOG_SELFTEST_IMAGE points at a real image to additionally prove a
+    person/car/motorcycle is retained.
+    """
+    import io as _io
+    import os as _os
+    print(f"watchlog-agent {AGENT_VERSION} — AI filter self-test")
+
+    class _Cfg:
+        detect = True
+        detect_model = _os.environ.get("WATCHLOG_SELFTEST_MODEL")
+        detect_confidence = vision.DEFAULT_CONFIDENCE
+        detect_classes = None
+
+    det = vision.build(_Cfg(), log=print)
+    if det is None:
+        print("RESULT: NO-FILTER (build returned no detector)")
+        return 3
+
+    print(f"backend: {type(det).__name__}   model: {getattr(det, 'model_name', '?')}")
+
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (640, 480), (120, 120, 120)).save(buf, "JPEG")
+    keep, dets = det.classify_event(buf.getvalue())
+
+    if not det.available:
+        print(f"vision unavailable: {det._unavailable}")
+        print("RESULT: FAIL-OPEN (AI runtime/model NOT packaged; every event kept)")
+        return 3
+
+    print(f"synthetic gray frame -> keep={keep} detections={dets}")
+
+    retained = None
+    real = _os.environ.get("WATCHLOG_SELFTEST_IMAGE")
+    if real and _os.path.exists(real):
+        with open(real, "rb") as f:
+            k2, d2 = det.classify_event(f.read())
+        labels = sorted({x.label for x in (d2 or [])})
+        print(f"real image -> keep={k2} detections={labels}")
+        retained = bool(k2 and d2)
+
+    print(det.summary())
+    if det.available and keep is False:
+        extra = "" if retained is None else f"; real-object retained={retained}"
+        print(f"RESULT: PASS (ONNX runtime + model loaded, inference ran, "
+              f"junk frame discarded{extra})")
+        return 0
+    print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
+    return 2
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -613,7 +680,13 @@ def main() -> None:
     ap.add_argument("--scan", metavar="IP",
                     help="scan an address for a recorder and report what "
                          "answers; needs no config at all")
+    ap.add_argument("--selftest", action="store_true",
+                    help="prove the on-site AI false-alarm filter is packaged "
+                         "and working in this build; needs no config")
     args = ap.parse_args()
+
+    if args.selftest:
+        raise SystemExit(cmd_selftest())
 
     # These need no configuration at all - they are the tools you reach
     # for precisely when the configuration is wrong.

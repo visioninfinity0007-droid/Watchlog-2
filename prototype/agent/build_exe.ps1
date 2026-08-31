@@ -1,51 +1,72 @@
-# WatchLog — freeze the agent to a one-file Windows .exe.
+# WatchLog - freeze the agent to a one-file Windows .exe.
 #
-#   powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1
+#   Lean (data only, filter fails open):
+#     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1
 #
-# Output: dist\watchlog-agent.exe  (about 16 MB)
+#   Production AI build (bundles onnxruntime + numpy + PIL + yolov8n.onnx):
+#     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1 -WithAI
 #
-# LEAN ON PURPOSE. The exe carries the agent, its drivers, discovery and
-# the setup wizard - and nothing heavy. The false-alarm filter fails open
-# when its runtime is absent (see agent/vision.py), so torch, ultralytics,
-# numpy, PIL and onnxruntime are all EXCLUDED here. That keeps the client
-# download small and the build fast. Data flows without them; the filter
-# is enabled later by shipping a build that bundles onnxruntime + the
-# yolov8n.onnx model. See the note at the bottom.
+# The AI build is the shippable one: it carries the on-site false-alarm
+# filter and its model, so events are filtered before they leave the site.
+# The lean build still works - the filter fails open (agent/vision.py) - but
+# it reports every event unfiltered, so it is for testing only.
 #
-# The exe is UNSIGNED. Windows SmartScreen will show "Windows protected
-# your PC" - the client clicks More info > Run anyway. A code-signing
-# certificate removes that prompt and is the right fix before wide rollout.
+# The exe is UNSIGNED. SmartScreen shows "Windows protected your PC"; a
+# code-signing certificate removes that and is the right fix before rollout.
+
+param([switch]$WithAI)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-Write-Host "Installing build dependencies..." -ForegroundColor Cyan
-python -m pip install --disable-pip-version-check --quiet pyinstaller requests
+$common = @(
+    "--onefile","--name","watchlog-agent","--console","--clean","--noconfirm",
+    "--distpath","dist","--workpath","build","--specpath","build",
+    "--hidden-import","requests",
+    "--exclude-module","torch","--exclude-module","ultralytics",
+    "--exclude-module","matplotlib","--exclude-module","tkinter",
+    "--exclude-module","pandas","--exclude-module","scipy",
+    "--exclude-module","pytest","--exclude-module","IPython"
+)
 
-Write-Host "Freezing agent (lean)..." -ForegroundColor Cyan
-python -m PyInstaller `
-    --onefile --name watchlog-agent --console --clean --noconfirm `
-    --distpath dist --workpath build --specpath build `
-    --hidden-import requests `
-    --exclude-module torch --exclude-module ultralytics --exclude-module onnxruntime `
-    --exclude-module numpy --exclude-module PIL --exclude-module matplotlib `
-    --exclude-module tkinter --exclude-module pandas --exclude-module scipy `
-    --exclude-module pytest --exclude-module IPython `
-    agent\watchlog_agent.py
+if ($WithAI) {
+    $model = Join-Path $root "models\yolov8n.onnx"
+    if (-not (Test-Path $model)) {
+        throw "AI build needs the model at prototype\models\yolov8n.onnx. Export it once:
+  yolo export model=yolov8n.pt format=onnx   (in a torch/ultralytics env)
+then copy it there."
+    }
+    Write-Host "Installing AI build dependencies (onnxruntime, numpy, pillow)..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests onnxruntime numpy pillow
+    # numpy is imported dynamically in vision.py, so it must be a hidden import;
+    # onnxruntime ships native DLLs, so collect all of it; PIL is imported lazily.
+    $ai = @(
+        "--hidden-import","numpy",
+        "--hidden-import","onnxruntime","--collect-all","onnxruntime",
+        "--hidden-import","PIL.Image",
+        "--add-data","$model;."
+    )
+    Write-Host "Freezing agent (production AI build)..." -ForegroundColor Cyan
+    python -m PyInstaller @common @ai agent\watchlog_agent.py
+} else {
+    $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
+    Write-Host "Installing build dependencies..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests
+    Write-Host "Freezing agent (lean; filter fails open)..." -ForegroundColor Cyan
+    python -m PyInstaller @common @lean agent\watchlog_agent.py
+}
 
 $exe = Join-Path $root "dist\watchlog-agent.exe"
 if (-not (Test-Path $exe)) { throw "build produced no exe" }
 $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host ""
 Write-Host "Built $exe ($mb MB)" -ForegroundColor Green
-Write-Host ""
-Write-Host "To make a client installer zip:" -ForegroundColor Yellow
-Write-Host "  powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Code WL-XXXX-XXXX -SiteName 'Client Site'"
-Write-Host ""
-Write-Host "TO ENABLE THE FALSE-ALARM FILTER later:" -ForegroundColor Yellow
-Write-Host "  1. export a model:  yolo export model=yolov8n.pt format=onnx  (needs ultralytics once)"
-Write-Host "  2. put it at        prototype\models\yolov8n.onnx"
-Write-Host "  3. rebuild adding:  --collect-binaries onnxruntime --hidden-import onnxruntime"
-Write-Host "     and drop --exclude-module for onnxruntime/numpy/PIL"
-Write-Host "  The packager then bundles the model automatically."
+if ($WithAI) {
+    Write-Host "Verifying the AI filter is packaged (running --selftest)..." -ForegroundColor Cyan
+    & $exe --selftest
+    if ($LASTEXITCODE -ne 0) { throw "AI self-test failed (exit $LASTEXITCODE) - the filter is not correctly packaged" }
+    Write-Host "AI self-test PASSED." -ForegroundColor Green
+} else {
+    Write-Host "Lean build - filter fails open. Use -WithAI for the shippable build." -ForegroundColor Yellow
+}
