@@ -37,8 +37,8 @@ migrations, runbooks, CI) are sequenced early to keep `main` continuously demons
 
 | Phase | Scope | Status | Gate (acceptance) |
 |---|---|---|---|
-| **P0** | Control plane: merge audit, branch, these 4 docs | **IN-PROGRESS** | 4 docs exist; branch pushed |
-| **P1** | Security/DB foundation: `schema_migrations` lockdown + ledger reconcile; kill self-service paid state (`wl_set_plan`); SECURITY DEFINER re-audit; RLS public→authenticated; FK indexes; isolation stays 9/9 | **TODO** | isolation ≥9/9 live; anon customer-data = 0; anon `schema_migrations` write impossible; owner cannot self-mark paid |
+| **P0** | Control plane: merge audit, branch, these 4 docs | **DONE** | 4 docs exist; branch pushed |
+| **P1** | Security/DB foundation: `schema_migrations` lockdown + ledger reconcile; kill self-service paid state (`wl_set_plan`); SECURITY DEFINER re-audit; RLS public→authenticated; FK indexes; isolation stays 9/9 | **DONE** (migrations 0016–0018 applied live + verified 2026-09-01) | isolation 9/9 ✅; anon customer-data 0 ✅; schema_migrations anon write impossible ✅; owner cannot self-mark paid ✅ (`test_billing_authz` 4/4) |
 | **P7** | SendGrid **branded HTML** daily email + plain-text fallback + tests | TODO | HTML renders for 0/normal/high/fault days; escaping safe; sender configurable |
 | **P4** | Daily report as a real service: n8n schedule → report job → Evolution → delivery log; WatchLog-owned Evolution config; workflow export in git | TODO | scheduled run writes `report_deliveries.status=sent` (test destination); idempotent |
 | **P2** | Agent AI: build frozen exe **with** onnxruntime+numpy+Pillow+`yolov8n.onnx`; self-test proves inference; person/car/motorcycle only; fail-open | TODO | frozen exe self-test: model loads, inference runs, classes retained, junk frame discarded |
@@ -75,5 +75,5 @@ Scores at baseline: engineering ~68% · live-deploy ~58% · signed-scope ~37% ·
 
 ## Next action (always keep current)
 
-**➤ Execute P1 security/DB foundation** (migrations 0016–0018), apply to live Supabase,
-re-run the isolation gate, then proceed to P7 (SendGrid HTML).
+**➤ P1 DONE.** Next: **P7 (SendGrid branded HTML email)** — pure code, offline-testable, closes an
+M3 sub-gate and gives the daily report a real body. Then P4 (n8n reporting pipeline).

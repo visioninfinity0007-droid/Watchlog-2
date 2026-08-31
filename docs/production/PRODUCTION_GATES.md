@@ -10,11 +10,12 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 |---|---|---|
 | SEC-1 tenant isolation | `python prototype/tests/test_tenant_isolation.py` → 9/9, exit 0 | ✅ (baseline 2026-08-31) |
 | SEC-2 anon customer-data | anon PostgREST GET on every tenant table → `[]`/denied | ✅ (baseline) |
-| SEC-3 schema_migrations locked | `has_table_privilege('anon','schema_migrations','INSERT')` = false; RLS on | ⏳ |
-| SEC-4 no self-service paid state | `wl_set_plan` cannot set `subscription_status` to a paid/active value as owner | ⏳ |
-| SEC-5 migration ledger authoritative | ledger lists 0001–00NN matching git files | ⏳ |
-| SEC-6 SECURITY DEFINER hygiene | 0 definer funcs without pinned search_path | ✅ (baseline) |
-| SEC-7 FK indexes | audit-listed FK indexes present | ⏳ |
+| SEC-3 schema_migrations locked | `has_table_privilege('anon','schema_migrations','INSERT')` = false; RLS on | ✅ (0016, 2026-09-01) |
+| SEC-4 no self-service paid state | `wl_set_plan` cannot activate paid status; authoritative writer ungranted | ✅ (0017 + `test_billing_authz` 4/4) |
+| SEC-5 migration ledger authoritative | ledger lists 0001–0018 matching git files | ✅ (2026-09-01) |
+| SEC-6 SECURITY DEFINER hygiene | 0 definer funcs without pinned search_path | ✅ (baseline; new funcs pin) |
+| SEC-7 FK indexes | events.camera_id, snapshots.site_id/camera_id, agents.site_id | ✅ (0016) |
+| SEC-8 write grants minimized | anon+authenticated have no direct INSERT/UPDATE/DELETE on app tables | ✅ (0018) |
 
 ## Reporting (P4/P7)
 | Gate | Check | Status |
