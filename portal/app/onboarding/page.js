@@ -107,13 +107,18 @@ export default function Onboarding() {
             <b>Download the agent</b>
             <p>A single program. Nothing to install.</p>
             <p style={{ marginTop: 8 }}>
-              <button className="ghost small" type="button"
-                      onClick={() => alert(
-                        "The signed installer is not published yet.\n\n" +
-                        "Until it is, ask your Vision Infinity contact for " +
-                        "watchlog-agent.exe.")}>
-                Download for Windows
-              </button>
+              {process.env.NEXT_PUBLIC_INSTALLER_URL ? (
+                <a href={process.env.NEXT_PUBLIC_INSTALLER_URL}>
+                  <button className="small" type="button" style={{ width: "auto" }}>
+                    Download for Windows
+                  </button>
+                </a>
+              ) : (
+                <span className="muted" style={{ fontSize: "var(--font-size-sm)" }}>
+                  The signed installer download appears here once published; until then your setup
+                  engineer provides <span className="mono">WatchLog-Setup.exe</span>.
+                </span>
+              )}
             </p>
           </li>
           <li>

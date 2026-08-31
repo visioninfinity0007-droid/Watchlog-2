@@ -191,6 +191,32 @@ td { padding: var(--space-3) var(--space-4);
 .empty { padding: var(--space-7); text-align: center; color: var(--color-muted-dark);
          font-size: var(--font-size-sm); }
 
+/* ---------- nav ---------- */
+.brandlink { display: flex; align-items: center; gap: var(--space-3);
+             color: var(--color-white); text-decoration: none; }
+.brandlink:hover { text-decoration: none; }
+.nav { display: flex; gap: 2px; flex-wrap: wrap; }
+.navlink { color: var(--color-muted-dark); text-decoration: none;
+           padding: 7px 12px; border-radius: var(--radius-control);
+           font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+.navlink:hover { color: var(--color-white); text-decoration: none;
+                 background: rgba(255,255,255,.05); }
+.navlink.active { color: var(--color-white); background: rgba(255,255,255,.08); }
+
+/* ---------- forms / cards on app pages ---------- */
+.card { background: var(--color-panel); border: 1px solid var(--color-line-dark);
+        border-radius: var(--radius-surface); padding: var(--space-5);
+        margin-bottom: var(--space-4); }
+.row { display: flex; gap: var(--space-3); align-items: flex-end; flex-wrap: wrap; }
+.field { flex: 1; min-width: 150px; }
+.field label { margin-bottom: var(--space-2); }
+.field input, .field select { margin-bottom: 0; }
+.btn-danger { background: transparent; color: var(--color-status-bad-dark);
+              border: 1px solid var(--color-line-dark); width: auto;
+              padding: 6px 12px; font-size: var(--font-size-sm); font-weight: 600; }
+.btn-danger:hover:not(:disabled) { opacity: .85; }
+td select { margin: 0; padding: 5px 8px; width: auto; }
+
 @media (max-width: 720px) {
   .hide-sm { display: none; }
 }

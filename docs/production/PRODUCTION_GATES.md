@@ -33,7 +33,7 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 | AI-3 inference | inference completes on a frame | ✅ (~130ms/frame) |
 | AI-4 classes | only person/car/motorcycle retained; junk dropped | ✅ (`test_vision_onnx`: gray→discarded, bus.jpg→person kept) |
 | AI-5 fail-open | runtime/model/inference failure → event kept | ✅ (unit 12/12 + live FAIL-OPEN exit 3) |
-| AI-6 shipped in exe | frozen `watchlog-agent.exe --selftest` → RESULT PASS | ⏳ (building) |
+| AI-6 shipped in exe | frozen `watchlog-agent.exe --selftest` → RESULT PASS | ✅ (build_exe.ps1 -WithAI → 111 MB exe; --selftest loaded bundled model, inference ran, junk discarded, RESULT PASS, 2026-09-01) |
 
 ## Billing (P8)
 | Gate | Check | Status |
@@ -48,9 +48,13 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Onboarding / Portal (P5/P6)
 | Gate | Check | Status |
 |---|---|---|
-| ONB-1 no dead-end | onboarding installer download is real (no alert stub) | ⏳ |
-| ONB-2 setup-state | portal reflects agent state (enrolled→…→ready) from cloud | ⏳ |
-| PORT-1..N surfaces | overview/sites/incidents/reports/recipients/team/plan/settings live | ⏳ |
+| ONB-1 no dead-end | onboarding installer download is real (no alert stub) | ✅ (alert removed; config-driven download, honest fallback) |
+| ONB-2 setup-state | portal reflects agent state (enrolled→…→ready) from cloud | ⏳ (TODO — needs a setup-state model) |
+| PORT-team | members/invite/roles/revoke + invite-accept live | ✅ (contracts verified; build+guard OK) |
+| PORT-reports | recipients CRUD + channel prefs + delivery history | ✅ (contracts verified) |
+| PORT-settings | plan/trial + sites + add-site + issue-code | ✅ (contracts verified; wl_sites live) |
+| PORT-nav | shared nav across Overview/Reports/Team/Settings | ✅ |
+| PORT-incidents | dedicated filterable incident history page | ⏳ (overview shows recent; dedicated page TODO) |
 
 ## Installer (P9/P10)
 | Gate | Check | Status |
@@ -63,7 +67,7 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 | Gate | Check | Status |
 |---|---|---|
 | DOM-1 no temp URLs in prod build | grep `sslip.io`/`161.97.175.15` in shipped artifacts = 0 (demo excepted) | ⏳ |
-| WP-1 sitemap | `/wp-sitemap.xml` → 200 | ⏳ |
+| WP-1 sitemap | `/wp-sitemap.xml` → 200 | ⏳ DEFERRED (minor SEO): WP core sitemap server is configured (index has 1 entry per WP-CLI, providers populated, no plugin/theme override, cache+rewrite flushed) yet web render 404s on WP 7.1 in this env. Not a config error introduced by us; low priority vs portal/billing. |
 | CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ✅ (run 33429616057 green: backend+portal, 2026-09-01) |
 | HLTH-1 healthchecks | portal/site/bridge health endpoints wired in Coolify | ⏳ |
 
