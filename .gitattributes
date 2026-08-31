@@ -1,3 +1,4 @@
 prototype/installer/*.cmd text eol=crlf
 prototype/installer/*.ps1 text eol=crlf
 prototype/installer/*.txt text eol=crlf
+prototype/installer/*.iss text eol=crlf
