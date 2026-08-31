@@ -63,7 +63,7 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 |---|---|---|
 | DOM-1 no temp URLs in prod build | grep `sslip.io`/`161.97.175.15` in shipped artifacts = 0 (demo excepted) | ⏳ |
 | WP-1 sitemap | `/wp-sitemap.xml` → 200 | ⏳ |
-| CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ⏳ |
+| CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ✅ (run 33429616057 green: backend+portal, 2026-09-01) |
 | HLTH-1 healthchecks | portal/site/bridge health endpoints wired in Coolify | ⏳ |
 
 ## Field / hardware (P3)

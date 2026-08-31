@@ -51,9 +51,9 @@ migrations, runbooks, CI) are sequenced early to keep `main` continuously demons
 | **P11** | Website/portal/installer terminology + capability alignment | TODO | no advertised-but-unbuilt feature; consistent nouns |
 | **P12** | Production domain migration | **CLIENT-BLOCKED** (domain) | all URLs config-driven; cutover checklist ready |
 | **P13** | WordPress polish: sitemap 404, canonical, PHP header, CTAs | TODO | sitemap 200; no stale links |
-| **P14** | CI (GitHub Actions) + branch protection + release check | TODO | PR CI runs compile/tests/build/secret-scan/migration-lint |
+| **P14** | CI (GitHub Actions) + branch protection + release check | **IN-PROGRESS** (workflow + secret-scan + migration-lint added; verifying first run; branch protection + release_check pending) | PR CI runs compile/tests/build/secret-scan/migration-lint |
 | **P15** | Coolify healthchecks + practical diagnostics | TODO | portal/site/bridge have real health endpoints wired |
-| **P16** | M4 runbooks (+ recommended ops docs) | TODO | 5 required runbooks exist and match reality |
+| **P16** | M4 runbooks (+ recommended ops docs) | **DONE** (5 required + DEPLOYMENT + DATABASE_MIGRATIONS; BILLING_OPERATIONS/AGENT_RELEASE land with P8/P2) | 5 required runbooks exist and match reality ✅ |
 | **P17/P23** | Credential rotation | **DEFERRED — client will do (per instruction)** | n/a |
 | **P18** | Demo mode (tagged, isolated, no RLS weakening) | TODO | full journey demonstrable without client hardware/creds |
 | **P19** | `docs/demo/FULL_PRODUCT_DEMO.md` (15–25 min) | TODO | script runs start-to-finish on demo env |
