@@ -1,0 +1,301 @@
+{
+  "generated_at": "2026-08-31",
+  "method": "live inspection: GitHub API, Coolify API + SSH, Supabase Postgres, PostgREST/Auth HTTP, running services",
+  "no_secrets": true,
+  "git": {
+    "repository": "github.com/Alkalid-security/Watchlog",
+    "private": true,
+    "default_branch": "main",
+    "head_sha": "ce651dd5f3f639b0c1ef994725c9916958588fa0",
+    "head_local_equals_remote": true,
+    "commits": 39,
+    "tracked_files": 208,
+    "tags": 0,
+    "branches": ["main"],
+    "branch_protection": false,
+    "open_prs": 0,
+    "github_actions_workflows": 0,
+    "github_webhooks": 0,
+    "deploy_keys": 1,
+    "working_tree": "clean",
+    "hygiene": {"todo_fixme_hack_xxx": 0, "env_ever_committed": false, "secret_shaped_files_tracked": 0, "stale_label": "0001_prototype_schema.sql:4 self-labels THROWAWAY"}
+  },
+  "coolify": {
+    "host": "161.97.175.15:8000",
+    "version": "4.1.2",
+    "api_health": "200",
+    "auto_deploy": "NOT COMPLETE (no GitHub webhook; manual deploys)",
+    "migrations_applied": "manual",
+    "host_load_avg": "~11 (high)",
+    "host_uptime_days": 99
+  },
+  "services": [
+    {"name": "watchlog-portal-git", "uuid": "u10fp0bsvkwjmj8kpty5zk40", "type": "application/dockerfile", "dir": "/portal", "branch": "main", "domain": "https://watchlog.161.97.175.15.sslip.io", "tls": "letsencrypt", "status": "running:healthy", "deployed_commit": "33bebd4", "restarts": 0, "healthcheck_enabled": false, "functional_drift_vs_head": false},
+    {"name": "watchlog-push-bridge", "uuid": "ixi45m3km4kp8hrnv0qzh26x", "type": "application/dockerfile", "dir": "/prototype/bridge", "branch": "main", "domain": "https://watchlog-push.161.97.175.15.sslip.io", "tls": "letsencrypt", "status": "running:healthy", "deployed_commit": "b6cfb59", "restarts": 0, "healthcheck_enabled": false, "functional_drift_vs_head": false},
+    {"name": "watchlog-website-git", "uuid": "ez7677oub6mo1c2gwukaynuk", "type": "application/compose", "dir": "/deploy", "branch": "main", "domain": "https://watchlogsite.161.97.175.15.sslip.io", "tls": "letsencrypt", "status": "running:healthy", "deployed_commit": "5f9b990", "restarts": 0, "healthcheck_enabled": false, "functional_drift_vs_head": false},
+    {"name": "evolution-api (WhatsApp)", "uuid": "zcmb4riantrz8ksro2kvlcxz", "type": "service", "status": "running:healthy", "note": "belongs to AKSS Security-Portal engagement; WatchLog borrows its creds"},
+    {"name": "n8n-with-postgres-and-worker", "uuid": "z1ez9cwuxybc50lvgp9c88jr", "type": "service", "status": "running:healthy", "note": "deployed but NO WatchLog workflow uses it"}
+  ],
+  "website": {
+    "url": "https://watchlogsite.161.97.175.15.sslip.io",
+    "http_status": 200,
+    "stack": "WordPress / Apache 2.4.67 / PHP 8.3.31",
+    "https_redirect": true,
+    "seo": {"title": true, "meta_description": true, "og_tags": true, "canonical": true, "json_ld": true},
+    "pages": ["home", "features", "how-it-works", "pricing", "setup", "who-its-for", "contact", "privacy", "terms"],
+    "ctas_point_to_portal": true,
+    "broken_hash_ctas": 0,
+    "custom_404": true,
+    "robots_txt": true,
+    "sitemap": "BROKEN - wp-sitemap.xml returns 404",
+    "production_domain": "MISSING (sslip.io; baked into installer + WP theme)"
+  },
+  "portal": {
+    "framework": "Next.js 15 static export via nginx",
+    "routes": ["/", "/login", "/signup", "/onboarding", "/dashboard"],
+    "production_build": "PASS (npm run build exit 0, out/ = 41 files)",
+    "auth_gating": "client-side only; real authz is Postgres RLS",
+    "rpcs_used": ["wl_my_tenant", "wl_bootstrap_tenant", "wl_portal_overview", "wl_portal_snapshot"],
+    "capabilities_present": ["signup", "login", "onboarding", "dashboard", "enrollment_code", "agent_status", "incidents", "event_history"],
+    "capabilities_absent": ["add_site", "site_detail", "nvr_test", "cameras_list", "reports", "report_history", "recipients", "channel_preferences", "capabilities_display", "team", "invitations", "roles", "trial_status", "billing", "subscription", "payment_history", "profile_settings", "recorder_push_setup"],
+    "installer_download": "STUB (browser alert; onboarding/page.js:110-117)",
+    "onboarding": "not self-service; dead-ends at installer download"
+  },
+  "supabase": {
+    "project_ref": "oyvgubyxmjlijiczjona",
+    "url": "https://oyvgubyxmjlijiczjona.supabase.co",
+    "postgres_version": "17.6",
+    "region": "ap-southeast-1",
+    "plan": "free",
+    "table_count": 13,
+    "function_count": 43,
+    "views": [{"name": "v_agent_fleet", "security_invoker": true, "safe": true}],
+    "migration_ledger": "records only 0001-0009; 0010-0015 live but unlogged (ledger not authoritative)",
+    "migration_files_in_git": 15,
+    "advisor_official_run": false,
+    "advisor_note": "no Supabase management token available; catalog-equivalent checks used"
+  },
+  "tables": [
+    {"name": "tenants", "rls": true, "policies": 1, "tenant_id": false, "rows": 2},
+    {"name": "sites", "rls": true, "policies": 1, "tenant_id": true, "rows": 2},
+    {"name": "agents", "rls": true, "policies": 1, "tenant_id": true, "rows": 17},
+    {"name": "cameras", "rls": true, "policies": 1, "tenant_id": true, "rows": 12},
+    {"name": "enrollment_codes", "rls": true, "policies": 1, "tenant_id": true, "rows": 15},
+    {"name": "events", "rls": true, "policies": 1, "tenant_id": true, "rows": 2070},
+    {"name": "snapshots", "rls": true, "policies": 1, "tenant_id": true, "rows": 803},
+    {"name": "memberships", "rls": true, "policies": 1, "tenant_id": true, "rows": 2},
+    {"name": "invitations", "rls": true, "policies": 1, "tenant_id": true, "rows": 0},
+    {"name": "report_recipients", "rls": true, "policies": 1, "tenant_id": true, "rows": 1},
+    {"name": "report_deliveries", "rls": true, "policies": 1, "tenant_id": true, "rows": 0},
+    {"name": "push_sources", "rls": true, "policies": 1, "tenant_id": true, "rows": 3},
+    {"name": "schema_migrations", "rls": false, "policies": 0, "tenant_id": false, "rows": 9, "finding": "RLS off + anon SELECT/INSERT"}
+  ],
+  "functions": {
+    "total": 43,
+    "security_definer": 41,
+    "security_definer_without_search_path": 0,
+    "anon_executable": ["wl_enroll", "wl_heartbeat", "wl_ingest_events", "wl_sync_cameras", "wl_sync_capabilities", "wl_ingest_push", "wl_bootstrap_tenant", "wl_add_site", "wl_issue_code", "wl_is_member", "wl_my_tenant", "wl_dedupe_key", "wl_plan_retention_days"],
+    "anon_executable_all_self_guarded": true,
+    "billing_authorization": {"function": "wl_set_plan", "callable_by": "tenant owner (authenticated)", "gap": "owner can self-set plan + subscription_status; no payment/webhook/admin gate", "severity": "CRITICAL (audit definition); low live impact today"}
+  },
+  "security": {
+    "cross_tenant_leak_found": false,
+    "isolation_gate": {"cases": 9, "passed": 9, "failed": 0, "run": "live HTTP read-only", "target": "https://oyvgubyxmjlijiczjona.supabase.co"},
+    "anon_sensitive_tables_probe": {"push_sources": "empty", "report_recipients": "empty", "invitations": "empty", "report_deliveries": "empty"},
+    "anon_privileged_rpcs": "401 permission denied",
+    "findings": [
+      {"severity": "CRITICAL", "id": "billing-authz", "what": "wl_set_plan self-service plan/subscription changes"},
+      {"severity": "ROTATION_REQUIRED", "id": "coolify-token", "what": "Coolify API token exposed in chat, still valid; stored quote-wrapped in .env"},
+      {"severity": "ROTATION_REQUIRED", "id": "supabase-db-password", "what": "Supabase DB password exposed in chat, still valid"},
+      {"severity": "MEDIUM", "id": "schema_migrations-anon-write", "what": "RLS disabled + anon SELECT/INSERT on schema_migrations"},
+      {"severity": "LOW", "id": "public-role-policies", "what": "4 RLS SELECT policies on public role (safe via wl_is_member) should be authenticated"},
+      {"severity": "LOW", "id": "unindexed-fks", "what": "12 foreign keys lack a covering index"}
+    ]
+  },
+  "hardware_validation": {
+    "real_recorders": [
+      {"host": "SM-HP", "vendor": "Dahua", "model": "DH-XVR1B08-I", "driver": "dahua-cgi", "real": true, "events": 9, "snapshots": 8, "cameras_synced": 0, "window": "2026-08-29 08:45->08:48 (~3 min)", "then": "agent stopped"}
+    ],
+    "simulator_only": [
+      {"model": "NVR4208-8P-4KS2", "note": "dahua_sim reports this exact model"},
+      {"model": "DS-7608NI-K2/8P", "note": "hikvision_sim"},
+      {"model": "MOCK-NVR-16CH", "note": "mock_nvr"}
+    ],
+    "hikvision_real": false,
+    "onvif_real": false,
+    "online_agents_now": 0,
+    "m1_field_requirement": "2 sites x 10 cameras",
+    "m1_field_reality": "1 real client site, 8 simulated cameras, real XVR synced 0, ~3 min data",
+    "m1_field_gate": "FAIL",
+    "blocker": "needs C:/ProgramData/WatchLog/agent.log from SM-HP (client-dependent)"
+  },
+  "ai_filter": {
+    "classes": ["person", "car", "motorcycle"],
+    "coco_ids": [0, 2, 3],
+    "confidence": 0.35,
+    "engine": "OnnxDetector (onnxruntime) shipped path; ultralytics/torch dev path",
+    "fail_open": true,
+    "shipped_in_exe": false,
+    "shipped_in_exe_evidence": "build excludes torch/ultralytics/onnxruntime/numpy/PIL; no .onnx/.pt model anywhere; strings scan of shipped exe finds onnxruntime/torch/yolov8 zero times",
+    "field_tuning_done": false,
+    "unit_tests": "12/12 pass (synthetic frames; OnnxDetector untested)"
+  },
+  "reporting": {
+    "engine_built": true,
+    "timezone": "per-site",
+    "idempotent": true,
+    "delivery_logging": "report_deliveries table",
+    "scheduler": "NONE (pg_cron used only for retention)",
+    "n8n_used": false,
+    "sow_says": "daily WhatsApp via n8n",
+    "sow_classification": "n8n NOT DELIVERED; automation NOT DELIVERED; send-logic FUNCTIONALLY EQUIVALENT BUT DEVIATION",
+    "reports_ever_sent": 0,
+    "evolution_health": {"reachable": true, "instances": [{"name": "Alkhalid Security", "status": "open"}, {"name": "Alkhalid", "status": "close"}], "note": "instances belong to AKSS Security-Portal engagement; cross-project credential coupling"}
+  },
+  "sendgrid": {
+    "code_exists": true,
+    "content_type": "text/plain",
+    "branded_html_template": false,
+    "configured": false,
+    "channel_preference_data_layer": true,
+    "channel_preference_ui": false,
+    "status": "PARTIAL (branded HTML deliverable MISSING)"
+  },
+  "switch": {
+    "status": "NOT STARTED",
+    "merchant_config": false,
+    "checkout": false,
+    "webhook_receiver": false,
+    "signature_validation": false,
+    "payment_tables": false,
+    "trial_to_paid": false,
+    "portal_billing_ui": false,
+    "client_dependent": "merchant credentials absent",
+    "note": "no Safepay/Stripe either; trial-state columns + owner-settable wl_set_plan only"
+  },
+  "installer": {
+    "technology_actual": "Inno Setup (.iss, never compiled) + PowerShell",
+    "contract_technology": "NSIS",
+    "contract_technology_match": false,
+    "nsi_script_exists": false,
+    "artifact_built": "ZIP only (4x WatchLog-Setup-*.zip); no Setup.exe/.msi",
+    "agent_exe_built": "prototype/dist|ship/watchlog-agent.exe (16 MB, untracked)",
+    "signed": false,
+    "smartscreen": "warns on every fresh PC",
+    "autostart": "SYSTEM scheduled task AtStartup (not an SCM service), RestartCount 999",
+    "yolo_model_bundled": false,
+    "config_reinstall": "PowerShell path overwrites watchlog.ini (clobbers recorder config)",
+    "code_complete": "PARTIAL",
+    "acceptance_complete": "NO (untested on Win10/11/reboot/logon/power-loss/crash/uninstall)"
+  },
+  "runbooks": {
+    "required_by_m4": ["add tenant manually", "key rotation", "log access", "webhook replay", "NVR troubleshooting"],
+    "present": [],
+    "status": "MISSING (only design/brand docs + PROJECT.md + prototype/README.md; ops notes are gitignored in _memory/)"
+  },
+  "tests": {
+    "run_at_audit": [
+      {"suite": "test_vision_filter", "type": "local", "passed": 12, "failed": 0},
+      {"suite": "test_push_bridge", "type": "local", "passed": 5, "failed": 0},
+      {"suite": "test_capabilities", "type": "local-sim", "passed": 3, "failed": 0},
+      {"suite": "test_tenant_isolation", "type": "live-http-readonly", "passed": 9, "failed": 0}
+    ],
+    "not_run": [{"suite": "test_team_and_trial", "cases": 12, "reason": "mutates prod DB; excluded under no-mutation audit rule"}],
+    "python_compileall": "exit 0",
+    "portal_build": "exit 0 (out/ 41 files)",
+    "installer_ps_syntax": "OK",
+    "total_passed": 29,
+    "total_failed": 0
+  },
+  "live_data_counts": {
+    "tenants": 2, "sites": 2, "agents": 17, "online_agents": 0, "cameras": 12,
+    "events": 2070, "snapshots": 803, "push_sources": 3, "memberships": 2,
+    "invitations": 0, "report_recipients": 1, "report_deliveries": 0, "reports_sent": 0,
+    "real_hardware_events": 9
+  },
+  "credentials_inventory": {
+    "watchlog_env": ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY(EMPTY)", "SUPABASE_DB_*", "COOLIFY_URL", "COOLIFY_API_TOKEN", "WORDPRESS_*", "PORTAL_DEMO_*"],
+    "portal_env": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"],
+    "borrowed_from_akss_portal": ["EVOLUTION_API_URL", "EVOLUTION_API_KEY", "EVOLUTION_INSTANCE_NAME", "GITHUB_PAT"],
+    "absent_everywhere": ["SENDGRID_API_KEY", "SWITCH_MERCHANT_CREDS"],
+    "rotation_required": ["COOLIFY_API_TOKEN", "SUPABASE_DB_PASSWORD"]
+  },
+  "client_dependencies": [
+    "SM-HP agent.log + Task Scheduler state (fix 3-min stop / 0 cameras)",
+    "a real Hikvision unit + a real ONVIF unit",
+    "selection of 2nd MVP site + 10 cameras/site",
+    "a production domain (e.g. watchlog.pk)",
+    "Switch merchant credentials",
+    "SendGrid account + domain authentication",
+    "go-ahead for one live WhatsApp send"
+  ],
+  "sow": {
+    "m1": [
+      {"req": "Windows Site Agent", "status": "PARTIAL", "note": "agent built; packaging Inno/zip not NSIS"},
+      {"req": "Python LAN NVR polling", "status": "DELIVERED (code)"},
+      {"req": "Hikvision/Dahua/ONVIF support", "status": "PARTIAL", "note": "code exists; only Dahua touched real hw briefly; Hik/ONVIF sim-only; all self-declared unverified"},
+      {"req": "YOLOv8n local AI filter (person/car/motorcycle)", "status": "MISSING", "note": "not shipped in exe; no model; runtimes excluded"},
+      {"req": "validated event sync to Supabase", "status": "DELIVERED"},
+      {"req": "internal dashboard", "status": "DELIVERED"},
+      {"req": "daily WhatsApp summary", "status": "BROKEN/PARTIAL", "note": "engine built; unscheduled; not via n8n; 0 sends"},
+      {"req": "2 MVP sites x 10 cameras", "status": "MISSING", "note": "1 real site, 8 sim cameras, real XVR 0 cameras"},
+      {"req": "FIELD VALIDATION (hard gate)", "status": "FAIL", "note": "9 events / 3 min / 0 cameras"},
+      {"req": "FP/FN tuning vs real footage", "status": "MISSING"}
+    ],
+    "m2": [
+      {"req": "public marketing site", "status": "DELIVERED", "note": "on sslip.io"},
+      {"req": "registration", "status": "DELIVERED"},
+      {"req": "full self-serve onboarding", "status": "PARTIAL", "note": "dead-ends at installer download stub"},
+      {"req": "agent provisioning", "status": "PARTIAL"},
+      {"req": "NVR connection/test", "status": "MISSING (no UI)"},
+      {"req": "multi-tenant DB model", "status": "DELIVERED"},
+      {"req": "tenant isolation", "status": "DELIVERED", "note": "9/9 live gate"},
+      {"req": "customer portal", "status": "DELIVERED", "note": "basic, 5 routes"},
+      {"req": "team management", "status": "PARTIAL", "note": "DB functions/policies; no UI"},
+      {"req": "complete report history", "status": "PARTIAL", "note": "table+fn; no UI; 0 rows"},
+      {"req": "trial logic (default 14d)", "status": "PARTIAL", "note": "columns+fn; reported not enforced; 14d default present; no UI"}
+    ],
+    "m3": [
+      {"req": "SWITCH payment gateway", "status": "MISSING", "note": "NOT STARTED"},
+      {"req": "tenant subscriptions", "status": "MISSING", "note": "columns only"},
+      {"req": "trial-to-paid conversion", "status": "MISSING"},
+      {"req": "webhook-driven subscription updates", "status": "MISSING"},
+      {"req": "branded SendGrid HTML daily reports", "status": "PARTIAL", "note": "text/plain, no HTML template, unconfigured"},
+      {"req": "WhatsApp alongside email", "status": "PARTIAL"},
+      {"req": "tenant/channel preference", "status": "PARTIAL", "note": "DB whatsapp/email/both; no UI"}
+    ],
+    "m4": [
+      {"req": "NSIS installer", "status": "MISSING/BROKEN", "note": "Inno/zip not NSIS; unsigned; untested"},
+      {"req": "tenant-isolation QA suite (hard gate)", "status": "DELIVERED", "note": "9/9 live, proven can fail"},
+      {"req": "runbooks (add tenant/key rotation/log access/webhook replay/NVR troubleshooting)", "status": "MISSING"},
+      {"req": "final live-hardware handoff", "status": "MISSING"},
+      {"req": "production readiness", "status": "PARTIAL", "note": "no domain, no auto-deploy, no monitoring, filter not shipped"}
+    ]
+  },
+  "out_of_scope_bonus": ["recorder-push (PC-free) mode", "analytics capability probe", "per-tier snapshot retention (pg_cron)"],
+  "scores": {
+    "engineering_implementation_pct": 68,
+    "live_deployment_readiness_pct": 58,
+    "signed_scope_completion_pct": 37,
+    "final_handoff_readiness_pct": 28,
+    "weighting_note": "out-of-scope extras excluded from all contractual numbers; signed-scope is milestone-weighted 25% each (M1~45,M2~60,M3~10,M4~25)"
+  },
+  "blockers": [
+    {"priority": "P0", "item": "AI filter not shipped in exe (no model, runtimes excluded)", "client_dependent": false},
+    {"priority": "P0", "item": "M1 field validation FAIL (SM-HP 9 events/3 min/0 cameras)", "client_dependent": true},
+    {"priority": "P0", "item": "daily WhatsApp never scheduled/sent (no n8n, 0 deliveries)", "client_dependent": true},
+    {"priority": "P1", "item": "Switch billing NOT STARTED", "client_dependent": true},
+    {"priority": "P1", "item": "SendGrid branded HTML email missing (text/plain only)", "client_dependent": false},
+    {"priority": "P1", "item": "NSIS installer wrong tech / unsigned / untested", "client_dependent": false},
+    {"priority": "P1", "item": "M4 runbooks missing", "client_dependent": false},
+    {"priority": "P1", "item": "no production domain (baked into installer + WP theme)", "client_dependent": true},
+    {"priority": "P1", "item": "portal UI gaps (team/reports/recipients/channel-prefs/trial/billing/capabilities); onboarding dead-ends", "client_dependent": false},
+    {"priority": "P2", "item": "schema_migrations RLS off + anon SELECT/INSERT", "client_dependent": false},
+    {"priority": "P2", "item": "wl_set_plan self-service billing authorization", "client_dependent": false},
+    {"priority": "P2", "item": "auto-deploy off; migration-ledger drift (0010-0015 unlogged)", "client_dependent": false},
+    {"priority": "P2", "item": "Coolify healthchecks disabled; host load ~11", "client_dependent": false},
+    {"priority": "P2", "item": "agent: plaintext key survives uninstall; no backoff; push events lost on downtime; NVR password plaintext", "client_dependent": false},
+    {"priority": "P3", "item": "code-signing certificate", "client_dependent": true},
+    {"priority": "P3", "item": "decouple WhatsApp/Evolution from AKSS-portal project", "client_dependent": false}
+  ]
+}
