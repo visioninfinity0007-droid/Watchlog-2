@@ -155,6 +155,35 @@ class NvrDriver:
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         raise NotImplementedError
 
+    def capabilities(self) -> dict:
+        """
+        What analytics this recorder supports, and which are already on.
+
+        Read-only. This never changes a setting on the customer's device -
+        it reports what is there so the portal can show "your recorder
+        supports motion, human/vehicle, line-crossing..." and mark what is
+        already active. Enabling anything is a separate, opt-in, reversible
+        step.
+
+        Shape:
+          {"channels": [
+             {"channel": "1", "name": "Main Gate", "analytics": [
+                {"key": "motion", "label": "Motion", "supported": true,
+                 "active": true, "geometry": false},
+                {"key": "human_vehicle", ..., "geometry": false},
+                {"key": "line_crossing", ..., "geometry": true},
+                ...]}]}
+
+        `geometry: true` marks analytics that need a human to place a line
+        or zone on the scene - the portal guides the user for those rather
+        than pretending it can auto-configure them.
+
+        Best-effort and FAIL SAFE: an endpoint that is missing or errors
+        leaves that analytic 'unknown', never crashes the probe. Returns an
+        empty channel list if the device exposes nothing we understand.
+        """
+        return {"channels": []}
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         A still JPEG from `channel`, right now.

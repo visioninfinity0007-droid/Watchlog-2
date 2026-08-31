@@ -64,6 +64,30 @@ class MockDriver(NvrDriver):
             firmware=d.get("firmwareVersion"), serial=d.get("serialNumber"),
             channel_count=d.get("channelCount"), driver=self.name, raw=d)
 
+    def capabilities(self) -> dict:
+        """A representative capability set, so the feature can be seen
+        without real hardware. Mirrors what a mid-range recorder exposes."""
+        try:
+            chans = self.list_channels()
+        except Exception:  # noqa: BLE001
+            from .base import Channel
+            chans = [Channel(channel=str(i), name=f"Camera {i}") for i in (1, 2)]
+        out = []
+        for n, c in enumerate(chans):
+            out.append({"channel": c.channel, "name": c.name, "analytics": [
+                {"key": "motion", "label": "Motion detection",
+                 "supported": True, "active": True, "geometry": False},
+                {"key": "human_vehicle", "label": "Human/Vehicle",
+                 "supported": True, "active": n == 0, "geometry": False},
+                {"key": "tamper", "label": "Camera tamper",
+                 "supported": True, "active": False, "geometry": False},
+                {"key": "line_crossing", "label": "Line crossing",
+                 "supported": True, "active": n == 0, "geometry": True},
+                {"key": "intrusion", "label": "Intrusion zone",
+                 "supported": True, "active": False, "geometry": True},
+            ]})
+        return {"channels": out}
+
     def list_channels(self) -> list[Channel]:
         return [Channel(channel=str(c["channel"]), name=c.get("name"),
                         enabled=c.get("enabled", True))

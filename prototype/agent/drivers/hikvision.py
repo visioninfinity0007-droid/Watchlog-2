@@ -221,6 +221,45 @@ class HikvisionDriver(NvrDriver):
                    for i in range(1, n + 1)]
         return out
 
+    def capabilities(self) -> dict:
+        """
+        Report per-channel analytics from ISAPI. Read-only.
+
+        UNVALIDATED against real hardware. Hikvision's Smart endpoints vary
+        across firmware (some units expose /ISAPI/Smart/<fn>/<ch>, others
+        gate it behind AcuSense or a channel's IP-camera capabilities), so
+        this is written to the documented schema but must be proven on a
+        real unit. It fails safe: a channel whose config cannot be read
+        reports motion only rather than crashing.
+        """
+        def _active(path: str) -> bool:
+            try:
+                el = self._xml(path)
+            except DriverError:
+                return None            # unknown / not supported
+            en = el.find(".//enabled")
+            return en is not None and (en.text or "").strip().lower() == "true"
+
+        out = []
+        for c in self.list_channels():
+            ch = c.channel
+            motion = _active(f"/ISAPI/System/Video/inputs/channels/{ch}/motionDetection")
+            line = _active(f"/ISAPI/Smart/LineDetection/{ch}")
+            field = _active(f"/ISAPI/Smart/FieldDetection/{ch}")
+            analytics = [
+                {"key": "motion", "label": "Motion detection",
+                 "supported": motion is not None,
+                 "active": bool(motion), "geometry": False},
+                {"key": "line_crossing", "label": "Line crossing",
+                 "supported": line is not None,
+                 "active": bool(line), "geometry": True},
+                {"key": "intrusion", "label": "Intrusion zone",
+                 "supported": field is not None,
+                 "active": bool(field), "geometry": True},
+            ]
+            out.append({"channel": ch, "name": c.name, "analytics": analytics})
+        return {"channels": out}
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         ISAPI still image.

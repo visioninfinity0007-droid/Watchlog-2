@@ -92,6 +92,29 @@ class Handler(DigestMixin, BaseHTTPRequestHandler):
                 self._text("\r\n".join(
                     f"table.ChannelTitle[{i}].Name={n}"
                     for i, n in enumerate(CHANNELS)))
+            elif name == "MotionDetect":
+                self._text("\r\n".join(
+                    f"table.MotionDetect[{i}].Enable=true"
+                    for i in range(len(CHANNELS))))
+            elif name == "SmartMotionDetect":
+                lines = []
+                for i in range(len(CHANNELS)):
+                    lines.append(f"table.SmartMotionDetect[{i}].Enable=false")
+                    lines.append(f"table.SmartMotionDetect[{i}].ObjectTypes[0]=Human")
+                    lines.append(f"table.SmartMotionDetect[{i}].ObjectTypes[1]=Vehicle")
+                self._text("\r\n".join(lines))
+            elif name == "CoverDetect":
+                self._text("\r\n".join(
+                    f"table.CoverDetect[{i}].Enable={'true' if i == 3 else 'false'}"
+                    for i in range(len(CHANNELS))))
+            elif name == "VideoAnalyseRule":
+                self._text(
+                    "table.VideoAnalyseRule[0][0].Name=Gate line\r\n"
+                    "table.VideoAnalyseRule[0][0].Class=CrossLineDetection\r\n"
+                    "table.VideoAnalyseRule[0][0].Enable=true\r\n"
+                    "table.VideoAnalyseRule[2][0].Name=Yard zone\r\n"
+                    "table.VideoAnalyseRule[2][0].Class=CrossRegionDetection\r\n"
+                    "table.VideoAnalyseRule[2][0].Enable=true")
             else:
                 self._text("Error", status=400)
 

@@ -146,6 +146,77 @@ class DahuaDriver(NvrDriver):
                    for i in range(1, n + 1)]
         return sorted(out, key=lambda c: int(c.channel))
 
+    def capabilities(self) -> dict:
+        """
+        Read the recorder's analytics config and report it per channel.
+
+        Queries the Dahua config endpoints for the analytics families that
+        matter, marks each supported/active, and flags the ones that need a
+        drawn line or zone. Every query is wrapped: a Dahua model that does
+        not expose one of these simply leaves that analytic off the list
+        rather than failing the whole probe.
+        """
+        try:
+            chans = self.list_channels()
+        except DriverError:
+            return {"channels": []}   # device unreachable -> nothing to report
+        # Pull each config block once; tolerate any that 404 / error.
+        def _cfg(name):
+            try:
+                return _parse_kv(self._get(
+                    f"/cgi-bin/configManager.cgi?action=getConfig&name={name}"))
+            except DriverError:
+                return {}
+
+        motion = _cfg("MotionDetect")
+        smd    = _cfg("SmartMotionDetect")
+        cover  = _cfg("CoverDetect")
+        ivs    = _cfg("VideoAnalyseRule")
+
+        def _enabled(kv, prefix):   # table.<prefix>[i].Enable=true
+            return str(kv.get(f"{prefix}.Enable", "")).lower() == "true"
+
+        # IVS rules are table.VideoAnalyseRule[ch][rule].Class / .Enable
+        ivs_by_ch: dict[int, set] = {}
+        for key, val in ivs.items():
+            m = re.match(r"table\.VideoAnalyseRule\[(\d+)\]\[\d+\]\.Class", key)
+            if m:
+                ch = int(m.group(1))
+                # find the matching Enable
+                en_key = key.rsplit(".", 1)[0] + ".Enable"
+                if str(ivs.get(en_key, "")).lower() == "true":
+                    ivs_by_ch.setdefault(ch, set()).add(val)
+
+        out = []
+        for c in chans:
+            i = int(c.channel) - 1               # config is 0-based
+            classes = ivs_by_ch.get(i, set())
+            analytics = [
+                {"key": "motion", "label": "Motion detection",
+                 "supported": bool(motion),
+                 "active": _enabled(motion, f"table.MotionDetect[{i}]"),
+                 "geometry": False},
+                {"key": "human_vehicle", "label": "Human/Vehicle (SMD)",
+                 "supported": bool(smd),
+                 "active": _enabled(smd, f"table.SmartMotionDetect[{i}]"),
+                 "geometry": False},
+                {"key": "tamper", "label": "Camera tamper",
+                 "supported": bool(cover),
+                 "active": _enabled(cover, f"table.CoverDetect[{i}]"),
+                 "geometry": False},
+                {"key": "line_crossing", "label": "Line crossing",
+                 "supported": bool(ivs),
+                 "active": "CrossLineDetection" in classes,
+                 "geometry": True},
+                {"key": "intrusion", "label": "Intrusion zone",
+                 "supported": bool(ivs),
+                 "active": "CrossRegionDetection" in classes,
+                 "geometry": True},
+            ]
+            out.append({"channel": c.channel, "name": c.name,
+                        "analytics": analytics})
+        return {"channels": out}
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         Dahua still image. The CGI is 1-based here, unlike the event

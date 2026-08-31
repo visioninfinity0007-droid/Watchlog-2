@@ -491,6 +491,25 @@ def cmd_probe(cfg: Config) -> None:
     except DriverError as e:
         print(f"  channel list failed: {e}")
 
+    # Read-only: what analytics this recorder supports, and what is already
+    # on. We never change a setting here.
+    try:
+        caps = driver.capabilities()
+        if caps.get("channels"):
+            print("\n  analytics available on this recorder:")
+            for ch in caps["channels"]:
+                on = [a["label"] for a in ch["analytics"] if a.get("active")]
+                avail = [a["label"] for a in ch["analytics"]
+                         if a.get("supported") and not a.get("active")]
+                print(f"    ch{ch['channel']} {ch.get('name') or '':<14} "
+                      f"on: {', '.join(on) or 'none'}")
+                if avail:
+                    print(f"        available to enable: {', '.join(avail)}")
+            print("  (line/zone analytics need the line or zone drawn on the "
+                  "scene before they fire.)")
+    except Exception as e:                       # noqa: BLE001
+        print(f"  (capability probe skipped: {type(e).__name__})")
+
     print("\n  listening 20s for live events...")
     stop = threading.Event()
     threading.Timer(20, stop.set).start()
@@ -677,12 +696,18 @@ def main() -> None:
     # Identify the recorder ONCE and reuse the answer: enrollment, the
     # camera sync and the heartbeat all want it, and probing four times
     # on every start is noise on the wire and in the log.
-    device, channels = None, []
+    device, channels, capabilities = None, [], None
     try:
         driver, device = open_driver(cfg)
         try:
             channels = [{"channel": c.channel, "name": c.name}
                         for c in driver.list_channels()]
+            # Read analytics while the driver is open. Best-effort and
+            # read-only; never changes a setting on the device.
+            try:
+                capabilities = driver.capabilities()
+            except Exception:                    # noqa: BLE001
+                capabilities = None
         finally:
             driver.close()
     except (DriverError, SystemExit) as e:
@@ -719,6 +744,17 @@ def main() -> None:
             log(f"cameras synced: {len(mapping)} channels")
         except RuntimeError as e:
             log(f"WARNING: camera sync failed: {str(e).splitlines()[0][:160]}")
+
+    # Report what analytics the recorder supports, so the portal can show
+    # them. Captured above while the driver was open; a failure to upload
+    # must not stop the agent doing its actual job.
+    if capabilities and capabilities.get("channels"):
+        try:
+            cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
+                       p_agent_key=state["agent_key"], p_capabilities=capabilities)
+            log(f"analytics reported: {len(capabilities['channels'])} channel(s)")
+        except RuntimeError as e:
+            log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
 
     cmd_run(cfg, state, cloud, once=args.once, device=device)
 
