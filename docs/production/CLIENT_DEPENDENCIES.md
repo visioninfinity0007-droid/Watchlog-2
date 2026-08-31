@@ -63,7 +63,19 @@ matching gate in `PRODUCTION_GATES.md`.
 - **Built around it:** installer + agent lifecycle logic complete; `WINDOWS_ACCEPTANCE.md` checklist ready
   to fill with real run evidence (P10).
 
-## 8. 🔵 Final pricing approval
+## 8. 🔵 GitHub Actions minutes (private repo)
+- **Blocked:** the CI workflow running on GitHub's hosted runners. CI is correctly configured and
+  **passed green** while minutes were available (run 4cc0fb7); every run since dies at startup with
+  0 steps — the signature of **exhausted free Actions minutes** on the account (`Alkalid-security`
+  is a **User** account, private repo → 2000 free min/month shared across all its private repos).
+- **Needs from client:** either add an Actions spending limit / minutes to the account, make the repo
+  public (unlimited Actions), or provide a self-hosted runner.
+- **Built around it:** the pipeline is done and verified — every CI step passes **locally**
+  (`tools/secret_scan.py`, `tools/lint_migrations.py`, the 5 offline suites incl. real ONNX, portal
+  build). Merges this session were gated on that local run, not the quota-blocked runner.
+- **Acceptance when unblocked:** a pushed commit turns the CI checks green on GitHub.
+
+## 9. 🔵 Final pricing approval
 - **Blocked:** publishing production pricing on the marketing site + portal plan picker.
 - **Needs from client:** approved final tiers/amounts.
 - **Built around it:** pricing is data-driven; the current `03_Design/PRICING.md` is explicitly marked

@@ -68,7 +68,7 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 |---|---|---|
 | DOM-1 no temp URLs in prod build | grep `sslip.io`/`161.97.175.15` in shipped artifacts = 0 (demo excepted) | ⏳ |
 | WP-1 sitemap | `/wp-sitemap.xml` → 200 | ⏳ DEFERRED (minor SEO): WP core sitemap server is configured (index has 1 entry per WP-CLI, providers populated, no plugin/theme override, cache+rewrite flushed) yet web render 404s on WP 7.1 in this env. Not a config error introduced by us; low priority vs portal/billing. |
-| CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ✅ (run 33429616057 green: backend+portal, 2026-09-01) |
+| CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ✅ configured + proven green (run 33429616057); 🔵 hosted runner now quota-blocked (account free Actions minutes exhausted — CLIENT_DEPENDENCIES §8). All steps pass LOCALLY. |
 | HLTH-1 healthchecks | portal/site/bridge health endpoints wired in Coolify | ⏳ |
 
 ## Field / hardware (P3)
