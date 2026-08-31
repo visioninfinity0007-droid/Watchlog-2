@@ -5,6 +5,21 @@ Format: Decision · Reason · Evidence · Rollback.
 
 ---
 
+### 2026-09-01 · P9 — Real NSIS installer (contract tech), reusing the proven service registration
+- **Decision:** add `prototype/installer/nsis/watchlog.nsi` (a real NSIS/MUI2 installer) + a
+  deterministic `tools/build_windows_release.ps1` that builds the AI exe, stages the payload,
+  compiles with `makensis`, and emits `WatchLog-Setup.exe` + a SHA256. It reuses the existing,
+  proven `register-service.ps1` (SYSTEM scheduled task + power hardening) and `run-agent.cmd`
+  rather than reimplementing them. Publisher URL is a build `-D` define (no hardcoded host);
+  `signtool` runs only when a cert is supplied. NSIS was installed via `winget install NSIS.NSIS`.
+- **Reason:** the signed scope names **NSIS**; the audit found only an uncompiled Inno script +
+  a ZIP fallback (contract-tech mismatch). NSIS closes that. Reusing the tested service scripts
+  keeps the boot/restart behaviour identical to what already worked.
+- **Evidence:** audit §N — "Inno/PowerShell, ships ZIP, no `.nsi`, no Setup.exe".
+- **Rollback:** the Inno `.iss` and the ZIP packager remain; nothing removed.
+- **Still CLIENT-BLOCKED:** code-signing cert (SmartScreen) and Win10/11 lifecycle acceptance
+  (clean VMs) — the installer builds and is structurally complete regardless.
+
 ### 2026-09-01 · P2 — Ship the AI filter via onnxruntime; commit the exported model
 - **Decision:** the shippable agent build (`build_exe.ps1 -WithAI`) bundles **onnxruntime + numpy +
   PIL + `prototype/models/yolov8n.onnx`** and excludes torch/ultralytics. The exported model is

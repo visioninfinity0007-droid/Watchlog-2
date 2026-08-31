@@ -59,7 +59,8 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Installer (P9/P10)
 | Gate | Check | Status |
 |---|---|---|
-| INS-1 NSIS builds | `WatchLog-Setup.exe` produced from `.nsi` | ⏳ |
+| INS-1 NSIS builds | `WatchLog-Setup.exe` produced from `.nsi` | ⏳ code written (watchlog.nsi + build_windows_release.ps1); compiling once makensis installs |
+| INS-0 contract tech = NSIS | a real `.nsi` exists (not Inno/zip) | ✅ (prototype/installer/nsis/watchlog.nsi) |
 | INS-2 lifecycle | install→enroll→start; uninstall; reinstall | 🔵 (clean Win VM) |
 | INS-3 signed | signtool with a real cert | 🔵 (cert) |
 
