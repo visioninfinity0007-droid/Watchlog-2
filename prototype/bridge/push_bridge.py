@@ -160,6 +160,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         sys.stderr.write("  bridge: " + (fmt % a) + "\n")
 
+    def do_GET(self):
+        # Health/landing. Never reveals anything; POST /push/<token> is the
+        # only functional route.
+        self.send_response(200); self.send_header("Content-Type","text/plain")
+        self.end_headers(); self.wfile.write(b"WatchLog push bridge: OK")
+
     def do_POST(self):
         m = re.match(r"/push/([A-Za-z0-9]+)/?$", self.path)
         if not m:
