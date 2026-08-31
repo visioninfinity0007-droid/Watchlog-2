@@ -1,4 +1,4 @@
-# WatchLog — freeze the agent to a one-file Windows .exe.
+# WatchLog - freeze the agent to a one-file Windows .exe.
 #
 #   Lean (data only, filter fails open):
 #     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1
@@ -8,7 +8,7 @@
 #
 # The AI build is the shippable one: it carries the on-site false-alarm
 # filter and its model, so events are filtered before they leave the site.
-# The lean build still works — the filter fails open (agent/vision.py) — but
+# The lean build still works - the filter fails open (agent/vision.py) - but
 # it reports every event unfiltered, so it is for testing only.
 #
 # The exe is UNSIGNED. SmartScreen shows "Windows protected your PC"; a
@@ -65,8 +65,8 @@ Write-Host "Built $exe ($mb MB)" -ForegroundColor Green
 if ($WithAI) {
     Write-Host "Verifying the AI filter is packaged (running --selftest)..." -ForegroundColor Cyan
     & $exe --selftest
-    if ($LASTEXITCODE -ne 0) { throw "AI self-test failed (exit $LASTEXITCODE) — the filter is not correctly packaged" }
+    if ($LASTEXITCODE -ne 0) { throw "AI self-test failed (exit $LASTEXITCODE) - the filter is not correctly packaged" }
     Write-Host "AI self-test PASSED." -ForegroundColor Green
 } else {
-    Write-Host "Lean build — filter fails open. Use -WithAI for the shippable build." -ForegroundColor Yellow
+    Write-Host "Lean build - filter fails open. Use -WithAI for the shippable build." -ForegroundColor Yellow
 }
