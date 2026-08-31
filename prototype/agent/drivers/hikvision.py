@@ -125,6 +125,55 @@ class HikvisionDriver(NvrDriver):
         except ET.ParseError as e:
             raise DriverError(f"{path}: not XML ({e})") from e
 
+    def _put(self, path: str, body: str) -> requests.Response:
+        url = self.base_url + path
+        try:
+            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
+                           headers={"Content-Type": "application/xml"})
+        except requests.RequestException as e:
+            raise DriverError(f"{url}: {explain(e)}") from e
+        if r.status_code == 401:
+            self.s.auth = HTTPBasicAuth(self.username, self.password)
+            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
+                           headers={"Content-Type": "application/xml"})
+        if r.status_code >= 400:
+            raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
+        return r
+
+    def configure_push(self, url: str, host_id: int = 1) -> None:
+        """
+        Point this recorder's alarm notifications at `url` (the WatchLog
+        push bridge, with the site token in the path). This is the "PC-free
+        / recorder-push" setup: after this, the NVR POSTs every event to us
+        on its own, no on-site agent needed.
+
+        UNVALIDATED against real hardware. Hikvision's httpHosts schema
+        varies across firmware families (ISAPI/2011 vs 2020), and some OEM
+        units reject or silently ignore it. It must be proven on a real
+        Hikvision unit before being offered. Written here so the path is
+        complete in code and ready to test, not because it is trusted yet.
+
+        On a recorder that supports it, WatchLog then receives events with
+        NO PC on site. On one that does not, we fall back to an agent.
+        """
+        from urllib.parse import urlparse
+        u = urlparse(url)
+        host = u.hostname or ""
+        port = u.port or (443 if u.scheme == "https" else 80)
+        path = u.path or "/"
+        proto = "HTTPS" if u.scheme == "https" else "HTTP"
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<HttpHostNotification xmlns="http://www.hikvision.com/ver20/XMLSchema">'
+            f'<id>{host_id}</id><url>{path}</url>'
+            f'<protocolType>{proto}</protocolType>'
+            '<parameterFormatType>XML</parameterFormatType>'
+            f'<addressingFormatType>ipaddress</addressingFormatType>'
+            f'<ipAddress>{host}</ipAddress><portNo>{port}</portNo>'
+            '<httpAuthenticationMethod>none</httpAuthenticationMethod>'
+            '</HttpHostNotification>')
+        self._put(f"/ISAPI/Event/notification/httpHosts/{host_id}", body)
+
     # -- interface ------------------------------------------------------
 
     def probe(self) -> DeviceInfo:
