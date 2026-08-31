@@ -28,11 +28,12 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Agent / AI (P2)
 | Gate | Check | Status |
 |---|---|---|
-| AI-1 runtime packaged | frozen exe self-test: onnxruntime import OK | ⏳ |
-| AI-2 model packaged+loads | `yolov8n.onnx` bundled, session init OK | ⏳ |
-| AI-3 inference | self-test inference completes on a synthetic frame | ⏳ |
-| AI-4 classes | only person/car/motorcycle retained; others dropped | ⏳ |
-| AI-5 fail-open | runtime/model/inference failure → event kept | ✅ (unit 12/12) |
+| AI-1 runtime packaged | onnxruntime import OK | ✅ (source `--selftest`; frozen-exe build verifies too) |
+| AI-2 model packaged+loads | `yolov8n.onnx` (12.8 MB) committed, session init OK | ✅ (loads in 0.2s) |
+| AI-3 inference | inference completes on a frame | ✅ (~130ms/frame) |
+| AI-4 classes | only person/car/motorcycle retained; junk dropped | ✅ (`test_vision_onnx`: gray→discarded, bus.jpg→person kept) |
+| AI-5 fail-open | runtime/model/inference failure → event kept | ✅ (unit 12/12 + live FAIL-OPEN exit 3) |
+| AI-6 shipped in exe | frozen `watchlog-agent.exe --selftest` → RESULT PASS | ⏳ (building) |
 
 ## Billing (P8)
 | Gate | Check | Status |
