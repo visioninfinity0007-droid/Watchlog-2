@@ -54,6 +54,13 @@ import requests
 ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT = 30
 
+# The branded HTML body lives next to this file.
+try:
+    from email_template import render_html, subject as html_subject
+except ImportError:  # running from a different cwd
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from email_template import render_html, subject as html_subject
+
 
 # ---------------------------------------------------------------------
 # config
@@ -210,7 +217,7 @@ class WhatsApp:
                 return state == "open", f"instance '{name}' is '{state}'"
         return False, f"instance '{self.instance}' not found on this server"
 
-    def send(self, destination: str, text: str) -> tuple:
+    def send(self, destination: str, text: str, **_kw) -> tuple:
         number = re.sub(r"[^0-9]", "", destination)
         try:
             r = requests.post(
@@ -254,12 +261,19 @@ class Email:
     def check(self) -> tuple:
         return self.configured, ("ready" if self.configured else self.why_not())
 
-    def send(self, destination: str, text: str) -> tuple:
-        subject = text.splitlines()[0].replace("*", "")
+    def send(self, destination: str, text: str, **kw) -> tuple:
+        # Branded HTML is the point of this channel (M3); the plain-text body
+        # is sent alongside as the fallback part. SendGrid requires the
+        # text/plain part to come before text/html.
+        subject = kw.get("subject") or text.splitlines()[0].replace("*", "")
+        html = kw.get("html")
+        content = [{"type": "text/plain", "value": text.replace("*", "")}]
+        if html:
+            content.append({"type": "text/html", "value": html})
         body = {"personalizations": [{"to": [{"email": destination}]}],
                 "from": {"email": self.sender, "name": "WatchLog"},
                 "subject": subject,
-                "content": [{"type": "text/plain", "value": text.replace("*", "")}]}
+                "content": content}
         try:
             r = requests.post("https://api.sendgrid.com/v3/mail/send",
                               headers={"Authorization": f"Bearer {self.key}",
@@ -304,6 +318,10 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
             report = conn.execute("select wl_daily_report(%s, %s::date)",
                                   (site_id, day)).fetchone()[0]
             text = compose(report)
+            portal_url = (ENV.get("WATCHLOG_PORTAL_URL")
+                          or "https://watchlog.161.97.175.15.sslip.io")
+            html = render_html(report, portal_url)
+            subj = html_subject(report)
             total = int(report.get("total_events") or 0)
 
             people = conn.execute(
@@ -357,7 +375,7 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
                         skipped += 1
                         continue
 
-                    ok, provider_id, err = ch.send(dest, text)
+                    ok, provider_id, err = ch.send(dest, text, html=html, subject=subj)
                     conn.execute(
                         """insert into report_deliveries
                            (tenant_id, site_id, report_date, channel,

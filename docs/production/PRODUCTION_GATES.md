@@ -20,7 +20,7 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Reporting (P4/P7)
 | Gate | Check | Status |
 |---|---|---|
-| REP-1 branded HTML | rendered HTML for 0/normal/high/fault days, escaping safe | ⏳ |
+| REP-1 branded HTML | rendered HTML for 0/normal/high/fault days, escaping safe | ✅ (`test_email_template` 6/6, 2026-09-01) |
 | REP-2 scheduled send | n8n schedule → `report_deliveries.status='sent'` (test destination) | ⏳ |
 | REP-3 idempotent | re-run same day → no duplicate `sent` row | ⏳ (unit proven; live pending) |
 | REP-4 WatchLog-owned Evolution config | reporter reads WatchLog env, not another project's `.env` | ⏳ |
