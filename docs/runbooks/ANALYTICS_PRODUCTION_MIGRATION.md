@@ -1,7 +1,8 @@
 # WatchLog portal + Analytics production migration
 
 This runbook resolves the production Analytics schema-cache failure and keeps the
-portal, reporting model and operational authorization in one release train.
+portal, reporting model, Site Health detail model and operational authorization
+in one release train.
 
 The frontend must not be deployed ahead of the database. Apply the complete
 ordered migration train before merging/deploying the portal alignment branch.
@@ -35,10 +36,11 @@ The release train is:
 - `0030_analytics_semantics_authz.sql`
 - `0031_report_recipient_destinations.sql`
 - `0032_portal_operational_authz.sql`
+- `0033_site_health_details.sql`
 
 Do not paste only `wl_analytics_studio` into SQL Editor. The portal depends on the
-tables, policies, reporting endpoint model and authorization hardening created by
-the full ordered train.
+tables, policies, reporting endpoint model, Site Health detail API and
+authorization hardening created by the full ordered train.
 
 ## 2. Apply
 
@@ -47,7 +49,7 @@ python prototype/supabase/apply_migrations.py
 python prototype/supabase/apply_migrations.py --status
 ```
 
-All files through `0032` must report `applied` with repository-matching checksums.
+All files through `0033` must report `applied` with repository-matching checksums.
 
 ## 3. Database smoke test
 
@@ -59,6 +61,7 @@ select to_regprocedure('public.wl_analytics_overview(integer,uuid)');
 select to_regprocedure('public.wl_add_recipient_v2(text,text,text,text,uuid)');
 select to_regprocedure('public.wl_add_site(text,text)');
 select to_regprocedure('public.wl_issue_code(uuid,integer)');
+select to_regprocedure('public.wl_site_health_details(integer)');
 ```
 
 Every row must resolve to a function. Then, as a normal authenticated tenant user,
@@ -68,8 +71,10 @@ verify:
   purpose recommendations and Site Health under `always_on`.
 - `wl_analytics_studio()` returns tenant sites and `can_manage`.
 - `wl_analytics_overview(7, null)` returns summary/daily/by-rule payloads.
-- `/analytics/`, `/analytics/studio/` and `/analytics/schedules/` load without
-  schema-cache errors.
+- `wl_site_health_details(1)` returns only the caller tenant's cameras and recent
+  fault events with site identity.
+- `/analytics/`, `/analytics/studio/`, `/analytics/schedules/` and `/site-health/`
+  load without schema-cache errors.
 
 If SQL is present but PostgREST still reports an old cache, refresh/reload
 PostgREST only **after** proving the migration is applied.
@@ -87,6 +92,8 @@ Use disposable users in a test tenant:
   `wl_add_recipient_v2`, Analytics writers or team writers successfully.
 - Billing checkout/cancellation remains Owner-only.
 - A normal tenant user receives no Platform Admin data.
+- `wl_site_health_details` never returns cameras or fault rows from another
+  tenant.
 
 Do not test destructive authorization assumptions against a real customer.
 
@@ -135,16 +142,22 @@ python tools/seed_demo.py
 ```
 
 The demo must show exactly three curated sites with recent Site Agent contact,
-meaningful camera names, current activity and semantic Analytics history. The
-seed script is deliberately scoped to the tenant belonging to `PORTAL_DEMO_EMAIL`.
+meaningful camera names, semantic Analytics history and synthetic report delivery
+history. The seed script is deliberately scoped to the tenant belonging to
+`PORTAL_DEMO_EMAIL`.
 
-Verify Overview and Site Health read healthy rather than showing repeated stale
-agents or silent cameras.
+Expected controlled exceptions are part of the walkthrough, not a failed seed:
+
+- Korangi Warehouse / Rear Perimeter has no activity in the last 24 hours.
+- Korangi Warehouse / Loading Bay has one synthetic `video_loss` fault in the
+  last 24 hours.
+
+All sample stills/events remain explicitly tagged as demo/synthetic data.
 
 ## 9. Deployment order
 
-1. Production database through `0032`.
-2. Run schema/auth/reporting smoke tests.
+1. Production database through `0033`.
+2. Run schema/auth/reporting/Site Health smoke tests.
 3. Refresh the dedicated demo tenant.
 4. Deploy the matching portal build.
 5. Deploy agent/reporting services if their build changed.
