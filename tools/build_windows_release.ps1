@@ -1,7 +1,7 @@
 # WatchLog - build the production Windows release (NSIS only).
 #
 #   powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1
-#   ...\build_windows_release.ps1 -Code WL-XXXX-XXXX -PublisherUrl https://watchlog.pk
+#   ...\build_windows_release.ps1 -Code WL-XXXX-XXXX -PublisherUrl https://<production-domain>
 #   ...\build_windows_release.ps1 -Lean
 #   ...\build_windows_release.ps1 -SignPfx cert.pfx -SignPassword ****
 #
@@ -10,7 +10,7 @@
 
 param(
   [string]$Code = "",
-  [string]$PublisherUrl = "https://watchlog.pk",
+  [string]$PublisherUrl = "",
   [switch]$Lean,
   [string]$SignPfx = "",
   [string]$SignPassword = ""
@@ -55,7 +55,8 @@ enrollment_code = $Code
 nvr_driver = auto
 "@ | Set-Content -Path (Join-Path $stage "watchlog.defaults.ini") -Encoding UTF8
 
-# 3) Compile with NSIS.
+# 3) Compile with NSIS. The publisher URL is deliberately omitted unless a
+# real production URL is supplied; release metadata must never ship a fake URL.
 $out = Join-Path $root "dist-installer"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $setup = Join-Path $out "WatchLog-Setup.exe"
@@ -68,8 +69,10 @@ if (-not $makensis) {
 if (-not $makensis) { throw "makensis not found. Install NSIS: winget install NSIS.NSIS" }
 
 Write-Host "Compiling WatchLog-Setup.exe with NSIS..." -ForegroundColor Cyan
+$nsisArgs = @("/DICON=setup.ico", "/DOUTFILE=$setup")
+if ($PublisherUrl) { $nsisArgs += "/DPUBLISHER_URL=$PublisherUrl" }
 Push-Location $stage
-& $makensis "/DICON=setup.ico" "/DPUBLISHER_URL=$PublisherUrl" "/DOUTFILE=$setup" "watchlog.nsi" | Out-Host
+& $makensis @nsisArgs "watchlog.nsi" | Out-Host
 $rc = $LASTEXITCODE
 Pop-Location
 if ($rc -ne 0 -or -not (Test-Path $setup)) { throw "makensis failed (exit $rc)" }
@@ -81,6 +84,8 @@ $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
 Write-Host ""
 Write-Host "Built $setup ($mb MB)" -ForegroundColor Green
 Write-Host "  SHA256 $hash" -ForegroundColor Green
+if ($PublisherUrl) { Write-Host "  Publisher URL $PublisherUrl" -ForegroundColor Gray }
+else { Write-Host "  Publisher URL omitted (supply -PublisherUrl for production metadata)." -ForegroundColor Yellow }
 
 # 5) Optional Authenticode signing. Until a certificate is supplied this is
 # the one known release blocker that can trigger SmartScreen on a new PC.
