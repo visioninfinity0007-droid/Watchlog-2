@@ -99,6 +99,29 @@ function watchlog_signup_url() { return watchlog_portal_base() . '/signup/'; }
 function watchlog_login_url()  { return watchlog_portal_base() . '/login/'; }
 
 /**
+ * Contact destinations — configurable, never invented. Set the WP options
+ * (or env) when a real sales/support channel exists; until then the helpers
+ * return '' and the UI falls back to the free trial (a real action). This is
+ * the same config-over-hardcode pattern as the portal URL.
+ */
+function watchlog_contact_email() {
+    return trim(get_option('watchlog_contact_email', getenv('WATCHLOG_CONTACT_EMAIL') ?: ''));
+}
+function watchlog_whatsapp_number() { // digits only, international, no +
+    return preg_replace('/\D+/', '', get_option('watchlog_whatsapp', getenv('WATCHLOG_WHATSAPP') ?: ''));
+}
+function watchlog_whatsapp_url($text = '') {
+    $n = watchlog_whatsapp_number();
+    if ($n === '') { return ''; }
+    return 'https://wa.me/' . $n . ($text ? '?text=' . rawurlencode($text) : '');
+}
+function watchlog_mailto($subject = '') {
+    $e = watchlog_contact_email();
+    if ($e === '') { return ''; }
+    return 'mailto:' . $e . ($subject ? '?subject=' . rawurlencode($subject) : '');
+}
+
+/**
  * Head: icons, and the meta a link needs to look like anything when it is
  * pasted into WhatsApp, LinkedIn or a search result. Without these the
  * site had no favicon, no description, and shared as a bare URL.

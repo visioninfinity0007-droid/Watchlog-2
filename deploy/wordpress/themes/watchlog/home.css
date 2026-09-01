@@ -1,12 +1,5 @@
-/* WatchLog — homepage composition. Loads only on the front page. */
-
-/* ---- shared: product-screenshot placeholder ---- */
-.shot-ph{background:linear-gradient(160deg,#0e1f3c,#091628);min-height:360px;display:grid;place-items:center}
-.frame.shot-ph{min-height:394px}
-.shot-ph-in{display:flex;flex-direction:column;align-items:center;gap:12px;color:rgba(255,255,255,.4)}
-.shot-ph-in svg{height:34px;width:auto;opacity:.8}
-.shot-ph-in span{font-size:.85rem;letter-spacing:.04em}
-.shot-img{width:100%;display:block}
+/* WatchLog — homepage composition. Loads only on the front page.
+   (shared media/ticks/frame primitives live in style.css) */
 
 /* ============================================================ 01 HERO */
 .hero{position:relative;overflow:hidden;padding-top:clamp(118px,15vh,172px);padding-bottom:clamp(72px,9vw,120px)}
@@ -63,13 +56,6 @@
 .hiw-points .card svg{color:var(--blue);margin-bottom:14px}
 .hiw-points .card h3{font-size:1.16rem;margin-bottom:.35rem}
 .hiw-points .card p{font-size:.98rem;margin:0}
-
-/* ---- ticks list ---- */
-.ticks{list-style:none;padding:0;margin:1.2rem 0 1.6rem;display:grid;gap:12px}
-.ticks li{display:flex;align-items:flex-start;gap:12px;font-weight:500;color:var(--slate-600)}
-.ticks li svg{color:var(--blue);flex:none;margin-top:1px}
-.dark .ticks li,.light-ticks li{color:rgba(255,255,255,.8)}
-.dark .ticks li svg,.light-ticks li svg{color:var(--ice)}
 
 /* ============================================================ 10 SOLUTIONS */
 .sol-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:20px}
