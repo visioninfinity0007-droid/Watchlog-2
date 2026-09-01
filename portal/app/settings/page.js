@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
-import { Nav, requireTenant } from "../shell";
+import { Nav, requireTenant, setupPill } from "../shell";
 
 const PLANS = [
   ["starter", "Starter"],
@@ -121,13 +121,15 @@ export default function Settings() {
            sites.length === 0 ? <div className="empty">No sites yet.</div> : (
             <table>
               <thead>
-                <tr><th>Site</th><th>Agents</th><th>Cameras</th><th className="hide-sm">Last event</th><th>Enrollment code</th></tr>
+                <tr><th>Site</th><th>Status</th><th>Cameras</th><th className="hide-sm">Last event</th><th>Enrollment code</th></tr>
               </thead>
               <tbody>
-                {sites.map((s) => (
+                {sites.map((s) => {
+                  const [slabel, scls] = setupPill(s.setup_state, s.online);
+                  return (
                   <tr key={s.id}>
                     <td>{s.name}<div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>{s.timezone}</div></td>
-                    <td className="mono">{s.agents}</td>
+                    <td><span className={"pill " + scls}>{slabel}</span></td>
                     <td className="mono">{s.cameras}</td>
                     <td className="muted hide-sm">{fmt(s.last_event)}</td>
                     <td style={{ whiteSpace: "nowrap" }}>
@@ -138,7 +140,8 @@ export default function Settings() {
                       <button className="ghost small" onClick={() => issueCode(s.id)}>New code</button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}
