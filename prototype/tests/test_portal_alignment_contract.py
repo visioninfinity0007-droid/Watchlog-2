@@ -88,8 +88,11 @@ def check() -> None:
 
     assert '!define APPVERSION "0.3.0"' in NSIS
     assert 'VIProductVersion "0.3.0.0"' in NSIS
+    assert '!define PUBLISHER "Vision Infinity"' in NSIS
     assert '!include "LogicLib.nsh"' in NSIS
-    assert "watchlog.example" not in NSIS
+    assert "watchlog.example" not in NSIS and "watchlog.pk" not in NSIS
+    assert '[string]$PublisherUrl = ""' in BUILD and '[string]$PublisherUrl = ""' in WRAPPER
+    assert "if ($PublisherUrl)" in BUILD and "/DPUBLISHER_URL=$PublisherUrl" in BUILD
     assert "NSIS only" in BUILD
     assert "makensis" in BUILD.lower()
     assert "build_windows_release.ps1" in WRAPPER
