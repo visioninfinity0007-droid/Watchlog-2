@@ -81,12 +81,19 @@ Section "Install"
   ExecWait '"$INSTDIR\watchlog-agent.exe" --setup' $0
   DetailPrint "Recorder setup exited with code $0"
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. No untested recorder configuration was saved. Re-run WatchLog setup from the Start menu after correcting the issue."
+    MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. No untested recorder configuration was saved and the background Site Agent will not be registered. Correct the recorder/setup issue, then run the installer again."
+    Abort "WatchLog recorder setup did not complete"
   ${EndIf}
 
+  ; Register background startup only after the interactive recorder setup has
+  ; completed successfully. A failed setup must never leave a broken service.
   DetailPrint "Registering WatchLog to run in the background and start with Windows..."
   ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\register-service.ps1" -InstallDir "$INSTDIR"' $1
   DetailPrint "Background startup registration exited with code $1"
+  ${If} $1 != 0
+    MessageBox MB_ICONSTOP|MB_OK "The recorder is configured, but WatchLog could not register automatic background startup. Setup will stop so this is not mistaken for a complete installation."
+    Abort "WatchLog background startup registration failed"
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
