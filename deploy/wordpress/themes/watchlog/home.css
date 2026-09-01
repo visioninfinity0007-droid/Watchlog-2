@@ -66,21 +66,19 @@
 .metric b{display:block;font-size:1.7rem;font-weight:700;letter-spacing:-.02em;color:var(--ice);line-height:1}
 .metric span{display:block;font-size:.82rem;color:rgba(255,255,255,.55);margin-top:5px}
 
-/* ============================================================ 05 STORY */
-.story{display:grid;grid-template-columns:1fr 1.1fr;gap:clamp(32px,5vw,72px);align-items:start;position:relative}
-.story-rail{display:none}
-.story-steps{display:flex;flex-direction:column}
-.story-step{min-height:66vh;display:flex;flex-direction:column;justify-content:center;opacity:.4;transition:opacity .3s var(--ease)}
-.story-step.active{opacity:1}
-.st-kicker{display:inline-flex;align-items:center;gap:8px;color:var(--blue);font-weight:600;font-size:.92rem;margin-bottom:.6rem}
-.st-kicker svg{color:var(--blue)}
-.story-step h3{font-size:clamp(1.6rem,2.6vw,2.3rem);font-weight:700;letter-spacing:-.025em;margin-bottom:.6rem;max-width:16ch}
-.story-step p{max-width:46ch;font-size:1.06rem;margin-bottom:1.1rem}
-.story-shot-m{display:none;margin-top:8px}
-.story-visual{position:sticky;top:100px;height:min(72vh,560px)}
-.story-shot{margin:0;position:absolute;inset:0;opacity:0;visibility:hidden;transition:opacity .4s var(--ease);box-shadow:var(--shadow-lg)}
-.story-shot.active{opacity:1;visibility:visible}
-.story-shot img{width:100%;height:100%;object-fit:cover;object-position:top}
+/* ============================================================ 05 OUTCOMES (value trio) */
+.outcome-grid{align-items:stretch}
+.outcome-card{display:flex;flex-direction:column;background:#fff;border:1px solid var(--line-light);
+  border-radius:16px;padding:30px 28px;box-shadow:var(--shadow-soft);color:var(--slate-600);
+  transition:transform .2s var(--ease),box-shadow .2s,border-color .2s}
+.outcome-card:hover{transform:translateY(-4px);border-color:#CBD5E1;box-shadow:var(--shadow-card);color:var(--slate-600)}
+.oc-ic{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;margin-bottom:18px;
+  background:rgba(23,72,211,.09);color:var(--blue)}
+.outcome-card h3{font-size:clamp(1.3rem,1.8vw,1.55rem);letter-spacing:-.02em;margin-bottom:.5rem;color:var(--ink-900)}
+.outcome-card p{flex:1;font-size:1rem;margin-bottom:1.1rem}
+.oc-more{display:inline-flex;align-items:center;gap:6px;color:var(--blue);font-weight:600;font-size:.92rem}
+.oc-more svg{transition:transform .2s var(--ease)}
+.outcome-card:hover .oc-more svg{transform:translateX(3px)}
 
 /* ============================================================ 06 AI DEMO */
 .ai-flow{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:30px;flex-wrap:wrap}

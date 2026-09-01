@@ -69,8 +69,8 @@ $WL_ARCH = [
     <div class="hero-copy">
       <span class="eyebrow">CCTV intelligence for businesses</span>
       <h1>Make your existing cameras useful every&nbsp;day.</h1>
-      <p class="hero-sub">WatchLog filters recorder events on site, surfaces the incidents worth reviewing,
-        watches camera health, and gives your team a clear daily security picture.</p>
+      <p class="hero-sub">Know what happened overnight, what needs attention, and whether every camera is
+        healthy. Filtered on your site, delivered every morning.</p>
       <div class="cta-row">
         <a class="btn btn-primary btn-xl" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-xl js-scroll" href="#explore">See WatchLog in action</a>
@@ -160,31 +160,18 @@ $WL_ARCH = [
   </div>
 </section>
 
-<!-- 05 · THREE OUTCOMES (sticky story) -->
-<section class="light story-sec">
-  <div class="wrap-wide">
+<!-- 05 · THREE OUTCOMES (compact value trio; the explorer above is the product tour) -->
+<section class="surface-cool outcomes">
+  <div class="wrap">
     <div class="sec-head reveal"><span class="eyebrow">What you get</span>
-      <h2>Three outcomes, not three features.</h2></div>
-    <div class="story" data-story>
-      <div class="story-rail">
-        <?php foreach ($WL_STORY as $k=>$s){ printf(
-          '<button class="story-tab%s" data-step="%s"><span class="st-ic">%s</span><span><b>%s</b></span></button>',
-          $k===0?' active':'', esc_attr($s[0]), watchlog_icon($s[2],20), esc_html($s[1])); } ?>
-      </div>
-      <div class="story-steps">
-        <?php foreach ($WL_STORY as $k=>$s){ printf(
-          '<article class="story-step" data-step="%s"><span class="st-kicker">%s %s</span><h3>%s</h3><p>%s</p>'
-          .'<a class="arrow-link" href="%s">See %s</a>'
-          .'<div class="story-shot-m frame">%s</div></article>',
-          esc_attr($s[0]), watchlog_icon($s[2],18), esc_html($s[1]), esc_html($s[3]), esc_html($s[4]),
-          watchlog_url($s[6]), esc_html(strtolower($s[1])),
-          watchlog_pic($s[5], $s[3], 1500,1000,'shot-img','92vw')); } ?>
-      </div>
-      <div class="story-visual" aria-hidden="true">
-        <?php foreach ($WL_STORY as $k=>$s){ printf('<figure class="story-shot%s frame" data-shot="%s">%s</figure>',
-          $k===0?' active':'', esc_attr($s[0]),
-          watchlog_pic($s[5], '', 1500,1000,'shot-img','(max-width:1000px) 92vw, 620px')); } ?>
-      </div>
+      <h2>Three outcomes, not three features.</h2>
+      <p class="lead measure">The product tour above shows the screens. Here is what they add up to.</p></div>
+    <div class="grid g3 outcome-grid reveal">
+      <?php foreach ($WL_STORY as $s){ printf(
+        '<a class="outcome-card" href="%s"><span class="oc-ic">%s</span><h3>%s</h3><p>%s</p>'
+        .'<span class="oc-more">See %s %s</span></a>',
+        watchlog_url($s[6]), watchlog_icon($s[2],24), esc_html($s[3]), esc_html($s[4]),
+        esc_html(strtolower($s[1])), watchlog_icon('arrow-right',16)); } ?>
     </div>
   </div>
 </section>
@@ -369,7 +356,7 @@ $WL_ARCH = [
 </section>
 
 <!-- 13 · PRICING -->
-<section class="light pricing-sec">
+<section class="surface-cool pricing-sec">
   <div class="wrap">
     <div class="sec-head center reveal"><span class="eyebrow">Pricing</span>
       <h2>Start with one site. Prove the value in 14 days.</h2>
