@@ -1,454 +1,326 @@
 <?php
 /**
- * Home.
- *
- * Sections follow 03_Design/SITE_MAP.md. Each has one job and hands to
- * the next.
- *
- * ON IMAGERY. There is no photography for this product and the brand
- * guidelines ban the category's stock clichés outright — hooded figures,
- * glowing padlocks, blue "cyber" holograms. So every visual here is
- * authored: inline SVG, or the product's own interface rebuilt in CSS
- * using the real design tokens.
- *
- * That is not a compromise. The most persuasive asset this product has is
- * the thing the customer actually receives, so the hero shows the real
- * WhatsApp report in a phone frame rather than a photograph of a building.
- * Guidelines call this evidence over illustration.
- *
- * Anything that could be mistaken for a customer's real footage is
- * labelled as an example — see the caption under the dashboard.
+ * Homepage — WatchLog. 14 sections, dark at the conceptual peaks.
+ * Copy is the final deck in docs/design/COPY_DECK.md; claims conform to
+ * docs/design/PUBLIC_CLAIMS_MATRIX.md. Product screenshots come from the
+ * real demo tenant (watchlog_shot placeholders until captured).
  */
 if (!defined('ABSPATH')) { exit; }
 get_header();
-$portal = watchlog_signup_url();
+$signup = esc_url(watchlog_signup_url());
 ?>
 
-<!-- 1 ── Hero ────────────────────────────────────────────────────── -->
-<section class="hero<?php echo watchlog_has_img('hero-premises') ? ' hero-photo' : ''; ?>">
-  <?php if (watchlog_has_img('hero-premises')) : ?>
-    <!-- Decorative: the headline beside it carries the meaning, so the
-         alt is deliberately empty rather than describing a warehouse. -->
-    <div class="hero-bg" aria-hidden="true"
-         style="background-image:url('<?php echo esc_url(watchlog_img_url('hero-premises')); ?>')"></div>
-  <?php endif; ?>
-  <div class="hero-glow" aria-hidden="true"></div>
-  <div class="wrap hero-grid">
-    <div class="hero-copy">
-      <div class="eyebrow"><?php echo watchlog_icon('recorder', 15); ?> For businesses that already have CCTV</div>
-      <h1>Your cameras already see everything.<br><span class="hl">WatchLog tells you what they saw.</span></h1>
-      <p class="lede">Works with the Hikvision and Dahua recorders you already
-        own. No new cameras, no rewiring, no monthly guard.</p>
-      <div class="hero-actions">
-        <a class="btn btn-primary" href="<?php echo esc_url($portal); ?>">Start a 14-day trial</a>
-        <a class="btn btn-ghost" href="/how-it-works/">How it works</a>
+<!-- 01 · HERO -->
+<section class="hero dark field">
+  <?php echo watchlog_pic('hero-industry-atmosphere', '', 2000, 1125, 'hero-bg', '100vw', true); ?>
+  <div class="wrap-wide hero-grid">
+    <div class="hero-copy reveal in">
+      <span class="eyebrow">CCTV intelligence for businesses</span>
+      <h1>Make your existing cameras useful every&nbsp;day.</h1>
+      <p class="lead measure">WatchLog turns your recorder's events into validated incidents,
+        camera-health visibility and a daily report — without exposing your CCTV to the internet.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
+        <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('platform'); ?>">See the platform</a>
       </div>
-      <ul class="ticks">
-        <li><?php echo watchlog_icon('check', 18); ?> No card for the trial</li>
-        <li><?php echo watchlog_icon('check', 18); ?> Nothing exposed to the internet</li>
-        <li><?php echo watchlog_icon('check', 18); ?> Ten minutes to install</li>
-      </ul>
-    </div>
-
-    <!-- The actual deliverable. Shown, not described. -->
-    <div class="phone" role="img"
-         aria-label="Example WhatsApp summary: 14 events, two after midnight at the loading bay, one camera silent for 26 hours.">
-      <div class="phone-bar"><?php echo watchlog_icon('whatsapp', 16); ?> WhatsApp</div>
-      <div class="phone-screen">
-        <div class="bubble">
-          <div class="b-head">WatchLog — Karachi Head Office</div>
-          <div class="b-date">Friday 28 August</div>
-          <p class="b-total"><span class="tabular">14</span> events.</p>
-          <p class="b-row"><span class="pill pill-warn">2 after midnight</span> Loading bay</p>
-          <p class="b-row"><span class="pill pill-bad">1 fault</span> Camera 3 silent 26h</p>
-          <p class="b-row"><span class="pill pill-ok">6 cameras healthy</span></p>
-          <p class="b-foot">Busiest: Main Gate (9).<br>First 18:42, last 03:11.</p>
-          <span class="b-time">07:00</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- 2 ── Compatibility bar ───────────────────────────────────────── -->
-<section class="strip">
-  <div class="wrap strip-in">
-    <span class="strip-label">Works with the recorder you already own</span>
-    <ul class="chips small">
-      <li>Hikvision</li><li>HiLook</li><li>Dahua</li><li>Imou</li>
-      <li>CP Plus</li><li>Uniview</li><li>Tiandy</li><li>ONVIF</li>
-    </ul>
-  </div>
-</section>
-
-<!-- 3 ── The problem ─────────────────────────────────────────────── -->
-<section class="alt">
-  <div class="wrap split">
-    <div>
-      <div class="eyebrow">The problem</div>
-      <h2>Your cameras record. Nobody watches.</h2>
-      <p class="lede">Footage only gets opened after something has already gone
-        wrong. By then it is evidence, not security.</p>
-      <p>The recorder in the cupboard has been working perfectly all year. That
-        is not the same as somebody knowing what it saw.</p>
-    </div>
-
-    <?php if (watchlog_has_img('unwatched-monitor')) : ?>
-      <figure class="shot">
-        <?php echo watchlog_img('unwatched-monitor',
-          'A CCTV monitor showing four camera views, lit in an empty office at night. The chair in front of it is empty.',
-          1600, 1200); ?>
-        <figcaption>The recorder worked all night. Nobody was in the room.</figcaption>
-      </figure>
-    <?php else : ?>
-    <!-- A night on a real site: things happened, nobody was told. -->
-    <figure class="night" aria-label="A night of activity nobody saw: eleven events between 6pm and 6am.">
-      <div class="night-head"><?php echo watchlog_icon('moon', 16); ?> Last night, unreviewed</div>
-      <?php
-      $hours = ['18:00','20:00','22:00','00:00','02:00','04:00','06:00'];
-      $bars  = [2, 1, 0, 3, 4, 1, 0];
-      ?>
-      <div class="night-bars">
-        <?php foreach ($bars as $i => $n) : ?>
-          <div class="nb">
-            <div class="nb-fill<?php echo $n >= 3 ? ' hot' : ''; ?>"
-                 style="height:<?php echo max(6, $n * 22); ?>px"></div>
-            <span><?php echo esc_html($hours[$i]); ?></span>
-          </div>
-        <?php endforeach; ?>
-      </div>
-      <figcaption>11 events. None seen until somebody went looking.</figcaption>
-    </figure>
-    <?php endif; ?>
-  </div>
-</section>
-
-<!-- 4 ── What arrives ────────────────────────────────────────────── -->
-<section>
-  <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">What arrives</div>
-      <h2>A summary every morning, read in under a minute</h2>
-      <p class="lede">Every incident logged with a still from the moment it
-        happened. Nothing needs to be watched live.</p>
-    </div>
-
-    <div class="grid g3">
-      <div class="card">
-        <span class="ico-badge"><?php echo watchlog_icon('report'); ?></span>
-        <h3>What happened</h3>
-        <p>How many events, on which cameras, and how many were after hours.</p>
-      </div>
-      <div class="card">
-        <span class="ico-badge"><?php echo watchlog_icon('camera'); ?></span>
-        <h3>What it looked like</h3>
-        <p>A still from the moment of each incident, so you can judge it
-          without opening the recorder.</p>
-      </div>
-      <div class="card">
-        <span class="ico-badge warn"><?php echo watchlog_icon('alert'); ?></span>
-        <h3>What stopped working</h3>
-        <p>A camera gone silent is reported as a fault. That is the failure
-          nobody notices for weeks.</p>
-      </div>
-    </div>
-
-    <?php if (watchlog_has_img('still-gate')) : ?>
-      <figure class="stills">
-        <div class="stills-grid">
-          <?php
-          $frames = [
-            ['still-gate',    'A person walking through a factory gate at night, seen from a camera mounted above. Their face is blurred.', 'person', 'Main gate 01:47'],
-            ['still-vehicle', 'A delivery van parked at a loading bay at night with its rear doors open. The number plate is blurred.', 'vehicle', 'Loading bay 03:11'],
-            ['still-empty',   'An empty yard at night in the rain, with no people or vehicles.', 'discarded', 'Rear yard 02:14'],
-          ];
-          foreach ($frames as [$f, $alt, $kind, $label]) : ?>
-            <figure class="still<?php echo $kind === 'discarded' ? ' is-out' : ''; ?>">
-              <?php echo watchlog_img($f, $alt, 1280, 720); ?>
-              <figcaption>
-                <span class="pill pill-<?php echo $kind === 'discarded' ? 'muted' : ($kind === 'vehicle' ? 'warn' : 'violet'); ?>"><?php echo esc_html($kind); ?></span>
-                <?php echo esc_html($label); ?>
-              </figcaption>
-            </figure>
-          <?php endforeach; ?>
-        </div>
-        <p class="stills-note">The third frame is rain on an empty yard. Your
-          recorder logged it as motion; WatchLog discarded it at the site and
-          you never heard about it. Example frames, not a customer&rsquo;s site.</p>
-      </figure>
-    <?php endif; ?>
-
-    <!-- The portal, rebuilt in CSS from the same tokens the product uses. -->
-    <figure class="ui-shot">
-      <div class="ui-chrome"><span></span><span></span><span></span>
-        <div class="ui-url">watchlog — dashboard</div></div>
-      <div class="ui-body">
-        <div class="ui-stats">
-          <div class="stat"><b class="tabular">14</b><span>events</span></div>
-          <div class="stat"><b class="tabular">2</b><span>after hours</span></div>
-          <div class="stat ok"><b class="tabular">6</b><span>cameras up</span></div>
-          <div class="stat bad"><b class="tabular">1</b><span>fault</span></div>
-        </div>
-        <div class="ui-rows">
-          <div class="ui-row"><span class="pill pill-bad">fault</span>
-            <span class="ui-cam">Camera 3</span>
-            <span class="ui-txt">Silent for 26 hours</span>
-            <span class="ui-time tabular">—</span></div>
-          <div class="ui-row"><span class="pill pill-warn">vehicle</span>
-            <span class="ui-cam">Loading bay</span>
-            <span class="ui-txt">Vehicle after hours</span>
-            <span class="ui-time tabular">03:11</span></div>
-          <div class="ui-row"><span class="pill pill-violet">person</span>
-            <span class="ui-cam">Main gate</span>
-            <span class="ui-txt">Person detected</span>
-            <span class="ui-time tabular">01:47</span></div>
-          <div class="ui-row"><span class="pill pill-violet">person</span>
-            <span class="ui-cam">Main gate</span>
-            <span class="ui-txt">Person detected</span>
-            <span class="ui-time tabular">00:22</span></div>
-        </div>
-      </div>
-      <figcaption>Example data, not a customer's site.</figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- 5 ── How it works ────────────────────────────────────────────── -->
-<section class="alt">
-  <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">How it works</div>
-      <h2>Three steps, about ten minutes</h2>
-      <p class="lede">The connection only ever goes outward. Nothing of yours is
-        put on the internet.</p>
-    </div>
-
-    <div class="flow">
-      <div class="flow-node">
-        <span class="ico-badge"><?php echo watchlog_icon('recorder'); ?></span>
-        <h3>1. Your recorder</h3>
-        <p>Stays exactly where it is, doing what it already does.</p>
-      </div>
-      <div class="flow-arrow"><?php echo watchlog_icon('arrow-out', 22); ?></div>
-      <div class="flow-node">
-        <span class="ico-badge"><?php echo watchlog_icon('pc'); ?></span>
-        <h3>2. A PC on site</h3>
-        <p>A small program reads the event log, takes a still, and drops the
-          false alarms before they leave the building.</p>
-      </div>
-      <div class="flow-arrow"><?php echo watchlog_icon('arrow-out', 22); ?></div>
-      <div class="flow-node">
-        <span class="ico-badge"><?php echo watchlog_icon('cloud'); ?></span>
-        <h3>3. Your report</h3>
-        <p>On WhatsApp each morning, and in the portal whenever you want it.</p>
-      </div>
-    </div>
-
-    <div class="note">
-      <?php echo watchlog_icon('lock', 20); ?>
-      <p><strong>No port forwarding, no VPN, no firewall changes.</strong>
-        Your recorder's password stays in a file on that PC and is never sent
-        to us. We cannot view your cameras live or browse your footage.</p>
-    </div>
-  </div>
-</section>
-
-<!-- 5b ── You might already have… (honest differentiation) ───────── -->
-<section>
-  <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">Why this, when you already have cameras</div>
-      <h2>You have probably tried one of these already</h2>
-      <p class="lede">WatchLog is not a replacement for any of them. It is the
-        part every one of them leaves out: somebody actually reading what the
-        cameras saw.</p>
-    </div>
-
-    <div class="vs">
-      <div class="vs-row vs-head">
-        <div>What you already have</div>
-        <div>What it still leaves you missing</div>
-      </div>
-      <div class="vs-row">
-        <div><strong>A recorder that keeps 30 days</strong>
-          <span>The footage is there if you go and look.</span></div>
-        <div>Recording is not monitoring. Nobody opens it until after
-          something has already gone wrong.</div>
-      </div>
-      <div class="vs-row">
-        <div><strong>The camera vendor's phone app</strong>
-          <span>Live view whenever you open it.</span></div>
-        <div>It shows you the cameras on demand. It never tells you something
-          happened while you were not looking.</div>
-      </div>
-      <div class="vs-row">
-        <div><strong>Guards on site</strong>
-          <span>Someone physically present.</span></div>
-        <div>Guards cover what they can see, on shift. The cameras already
-          cover everything, always — if only someone read them.</div>
-      </div>
-      <div class="vs-row">
-        <div><strong>A monitoring contract</strong>
-          <span>A control room watching your feeds.</span></div>
-        <div>Many times the price, and it usually means replacing the cameras
-          you already paid for.</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- 6 ── Compatibility, with the exclusion in the open ───────────── -->
-<section class="alt">
-  <div class="wrap split">
-    <div>
-      <div class="eyebrow">Compatibility</div>
-      <h2>Most of what is installed in Pakistan</h2>
       <ul class="chips">
-        <li>Hikvision</li><li>HiLook</li><li>Dahua</li><li>Imou</li>
-        <li>CP Plus</li><li>Uniview</li><li>Tiandy</li><li>Most ONVIF recorders</li>
+        <li class="chip"><?php echo watchlog_icon('check', 18); ?> Works with existing CCTV</li>
+        <li class="chip"><?php echo watchlog_icon('check', 18); ?> On-site AI filtering</li>
+        <li class="chip"><?php echo watchlog_icon('check', 18); ?> 14-day trial, no card</li>
       </ul>
     </div>
-    <aside class="callout">
-      <span class="ico-badge bad"><?php echo watchlog_icon('alert'); ?></span>
-      <h3>What is not supported</h3>
-      <p>The cheapest unbranded recorders — typically Xiongmai or Hisilicon
-        boards sold without a brand name — do not speak a standard protocol
-        reliably enough for us to support.</p>
-      <p class="tiny">We would rather tell you here than after you have paid.
-        Not sure what you have? Send us a photo of the label.</p>
-    </aside>
+    <div class="hero-shot reveal in glow">
+      <?php echo watchlog_pic('product-hero-composite', 'The WatchLog portal: the Overview dashboard with a daily report showing delivery on WhatsApp and email', 1900, 1240, 'hero-composite', '(max-width:900px) 96vw, 54vw', true); ?>
+    </div>
   </div>
 </section>
 
-<!-- 7 ── What it is not ──────────────────────────────────────────── -->
-<section class="dark">
+<!-- 02 · PROOF STRIP -->
+<section class="dark navy proof sec-sm">
+  <div class="wrap-wide proof-grid">
+    <div class="proof-item"><?php echo watchlog_icon('camera', 22); ?><span>Works with the CCTV you already own</span></div>
+    <div class="proof-item"><?php echo watchlog_icon('check', 22); ?><span>Filters false alarms on site</span></div>
+    <div class="proof-item"><?php echo watchlog_icon('lock', 22); ?><span>No inbound access to your recorder</span></div>
+    <div class="proof-item"><?php echo watchlog_icon('report', 22); ?><span>Portal + a daily report</span></div>
+  </div>
+</section>
+
+<!-- 03 · PROBLEM / CONTEXT -->
+<section class="light">
+  <div class="wrap split split-5-7">
+    <div class="reveal">
+      <span class="eyebrow">The gap</span>
+      <h2>Your CCTV creates footage. WatchLog creates visibility.</h2>
+      <p class="lead">Most cameras are only ever opened after something has already gone wrong.</p>
+      <p>WatchLog reads the events your recorder already logs and turns them into an operational
+        record you actually use — a short daily read instead of hours of footage.</p>
+    </div>
+    <div class="reveal">
+      <?php echo watchlog_pic('environment-recorder', 'A CCTV recorder on a shelf at a site', 1800, 1200, 'frame-plain', '(max-width:900px) 92vw, 46vw'); ?>
+    </div>
+  </div>
+</section>
+
+<!-- 04 · PLATFORM REVEAL -->
+<section class="dark field platform-reveal">
+  <div class="wrap-wide">
+    <div class="sec-head center reveal">
+      <span class="eyebrow">The platform</span>
+      <h2>One place to understand every site.</h2>
+      <p class="lead measure">Incidents, site health and after-hours activity across all your
+        locations — in a single view.</p>
+    </div>
+    <div class="reveal glow platform-shot">
+      <?php echo watchlog_shot('product-platform-overview', 'WatchLog Overview: sites, incidents, after-hours activity and site health', 1900, 1150, '(max-width:1200px) 92vw, 1100px', true); ?>
+    </div>
+    <div class="platform-chips reveal">
+      <span class="pchip"><?php echo watchlog_icon('camera',18); ?> Incidents</span>
+      <span class="pchip"><?php echo watchlog_icon('alert',18); ?> Site health</span>
+      <span class="pchip"><?php echo watchlog_icon('moon',18); ?> After-hours</span>
+      <span class="pchip"><?php echo watchlog_icon('check',18); ?> Camera health</span>
+    </div>
+    <div class="center" style="margin-top:36px">
+      <a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See the platform <?php echo watchlog_icon('arrow-right',18); ?></a>
+    </div>
+  </div>
+</section>
+
+<!-- 05 · THREE CAPABILITIES -->
+<section class="light">
   <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">Being straight with you</div>
-      <h2>What WatchLog is not</h2>
+    <div class="sec-head reveal"><span class="eyebrow">What you get</span>
+      <h2>Three things, done properly.</h2></div>
+
+    <div class="cap split split-7-5 reveal">
+      <div class="cap-media"><?php echo watchlog_shot('product-incidents', 'WatchLog Incidents with filters and a person incident selected', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?></div>
+      <div class="cap-copy">
+        <span class="cap-k"><?php echo watchlog_icon('camera',20); ?> Incidents</span>
+        <h3>Know what happened.</h3>
+        <p>Every kept event carries a still, filtered on site so what you review is worth reviewing.
+          Search the history by site, camera and type.</p>
+        <a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">Explore incidents <?php echo watchlog_icon('arrow-right',18); ?></a>
+      </div>
     </div>
-    <div class="grid g2 nots">
-      <div class="not"><?php echo watchlog_icon('shield-off', 22); ?>
-        <div><b>Not a guard service.</b>
-          <span>Nobody watches your cameras live. It reads what the recorder
-            already logged and tells you.</span></div></div>
-      <div class="not"><?php echo watchlog_icon('camera', 22); ?>
-        <div><b>Not new cameras.</b>
-          <span>It uses the ones you have. If they cannot see the gate today,
-            WatchLog will not either.</span></div></div>
-      <div class="not"><?php echo watchlog_icon('clock', 22); ?>
-        <div><b>Not live monitoring.</b>
-          <span>Incidents are logged as they happen and summarised each
-            morning. It is not an alarm response service.</span></div></div>
-      <div class="not"><?php echo watchlog_icon('alert', 22); ?>
-        <div><b>Not a way to prevent anything.</b>
-          <span>It observes and reports. Prevention is what guards, gates and
-            lighting are for.</span></div></div>
+
+    <div class="cap split split-5-7 reveal flip">
+      <div class="cap-copy">
+        <span class="cap-k"><?php echo watchlog_icon('report',20); ?> Reporting</span>
+        <h3>Wake up to the useful part.</h3>
+        <p>A daily summary to the right people, on WhatsApp or email, in each site's local time —
+          with a full history kept in the portal.</p>
+        <a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',18); ?></a>
+      </div>
+      <div class="cap-media"><?php echo watchlog_shot('product-reports', 'WatchLog Reports: a daily report with delivery history and recipients', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?></div>
+    </div>
+
+    <div class="cap split split-7-5 reveal">
+      <div class="cap-media"><?php echo watchlog_shot('product-site-health', 'WatchLog Site Health showing a healthy site and a camera fault', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?></div>
+      <div class="cap-copy">
+        <span class="cap-k"><?php echo watchlog_icon('alert',20); ?> Site Health</span>
+        <h3>Know when something goes quiet.</h3>
+        <p>A camera that stopped three weeks ago is usually found the day you need its footage.
+          WatchLog tells you as soon as a camera or a site goes silent.</p>
+        <a class="arrow-link" href="<?php echo watchlog_url('site-health'); ?>">See site health <?php echo watchlog_icon('arrow-right',18); ?></a>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- 7b ── Why you can trust it (honest signals, no fake logos) ────── -->
-<section>
+<!-- 06 · LOCAL AI -->
+<section class="dark field ai">
+  <div class="wrap-wide">
+    <div class="sec-head center reveal"><span class="eyebrow">On-site intelligence</span>
+      <h2>Less noise. More useful incidents.</h2>
+      <p class="lead measure">Rain, headlights and the IR lamp at dusk all trip motion. WatchLog checks
+        each still on your own site PC and keeps only person, car and motorcycle — before anything is sent.</p>
+    </div>
+    <div class="reveal ai-diagram">
+      <?php echo watchlog_pic('diagram-ai-filtering', 'Raw event to local AI to a validated, kept incident; if the detector cannot run, the event is kept rather than dropped', 1800, 1000, '', '(max-width:1200px) 92vw, 1100px'); ?>
+    </div>
+    <div class="ai-strip reveal">
+      <div class="ai-col">
+        <span class="ai-lbl kept">Kept</span>
+        <div class="ai-thumbs">
+          <?php echo watchlog_pic('cctv-person','Example CCTV still: a person',1600,900,'', '30vw'); ?>
+          <?php echo watchlog_pic('cctv-vehicle','Example CCTV still: a vehicle',1600,900,'', '30vw'); ?>
+          <?php echo watchlog_pic('cctv-motorcycle','Example CCTV still: a motorcycle',1600,900,'', '30vw'); ?>
+        </div>
+      </div>
+      <div class="ai-col">
+        <span class="ai-lbl dropped">Filtered out</span>
+        <div class="ai-thumbs">
+          <?php echo watchlog_pic('cctv-empty-rain','Example CCTV still: empty scene in rain',1600,900,'', '30vw'); ?>
+          <?php echo watchlog_pic('cctv-headlights','Example CCTV still: headlights sweeping a wall',1600,900,'', '30vw'); ?>
+        </div>
+      </div>
+    </div>
+    <p class="center note-line reveal">Detects person, car and motorcycle. Not facial recognition.</p>
+  </div>
+</section>
+
+<!-- 07 · HOW IT WORKS -->
+<section class="light">
   <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">Built to be trusted with your cameras</div>
-      <h2>The things that would worry us, in your position</h2>
+    <div class="sec-head reveal"><span class="eyebrow">How it works</span>
+      <h2>Your recorder stays private.</h2>
+      <p class="lead measure">A small program on a PC you already have reads the recorder and connects
+        outward only — no port forwarding, no inbound access.</p></div>
+    <div class="reveal hiw-diagram">
+      <?php echo watchlog_pic('diagram-architecture', 'Recorder to Windows Site Agent to secure outbound to WatchLog cloud to portal and reports', 1800, 1000, '', '(max-width:1100px) 92vw, 1000px'); ?>
     </div>
-    <div class="grid g2 trust">
-      <div class="trust-item">
-        <span class="ico-badge"><?php echo watchlog_icon('lock'); ?></span>
-        <div>
-          <h3>Nothing of yours is put on the internet</h3>
-          <p>No port forwarding, no VPN, no inbound connection. Your recorder's
-            password stays in a file on your own PC. We could not log into your
-            cameras if we wanted to — there is no route in.</p>
-        </div>
-      </div>
-      <div class="trust-item">
-        <span class="ico-badge"><?php echo watchlog_icon('people'); ?></span>
-        <div>
-          <h3>One customer can never see another's</h3>
-          <p>Accounts are separated at the database level, and an automated
-            test fails the release if that separation ever weakens. It is
-            checked on every deploy, not assumed.</p>
-        </div>
-      </div>
-      <div class="trust-item">
-        <span class="ico-badge"><?php echo watchlog_icon('camera'); ?></span>
-        <div>
-          <h3>Your footage never leaves the building</h3>
-          <p>We receive an event record and one still per real incident.
-            We cannot browse your recordings, and the frames that were false
-            alarms are discarded on your machine.</p>
-        </div>
-      </div>
-      <div class="trust-item">
-        <span class="ico-badge"><?php echo watchlog_icon('check'); ?></span>
-        <div>
-          <h3>You will know in ten minutes if it fits</h3>
-          <p>Priced in rupees, per site, no card for the trial. If your
-            recorder is not supported the setup tells you before you have
-            spent anything.</p>
-        </div>
-      </div>
+    <div class="grid g3 hiw-points reveal">
+      <div class="card"><?php echo watchlog_icon('lock',24); ?><h3>Recorder stays private</h3><p>Never exposed to the public internet. No port forwarding, no VPN.</p></div>
+      <div class="card"><?php echo watchlog_icon('pc',24); ?><h3>Credentials stay on site</h3><p>The recorder's login lives in a file on your site PC and is never sent to WatchLog.</p></div>
+      <div class="card"><?php echo watchlog_icon('arrow-out',24); ?><h3>Connection goes outward</h3><p>Only validated event data and one still per incident leave the building.</p></div>
+    </div>
+    <div style="margin-top:36px"><a class="arrow-link" href="<?php echo watchlog_url('how-it-works'); ?>">How WatchLog works <?php echo watchlog_icon('arrow-right',18); ?></a></div>
+  </div>
+</section>
+
+<!-- 08 · DAILY OPERATIONS -->
+<section class="cloud">
+  <div class="wrap split split-7-5">
+    <div class="reveal">
+      <?php echo watchlog_shot('product-reports', 'A WatchLog daily report in the portal with delivery history', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?>
+    </div>
+    <div class="reveal">
+      <span class="eyebrow">Every morning</span>
+      <h2>The useful part, before your first coffee.</h2>
+      <p>Each morning the right people get a short summary — counts by camera and type, how many were
+        after hours, and anything that went quiet.</p>
+      <ul class="ticks">
+        <li><?php echo watchlog_icon('whatsapp',20); ?> WhatsApp, email, or both</li>
+        <li><?php echo watchlog_icon('clock',20); ?> Counts in each site's local time</li>
+        <li><?php echo watchlog_icon('report',20); ?> Full delivery history in the portal</li>
+      </ul>
+      <a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
   </div>
 </section>
 
-<!-- 8 ── Pricing preview ─────────────────────────────────────────── -->
-<section class="alt">
+<!-- 09 · MULTI-SITE -->
+<section class="dark field">
+  <div class="wrap split split-5-7">
+    <div class="reveal">
+      <span class="eyebrow">More than one site</span>
+      <h2>One view across every location.</h2>
+      <p>Head office sees the pattern; each site's report goes to the person who runs it. Roles for
+        owner, admin and read-only, and per-site recipients.</p>
+      <ul class="ticks light-ticks">
+        <li><?php echo watchlog_icon('sites',20); ?> Every site in one overview</li>
+        <li><?php echo watchlog_icon('people',20); ?> Per-site recipients and team roles</li>
+        <li><?php echo watchlog_icon('chart',20); ?> Compare activity across locations</li>
+      </ul>
+    </div>
+    <div class="reveal">
+      <?php echo watchlog_pic('diagram-multi-site','One WatchLog account across multiple sites',1800,1000,'', '(max-width:900px) 92vw, 55vw'); ?>
+    </div>
+  </div>
+</section>
+
+<!-- 10 · SOLUTIONS -->
+<section class="light">
+  <div class="wrap-wide">
+    <div class="sec-head reveal"><span class="eyebrow">Built for your sites</span>
+      <h2>WatchLog for the sites you already operate.</h2></div>
+    <div class="sol-grid reveal">
+      <?php
+      $sols = [
+        ['solutions/warehouses-logistics','solution-warehouse','Warehouses & Logistics','See what happened after the shift ended.'],
+        ['solutions/retail','solution-retail','Retail','Understand every branch without calling every branch.'],
+        ['solutions/manufacturing','solution-manufacturing','Manufacturing','Visibility across shifts, gates and critical areas.'],
+        ['solutions/schools-campuses','solution-school-campus','Schools & Campuses','Know what moved after hours.'],
+        ['solutions/offices','solution-office-commercial','Offices & Commercial','Daily visibility without watching screens.'],
+      ];
+      foreach ($sols as $s) {
+        printf('<a class="sol-tile" href="%s">%s<div class="sol-body"><h3>%s</h3><p>%s</p>'
+          .'<span class="sol-more">Explore %s</span></div></a>',
+          watchlog_url($s[0]),
+          watchlog_pic($s[1], $s[2], 1800, 1200, 'sol-img', '(max-width:640px) 92vw, (max-width:1000px) 46vw, 30vw'),
+          esc_html($s[2]), esc_html($s[3]), esc_html(strtolower($s[2])));
+      }
+      ?>
+    </div>
+  </div>
+</section>
+
+<!-- 11 · SECURITY -->
+<section class="dark navy security">
+  <div class="wrap split split-7-5">
+    <div class="reveal">
+      <?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: outbound-only, recorder private',1800,1000,'', '(max-width:900px) 92vw, 55vw'); ?>
+    </div>
+    <div class="reveal">
+      <span class="eyebrow">Security</span>
+      <h2>Security by architecture, not by promise.</h2>
+      <ul class="ticks light-ticks">
+        <li><?php echo watchlog_icon('shield',20); ?> Your recorder is never exposed to the public internet</li>
+        <li><?php echo watchlog_icon('lock',20); ?> Credentials stay on the site PC</li>
+        <li><?php echo watchlog_icon('camera',20); ?> Recorded video stays on your recorder</li>
+        <li><?php echo watchlog_icon('arrow-out',20); ?> Only validated incident data is synced</li>
+        <li><?php echo watchlog_icon('check',20); ?> Tenant isolation enforced in the database, tested before every release</li>
+      </ul>
+      <a class="arrow-link" href="<?php echo watchlog_url('security'); ?>">Explore security <?php echo watchlog_icon('arrow-right',18); ?></a>
+    </div>
+  </div>
+</section>
+
+<!-- 12 · COMPATIBILITY -->
+<section class="light">
+  <div class="wrap split split-7-5">
+    <div class="reveal">
+      <?php echo watchlog_pic('diagram-compatibility','Keep your cameras and recorder, add WatchLog',1800,1000,'frame-plain', '(max-width:900px) 92vw, 55vw'); ?>
+    </div>
+    <div class="reveal">
+      <span class="eyebrow">Compatibility</span>
+      <h2>Keep the cameras. Keep the recorder. Add WatchLog.</h2>
+      <p>WatchLog works with the recorder you already own. Hikvision and Dahua are validated; HiLook,
+        Imou, CP&nbsp;Plus, Uniview, Tiandy and most ONVIF recorders are protocol-compatible.</p>
+      <p>Not sure what you have? Send us your recorder's label and we'll confirm before you spend anything.</p>
+      <div class="cta-row"><a class="btn btn-primary" href="<?php echo watchlog_url('compatibility'); ?>">Check my recorder</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- 13 · PRICING / TRIAL -->
+<section class="cloud">
   <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">Pricing</div>
-      <h2>Per site, in rupees. No setup fee.</h2>
-      <p class="lede">Nothing is metered. The only thing that changes the price
-        is adding a site or moving up a camera tier.</p>
-    </div>
-    <div class="grid g3">
-      <div class="card plan">
-        <h3>Starter</h3>
-        <div class="price">PKR 6,000<small> / site / month</small></div>
-        <ul class="plan-features">
-          <li>Up to 8 cameras</li><li>7 days of stills</li>
-          <li>Daily WhatsApp report</li><li>Site health and analytics</li>
-        </ul>
+    <div class="sec-head center reveal"><span class="eyebrow">Pricing</span>
+      <h2>Priced per site. Start free for 14 days.</h2>
+      <p class="lead measure">No setup fee, no hardware to buy. When a trial ends, reporting pauses —
+        your events and history are kept.</p></div>
+    <div class="grid g3 price-grid reveal">
+      <div class="price-card">
+        <h3>Starter</h3><p class="price"><span>PKR</span> 6,000<small>/site / month</small></p>
+        <p class="price-for">For smaller sites getting daily visibility.</p>
+        <a class="btn btn-secondary" href="<?php echo $signup; ?>">Start free</a>
       </div>
-      <div class="card plan featured">
-        <span class="tag">Most sites</span>
-        <h3>Growth</h3>
-        <div class="price">PKR 12,000<small> / site / month</small></div>
-        <ul class="plan-features">
-          <li>Up to 24 cameras</li><li>30 days of stills</li>
-          <li>Everything in Starter</li><li>Unlimited team members</li>
-        </ul>
+      <div class="price-card featured">
+        <span class="price-tag">Most popular</span>
+        <h3>Growth</h3><p class="price"><span>PKR</span> 12,000<small>/site / month</small></p>
+        <p class="price-for">More cameras and a longer history of stills.</p>
+        <a class="btn btn-primary" href="<?php echo $signup; ?>">Start free</a>
       </div>
-      <div class="card plan">
-        <h3>Enterprise</h3>
-        <div class="price">Talk to us</div>
-        <ul class="plan-features">
-          <li>Unlimited cameras</li><li>90 days of stills</li>
-          <li>Multi-site rollout</li><li>Priority support</li>
-        </ul>
+      <div class="price-card">
+        <h3>Enterprise</h3><p class="price price-talk">Talk to us</p>
+        <p class="price-for">Multi-site, unlimited cameras, longest retention.</p>
+        <a class="btn btn-secondary" href="<?php echo watchlog_url('contact'); ?>">Talk to us</a>
       </div>
     </div>
-    <p class="center"><a href="/pricing/">Full pricing detail →</a></p>
+    <p class="center" style="margin-top:24px"><a class="arrow-link" href="<?php echo watchlog_url('pricing'); ?>">View full pricing <?php echo watchlog_icon('arrow-right',18); ?></a></p>
   </div>
 </section>
 
-<!-- 9 ── Close ───────────────────────────────────────────────────── -->
-<section class="close<?php echo watchlog_has_img('close-dusk') ? ' close-photo' : ''; ?>">
-  <?php if (watchlog_has_img('close-dusk')) : ?>
-    <div class="close-bg" aria-hidden="true"
-         style="background-image:url('<?php echo esc_url(watchlog_img_url('close-dusk')); ?>')"></div>
-  <?php endif; ?>
-  <div class="wrap center">
-    <h2>Find out what your cameras have been seeing</h2>
-    <p class="lede center-lede">Fourteen days, no card. If it does not work with
-      your recorder you will know within ten minutes.</p>
-    <div class="hero-actions center-actions">
-      <a class="btn btn-primary" href="<?php echo esc_url($portal); ?>">Start a trial</a>
-      <a class="btn btn-ghost" href="/contact/">Talk to us first</a>
+<!-- 14 · FINAL CTA -->
+<section class="dark field final-cta">
+  <?php echo watchlog_pic('hero-industry-atmosphere', '', 2000, 1125, 'cta-bg', '100vw'); ?>
+  <div class="wrap center reveal">
+    <h2>See what your cameras have been telling you.</h2>
+    <p class="lead measure">Install in about ten minutes on a PC you already have. Keep your cameras
+      and recorder — add WatchLog.</p>
+    <div class="cta-row" style="justify-content:center">
+      <a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
+      <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('compatibility'); ?>">Check my recorder</a>
     </div>
   </div>
 </section>

@@ -44,8 +44,19 @@ function watchlog_assets() {
             get_template_directory_uri() . '/home.css', ['watchlog'],
             wp_get_theme()->get('Version'));
     }
+
+    // Tiny progressive-enhancement script: sticky-header state, mobile
+    // drawer, mega-menu a11y, reveal-on-scroll, count-up. No dependencies.
+    wp_enqueue_script('watchlog',
+        get_template_directory_uri() . '/theme.js', [],
+        wp_get_theme()->get('Version'), true);
 }
 add_action('wp_enqueue_scripts', 'watchlog_assets');
+
+/** Route helper: an absolute site URL with a trailing slash. */
+function watchlog_url($path = '') {
+    return esc_url(home_url('/' . ltrim($path, '/')));
+}
 
 /**
  * The monogram, inline.
@@ -88,15 +99,39 @@ function watchlog_signup_url() { return watchlog_portal_base() . '/signup/'; }
 function watchlog_login_url()  { return watchlog_portal_base() . '/login/'; }
 
 /**
+ * Contact destinations — configurable, never invented. Set the WP options
+ * (or env) when a real sales/support channel exists; until then the helpers
+ * return '' and the UI falls back to the free trial (a real action). This is
+ * the same config-over-hardcode pattern as the portal URL.
+ */
+function watchlog_contact_email() {
+    return trim(get_option('watchlog_contact_email', getenv('WATCHLOG_CONTACT_EMAIL') ?: ''));
+}
+function watchlog_whatsapp_number() { // digits only, international, no +
+    return preg_replace('/\D+/', '', get_option('watchlog_whatsapp', getenv('WATCHLOG_WHATSAPP') ?: ''));
+}
+function watchlog_whatsapp_url($text = '') {
+    $n = watchlog_whatsapp_number();
+    if ($n === '') { return ''; }
+    return 'https://wa.me/' . $n . ($text ? '?text=' . rawurlencode($text) : '');
+}
+function watchlog_mailto($subject = '') {
+    $e = watchlog_contact_email();
+    if ($e === '') { return ''; }
+    return 'mailto:' . $e . ($subject ? '?subject=' . rawurlencode($subject) : '');
+}
+
+/**
  * Head: icons, and the meta a link needs to look like anything when it is
  * pasted into WhatsApp, LinkedIn or a search result. Without these the
  * site had no favicon, no description, and shared as a bare URL.
  */
 function watchlog_head() {
     $t = get_template_directory_uri();
-    $desc = 'WatchLog reads the CCTV recorder you already own, filters out '
-          . 'false alarms on site, and sends a daily summary on WhatsApp. '
-          . 'Works with Hikvision, Dahua and most ONVIF recorders.';
+    $desc = 'The intelligence layer for the CCTV you already own. WatchLog turns '
+          . 'your recorder\'s events into validated incidents, camera-health '
+          . 'visibility and a daily report — without exposing your recorder to '
+          . 'the internet. Works with Hikvision, Dahua and most ONVIF recorders.';
     $title = wp_get_document_title();
     $url = home_url(add_query_arg([], $GLOBALS['wp']->request ?? ''));
     $og  = "$t/img/og-card.png";
@@ -116,6 +151,7 @@ function watchlog_head() {
     <meta name="twitter:title" content="<?php echo esc_attr($title); ?>">
     <meta name="twitter:description" content="<?php echo esc_attr($desc); ?>">
     <meta name="twitter:image" content="<?php echo esc_url($og); ?>">
+    <link rel="canonical" href="<?php echo esc_url($url); ?>">
     <script type="application/ld+json"><?php echo wp_json_encode([
         '@context' => 'https://schema.org',
         '@type' => 'SoftwareApplication',
@@ -123,16 +159,84 @@ function watchlog_head() {
         'applicationCategory' => 'SecurityApplication',
         'operatingSystem' => 'Windows',
         'description' => $desc,
+        'url' => home_url('/'),
         'offers' => [
-            '@type' => 'Offer', 'price' => '6000',
-            'priceCurrency' => 'PKR',
-            'description' => 'Per site, per month. 14-day free trial.',
+            ['@type' => 'Offer', 'name' => 'Starter', 'price' => '6000', 'priceCurrency' => 'PKR',
+             'description' => 'Per site, per month. 14-day free trial, no card.'],
+            ['@type' => 'Offer', 'name' => 'Growth', 'price' => '12000', 'priceCurrency' => 'PKR',
+             'description' => 'Per site, per month.'],
         ],
-        'publisher' => ['@type' => 'Organization', 'name' => 'Vision Infinity'],
+        'publisher' => ['@type' => 'Organization', 'name' => 'WatchLog'],
+    ], JSON_UNESCAPED_SLASHES); ?></script>
+    <script type="application/ld+json"><?php echo wp_json_encode([
+        '@context' => 'https://schema.org',
+        '@type' => 'Organization',
+        'name' => 'WatchLog',
+        'url' => home_url('/'),
+        'logo' => "$t/icon-512.png",
+        'description' => 'CCTV intelligence for businesses that already own cameras.',
     ], JSON_UNESCAPED_SLASHES); ?></script>
     <?php
 }
 add_action('wp_head', 'watchlog_head', 1);
+
+/**
+ * Redirect retired routes to their new homes (preserve any external links).
+ */
+function watchlog_redirects() {
+    if (is_admin()) { return; }
+    $map = [
+        'features'    => '/platform/',
+        'who-its-for' => '/solutions/',
+        'about'       => '/security/',
+    ];
+    $req = trim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH), '/');
+    if (isset($map[$req])) {
+        wp_safe_redirect(home_url($map[$req]), 301);
+        exit;
+    }
+}
+add_action('template_redirect', 'watchlog_redirects');
+
+/**
+ * A reliable XML sitemap at /sitemap.xml.
+ *
+ * WordPress core's /wp-sitemap.xml returns 404 on this install (a core rewrite
+ * quirk, not ours). Rather than depend on it, emit our own from the published
+ * pages — intercepted in template_redirect so no rewrite flush is needed.
+ * Retired/redirected slugs are excluded.
+ */
+function watchlog_sitemap() {
+    $path = trim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH), '/');
+    if ($path !== 'sitemap.xml') { return; }
+    $skip = ['home', 'about', 'features', 'who-its-for'];
+    $pages = get_posts([
+        'post_type' => 'page', 'numberposts' => -1, 'post_status' => 'publish',
+        'orderby' => 'menu_order', 'order' => 'ASC',
+    ]);
+    status_header(200);          // override WP's 404 for this virtual route
+    nocache_headers();
+    header('Content-Type: application/xml; charset=UTF-8');
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
+    printf("  <url><loc>%s</loc><priority>1.0</priority></url>\n", esc_url(home_url('/')));
+    foreach ($pages as $p) {
+        if (in_array($p->post_name, $skip, true)) { continue; }
+        printf("  <url><loc>%s</loc><lastmod>%s</lastmod></url>\n",
+            esc_url(get_permalink($p)), esc_html(get_post_modified_time('Y-m-d', true, $p)));
+    }
+    echo '</urlset>';
+    exit;
+}
+add_action('template_redirect', 'watchlog_sitemap', 0);
+
+/** Point robots.txt at our sitemap (and keep crawlers out of wp-admin). */
+function watchlog_robots($output) {
+    $output = "User-agent: *\nDisallow: /wp-admin/\nAllow: /wp-admin/admin-ajax.php\n\n";
+    $output .= 'Sitemap: ' . home_url('/sitemap.xml') . "\n";
+    return $output;
+}
+add_filter('robots_txt', 'watchlog_robots', 20);
 
 /**
  * A theme image, or nothing.
@@ -143,24 +247,64 @@ add_action('wp_head', 'watchlog_head', 1);
  * page rather than breaking it. That also means the site can ship before
  * the photography exists, which is what happened.
  */
-function watchlog_has_img($name) {
-    return file_exists(get_template_directory() . "/img/$name.jpg");
+function watchlog_img_dir() { return get_template_directory() . '/img'; }
+function watchlog_img_uri() { return get_template_directory_uri() . '/img'; }
+
+/** The fallback file for a name: prefer .jpg, then .png, else ''. */
+function watchlog_fallback($name) {
+    foreach (['jpg', 'png'] as $ext) {
+        if (file_exists(watchlog_img_dir() . "/$name.$ext")) { return $ext; }
+    }
+    return '';
+}
+function watchlog_has_img($name) { return watchlog_fallback($name) !== ''; }
+
+/**
+ * Responsive <picture>: WebP (full + `-sm` mobile source) with a JPG/PNG
+ * fallback. Built by tools/build_site_images.py. `alt` is required; pass ''
+ * only for genuinely decorative images. Missing files degrade to nothing so
+ * a page can ship before every asset exists.
+ */
+function watchlog_pic($name, $alt, $w, $h, $class = '', $sizes = '100vw', $priority = false) {
+    $ext = watchlog_fallback($name);
+    if ($ext === '') { return ''; }
+    $dir = watchlog_img_dir(); $uri = watchlog_img_uri();
+    $srcset = [];
+    if (file_exists("$dir/$name-sm.webp")) { $srcset[] = "$uri/$name-sm.webp 960w"; }
+    if (file_exists("$dir/$name.webp"))    { $srcset[] = "$uri/$name.webp {$w}w"; }
+    $load = $priority
+        ? 'loading="eager" fetchpriority="high" decoding="async"'
+        : 'loading="lazy" decoding="async"';
+    $src = sprintf(
+        '<img src="%s/%s.%s" alt="%s" width="%d" height="%d" class="%s" %s>',
+        esc_url($uri), esc_attr($name), $ext, esc_attr($alt), $w, $h, esc_attr($class), $load);
+    if ($srcset) {
+        return sprintf(
+            '<picture><source type="image/webp" srcset="%s" sizes="%s">%s</picture>',
+            esc_attr(implode(', ', $srcset)), esc_attr($sizes), $src);
+    }
+    return $src;
 }
 
-function watchlog_img_url($name) {
-    return get_template_directory_uri() . "/img/$name.jpg";
+/** Back-compat shim for older templates. */
+function watchlog_img($name, $alt, $w, $h, $class = '') {
+    return watchlog_pic($name, $alt, $w, $h, $class);
 }
 
 /**
- * `alt` is required, never decorative-by-accident. Pass '' deliberately
- * for images that repeat adjacent text - a screen reader announcing a
- * filename is worse than silence.
+ * A real product screenshot inside an app "frame". If the capture is not yet
+ * present it renders a deliberate placeholder (mark + label) so the layout
+ * holds and the page never looks broken before captures land.
+ * $chrome=true adds the faux browser top bar.
  */
-function watchlog_img($name, $alt, $w, $h, $class = '') {
-    if (!watchlog_has_img($name)) { return ''; }
-    return sprintf(
-        '<img src="%s" alt="%s" width="%d" height="%d" class="%s" '
-        . 'loading="lazy" decoding="async">',
-        esc_url(watchlog_img_url($name)), esc_attr($alt),
-        $w, $h, esc_attr($class));
+function watchlog_shot($name, $alt, $w, $h, $sizes = '100vw', $chrome = true, $priority = false) {
+    $cls = $chrome ? 'frame' : 'frame-plain';
+    $pic = watchlog_pic($name, $alt, $w, $h, 'shot-img', $sizes, $priority);
+    if ($pic !== '') {
+        return '<div class="' . $cls . '">' . $pic . '</div>';
+    }
+    // graceful placeholder
+    return '<div class="' . $cls . ' shot-ph"><div class="shot-ph-in">'
+        . watchlog_mark(30)
+        . '<span>Live product view</span></div></div>';
 }
