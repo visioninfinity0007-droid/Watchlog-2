@@ -87,15 +87,15 @@ $signup = esc_url(watchlog_signup_url());
 </section>
 
 <section class="dark navy">
-  <div class="wrap split">
-    <div>
+  <div class="wrap-wide">
+    <div class="sec-head center">
       <span class="eyebrow">Security boundary</span>
       <h2>The platform never reaches into your network.</h2>
-      <p>Everything in the portal is built from event data and stills the site chose to send — outward
-        only. WatchLog holds no live access to your cameras and no path back into your recorder.</p>
-      <a class="arrow-link" href="<?php echo watchlog_url('security'); ?>">Explore security <?php echo watchlog_icon('arrow-right',18); ?></a>
+      <p class="lead measure">Everything in the portal is built from event data and stills the site chose
+        to send — outward only. No live access to your cameras, no path back into your recorder.</p>
     </div>
-    <div><?php echo watchlog_pic('diagram-privacy','The outbound-only privacy model behind the platform',1800,1000,'','(max-width:900px) 92vw, 48vw'); ?></div>
+    <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-privacy','The outbound-only privacy model behind the platform',1800,1000,'','(max-width:1100px) 92vw, 1100px'); ?></div>
+    <div class="center" style="margin-top:32px"><a class="btn btn-ghost" href="<?php echo watchlog_url('security'); ?>">Explore security</a></div>
   </div>
 </section>
 

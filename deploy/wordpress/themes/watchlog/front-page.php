@@ -213,7 +213,7 @@ $signup = esc_url(watchlog_signup_url());
       </ul>
     </div>
     <div class="reveal">
-      <?php echo watchlog_pic('diagram-multi-site','One WatchLog account across multiple sites',1800,1000,'', '(max-width:900px) 92vw, 55vw'); ?>
+      <?php echo watchlog_shot('product-team','WatchLog Team and sites across multiple locations',1500,1000,'(max-width:900px) 92vw, 55vw',true); ?>
     </div>
   </div>
 </section>
@@ -246,21 +246,24 @@ $signup = esc_url(watchlog_signup_url());
 
 <!-- 11 · SECURITY -->
 <section class="dark navy security">
-  <div class="wrap split split-7-5">
-    <div class="reveal">
-      <?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: outbound-only, recorder private',1800,1000,'', '(max-width:900px) 92vw, 55vw'); ?>
-    </div>
-    <div class="reveal">
+  <div class="wrap-wide">
+    <div class="sec-head center reveal">
       <span class="eyebrow">Security</span>
       <h2>Security by architecture, not by promise.</h2>
-      <ul class="ticks light-ticks">
-        <li><?php echo watchlog_icon('shield',20); ?> Your recorder is never exposed to the public internet</li>
-        <li><?php echo watchlog_icon('lock',20); ?> Credentials stay on the site PC</li>
-        <li><?php echo watchlog_icon('camera',20); ?> Recorded video stays on your recorder</li>
-        <li><?php echo watchlog_icon('arrow-out',20); ?> Only validated incident data is synced</li>
-        <li><?php echo watchlog_icon('check',20); ?> Tenant isolation enforced in the database, tested before every release</li>
-      </ul>
-      <a class="arrow-link" href="<?php echo watchlog_url('security'); ?>">Explore security <?php echo watchlog_icon('arrow-right',18); ?></a>
+      <p class="lead measure">The sensitive parts never have to move. WatchLog only ever holds validated
+        event data and one still per incident.</p>
+    </div>
+    <div class="reveal" style="max-width:1100px;margin:0 auto">
+      <?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: no inbound access, credentials stay on site, recorded video stays local, only validated stills sync, outbound only',1800,1000,'', '(max-width:1100px) 92vw, 1100px'); ?>
+    </div>
+    <ul class="ticks light-ticks reveal" style="max-width:900px;margin:32px auto 0;grid-template-columns:1fr 1fr">
+      <li><?php echo watchlog_icon('shield',20); ?> Recorder never exposed to the public internet</li>
+      <li><?php echo watchlog_icon('lock',20); ?> Credentials stay on the site PC</li>
+      <li><?php echo watchlog_icon('camera',20); ?> Recorded video stays on your recorder</li>
+      <li><?php echo watchlog_icon('check',20); ?> Tenant isolation enforced in the database, tested before every release</li>
+    </ul>
+    <div class="center reveal" style="margin-top:32px">
+      <a class="btn btn-ghost" href="<?php echo watchlog_url('security'); ?>">Explore security</a>
     </div>
   </div>
 </section>

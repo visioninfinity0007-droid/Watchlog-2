@@ -5,17 +5,17 @@ get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
 <section class="page-hero dark field">
-  <div class="wrap-wide page-hero-split wide-media">
-    <div>
-      <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Compatibility</span></nav>
-      <span class="eyebrow">Compatibility</span>
-      <h1>Keep the cameras. Keep the recorder. Add WatchLog.</h1>
-      <p class="lead">WatchLog works with the recorder you already own. There is no new hardware to buy
-        and nothing to rip out — just a small program on a PC at the site.</p>
-      <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a>
-        <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
-    </div>
-    <div class="page-hero-media"><?php echo watchlog_pic('diagram-compatibility','Keep your existing cameras and recorder and add WatchLog',1800,1000,'',' (max-width:900px) 92vw, 52vw'); ?></div>
+  <div class="wrap" style="max-width:56rem">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Compatibility</span></nav>
+    <span class="eyebrow">Compatibility</span>
+    <h1>Keep the cameras. Keep the recorder. Add WatchLog.</h1>
+    <p class="lead measure">WatchLog works with the recorder you already own. There is no new hardware to buy
+      and nothing to rip out — just a small program on a PC at the site.</p>
+    <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a>
+      <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
+  </div>
+  <div class="wrap-wide" style="margin-top:clamp(32px,4vw,52px)">
+    <?php echo watchlog_pic('diagram-compatibility','Keep your existing cameras and recorder and add WatchLog',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?>
   </div>
 </section>
 

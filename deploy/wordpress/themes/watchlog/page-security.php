@@ -5,18 +5,18 @@ get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
 <section class="page-hero dark field">
-  <div class="wrap-wide page-hero-split wide-media">
-    <div>
-      <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Security</span></nav>
-      <span class="eyebrow">Security</span>
-      <h1>Security by architecture.</h1>
-      <p class="lead">WatchLog is built so the sensitive parts never have to move. Your recorder is
-        never exposed to the internet, its credentials stay on site, and only validated incident data
-        leaves the building.</p>
-      <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
-        <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
-    </div>
-    <div class="page-hero-media"><?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: the recorder stays private and the connection is outbound only',1800,1000,'',' (max-width:900px) 92vw, 52vw'); ?></div>
+  <div class="wrap" style="max-width:56rem">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Security</span></nav>
+    <span class="eyebrow">Security</span>
+    <h1>Security by architecture.</h1>
+    <p class="lead measure">WatchLog is built so the sensitive parts never have to move. Your recorder is
+      never exposed to the internet, its credentials stay on site, and only validated incident data
+      leaves the building.</p>
+    <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
+      <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
+  </div>
+  <div class="wrap-wide" style="margin-top:clamp(32px,4vw,52px)">
+    <?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: recorder stays private, credentials stay on site, connection is outbound only',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?>
   </div>
 </section>
 
