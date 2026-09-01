@@ -1,14 +1,15 @@
 -- =====================================================================
 -- 0031 - Report recipient destinations + operational authorization
 --
--- The original recipient model stored one `destination` even when channel
--- was `both`. The reporter then attempted to send that same value to both
--- WhatsApp and SendGrid. A phone number therefore became an email address.
+-- The original model allowed channel='both' with ONE destination. The reporter
+-- expands 'both' into WhatsApp + email, so the same value was handed to both
+-- providers. That shape cannot represent two different addresses.
 --
--- Keep `destination` for backward compatibility, but make each transport's
--- address explicit. Existing `both` rows cannot contain a recoverable email,
--- so they are conservatively migrated to WhatsApp-only instead of inventing
--- an address or silently dropping delivery.
+-- Canonical model after this migration: one report_recipients row = one
+-- delivery endpoint. The v2 RPC accepts "both" as a UX convenience but writes
+-- TWO rows (one WhatsApp row and one email row). The reporter therefore needs
+-- no special migration-time compatibility mode and delivery idempotency remains
+-- naturally keyed by channel + destination.
 -- =====================================================================
 
 alter table public.report_recipients
@@ -22,10 +23,12 @@ update public.report_recipients
    set email_destination = lower(btrim(destination))
  where channel = 'email' and email_destination is null;
 
--- Legacy BOTH rows never stored an email address. Preserve the valid half.
+-- Legacy BOTH rows contain only a phone number because 0011 normalized the
+-- overloaded destination as WhatsApp. Preserve that valid endpoint and stop
+-- pretending an email address exists.
 update public.report_recipients
-   set channel = 'whatsapp'
- where channel = 'both' and email_destination is null;
+   set channel = 'whatsapp', email_destination = null
+ where channel = 'both';
 
 alter table public.report_recipients
   drop constraint if exists report_recipients_destinations_chk;
@@ -33,18 +36,17 @@ alter table public.report_recipients
   add constraint report_recipients_destinations_chk check (
     (channel = 'whatsapp' and whatsapp_destination is not null and email_destination is null)
     or (channel = 'email' and email_destination is not null and whatsapp_destination is null)
-    or (channel = 'both' and whatsapp_destination is not null and email_destination is not null)
   );
 
--- The old unique index keyed only the overloaded destination field.
+-- Existing rows can keep the legacy non-null `destination`; the transport-
+-- specific columns make intent explicit for portal reads and future exports.
 drop index if exists report_recipients_unique;
 create unique index if not exists report_recipients_unique_v2
   on public.report_recipients(
     tenant_id,
     coalesce(site_id,'00000000-0000-0000-0000-000000000000'::uuid),
     channel,
-    coalesce(whatsapp_destination,''),
-    coalesce(email_destination,'')
+    destination
   );
 
 create or replace function public.wl_add_recipient_v2(
@@ -62,7 +64,8 @@ declare
   v_tenant uuid := wl_require_role(array['owner','admin']);
   v_wa text;
   v_email text;
-  v_id uuid;
+  v_wa_id uuid;
+  v_email_id uuid;
 begin
   if p_channel not in ('whatsapp','email','both') then
     raise exception 'channel must be whatsapp, email or both';
@@ -78,30 +81,30 @@ begin
     if length(v_wa) < 10 or length(v_wa) > 15 then
       raise exception 'enter a WhatsApp number with country code';
     end if;
+    insert into report_recipients(
+      tenant_id,site_id,name,channel,destination,whatsapp_destination,email_destination,enabled
+    ) values (
+      v_tenant,p_site_id,nullif(btrim(coalesce(p_name,'')),''),'whatsapp',v_wa,v_wa,null,true
+    ) on conflict do nothing returning id into v_wa_id;
   end if;
+
   if p_channel in ('email','both') then
     v_email := lower(btrim(coalesce(p_email,'')));
     if v_email !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' then
       raise exception 'enter a valid email address';
     end if;
+    insert into report_recipients(
+      tenant_id,site_id,name,channel,destination,whatsapp_destination,email_destination,enabled
+    ) values (
+      v_tenant,p_site_id,nullif(btrim(coalesce(p_name,'')),''),'email',v_email,null,v_email,true
+    ) on conflict do nothing returning id into v_email_id;
   end if;
 
-  insert into report_recipients(
-    tenant_id,site_id,name,channel,destination,
-    whatsapp_destination,email_destination,enabled
-  ) values (
-    v_tenant,p_site_id,nullif(btrim(coalesce(p_name,'')),''),p_channel,
-    coalesce(v_wa,v_email),v_wa,v_email,true
-  )
-  on conflict do nothing
-  returning id into v_id;
-
-  if v_id is null then
-    return jsonb_build_object('ok',true,'created',false,'note','that recipient already exists');
-  end if;
   return jsonb_build_object(
-    'ok',true,'created',true,'id',v_id,'channel',p_channel,
-    'whatsapp_destination',v_wa,'email_destination',v_email
+    'ok',true,
+    'created',(v_wa_id is not null or v_email_id is not null),
+    'whatsapp_id',v_wa_id,'email_id',v_email_id,
+    'note',case when v_wa_id is null and v_email_id is null then 'those delivery endpoints already exist' else null end
   );
 end $$;
 
@@ -144,13 +147,13 @@ begin
       'whatsapp_destination',r.whatsapp_destination,
       'email_destination',r.email_destination,
       'enabled',r.enabled,'created_at',r.created_at
-    ) order by coalesce(s.name,'All sites'),coalesce(r.name,''),r.created_at)
+    ) order by coalesce(s.name,'All sites'),coalesce(r.name,''),r.channel,r.created_at)
     from report_recipients r left join sites s on s.id=r.site_id
     where r.tenant_id=v_tenant
   ),'[]'::jsonb);
 end $$;
 
--- Harden the existing management RPC; viewer remains read-only.
+-- Harden the existing management RPCs: viewer is read-only.
 create or replace function public.wl_set_recipient(p_id uuid,p_enabled boolean)
 returns jsonb
 language plpgsql
