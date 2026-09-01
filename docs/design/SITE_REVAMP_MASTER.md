@@ -54,5 +54,14 @@ Visual quality gate (§40), commercial/demo consistency (§41: 6000/12000/contac
 security consistency (§42), per-page PASS (§43), full live audit on real URLs (§44).
 
 ## Live-verified log
-_(updated as pages ship)_
-- (pending first deploy)
+_(updated as pages ship; demo site = watchlogsite.161.97.175.15.sslip.io, app branch pointed at
+`website/watchlog-platform-revamp` during the revamp; merge to `main` + repoint at the end)_
+- **Homepage — LIVE VERIFIED** (commit ab44ec6): 14 sections render, correct dark/light rhythm, no
+  console errors, WebP+srcset images 200, mega-menu, hero (product placeholder + dusk-camera bg),
+  platform reveal, editorial capability rows, AI diagram blends into dark section, solutions photo
+  tiles, pricing 6,000/12,000/Talk-to-us, product-first footer. Premium, on-message.
+- **Inner pages — built, deploy in progress** (commit 5c9145c): platform, incidents, reporting,
+  site-health, solutions +5, how-it-works, compatibility, security, pricing, setup, contact,
+  privacy, terms. Structural PHP checks pass. Live QA pending this deploy.
+- **Pending:** real product captures (demo tenant, passwordless admin session), hero composite,
+  full responsive/a11y/SEO pass, merge to main.

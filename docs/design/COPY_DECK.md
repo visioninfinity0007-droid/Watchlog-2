@@ -121,5 +121,68 @@ Four points, no filler:
 
 ---
 
-_(Inner-page copy appended as each page is built: Platform, Incidents, Reporting, Site Health,
-Solutions ×6, How it works, Compatibility, Security, Pricing, Setup, Contact, Privacy, Terms.)_
+---
+
+# INNER PAGES
+
+Full rendered copy lives in the version-controlled templates (`page-<slug>.php`) — the editorial
+source for a bespoke theme. Headlines, key claims and CTAs below for review; every line conforms to
+`PUBLIC_CLAIMS_MATRIX.md`.
+
+## /platform/  (page-platform.php)
+H1 **One place to understand every site.** Sections: Overview (real capture) → Incident review →
+Site health → Reporting → Multi-site & teams → Trial & plan → Security boundary. CTA Start free / Check my recorder.
+
+## /incidents/  (page-incidents.php)
+H1 **From motion to something worth reviewing.** Load-bearing: "An event is not an incident" (event =
+raw motion; incident = validated person/car/motorcycle with a still). Kept vs filtered CCTV strip.
+Note: "Detects person, car and motorcycle. Not facial recognition. WatchLog reports incidents — it does not watch live or dispatch."
+
+## /reporting/  (page-reporting.php)
+H1 **Wake up to the useful part.** By camera & type / after hours / first & last (site local time) /
+anything quiet. Channels WhatsApp·email·both. "The same day's report is never sent twice" (idempotency, plain).
+Note: daily reporting, not live alerting.
+
+## /site-health/  (page-site-health.php)
+H1 **A silent camera shouldn't stay silent for weeks.** Camera last-seen, recorder/camera faults,
+agent reporting status, per-site status. Honest note: surfaced in portal + daily report, not instant paging.
+
+## /solutions/ + 5  (page-solutions.php, warehouses-logistics, retail, manufacturing, schools-campuses, offices)
+Index H1 **WatchLog for the sites you already operate.** Per-sector H1s: "See what happened after the
+shift ended." · "One view across every branch." · "Visibility across every shift." · "Know what moved
+after hours." · "Daily visibility without watching screens." Each: 6 topic cards + a product feature row + CTA.
+
+## /how-it-works/  (page-how-it-works.php)
+H1 **Your recorder stays private.** Architecture diagram + 7 steps (recorder → Agent → still+on-site AI →
+outbound → portal → daily report → offline buffering). "What runs where" (recorder/site PC/WatchLog).
+
+## /compatibility/  (page-compatibility.php)
+H1 **Keep the cameras. Keep the recorder. Add WatchLog.** Three categories — Validated (Hikvision ISAPI,
+Dahua CGI), Protocol-compatible/confirm (HiLook, Imou, CP Plus, Uniview, Tiandy, ONVIF), Not supported
+(unbranded Xiongmai/Hisilicon). CTA **Check my recorder** → send label (Contact).
+
+## /security/  (page-security.php)
+H1 **Security by architecture.** Outbound only · credentials & footage stay on site · access boundary
+(can vs cannot) · tenant isolation · retention · account security. Explicit: no facial recognition, no SOC2/ISO claims.
+
+## /pricing/  (page-pricing.php)
+H1 **Priced per site, in rupees.** Starter PKR 6,000 / Growth PKR 12,000 / Enterprise Talk to us.
+14-day trial no card. FAQ: trial-end pauses reporting (data kept), cancel to end of paid month, nothing metered, no hardware.
+
+## /setup/  (page-setup.php)
+H1 **What you'll need, before you sign up.** Four prerequisites (supported recorder, site PC, recorder
+login, ordinary internet) + not-supported note + 5 install steps + onboarding capture.
+
+## /contact/  (page-contact.php)
+H1 **Let's check whether WatchLog fits your site.** Four paths (recorder compatibility, multiple sites,
+existing customer, general enquiry). Real actions only — configurable WhatsApp/email options; falls back
+to Start free / portal sign-in when no channel configured. No invented contact data.
+
+## /privacy/ , /terms/  (page-privacy.php, page-terms.php)
+Privacy: what stays on site / what we receive / what we don't do / retention / isolation / people in images.
+Terms: what WatchLog does & doesn't (reports, not guarding/monitoring/response — works alongside teams) /
+availability / responsibilities / billing / data on leaving.
+
+## Footer (footer.php)
+Product-first: "© <year> WatchLog. Works alongside your security team — WatchLog observes and reports; it
+is not a guarding or monitoring service and does not dispatch a response."
