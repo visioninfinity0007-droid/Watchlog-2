@@ -53,9 +53,11 @@ function watchlog_assets() {
 }
 add_action('wp_enqueue_scripts', 'watchlog_assets');
 
-/** Route helper: an absolute site URL with a trailing slash. */
+/** Route helper: an absolute site URL WITH a trailing slash (matches the
+ *  permalink structure, so internal links resolve directly with no 301 hop). */
 function watchlog_url($path = '') {
-    return esc_url(home_url('/' . ltrim($path, '/')));
+    $path = trim($path, '/');
+    return esc_url(home_url($path === '' ? '/' : '/' . $path . '/'));
 }
 
 /**
