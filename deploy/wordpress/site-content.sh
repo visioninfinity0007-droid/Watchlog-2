@@ -349,8 +349,9 @@ HTML
 # --- settings ---------------------------------------------------------
 $W option update show_on_front page >/dev/null
 $W option update page_on_front "$HOME_ID" >/dev/null
-# The marketing CTAs read this. Without it every button points at "#".
-$W option update watchlog_portal_url "https://watchlog.161.97.175.15.sslip.io" >/dev/null
+# The marketing CTAs read this. Configurable via WATCHLOG_PORTAL_URL; the
+# sslip default is the DEMO environment only (production sets the env).
+$W option update watchlog_portal_url "${WATCHLOG_PORTAL_URL:-https://watchlog.161.97.175.15.sslip.io}" >/dev/null
 $W option update blogname "WatchLog" >/dev/null
 $W option update blogdescription "Your cameras already see everything. WatchLog tells you what they saw." >/dev/null
 $W option update timezone_string "Asia/Karachi" >/dev/null

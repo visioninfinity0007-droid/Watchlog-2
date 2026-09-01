@@ -30,11 +30,18 @@ matching gate in `PRODUCTION_GATES.md`.
   single effect; owner cannot forge paid state.
 
 ## 3. 🔵 Production domain
-- **Blocked:** DOM-1 (final domain), TLS on real domain, canonical/OG/Auth-redirect/installer URLs.
+- **Blocked:** the **final domain choice** only — TLS on the real domain, canonical/OG/Auth-redirect/installer
+  URLs pointing at it. (The "no temporary hostname baked into the production build" half of DOM-1 is **done** —
+  see below.)
 - **Needs from client:** the chosen domain (e.g. `watchlog.pk`) + DNS control (or delegation).
-- **Built around it:** every URL is made **config-driven** (P11/P12); a cutover checklist + a repo/runtime
-  grep gate for `sslip.io`/`161.97.175.15`; sslip stays only as the **demo** environment.
-- **Acceptance when unblocked:** run the cutover checklist; grep gate returns 0 stale URLs in prod build.
+- **Built around it:** every URL is **config-driven** (P11/P12) — reporter portal-link, portal
+  `NEXT_PUBLIC_*`, NSIS/Inno publisher URL, WP theme portal-URL all read env / build-define with a neutral
+  `watchlog.example` placeholder. A repo grep for `sslip.io`/`161.97.175.15` now returns **only** an
+  env-overridable demo default in `site-content.sh` + docs — **no shippable code** carries the temp host, so
+  **DOM-1 (no temp URL in prod build) = PASS**. sslip remains solely the **demo** environment. A cutover
+  checklist is ready.
+- **Acceptance when unblocked:** set the domain env/DNS, run the cutover checklist; the grep gate stays at 0
+  stale URLs in shippable code and the live site serves on the real domain with valid TLS.
 
 ## 4. 🔵 SendGrid account + domain authentication
 - **Blocked:** live branded-HTML email delivery.

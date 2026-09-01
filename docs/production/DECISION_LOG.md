@@ -5,6 +5,58 @@ Format: Decision · Reason · Evidence · Rollback.
 
 ---
 
+### 2026-09-01 · P11/closure — One authoritative pricing source (website == billing), CI-enforced
+- **Decision:** treat the **published website** as the single source of truth for demo pricing —
+  Starter PKR 6,000/mo, Growth PKR 12,000/mo, Enterprise "Talk to us" (contact-only). `0022_pricing_align.sql`
+  sets `billing_plans` to match (Starter/Growth non-draft; Enterprise `active=false`); the portal already
+  renders `wl_billing_plans`, so it inherits the aligned numbers. `test_pricing_alignment.py` parses the WP
+  templates and the migration chain and **fails CI** if they diverge (while non-draft).
+- **Reason:** the review found the site advertised 6,000/12,000 while the DB seeded draft 2,500/5,000/9,000 —
+  a contradiction a client would see. We do **not** invent final pricing; we align the demo to what is
+  already published and make drift a test failure.
+- **Evidence:** `wl_billing_plans` → Starter 6,000 / Growth 12,000; `wl_billing_start_checkout('enterprise')`
+  → 400 (contact-only); `test_pricing_alignment` PASS; portal build renders the same.
+- **Rollback:** `0022` is data-only (`update billing_plans …`); a one-line migration restores prior amounts.
+
+### 2026-09-01 · P11/closure — Central entitlement (`wl_reporting_enabled`); reporter enforces, data preserved
+- **Decision:** add one authoritative `wl_reporting_enabled(tenant)` + `wl_entitlement()` (`0023`). Reporting
+  is enabled for `active`, `past_due` (documented grace), and `trialing` within the trial window; disabled for
+  expired/cancelled/lapsed trials. `daily_report.py` consults it and **skips** disabled tenants; the portal
+  shows the same active/paused state. Trial expiry enforces only the **commercial** function — it never
+  deletes events/snapshots/data.
+- **Reason:** marketing says reporting stops when the trial ends, but the reporter processed every tenant
+  regardless. Enforcement must be one function used by both reporter and portal, and driven by billing state.
+- **Evidence:** `test_entitlement.py` 6/6 (active/past_due/trial-valid → enabled; trial-expired/cancelled/
+  expired → disabled); `e2e_http.py` step 7 shows the runner reporting `skipped` under enforcement; portal
+  build renders the pill.
+- **Rollback:** drop the two functions and remove the reporter's `if not enabled: continue` guard; behaviour
+  reverts to "report for all" (no data implications either way).
+
+### 2026-09-01 · closure — Remove temp-URL fallbacks from shippable code; keep sslip only as demo default
+- **Decision:** remove every hardcoded `sslip.io`/`161.97.175.15` from code that ships (reporter portal-link,
+  Inno `AppPublisherURL`, WP theme portal-URL default). They now read env / build-define with a neutral
+  `watchlog.example` placeholder. The only remaining sslip is an **env-overridable** demo default in
+  `deploy/wordpress/site-content.sh` (`${WATCHLOG_PORTAL_URL:-…}`), which is demo tooling, not a prod artifact.
+- **Reason:** DOM-1 must be able to pass on "no temporary hostname baked into the production build" without
+  waiting on the client's final domain (a separate block).
+- **Evidence:** repo grep for the two tokens shows only the demo default + docs; DOM-1 flipped to PASS with the
+  final-domain block kept explicitly separate.
+- **Rollback:** none needed; env vars restore any host for the demo environment.
+
+### 2026-09-01 · closure — True external-boundary E2E; fix the dead cross-tenant probe
+- **Decision:** add `e2e_http.py` — a higher-level E2E that drives the **deployed** interfaces over HTTP
+  (GoTrue auth → tenant/enroll/ingest/incidents RPC → report-runner HTTP `/run` → billing **via the deployed
+  billing service** checkout→pay page→signed webhook→active → cross-tenant PostgREST denial), keeping the
+  privileged-Postgres `e2e_harness.py` as the disposable-tenant journey. Replace the harness's dead
+  `if False:` cross-tenant block with a real PostgREST read asserting 0 foreign rows.
+- **Reason:** the review correctly noted the harness used privileged Postgres for key transitions (so it did
+  not test the shipped boundary) and contained an unreachable probe. Don't claim a boundary the code bypasses.
+- **Evidence:** `e2e_http.py` 9/9 (billing step: `page 200, active True` through the service); `e2e_harness.py`
+  14/14 with the real probe (`own only, 0 foreign`). Signup uses the real endpoint; when GoTrue returns 429
+  (rate-limited) the test seeds a confirmed user via DB **only to continue the remaining HTTP steps**, and
+  labels that it did so — the signup endpoint itself is still exercised every run.
+- **Rollback:** tests only; no product code.
+
 ### 2026-09-01 · P9 — Real NSIS installer (contract tech), reusing the proven service registration
 - **Decision:** add `prototype/installer/nsis/watchlog.nsi` (a real NSIS/MUI2 installer) + a
   deterministic `tools/build_windows_release.ps1` that builds the AI exe, stages the payload,

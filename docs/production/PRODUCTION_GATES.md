@@ -55,8 +55,8 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 | PORT-settings | plan/trial + sites + add-site + issue-code | ✅ (contracts verified; wl_sites live) |
 | PORT-nav | shared nav across Overview/Reports/Team/Settings | ✅ |
 | PORT-incidents | dedicated filterable incident history page | ✅ (/incidents live: window/site/type filters + snapshots; wl_incidents) |
-| HLTH-1 healthchecks | portal/bridge/report/billing health checks | ✅ portal via Coolify healthcheck (nginx); bridge/report/billing via a python-based Docker HEALTHCHECK (slim images lack curl, so Coolify's curl probe is disabled for them). All serve GET / 200. |
-| E2E-1 full journey | disposable-tenant harness green | ✅ (e2e_harness.py 14/14; self-cleaning) |
+| E2E-1 full journey (harness) | disposable-tenant harness green | ✅ (`e2e_harness.py` 14/14; self-cleaning; step 14 is a real cross-tenant PostgREST read, not a stub) |
+| E2E-2 deployed HTTP boundaries | higher-level E2E driving the shipped interfaces | ✅ (`e2e_http.py` 9/9: HTTP auth → tenant/enroll/ingest/incidents RPC → report-runner HTTP `/run` → **billing via the deployed billing service** checkout→pay page→webhook→active → cross-tenant PostgREST denial. Only privileged DB use is confirm-email + cleanup; signup endpoint is hit — falls back to a seeded user only when GoTrue rate-limits (429)) |
 | DEMO-1 demo mode | isolated tagged demo tenant demonstrates the journey | ✅ (seed_demo.py; demo login populated; FULL_PRODUCT_DEMO.md) |
 
 ## Installer (P9/P10)
@@ -70,10 +70,12 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Platform (P12/P13/P14/P15)
 | Gate | Check | Status |
 |---|---|---|
-| DOM-1 no temp URLs in prod build | grep `sslip.io`/`161.97.175.15` in shipped artifacts = 0 (demo excepted) | ⏳ |
-| WP-1 sitemap | `/wp-sitemap.xml` → 200 | ⏳ DEFERRED (minor SEO): WP core sitemap server is configured (index has 1 entry per WP-CLI, providers populated, no plugin/theme override, cache+rewrite flushed) yet web render 404s on WP 7.1 in this env. Not a config error introduced by us; low priority vs portal/billing. |
-| CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ✅ configured + proven green (run 33429616057); 🔵 hosted runner now quota-blocked (account free Actions minutes exhausted — CLIENT_DEPENDENCIES §8). All steps pass LOCALLY. |
-| HLTH-1 healthchecks | portal/site/bridge health endpoints wired in Coolify | ⏳ |
+| DOM-1 no temp URLs in prod build | grep `sslip.io`/`161.97.175.15` in shippable code | ✅ PASS — production code is domain-configurable (reporter/portal/NSIS/Inno/WP-theme via env or `-D`); the only remaining sslip is an **env-overridable demo default** in `site-content.sh` (`${WATCHLOG_PORTAL_URL:-…}`). **FINAL DOMAIN — 🔵 client-blocked** (separate). Enforced-ish by the grep in this row. |
+| PRICE-1 website==billing | published WP pricing == billing plan config | ✅ (`test_pricing_alignment` — Starter 6,000 / Growth 12,000 / Enterprise contact-only, both sides) |
+| ENT-1 entitlement enforced | reporter + portal honor trial/subscription | ✅ (`wl_reporting_enabled`/`wl_entitlement`; reporter gates; `test_entitlement` 6/6; portal shows reports active/paused) |
+| WP-1 sitemap | `/wp-sitemap.xml` → 200 | ⏳ DEFERRED (minor SEO): WP core sitemap renders 404 despite a populated index; not a config error we introduced; low priority. |
+| CI-1 PR pipeline | Actions runs compile/tests/build/secret-scan | ✅ configured + proven green (run 33429616057); 🔵 hosted runner quota-blocked (account free Actions minutes — CLIENT_DEPENDENCIES §8). Reproduced LOCALLY each change. |
+| HLTH-1 healthchecks | portal + bridge + report-runner + billing report healthy | ✅ single authoritative entry. Portal via Coolify's HTTP healthcheck (nginx); bridge/report-runner/billing via a python-based Docker `HEALTHCHECK` (python:slim images lack curl, so Coolify's curl probe is disabled for those three). All four `running:healthy`; each serves `GET /` 200. |
 
 ## Field / hardware (P3)
 | Gate | Check | Status |

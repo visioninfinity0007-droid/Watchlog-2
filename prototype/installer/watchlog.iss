@@ -25,7 +25,10 @@ AppId={{7E1C9A54-0B2E-4C6A-9E77-WATCHLOG0001}
 AppName={#AppName}
 AppVersion={#AppVer}
 AppPublisher={#Publisher}
-AppPublisherURL=https://watchlogsite.161.97.175.15.sslip.io
+#ifndef PublisherURL
+  #define PublisherURL "https://watchlog.example"
+#endif
+AppPublisherURL={#PublisherURL}
 DefaultDirName={autopf}\WatchLog
 DefaultGroupName=WatchLog
 DisableProgramGroupPage=yes

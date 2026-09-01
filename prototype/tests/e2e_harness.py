@@ -173,12 +173,20 @@ def run() -> int:
         step(bool(pcid) and st_sp in (401, 403) and active,
              "13 billing: checkout->webhook->active; self-pay denied", f"self-pay {st_sp}, status {ov.get('subscription_status') if isinstance(ov,dict) else ov}")
 
-        # 14) foreign-tenant denial: this user sees only their tenant
+        # 14) foreign-tenant denial — a REAL read over the PostgREST boundary:
+        #     every events row the user can read must belong to their tenant (RLS).
         st, ov2 = rpc("wl_portal_overview", {"p_days": 7}, jwt)
         own = isinstance(ov2, dict) and ov2.get("tenant", {}).get("id") == tenant_id
-        # direct read of ALL events over PostgREST returns only own rows (RLS)
-        st_e, allev = http("/rest/v1/events?select=tenant_id&limit=200", None, jwt) if False else (0, [])
-        step(own, "14 foreign-tenant denial (sees only own tenant)")
+        req = urllib.request.Request(URL + "/rest/v1/events?select=tenant_id&limit=500",
+                                     headers={"apikey": KEY, "Authorization": f"Bearer {jwt}"})
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r:
+                rows = json.loads(r.read().decode())
+        except urllib.error.HTTPError:
+            rows = []
+        foreign = [x for x in rows if x.get("tenant_id") != tenant_id]
+        step(own and not foreign, "14 foreign-tenant denial",
+             f"own only ({len(rows)} rows, 0 foreign)" if not foreign else f"LEAK: {len(foreign)}")
 
         passed = sum(1 for ok, *_ in STEPS if ok)
         print(f"\n  {passed}/{len(STEPS)} steps passed")

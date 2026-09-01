@@ -79,8 +79,10 @@ remove_action('wp_head', 'rsd_link');
  * the right door instead of the same one.
  */
 function watchlog_portal_base() {
-    return rtrim(get_option('watchlog_portal_url',
-        'https://watchlog.161.97.175.15.sslip.io'), '/');
+    // Configurable: the WP option (set at provisioning from $WATCHLOG_PORTAL_URL),
+    // else the env, else a neutral placeholder — never a hardcoded demo host.
+    $default = getenv('WATCHLOG_PORTAL_URL') ?: 'https://watchlog.example';
+    return rtrim(get_option('watchlog_portal_url', $default), '/');
 }
 function watchlog_signup_url() { return watchlog_portal_base() . '/signup/'; }
 function watchlog_login_url()  { return watchlog_portal_base() . '/login/'; }
