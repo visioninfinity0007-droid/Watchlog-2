@@ -7,7 +7,7 @@ import { Nav, requireTenant } from "../shell";
 const ROLES = ["owner", "admin", "viewer"];
 
 function fmt(ts) {
-  if (!ts) return "—";
+  if (!ts) return "-";
   return new Date(ts).toLocaleDateString();
 }
 
@@ -90,12 +90,12 @@ export default function Team() {
                 <input type="email" required placeholder="name@company.com"
                        value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
               </div>
-              <div className="field" style={{ maxWidth: 160 }}>
+              <div className="field" style={{ maxWidth: 210 }}>
                 <label>Role</label>
                 <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
-                  <option value="viewer">Viewer — read only</option>
-                  <option value="admin">Admin — operations</option>
-                  {myRole === "owner" && <option value="owner">Owner — full access</option>}
+                  <option value="viewer">Viewer (read only)</option>
+                  <option value="admin">Admin (operations)</option>
+                  {myRole === "owner" && <option value="owner">Owner (full access)</option>}
                 </select>
               </div>
               <button className="small" disabled={busy} style={{ width: "auto" }}>

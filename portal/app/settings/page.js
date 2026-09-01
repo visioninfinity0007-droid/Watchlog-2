@@ -9,9 +9,9 @@ const BILLING_URL = process.env.NEXT_PUBLIC_BILLING_URL || "";
 const BILLING_PROVIDER = process.env.NEXT_PUBLIC_BILLING_PROVIDER || "mock";
 const MARKETING_URL = process.env.NEXT_PUBLIC_MARKETING_URL || "";
 
-function fmt(ts) { return ts ? new Date(ts).toLocaleString() : "—"; }
+function fmt(ts) { return ts ? new Date(ts).toLocaleString() : "-"; }
 function money(minor, cur) {
-  if (minor == null) return "—";
+  if (minor == null) return "-";
   return `${cur || "PKR"} ${(minor / 100).toLocaleString()}`;
 }
 
@@ -103,11 +103,11 @@ export default function Settings() {
                 <div><div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>Plan</div>
                   <b style={{ fontSize: "var(--font-size-lg)", textTransform: "capitalize" }}>{t.plan || "trial"}</b></div>
                 <div><div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>Status</div>
-                  <span className={"pill " + statusCls}>{t.status || "—"}</span></div>
+                  <span className={"pill " + statusCls}>{t.status || "-"}</span></div>
                 {t.status === "trialing" && (
                   <div><div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>Trial</div>
                     <b>{t.days_left ?? 0} days left</b>
-                    <div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>ends {t.trial_ends_at ? new Date(t.trial_ends_at).toLocaleDateString() : "—"}</div></div>
+                    <div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>ends {t.trial_ends_at ? new Date(t.trial_ends_at).toLocaleDateString() : "-"}</div></div>
                 )}
                 {billing?.subscription?.current_period_end && (
                   <div><div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>Renews</div>
@@ -124,7 +124,7 @@ export default function Settings() {
                   </span>
                   {!entitlement.reporting_enabled && (
                     <span className="muted" style={{ fontSize: "var(--font-size-sm)", marginLeft: 8 }}>
-                      {entitlement.reason} — subscribe to resume. Your recorded events are kept.
+                      {entitlement.reason}. Subscribe to resume. Your recorded events are kept.
                     </span>
                   )}
                 </div>
@@ -132,7 +132,7 @@ export default function Settings() {
 
               <div style={{ marginTop: "var(--space-5)" }}>
                 <div className="muted" style={{ fontSize: "var(--font-size-sm)", marginBottom: 8 }}>
-                  {t.status === "active" ? "Change your plan" : "Choose a plan"} — you pay on the
+                  {t.status === "active" ? "Change your plan" : "Choose a plan"}. You pay on the
                   secure checkout; your plan activates when payment is confirmed.
                 </div>
                 <div className="row">
@@ -140,11 +140,11 @@ export default function Settings() {
                     <button key={p.plan} className="ghost small" style={{ width: "auto" }}
                             onClick={() => startCheckout(p.plan)}>
                       <span style={{ textTransform: "capitalize" }}>{p.plan}</span>
-                      {" — "}{money(p.amount_minor, p.currency)}/mo
+                      {" · "}{money(p.amount_minor, p.currency)}/mo
                     </button>
                   ))}
                   <span className="muted" style={{ fontSize: "var(--font-size-sm)", alignSelf: "center" }}>
-                    Enterprise — <a href={MARKETING_URL ? MARKETING_URL + "/contact/" : "#"}>Talk to us</a>
+                    Enterprise · <a href={MARKETING_URL ? MARKETING_URL + "/contact/" : "#"}>Talk to us</a>
                   </span>
                   {t.status === "active" && (
                     <button className="btn-danger" onClick={cancelSub}>Cancel subscription</button>
@@ -166,7 +166,7 @@ export default function Settings() {
                       {billing.transactions.map((x, i) => (
                         <tr key={i}>
                           <td className="mono">{new Date(x.created_at).toLocaleDateString()}</td>
-                          <td style={{ textTransform: "capitalize" }}>{x.plan || "—"}</td>
+                          <td style={{ textTransform: "capitalize" }}>{x.plan || "-"}</td>
                           <td className="mono">{money(x.amount_minor, x.currency)}</td>
                           <td><span className={"pill " + (x.status === "succeeded" ? "s-ok" : x.status === "failed" ? "s-bad" : "s-unk")}>{x.status}</span></td>
                         </tr>

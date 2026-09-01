@@ -275,7 +275,7 @@ export default function Dashboard() {
                     <td className="mono">
                       {new Date(e.device_ts).toLocaleString()}</td>
                     <td>{e.site}</td>
-                    <td>{e.camera || "—"}</td>
+                    <td>{e.camera || "-"}</td>
                     <td>{e.event_type}</td>
                   </tr>
                 ))}

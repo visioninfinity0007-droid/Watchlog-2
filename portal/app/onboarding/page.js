@@ -132,15 +132,15 @@ export default function Onboarding() {
               <div key={key} style={{ display: "flex", alignItems: "center", gap: 10,
                                       padding: "4px 0", opacity: done ? 1 : 0.45 }}>
                 <span style={{ width: 16, height: 16, borderRadius: 999, flex: "none",
-                               background: done ? "var(--color-violet-bright)" : "transparent",
-                               border: "1px solid var(--color-violet-bright)" }} />
+                               background: done ? "var(--wl-blue)" : "transparent",
+                               border: "1px solid var(--wl-blue)" }} />
                 <span style={{ fontSize: "var(--font-size-sm)",
                                fontWeight: active ? 700 : 400 }}>{label}</span>
               </div>
             );
           })}
           <p className="muted" style={{ fontSize: "var(--font-size-xs)", margin: "10px 0 0" }}>
-            This updates on its own as the agent comes online — no need to refresh.
+            This updates on its own as the agent comes online, no need to refresh.
           </p>
         </div>
 
@@ -166,7 +166,7 @@ export default function Onboarding() {
           <li>
             <b>Run it and enter this code</b>
             <p>It finds your recorder on the network by itself.</p>
-            <div className="code-box">{code || "—"}</div>
+            <div className="code-box">{code || "-"}</div>
             <p>Single use, valid 14 days.</p>
           </li>
           <li>
