@@ -8,12 +8,8 @@ Unicode true
 
 !define APPNAME "WatchLog"
 !define APPVERSION "0.3.0"
-!define PUBLISHER "WatchLog"
-!define LEGAL_PUBLISHER "Vision Infinity"
+!define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
-!ifndef PUBLISHER_URL
-  !define PUBLISHER_URL "https://watchlog.pk"
-!endif
 !define ARPKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WatchLog"
 
 Name "${APPNAME}"
@@ -50,7 +46,7 @@ VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileVersion" "${APPVERSION}"
 VIAddVersionKey "ProductVersion" "${APPVERSION}"
 VIAddVersionKey "FileDescription" "WatchLog Site Agent installer"
-VIAddVersionKey "LegalCopyright" "${LEGAL_PUBLISHER}"
+VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 Section "Install"
   SetOutPath "$INSTDIR"
@@ -70,7 +66,9 @@ Section "Install"
   WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog Site Agent"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "Publisher" "${PUBLISHER}"
-  WriteRegStr HKLM "${ARPKEY}" "URLInfoAbout" "${PUBLISHER_URL}"
+  !ifdef PUBLISHER_URL
+    WriteRegStr HKLM "${ARPKEY}" "URLInfoAbout" "${PUBLISHER_URL}"
+  !endif
   WriteRegStr HKLM "${ARPKEY}" "DisplayIcon" "$INSTDIR\watchlog-agent.exe"
   WriteRegStr HKLM "${ARPKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "${ARPKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
