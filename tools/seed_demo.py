@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""
-Seed the DEMO tenant with clearly-tagged sample data for a live walkthrough.
+"""Seed a deterministic, clearly labelled three-site WatchLog demo account.
 
-Scope: touches ONLY the demo tenant (the one demo@watchlog.test belongs to).
-Never AKSS or any real customer. Every seeded event carries payload
-{"demo": true, "note": "SAMPLE - not real footage"} and the snapshots are
-synthetic frames, so the data is unmistakably test data.
+This script is intentionally destructive ONLY inside the tenant belonging to
+PORTAL_DEMO_EMAIL (default demo@watchlog.test). It rebuilds that tenant's sites,
+agents, cameras, sample incidents, recipients and, when Analytics Studio is
+migrated, operational analytics. It never touches AKSS or another customer.
 
-Idempotent: clears the demo tenant's seeded events/snapshots and re-inserts a
-coherent recent set (a few days of accepted incidents across cameras, plus a
-couple of equipment faults), sets the demo agent 'online' so the site reads
-'ready', and leaves the tenant on trial so the demo can show the trial ->
-checkout flow.
+Every synthetic event is tagged {"demo": true, "note": "SAMPLE - not real footage"}.
+The resulting account is designed to read as a healthy product walkthrough:
+three locations, one Site Agent per location, current camera activity and varied
+business context rather than repeated/offline test rows.
 
     python tools/seed_demo.py
 """
 from __future__ import annotations
 
-import base64
-import datetime
+import datetime as dt
 import io
 import json
 import re
@@ -32,104 +29,155 @@ for line in (ROOT / ".env").read_text(errors="ignore").splitlines():
     m = re.match(r"^([A-Za-z0-9_]+)=(.*)$", line)
     if m:
         ENV[m.group(1)] = m.group(2).strip().strip('"').strip("'")
-DSN = dict(host=ENV["SUPABASE_DB_HOST"], port=ENV["SUPABASE_DB_PORT"],
+DSN = dict(host=ENV["SUPABASE_DB_HOST"], port=ENV.get("SUPABASE_DB_PORT", 5432),
            user=ENV["SUPABASE_DB_USER"], password=ENV["SUPABASE_DB_PASSWORD"],
-           dbname=ENV["SUPABASE_DB_NAME"], connect_timeout=30, autocommit=True)
-
+           dbname=ENV.get("SUPABASE_DB_NAME", "postgres"), connect_timeout=30,
+           autocommit=True)
 DEMO_EMAIL = ENV.get("PORTAL_DEMO_EMAIL", "demo@watchlog.test")
-CAMERAS = [("1", "Main Gate"), ("2", "Loading Bay"), ("3", "Rear Perimeter"), ("4", "Reception")]
-# (hours_ago, channel, type)  — accepted incidents (person/vehicle/motorcycle) + faults
-PLAN = [
-    (2, "1", "person"), (3, "2", "vehicle"), (5, "1", "person"), (8, "4", "person"),
-    (11, "2", "vehicle"), (14, "3", "person"), (20, "1", "motorcycle"), (26, "2", "vehicle"),
-    (30, "3", "tamper"), (34, "4", "person"), (39, "1", "person"), (46, "2", "vehicle"),
-    (52, "3", "person"), (55, "1", "motorcycle"), (61, "4", "person"), (68, "2", "vehicle"),
-    (70, "3", "video_loss"), (73, "1", "person"),
+
+SITES = [
+    {"name": "Karachi Head Office", "type": "office_commercial", "host": "WL-DEMO-HQ",
+     "vendor": "Dahua", "model": "NVR4216-4KS2", "driver": "dahua-cgi",
+     "cams": [("1","Main Entrance","entrance_exit"),("2","Reception","reception"),("3","Office Floor","office_floor"),("4","Parking","parking")]},
+    {"name": "Korangi Warehouse", "type": "warehouse_logistics", "host": "WL-DEMO-WH",
+     "vendor": "Hikvision", "model": "DS-7616NI-K2", "driver": "hikvision-isapi",
+     "cams": [("1","Main Gate","main_gate"),("2","Loading Bay","loading_bay"),("3","Warehouse Floor","warehouse_floor"),("4","Rear Perimeter","perimeter")]},
+    {"name": "Clifton Retail", "type": "retail", "host": "WL-DEMO-RT",
+     "vendor": "Dahua", "model": "NVR4108HS", "driver": "dahua-cgi",
+     "cams": [("1","Store Entrance","entrance_exit"),("2","Checkout","checkout_till"),("3","Sales Floor","custom"),("4","Rear Door","restricted_area")]},
 ]
-FAULTS = {"tamper", "video_loss", "disk_error", "offline"}
+
+# hours ago, site index, channel, incident type. Every camera has a recent event.
+PLAN = [
+    (1,0,"1","person"),(2,1,"2","vehicle"),(3,2,"1","person"),(4,0,"4","vehicle"),
+    (5,1,"1","motorcycle"),(6,2,"2","person"),(7,0,"2","person"),(8,1,"3","person"),
+    (9,2,"3","person"),(10,0,"3","person"),(11,1,"4","person"),(12,2,"4","person"),
+    (16,1,"2","vehicle"),(20,2,"1","person"),(26,0,"1","person"),(31,1,"1","vehicle"),
+    (38,1,"4","tamper"),(45,2,"2","person"),(54,0,"4","vehicle"),(67,1,"3","person"),
+]
+FAULTS = {"tamper","video_loss","disk_error","disk_full","offline"}
+COLORS = [(47,66,93),(58,76,63),(77,58,89),(72,68,53)]
 
 
 def frame(rgb):
-    from PIL import Image
-    buf = io.BytesIO()
-    Image.new("RGB", (320, 180), rgb).save(buf, "JPEG")
-    return buf.getvalue()
+    from PIL import Image, ImageDraw
+    buf = io.BytesIO(); im = Image.new("RGB", (640, 360), rgb)
+    draw = ImageDraw.Draw(im); draw.rectangle((18,18,622,342), outline=(120,135,160), width=2)
+    draw.text((28,28), "WATCHLOG DEMO - SYNTHETIC STILL", fill=(205,215,230))
+    im.save(buf, "JPEG", quality=82); return buf.getvalue()
+
+
+def has_table(cur, name: str) -> bool:
+    return bool(cur.execute("select to_regclass(%s)", (f"public.{name}",)).fetchone()[0])
+
+
+def has_column(cur, table: str, column: str) -> bool:
+    return bool(cur.execute("""select 1 from information_schema.columns
+        where table_schema='public' and table_name=%s and column_name=%s""",
+        (table, column)).fetchone())
 
 
 def main():
     conn = psycopg.connect(**DSN); cur = conn.cursor()
-    # locate the demo tenant via the demo user's membership
     row = cur.execute("""select m.tenant_id from memberships m join auth.users u on u.id=m.user_id
-                         where lower(u.email)=lower(%s) limit 1""", (DEMO_EMAIL,)).fetchone()
-    if not row:
-        raise SystemExit(f"no tenant for {DEMO_EMAIL}")
+        where lower(u.email)=lower(%s) limit 1""", (DEMO_EMAIL,)).fetchone()
+    if not row: raise SystemExit(f"no demo tenant for {DEMO_EMAIL}")
     tenant = row[0]
-    cur.execute("update tenants set name='WatchLog Demo (sample data)' where id=%s and name<>'WatchLog Demo (sample data)'", (tenant,))
-    site = cur.execute("select id from sites where tenant_id=%s order by created_at limit 1", (tenant,)).fetchone()[0]
-    print("demo tenant:", tenant, "site:", site)
+    print("demo tenant:", tenant)
 
-    # demo agent, shown online + ready
-    ag = cur.execute("select id from agents where site_id=%s and hostname='DEMO-PC'", (site,)).fetchone()
-    if ag:
-        agent = ag[0]
-        cur.execute("update agents set last_seen_at=now(), device_vendor='Dahua', device_model='DH-DEMO-8CH', device_driver='dahua-cgi' where id=%s", (agent,))
+    # Curate the demo account as a whole. This is safer than leaving old test
+    # agents/cameras behind and making the public walkthrough look broken.
+    for table in ("report_deliveries", "report_recipients"):
+        if has_table(cur, table): cur.execute(f"delete from {table} where tenant_id=%s", (tenant,))
+    cur.execute("delete from sites where tenant_id=%s", (tenant,))
+    cur.execute("update tenants set name='WatchLog Demo', plan='trial', subscription_status='trialing', requested_plan=null, trial_started_at=now()-interval '2 days', trial_days=14 where id=%s", (tenant,))
+    for table in ("payment_transactions","subscriptions","billing_checkouts"):
+        if has_table(cur, table): cur.execute(f"delete from {table} where tenant_id=%s", (tenant,))
+
+    analytics = has_table(cur, "monitoring_rules") and has_table(cur, "analytic_events") and has_column(cur, "monitoring_rules", "analytic_key")
+    site_ids=[]; agents=[]; camera_ids=[]
+    for idx, spec in enumerate(SITES):
+        cols = "tenant_id,name,timezone"; vals = [tenant,spec["name"],"Asia/Karachi"]
+        if has_column(cur,"sites","site_type"): cols += ",site_type"; vals.append(spec["type"])
+        site_id = cur.execute(f"insert into sites ({cols}) values ({','.join(['%s']*len(vals))}) returning id", vals).fetchone()[0]
+        site_ids.append(site_id)
+        agent = cur.execute("""insert into agents (tenant_id,site_id,agent_key_hash,hostname,platform,agent_version,
+            device_vendor,device_model,device_driver,enrolled_at,last_seen_at)
+            values (%s,%s,md5(gen_random_uuid()::text),%s,'Windows','0.3.0-demo',%s,%s,%s,now()-interval '30 days',now()-make_interval(secs=>%s)) returning id""",
+            (tenant,site_id,spec["host"],spec["vendor"],spec["model"],spec["driver"],35+idx*20)).fetchone()[0]
+        agents.append(agent); cmap={}
+        for ch,name,purpose in spec["cams"]:
+            if has_column(cur,"cameras","purpose"):
+                cid=cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose,analytics_enabled) values (%s,%s,%s,%s,%s,true) returning id",(tenant,site_id,ch,name,purpose)).fetchone()[0]
+            else:
+                cid=cur.execute("insert into cameras (tenant_id,site_id,channel,name) values (%s,%s,%s,%s) returning id",(tenant,site_id,ch,name)).fetchone()[0]
+            cmap[ch]=cid
+        camera_ids.append(cmap)
+
+    now=dt.datetime.now(dt.timezone.utc); n_ev=n_snap=0
+    for hrs,si,ch,etype in PLAN:
+        site_id=site_ids[si]; cid=camera_ids[si][ch]; agent=agents[si]; ts=now-dt.timedelta(hours=hrs)
+        payload=json.dumps({"demo":True,"note":"SAMPLE - not real footage","vendor":"demo","site":SITES[si]["name"]})
+        dk=cur.execute("select wl_dedupe_key(%s,%s,%s,%s::timestamptz,%s)",(site_id,ch,f"demo-{si}-{hrs}-{ch}",ts.isoformat(),etype)).fetchone()[0]
+        row=cur.execute("""insert into events (tenant_id,site_id,camera_id,agent_id,event_type,device_event_id,device_ts,agent_ts,received_at,dedupe_key,payload)
+            values (%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s,%s::jsonb)
+            on conflict (tenant_id,dedupe_key) do nothing returning id""",
+            (tenant,site_id,cid,agent,etype,f"demo-{si}-{hrs}-{ch}",ts.isoformat(),ts.isoformat(),ts.isoformat(),dk,payload)).fetchone()
+        if not row: continue
+        eid=row[0];n_ev+=1
+        if etype not in FAULTS:
+            img=frame(COLORS[(si+int(ch)-1)%len(COLORS)])
+            cur.execute("insert into snapshots (tenant_id,event_id,site_id,camera_id,image,bytes,content_type,captured_at) values (%s,%s,%s,%s,%s,%s,'image/jpeg',%s::timestamptz)",(tenant,eid,site_id,cid,img,len(img),ts.isoformat()));n_snap+=1
+
+    n_analytics=0
+    if analytics:
+        for si,spec in enumerate(SITES):
+            sid=site_ids[si]
+            schedule=cur.execute("""insert into monitoring_schedules (tenant_id,site_id,name,timezone,schedule_json,enabled)
+                values (%s,%s,'Business hours','Asia/Karachi',%s::jsonb,true) returning id""",
+                (tenant,sid,json.dumps({"days":{d:[["08:00","18:00"]] for d in ("mon","tue","wed","thu","fri")} | {"sat":[],"sun":[]}}))).fetchone()[0]
+            rules=[]
+            # Purpose-specific, semantically distinct goals.
+            if spec["type"]=="retail":
+                defs=[("1","Visitor Flow","visitor_flow","line_crossing",["person"]),("2","Checkout Activity","checkout_activity","occupancy",["person"])]
+            elif spec["type"]=="warehouse_logistics":
+                defs=[("1","Vehicle Flow","vehicle_flow","line_crossing",["car","motorcycle"]),("2","Loading Bay Activity","zone_activity","zone_entry",["person","car"])]
+            else:
+                defs=[("1","Visitor Flow","visitor_flow","line_crossing",["person"]),("4","Parking Vehicle Flow","vehicle_flow","line_crossing",["car","motorcycle"])]
+            for ch,name,key,rtype,classes in defs:
+                geom={"type":"line","points":[[.15,.55],[.85,.55]]} if rtype=="line_crossing" else {"type":"polygon","points":[[.2,.25],[.8,.25],[.8,.8],[.2,.8]]}
+                rid=cur.execute("""insert into monitoring_rules (tenant_id,site_id,camera_id,name,analytic_key,rule_type,object_classes,geometry_json,direction_json,schedule_id,enabled)
+                    values (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,true) returning id""",
+                    (tenant,sid,camera_ids[si][ch],name,key,rtype,classes,json.dumps(geom),json.dumps({"negative_to_positive":"in","positive_to_negative":"out"}),schedule)).fetchone()[0]
+                rules.append((rid,ch,key,rtype,classes[0]))
+            # 14 days of measurements for charts, deterministic counts per site/day.
+            for day in range(14):
+                for rid,ch,key,rtype,obj in rules:
+                    count=4+si*2+(day%5)
+                    for n in range(count):
+                        occurred=now-dt.timedelta(days=day,hours=1+n*.12+si*.2)
+                        etype="occupancy" if rtype=="occupancy" else rtype
+                        direction="in" if rtype=="line_crossing" else None
+                        meta={"demo":True,"count":2+(n%4)} if rtype=="occupancy" else {"demo":True}
+                        dedupe=f"demo-analytics-{si}-{day}-{rid}-{n}"
+                        cur.execute("""insert into analytic_events (tenant_id,site_id,camera_id,agent_id,monitoring_rule_id,analytic_key,event_type,object_class,track_key,direction,occurred_at,dedupe_key,metadata_json)
+                            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s,%s::jsonb) on conflict (tenant_id,dedupe_key) do nothing""",
+                            (tenant,sid,camera_ids[si][ch],agents[si],rid,key,etype,obj,f"demo-{day}-{n}",direction,occurred.isoformat(),dedupe,json.dumps(meta)))
+                        n_analytics+=1
+
+    # Separate endpoint rows are canonical after 0031. Pre-0031 falls back to
+    # one WhatsApp row and remains runnable for migration-order smoke tests.
+    if has_column(cur,"report_recipients","whatsapp_destination"):
+        cur.execute("""insert into report_recipients (tenant_id,site_id,name,channel,destination,whatsapp_destination,email_destination,enabled)
+            values (%s,null,'Demo operations','whatsapp','923000000000','923000000000',null,true),
+                   (%s,null,'Demo operations','email','demo@watchlog.test',null,'demo@watchlog.test',true)""",(tenant,tenant))
     else:
-        agent = cur.execute("""insert into agents (tenant_id, site_id, agent_key_hash, hostname, platform,
-                 agent_version, device_vendor, device_model, device_driver, enrolled_at, last_seen_at)
-                 values (%s,%s, md5(gen_random_uuid()::text), 'DEMO-PC', 'Windows',
-                 'demo', 'Dahua', 'DH-DEMO-8CH', 'dahua-cgi', now(), now()) returning id""", (tenant, site)).fetchone()[0]
+        cur.execute("insert into report_recipients (tenant_id,site_id,name,channel,destination) values (%s,null,'Demo operations','whatsapp','923000000000')",(tenant,))
 
-    # cameras
-    cam_id = {}
-    for ch, name in CAMERAS:
-        r = cur.execute("select id from cameras where site_id=%s and channel=%s", (site, ch)).fetchone()
-        if r:
-            cam_id[ch] = r[0]
-            cur.execute("update cameras set name=%s where id=%s", (name, r[0]))
-        else:
-            cam_id[ch] = cur.execute("insert into cameras (tenant_id, site_id, channel, name) values (%s,%s,%s,%s) returning id", (tenant, site, ch, name)).fetchone()[0]
-
-    # clear previously-seeded demo events (tagged) + their snapshots, reseed
-    cur.execute("delete from snapshots where site_id=%s and event_id in (select id from events where site_id=%s and payload->>'demo'='true')", (site, site))
-    cur.execute("delete from events where site_id=%s and payload->>'demo'='true'", (site,))
-
-    colors = {"1": (60, 70, 95), "2": (70, 90, 70), "3": (95, 75, 60), "4": (80, 70, 95)}
-    now = datetime.datetime.now(datetime.timezone.utc)
-    n_ev = n_snap = 0
-    for hrs, ch, etype in PLAN:
-        ts = now - datetime.timedelta(hours=hrs)
-        payload = json.dumps({"demo": True, "note": "SAMPLE - not real footage", "vendor": "demo"})
-        dk = cur.execute("select wl_dedupe_key(%s,%s,%s,%s::timestamptz,%s)",
-                         (site, ch, f"demo-{hrs}-{ch}", ts.isoformat(), etype)).fetchone()[0]
-        eid = cur.execute("""insert into events (tenant_id, site_id, camera_id, agent_id, event_type,
-                 device_event_id, device_ts, agent_ts, received_at, dedupe_key, payload)
-                 values (%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz, now(), %s, %s::jsonb)
-                 on conflict (tenant_id, dedupe_key) do nothing returning id""",
-                 (tenant, site, cam_id[ch], agent, etype, f"demo-{hrs}-{ch}",
-                  ts.isoformat(), ts.isoformat(), dk, payload)).fetchone()
-        if not eid:
-            continue
-        eid = eid[0]; n_ev += 1
-        if etype not in FAULTS:   # incidents carry a still; faults do not
-            img = frame(colors.get(ch, (60, 60, 70)))
-            cur.execute("""insert into snapshots (tenant_id, event_id, site_id, camera_id, image, bytes, content_type, captured_at)
-                     values (%s,%s,%s,%s,%s,%s,'image/jpeg',%s::timestamptz)""",
-                     (tenant, eid, site, cam_id[ch], img, len(img), ts.isoformat()))
-            n_snap += 1
-
-    # a report recipient (whatsapp test) if none
-    if not cur.execute("select 1 from report_recipients where tenant_id=%s limit 1", (tenant,)).fetchone():
-        cur.execute("insert into report_recipients (tenant_id, site_id, name, channel, destination) values (%s,null,'Demo control room','whatsapp','923000000000')", (tenant,))
-
-    # keep the demo tenant on trial so the demo can show trial -> checkout
-    cur.execute("update tenants set plan='trial', subscription_status='trialing', requested_plan=null, trial_started_at=now()-interval '2 days', trial_days=14 where id=%s", (tenant,))
-    for tb in ("payment_transactions", "subscriptions", "billing_checkouts"):
-        cur.execute(f"delete from {tb} where tenant_id=%s", (tenant,))
-
-    print(f"seeded: {n_ev} events, {n_snap} snapshots across {len(CAMERAS)} cameras; agent online; tenant on trial")
-    print("login: ", DEMO_EMAIL, "(password in .env PORTAL_DEMO_PASSWORD)")
+    print(f"seeded {len(SITES)} healthy sites, {sum(len(s['cams']) for s in SITES)} cameras, {n_ev} incidents/events, {n_snap} synthetic stills")
+    if analytics: print(f"seeded {n_analytics} semantic analytics measurements")
+    else: print("analytics schema not present; skipped analytics seed safely")
+    print("login:",DEMO_EMAIL,"(password in .env PORTAL_DEMO_PASSWORD)")
     conn.close()
 
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__": main()
