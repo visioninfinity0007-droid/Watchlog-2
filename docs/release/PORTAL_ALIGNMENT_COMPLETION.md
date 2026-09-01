@@ -104,6 +104,9 @@ implemented and what still requires access to external production systems.
   billing provider.
 - [x] Checkout fails closed unless both an explicit provider and hosted checkout
   service URL are configured.
+- [x] Detailed billing overview and direct financial-table reads are Owner-only.
+- [x] Admin/Viewer can still see non-sensitive plan/account/entitlement state
+  without receiving provider customer IDs, checkout records or payment history.
 - [x] Draft pricing remains visibly marked provisional.
 
 ### Demo account
@@ -170,11 +173,12 @@ These are intentionally not marked complete by source code or CI.
 
 - [ ] Confirm the production migration ledger and checksums.
 - [ ] Apply the complete ordered train through
-  `0034_enrollment_code_read_authz.sql`.
+  `0035_billing_read_authz.sql`.
 - [ ] Verify PostgREST exposes the new RPCs after the migration is proven.
 - [ ] Run target-database tenant-isolation and role-authorization tests using
   disposable users/data, including proof that a Viewer receives
-  `open_code = null` from `wl_sites()`.
+  `open_code = null` from `wl_sites()` and Admin/Viewer cannot read detailed
+  billing tables or `wl_billing_overview()`.
 - [ ] Run reporting endpoint and Analytics semantic smoke tests.
 - [ ] Refresh the dedicated demo tenant only after schema compatibility is
   confirmed.
@@ -212,7 +216,7 @@ hardware. They must not be represented as complete until actually executed.
 
 1. Latest PR head passes all repository CI jobs.
 2. Production DB migration ledger is checked for drift.
-3. Apply migrations in order through `0034`.
+3. Apply migrations in order through `0035`.
 4. Run DB/authz/semantic/reporting smoke tests.
 5. Refresh the dedicated demo tenant.
 6. Merge PR #12.
