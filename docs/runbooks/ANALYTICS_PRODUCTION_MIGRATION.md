@@ -38,6 +38,7 @@ The release train is:
 - `0032_portal_operational_authz.sql`
 - `0033_site_health_details.sql`
 - `0034_enrollment_code_read_authz.sql`
+- `0035_billing_read_authz.sql`
 
 Do not paste only `wl_analytics_studio` into SQL Editor. The portal depends on the
 tables, policies, reporting endpoint model, Site Health detail API and
@@ -50,7 +51,7 @@ python prototype/supabase/apply_migrations.py
 python prototype/supabase/apply_migrations.py --status
 ```
 
-All files through `0034` must report `applied` with repository-matching checksums.
+All files through `0035` must report `applied` with repository-matching checksums.
 
 ## 3. Database smoke test
 
@@ -64,6 +65,7 @@ select to_regprocedure('public.wl_add_site(text,text)');
 select to_regprocedure('public.wl_issue_code(uuid,integer)');
 select to_regprocedure('public.wl_site_health_details(integer)');
 select to_regprocedure('public.wl_sites()');
+select to_regprocedure('public.wl_billing_overview()');
 ```
 
 Every row must resolve to a function. Then, as a normal authenticated tenant user,
@@ -77,6 +79,7 @@ verify:
   fault events with site identity.
 - `wl_sites()` reports `has_open_code` to all members but returns the actual
   `open_code` value only to Owner/Admin.
+- Owner can call `wl_billing_overview()`; Admin/Viewer receive permission denied.
 - `/analytics/`, `/analytics/studio/`, `/analytics/schedules/` and `/site-health/`
   load without schema-cache errors.
 
@@ -87,16 +90,21 @@ PostgREST only **after** proving the migration is applied.
 
 Use disposable users in a test tenant:
 
-- Owner: can add sites, issue enrollment codes, manage report recipients and
-  configure Analytics.
-- Admin: can perform the same operational actions except owner-only billing.
+- Owner: can add sites, issue enrollment codes, manage report recipients,
+  configure Analytics and read billing/subscription/payment detail.
+- Admin: can perform operational actions but cannot mutate or read detailed
+  financial records.
 - Viewer: can read Overview, Site Health, Incidents, Analytics, Reports, Team and
-  Settings but receives permission denied from all configuration writers.
+  non-sensitive Settings state but receives permission denied from all
+  configuration writers and detailed billing reads.
 - Viewer specifically cannot call `wl_add_site`, `wl_issue_code`,
   `wl_add_recipient_v2`, Analytics writers or team writers successfully.
 - Viewer can see whether a site has an open enrollment code but cannot read the
   code value itself.
 - Billing checkout/cancellation remains Owner-only.
+- Direct SELECTs by Admin/Viewer against `billing_customers`, `subscriptions`,
+  `payment_transactions` and `billing_checkouts` return no rows because their RLS
+  policies are Owner-only.
 - A normal tenant user receives no Platform Admin data.
 - `wl_site_health_details` never returns cameras or fault rows from another
   tenant.
@@ -162,7 +170,7 @@ All sample stills/events remain explicitly tagged as demo/synthetic data.
 
 ## 9. Deployment order
 
-1. Production database through `0034`.
+1. Production database through `0035`.
 2. Run schema/auth/reporting/Site Health smoke tests.
 3. Refresh the dedicated demo tenant.
 4. Deploy the matching portal build.
