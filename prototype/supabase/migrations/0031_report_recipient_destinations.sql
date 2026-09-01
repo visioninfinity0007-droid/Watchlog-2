@@ -28,12 +28,6 @@ update public.report_recipients
  where channel = 'both' and email_destination is null;
 
 alter table public.report_recipients
-  drop constraint if exists report_recipients_channel_chk;
-alter table public.report_recipients
-  add constraint report_recipients_channel_chk
-  check (channel in ('whatsapp','email','both'));
-
-alter table public.report_recipients
   drop constraint if exists report_recipients_destinations_chk;
 alter table public.report_recipients
   add constraint report_recipients_destinations_chk check (
@@ -54,11 +48,11 @@ create unique index if not exists report_recipients_unique_v2
   );
 
 create or replace function public.wl_add_recipient_v2(
-  p_site_id uuid,
-  p_name text,
-  p_channel text,
-  p_whatsapp text default null,
-  p_email text default null
+  p_whatsapp text,
+  p_email text,
+  p_channel text default 'whatsapp',
+  p_name text default null,
+  p_site_id uuid default null
 ) returns jsonb
 language plpgsql
 security definer
@@ -96,22 +90,28 @@ begin
     tenant_id,site_id,name,channel,destination,
     whatsapp_destination,email_destination,enabled
   ) values (
-    v_tenant,p_site_id,nullif(btrim(p_name),''),p_channel,
+    v_tenant,p_site_id,nullif(btrim(coalesce(p_name,'')),''),p_channel,
     coalesce(v_wa,v_email),v_wa,v_email,true
-  ) returning id into v_id;
+  )
+  on conflict do nothing
+  returning id into v_id;
 
+  if v_id is null then
+    return jsonb_build_object('ok',true,'created',false,'note','that recipient already exists');
+  end if;
   return jsonb_build_object(
-    'ok',true,'id',v_id,'channel',p_channel,
+    'ok',true,'created',true,'id',v_id,'channel',p_channel,
     'whatsapp_destination',v_wa,'email_destination',v_email
   );
 end $$;
 
--- Keep the old RPC for older clients, but do not permit the broken BOTH shape.
+-- Preserve the exact 0011 signature for older portal builds. BOTH is rejected
+-- because that legacy call can only supply one address.
 create or replace function public.wl_add_recipient(
-  p_site_id uuid,
-  p_name text,
-  p_channel text,
-  p_destination text
+  p_destination text,
+  p_channel text default 'whatsapp',
+  p_name text default null,
+  p_site_id uuid default null
 ) returns jsonb
 language plpgsql
 security definer
@@ -119,12 +119,12 @@ set search_path = public
 as $$
 begin
   if p_channel = 'both' then
-    raise exception 'WhatsApp + Email now requires separate destinations; update this client';
+    raise exception 'WhatsApp + Email requires separate destinations; update this client';
   end if;
   if p_channel = 'whatsapp' then
-    return wl_add_recipient_v2(p_site_id,p_name,p_channel,p_destination,null);
+    return wl_add_recipient_v2(p_destination,null,p_channel,p_name,p_site_id);
   end if;
-  return wl_add_recipient_v2(p_site_id,p_name,p_channel,null,p_destination);
+  return wl_add_recipient_v2(null,p_destination,p_channel,p_name,p_site_id);
 end $$;
 
 create or replace function public.wl_recipients()
@@ -144,13 +144,14 @@ begin
       'whatsapp_destination',r.whatsapp_destination,
       'email_destination',r.email_destination,
       'enabled',r.enabled,'created_at',r.created_at
-    ) order by coalesce(s.name,'All sites'),r.name,r.created_at)
+    ) order by coalesce(s.name,'All sites'),coalesce(r.name,''),r.created_at)
     from report_recipients r left join sites s on s.id=r.site_id
     where r.tenant_id=v_tenant
   ),'[]'::jsonb);
 end $$;
 
-create or replace function public.wl_set_recipient_enabled(p_id uuid,p_enabled boolean)
+-- Harden the existing management RPC; viewer remains read-only.
+create or replace function public.wl_set_recipient(p_id uuid,p_enabled boolean)
 returns jsonb
 language plpgsql
 security definer
@@ -177,13 +178,13 @@ begin
   return jsonb_build_object('ok',v_hit>0);
 end $$;
 
-revoke all on function public.wl_add_recipient_v2(uuid,text,text,text,text) from public,anon;
-revoke all on function public.wl_add_recipient(uuid,text,text,text) from public,anon;
+revoke all on function public.wl_add_recipient_v2(text,text,text,text,uuid) from public,anon;
+revoke all on function public.wl_add_recipient(text,text,text,uuid) from public,anon;
 revoke all on function public.wl_recipients() from public,anon;
-revoke all on function public.wl_set_recipient_enabled(uuid,boolean) from public,anon;
+revoke all on function public.wl_set_recipient(uuid,boolean) from public,anon;
 revoke all on function public.wl_remove_recipient(uuid) from public,anon;
-grant execute on function public.wl_add_recipient_v2(uuid,text,text,text,text) to authenticated;
-grant execute on function public.wl_add_recipient(uuid,text,text,text) to authenticated;
+grant execute on function public.wl_add_recipient_v2(text,text,text,text,uuid) to authenticated;
+grant execute on function public.wl_add_recipient(text,text,text,uuid) to authenticated;
 grant execute on function public.wl_recipients() to authenticated;
-grant execute on function public.wl_set_recipient_enabled(uuid,boolean) to authenticated;
+grant execute on function public.wl_set_recipient(uuid,boolean) to authenticated;
 grant execute on function public.wl_remove_recipient(uuid) to authenticated;
