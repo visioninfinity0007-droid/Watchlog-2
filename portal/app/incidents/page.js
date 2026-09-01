@@ -4,6 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
 import { Nav, requireTenant } from "../shell";
 
+// Enum values like "line_crossing" are for the database, not the operator.
+function humanType(t) {
+  if (!t) return "Event";
+  return t.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+
 export default function Incidents() {
   const [email, setEmail] = useState("");
   const [rows, setRows] = useState(null);
@@ -76,7 +82,7 @@ export default function Incidents() {
               <label>Type</label>
               <select value={type} onChange={(e) => setType(e.target.value)}>
                 <option value="">All types</option>
-                {types.map((t) => <option key={t} value={t}>{t}</option>)}
+                {types.map((t) => <option key={t} value={t}>{humanType(t)}</option>)}
               </select>
             </div>
             <div className="field" style={{ alignSelf: "flex-end" }}>
@@ -105,18 +111,31 @@ export default function Incidents() {
                 {rows.map((r) => (
                   <tr key={r.event_id}>
                     <td style={{ width: 96 }}>
-                      {r.has_snapshot ? (
-                        <img src={shots.current.get(r.event_id) || undefined}
+                      {r.has_snapshot && shots.current.get(r.event_id) ? (
+                        <img src={shots.current.get(r.event_id)}
                              alt={`still from ${r.camera || "camera"}`}
                              style={{ width: 84, height: 47, objectFit: "cover",
                                       borderRadius: 6, background: "var(--color-canvas)",
                                       display: "block" }} />
-                      ) : <span className="muted">—</span>}
+                      ) : (
+                        <span style={{ display: "grid", placeItems: "center",
+                                       width: 84, height: 47, borderRadius: 6,
+                                       background: "var(--color-canvas)",
+                                       border: "1px solid var(--color-line-dark)",
+                                       color: "var(--color-muted-dark)",
+                                       fontSize: "var(--font-size-xs)" }}>
+                          {r.has_snapshot ? "loading" : "no still"}
+                        </span>
+                      )}
                     </td>
                     <td className="mono">{new Date(r.device_ts).toLocaleString()}</td>
                     <td>{r.site}</td>
-                    <td>{r.camera || "—"}</td>
-                    <td>{r.event_type}</td>
+                    <td>{r.camera || <span className="muted">unassigned</span>}</td>
+                    <td><span style={{ fontSize: "var(--font-size-xs)", fontWeight: 600,
+                                       padding: "3px 9px", borderRadius: 999,
+                                       background: "rgba(114,212,255,.12)",
+                                       color: "var(--wl-ice)" }}>
+                      {humanType(r.event_type)}</span></td>
                   </tr>
                 ))}
               </tbody>
