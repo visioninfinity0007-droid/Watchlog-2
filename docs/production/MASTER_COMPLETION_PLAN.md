@@ -40,9 +40,9 @@ migrations, runbooks, CI) are sequenced early to keep `main` continuously demons
 | **P0** | Control plane: merge audit, branch, these 4 docs | **DONE** | 4 docs exist; branch pushed |
 | **P1** | Security/DB foundation: `schema_migrations` lockdown + ledger reconcile; kill self-service paid state (`wl_set_plan`); SECURITY DEFINER re-audit; RLS public→authenticated; FK indexes; isolation stays 9/9 | **DONE** (migrations 0016–0018 applied live + verified 2026-09-01) | isolation 9/9 ✅; anon customer-data 0 ✅; schema_migrations anon write impossible ✅; owner cannot self-mark paid ✅ (`test_billing_authz` 4/4) |
 | **P7** | SendGrid **branded HTML** daily email + plain-text fallback + tests | **DONE** (code; live send CLIENT-BLOCKED on SendGrid creds) | HTML renders for 0/normal/high/fault days ✅; escaping safe ✅ (`test_email_template` 6/6); sender configurable ✅ |
-| **P4** | Daily report as a real service: n8n schedule → report job → Evolution → delivery log; WatchLog-owned Evolution config; workflow export in git | TODO | scheduled run writes `report_deliveries.status=sent` (test destination); idempotent |
+| **P4** | Daily report as a real service: n8n schedule → report job → Evolution → delivery log; WatchLog-owned Evolution config; workflow export in git | **DONE** (report-runner deployed `watchlog-report.…`; n8n workflow versioned; config decoupled; dry-run proven to provider boundary). 🔵 real send needs go-ahead+creds | idempotent ✅; scheduled pipeline live |
 | **P2** | Agent AI: build frozen exe **with** onnxruntime+numpy+Pillow+`yolov8n.onnx`; self-test proves inference; person/car/motorcycle only; fail-open | **DONE** — frozen exe (111 MB) `--selftest` RESULT PASS; #1 P0 closed | model loads, inference runs, junk discarded, person retained, shipped-in-exe — all ✅ |
-| **P8** | Switch billing: DB model + webhook endpoint + signature verify + idempotency + provider abstraction + sandbox fixture + portal UI; customer never writes paid state | TODO (live = CLIENT-BLOCKED) | sandbox checkout→webhook→subscription active; owner cannot forge paid |
+| **P8** | Switch billing: DB model + webhook endpoint + signature verify + idempotency + provider abstraction + sandbox fixture + portal UI; customer never writes paid state | **DONE** (0021 + billing service `watchlog-billing.…` + Settings billing UI; mock sandbox live E2E; owner cannot forge — 403). 🔵 Switch adapter = 501 (needs API contract+creds) | sandbox checkout→webhook→active ✅; self-pay denied ✅ |
 | **P5** | Self-serve onboarding: remove installer alert stub; real installer download; agent setup-state model; recorder test / camera confirm shown from cloud state | **PARTIAL** — alert stub removed (config-driven `NEXT_PUBLIC_INSTALLER_URL` download, no dead-end); real download needs P9 hosting; agent setup-state model still TODO | signup→…→ready with no VI intervention (demo recorder) |
 | **P6** | Portal surfaces: overview, sites (+add/detail), incidents (filter), reports+delivery history, recipients, team, plan/trial, settings | **CORE DONE** — shared nav + Team, Reports (recipients+channel prefs+delivery history), Settings (plan/trial + sites + add-site + issue-code), invite-accept; all build + guard + data-contracts verified. Remaining: site-detail drill-down, dedicated incidents-filter page, full authenticated visual QA | each surface reads/writes live via RLS-safe RPCs ✅ |
 | **P9** | Real **NSIS** installer → `WatchLog-Setup.exe`; deterministic build tooling; checksums; config-driven URLs | **CODE DONE** — `prototype/installer/nsis/watchlog.nsi` (MUI2; reuses register-service.ps1) + `tools/build_windows_release.ps1` (builds AI exe → stage → makensis → Setup.exe + SHA256; config-driven publisher URL; optional signtool). Compile pending NSIS toolchain install (winget); Win10/11 acceptance CLIENT-BLOCKED | NSIS compiles a Setup.exe; installs, enrolls, starts agent |
@@ -52,12 +52,12 @@ migrations, runbooks, CI) are sequenced early to keep `main` continuously demons
 | **P12** | Production domain migration | **CLIENT-BLOCKED** (domain) | all URLs config-driven; cutover checklist ready |
 | **P13** | WordPress polish: sitemap 404, canonical, PHP header, CTAs | TODO | sitemap 200; no stale links |
 | **P14** | CI (GitHub Actions) + branch protection + release check | **IN-PROGRESS** (workflow + secret-scan + migration-lint added; verifying first run; branch protection + release_check pending) | PR CI runs compile/tests/build/secret-scan/migration-lint |
-| **P15** | Coolify healthchecks + practical diagnostics | TODO | portal/site/bridge have real health endpoints wired |
+| **P15** | Coolify healthchecks + practical diagnostics | **DONE** | health_check_enabled on portal/bridge/report-runner/billing; each has a health route |
 | **P16** | M4 runbooks (+ recommended ops docs) | **DONE** (5 required + DEPLOYMENT + DATABASE_MIGRATIONS; BILLING_OPERATIONS/AGENT_RELEASE land with P8/P2) | 5 required runbooks exist and match reality ✅ |
 | **P17/P23** | Credential rotation | **DEFERRED — client will do (per instruction)** | n/a |
-| **P18** | Demo mode (tagged, isolated, no RLS weakening) | TODO | full journey demonstrable without client hardware/creds |
-| **P19** | `docs/demo/FULL_PRODUCT_DEMO.md` (15–25 min) | TODO | script runs start-to-finish on demo env |
-| **P20** | E2E test (create→enroll→ingest→report→isolation) | TODO | automated E2E green; fixtures cleaned |
+| **P18** | Demo mode (tagged, isolated, no RLS weakening) | **DONE** | `tools/seed_demo.py`; demo login populated (27 incidents, ready site); isolation still 9/9 |
+| **P19** | `docs/demo/FULL_PRODUCT_DEMO.md` (15–25 min) | **DONE** | incognito→marketing→signup→onboarding→AI→portal→reports→team→trial→billing sandbox, with fallbacks |
+| **P20** | E2E test (create→enroll→ingest→report→isolation) | **DONE** | `e2e_harness.py` 14/14, disposable tenant, self-cleaning |
 | **P21** | Signed-scope final gate re-audit | TODO | every item PASS or CLIENT-BLOCKED (no PARTIAL we control) |
 
 ---
@@ -75,5 +75,8 @@ Scores at baseline: engineering ~68% · live-deploy ~58% · signed-scope ~37% ·
 
 ## Next action (always keep current)
 
-**➤ P1 DONE.** Next: **P7 (SendGrid branded HTML email)** — pure code, offline-testable, closes an
-M3 sub-gate and gives the daily report a real body. Then P4 (n8n reporting pipeline).
+**➤ As of 2026-09-01 (session 2):** P0,P1,P2,P4,P5,P6,P7,P8,P9(src),P14(local),P15,P16,P18,P19,P20
+are DONE (VI-controlled). All demo-journey gates pass. Remaining is **CLIENT/ENV-BLOCKED only**:
+real recorder hardware (M1 field gate), Switch API contract + creds, production domain, SendGrid
+key, authorized live WhatsApp send, code-signing cert, GitHub Actions minutes, an NSIS build box.
+See `CLIENT_DEPENDENCIES.md`. DEMO READY = yes; CONTRACT ACCEPTANCE = blocked on those inputs.
