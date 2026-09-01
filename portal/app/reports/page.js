@@ -16,6 +16,8 @@ function statusPill(s) {
   return <span className={"pill " + cls}>{s}</span>;
 }
 function channelLabel(v) { return CHANNELS.find(([k]) => k === v)?.[1] || v; }
+function endpoint(r) { return r.whatsapp_destination || r.email_destination || r.destination || "-"; }
+function humanDate(v) { if (!v) return "-"; try { return new Date(`${v}T00:00:00`).toLocaleDateString(); } catch { return v; } }
 
 export default function Reports() {
   const [email, setEmail] = useState("");
@@ -37,7 +39,7 @@ export default function Reports() {
       sb.rpc("wl_recipients"), sb.rpc("wl_sites"), sb.rpc("wl_deliveries", { p_days: 30 }), sb.rpc("wl_my_role"),
     ]);
     if (r.error || s.error || d.error || me.error) { setErr(say(r.error || s.error || d.error || me.error)); return; }
-    setRecips(r.data || []); setSites(s.data || []); setDeliveries(d.data || []); setRole(me.data || "viewer");
+    setErr(""); setRecips(r.data || []); setSites(s.data || []); setDeliveries(d.data || []); setRole(me.data || "viewer");
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -77,19 +79,19 @@ export default function Reports() {
         <div className={ui.metric}><div className={ui.metricValue}>{failed}</div><div className={ui.metricLabel}>Failed, last 30 days</div></div>
       </section>
 
-      <div className={ui.sectionHead}><div><h2>The daily report</h2><p>A preview of the information recipients receive each morning.</p></div></div>
+      <div className={ui.sectionHead}><div><h2>The daily report</h2><p>A preview of the information recipients receive on the configured morning schedule.</p></div></div>
       <section className={ui.heroGrid}>
         <div className={ui.featureCard}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}><span className={ui.statusDot}/><b>WatchLog daily report</b><span className="muted" style={{marginLeft:"auto",fontSize:"var(--font-size-xs)"}}>07:00, site time</span></div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}><span className={ui.statusDot}/><b>WatchLog daily report</b><span className="muted" style={{marginLeft:"auto",fontSize:"var(--font-size-xs)"}}>Morning, site time</span></div>
           <div style={{padding:18,border:"1px solid var(--color-line-dark)",borderRadius:12,background:"var(--color-canvas)"}}>
-            <div className="muted" style={{fontSize:"var(--font-size-sm)",marginBottom:14}}>Warehouse, Tuesday 2 September</div>
+            <div className="muted" style={{fontSize:"var(--font-size-sm)",marginBottom:14}}>Example site · sample morning brief</div>
             <b>Overnight</b><ul style={{margin:"6px 0 16px",paddingLeft:"1.1rem",fontSize:"var(--font-size-sm)"}}><li>18 incidents: 12 person, 5 vehicle, 1 motorcycle</li><li>6 after hours, between 21:00 and 06:00</li><li>First at 21:14, last at 05:47</li></ul>
-            <b>Camera health</b><ul style={{margin:"6px 0 0",paddingLeft:"1.1rem",fontSize:"var(--font-size-sm)"}}><li>14 of 15 cameras reporting</li><li>Rear Perimeter silent since 01:00</li></ul>
+            <b>Camera health</b><ul style={{margin:"6px 0 0",paddingLeft:"1.1rem",fontSize:"var(--font-size-sm)"}}><li>14 of 15 cameras reporting activity</li><li>Rear Perimeter quiet since 01:00</li></ul>
           </div>
-          <p style={{fontSize:"var(--font-size-xs)",marginBottom:0}}>Example layout only. Live reports are built from each site's own incidents, health and analytics data.</p>
+          <p style={{fontSize:"var(--font-size-xs)",marginBottom:0}}>Example layout only. Live reports are built from each site's own incidents, health and analytics data. Actual dispatch time comes from the deployed reporting schedule.</p>
         </div>
         <div className={ui.card}>
-          <h3>One report, the right channel</h3><p>WhatsApp and email are independent delivery endpoints. Choosing both stores and delivers to both addresses correctly; no address is reused across providers.</p>
+          <h3>One report, the right channel</h3><p>WhatsApp and email are independent delivery endpoints. Choosing both creates both endpoints correctly; no phone number is ever reused as an email address.</p>
           <div className={ui.splitList}>
             <div className={ui.listRow}><span className={ui.statusDot}/><div><b>Per-site recipients</b><small>Branch teams can receive only their own site.</small></div></div>
             <div className={ui.listRow}><span className={ui.statusDot}/><div><b>Site-local time</b><small>Morning and after-hours mean the site's own timezone.</small></div></div>
@@ -116,11 +118,11 @@ export default function Reports() {
       </div> : <div className={ui.callout}><span className={ui.statusDot}/><div><strong>Read-only access</strong><p>Owners and admins manage report recipients. You can review recipients and delivery history.</p></div></div>}
 
       <div className="panel"><div className={ui.tableWrap}>
-        {recips === null ? <div className="empty">Loading...</div> : recips.length === 0 ? <div className="empty">No recipients yet. Add a delivery endpoint to start the daily report.</div> : <table><thead><tr><th>Recipient</th><th>Channel</th><th>Destination</th><th>Site</th><th>Status</th><th></th></tr></thead><tbody>{recips.map((r)=><tr key={r.id}><td><b>{r.name || "Recipient"}</b></td><td>{channelLabel(r.channel)}</td><td className="mono">{r.destination}</td><td>{r.site || "All sites"}</td><td><span className={"pill "+(r.enabled?"s-ok":"s-unk")}>{r.enabled?"active":"paused"}</span></td><td>{canManage && <div className={ui.inlineActions}><button className="ghost small" onClick={()=>toggle(r.id,r.enabled)}>{r.enabled?"Pause":"Resume"}</button><button className="btn-danger" onClick={()=>remove(r.id)}>Remove</button></div>}</td></tr>)}</tbody></table>}
+        {recips === null ? <div className="empty">Loading...</div> : recips.length === 0 ? <div className="empty">No recipients yet. Add a delivery endpoint to start the daily report.</div> : <table><thead><tr><th>Recipient</th><th>Channel</th><th>Destination</th><th>Site</th><th>Status</th><th></th></tr></thead><tbody>{recips.map((r)=><tr key={r.id}><td><b>{r.name || "Recipient"}</b></td><td>{channelLabel(r.channel)}</td><td className="mono">{endpoint(r)}</td><td>{r.site || "All sites"}</td><td><span className={"pill "+(r.enabled?"s-ok":"s-unk")}>{r.enabled?"active":"paused"}</span></td><td>{canManage && <div className={ui.inlineActions}><button className="ghost small" onClick={()=>toggle(r.id,r.enabled)}>{r.enabled?"Pause":"Resume"}</button><button className="btn-danger" onClick={()=>remove(r.id)}>Remove</button></div>}</td></tr>)}</tbody></table>}
       </div></div>
 
       <div className={ui.sectionHead}><div><h2>Delivery history</h2><p>Every attempted report remains visible for operational follow-up.</p></div></div>
-      <div className="panel"><div className={ui.tableWrap}>{deliveries.length===0?<div className="empty">No reports sent yet. Delivery history will appear here after the first scheduled run.</div>:<table><thead><tr><th>Date</th><th>Site</th><th>Channel</th><th>To</th><th>Status</th><th>Events</th></tr></thead><tbody>{deliveries.map((d,i)=><tr key={`${d.date}-${d.channel}-${d.destination}-${i}`}><td className="mono">{d.date}</td><td>{d.site}</td><td>{channelLabel(d.channel)}</td><td className="muted">{d.destination}</td><td>{statusPill(d.status)}{d.error&&<div className="muted" style={{fontSize:"var(--font-size-xs)",marginTop:4}}>{d.error}</div>}</td><td className="mono">{d.events??"-"}</td></tr>)}</tbody></table>}</div></div>
+      <div className="panel"><div className={ui.tableWrap}>{deliveries.length===0?<div className="empty">No reports sent yet. Delivery history will appear here after the first scheduled run.</div>:<table><thead><tr><th>Date</th><th>Site</th><th>Channel</th><th>To</th><th>Status</th><th>Events</th></tr></thead><tbody>{deliveries.map((d,i)=><tr key={`${d.date}-${d.channel}-${d.destination}-${i}`}><td>{humanDate(d.date)}</td><td>{d.site}</td><td>{channelLabel(d.channel)}</td><td className="muted">{d.destination}</td><td>{statusPill(d.status)}{d.error&&<div className="muted" style={{fontSize:"var(--font-size-xs)",marginTop:4}}>{d.error}</div>}</td><td className="mono">{d.events??"-"}</td></tr>)}</tbody></table>}</div></div>
     </main>
   </div>;
 }
