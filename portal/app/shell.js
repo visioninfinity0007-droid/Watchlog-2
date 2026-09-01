@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 
 const TABS = [
   ["Overview", "/dashboard/"],
+  ["Incidents", "/incidents/"],
   ["Reports", "/reports/"],
   ["Team", "/team/"],
   ["Settings", "/settings/"],
@@ -41,6 +42,25 @@ export function Nav({ active, email, right }) {
       <button className="ghost small" onClick={signOut}>Sign out</button>
     </header>
   );
+}
+
+// The ordered agent setup states, derived server-side in wl_sites() from
+// what the agent reports to the cloud (enrollment, heartbeat, cameras,
+// events). Used by onboarding (a live stepper) and Settings (a status pill).
+export const SETUP_STEPS = [
+  ["awaiting_agent", "Waiting for the site PC"],
+  ["enrolled", "Agent enrolled"],
+  ["recorder_connected", "Recorder connected"],
+  ["cameras_discovered", "Cameras discovered"],
+  ["ready", "Reporting"],
+];
+
+export function setupPill(state, online) {
+  const idx = SETUP_STEPS.findIndex(([k]) => k === state);
+  const label = idx >= 0 ? SETUP_STEPS[idx][1] : "Unknown";
+  if (state === "ready") return [label, online ? "s-ok" : "s-warn"];
+  if (state === "awaiting_agent") return [label, "s-unk"];
+  return [label, "s-warn"];
 }
 
 /** Page guard: ensures a session and a tenant, or redirects. Returns
