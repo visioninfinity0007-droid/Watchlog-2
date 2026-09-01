@@ -10,7 +10,7 @@
 param(
   [string]$Code = "",
   [string]$SiteName = "site",  # retained so old commands do not fail; artifact name is canonical
-  [string]$PublisherUrl = "https://watchlog.pk",
+  [string]$PublisherUrl = "",
   [switch]$Lean,
   [string]$SignPfx = "",
   [string]$SignPassword = ""
