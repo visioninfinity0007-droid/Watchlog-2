@@ -55,7 +55,7 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 | PORT-settings | plan/trial + sites + add-site + issue-code | ✅ (contracts verified; wl_sites live) |
 | PORT-nav | shared nav across Overview/Reports/Team/Settings | ✅ |
 | PORT-incidents | dedicated filterable incident history page | ✅ (/incidents live: window/site/type filters + snapshots; wl_incidents) |
-| HLTH-1 healthchecks | portal/bridge/report/billing health endpoints wired in Coolify | ✅ (health_check_enabled on all 4; health routes on each) |
+| HLTH-1 healthchecks | portal/bridge/report/billing health checks | ✅ portal via Coolify healthcheck (nginx); bridge/report/billing via a python-based Docker HEALTHCHECK (slim images lack curl, so Coolify's curl probe is disabled for them). All serve GET / 200. |
 | E2E-1 full journey | disposable-tenant harness green | ✅ (e2e_harness.py 14/14; self-cleaning) |
 | DEMO-1 demo mode | isolated tagged demo tenant demonstrates the journey | ✅ (seed_demo.py; demo login populated; FULL_PRODUCT_DEMO.md) |
 
