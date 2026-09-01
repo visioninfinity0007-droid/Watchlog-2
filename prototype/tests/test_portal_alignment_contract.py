@@ -13,6 +13,7 @@ SITE_HEALTH = (ROOT / "portal/app/site-health/page.js").read_text()
 RECIP = (ROOT / "prototype/supabase/migrations/0031_report_recipient_destinations.sql").read_text()
 AUTHZ = (ROOT / "prototype/supabase/migrations/0032_portal_operational_authz.sql").read_text()
 HEALTH = (ROOT / "prototype/supabase/migrations/0033_site_health_details.sql").read_text()
+ENROLL = (ROOT / "prototype/supabase/migrations/0034_enrollment_code_read_authz.sql").read_text()
 NSIS = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text()
 BUILD = (ROOT / "tools/build_windows_release.ps1").read_text()
 WRAPPER = (ROOT / "tools/make_installer.ps1").read_text()
@@ -40,12 +41,17 @@ def check() -> None:
     assert "Account &amp; Plan" in SETTINGS and "Sites &amp; Setup" in SETTINGS
     assert "canOperate" in SETTINGS and "canBill" in SETTINGS
     assert "copyCode" in SETTINGS and "Enrollment code copied" in SETTINGS
+    assert "canOperate&&s.open_code" in SETTINGS and "Code ready" in SETTINGS
     assert "wl_require_role(array['owner','admin'])" in AUTHZ
     assert "create or replace function public.wl_add_site" in AUTHZ
     assert "create or replace function public.wl_issue_code" in AUTHZ
     assert "wl_require_role(array['owner','admin'])" in RECIP
     assert "ROLE_COPY" in TEAM and "navigator.clipboard.writeText" in TEAM
     assert "Revoke this pending invitation" in TEAM
+    assert "v_can_manage boolean" in ENROLL
+    assert "'has_open_code', agg.open_code is not null" in ENROLL
+    assert "case when v_can_manage then agg.open_code else null end" in ENROLL
+    assert "ec.tenant_id = v_tenant" in ENROLL
 
     # Billing fails closed: mock is allowed only when explicitly configured.
     assert 'NEXT_PUBLIC_BILLING_PROVIDER||""' in SETTINGS
