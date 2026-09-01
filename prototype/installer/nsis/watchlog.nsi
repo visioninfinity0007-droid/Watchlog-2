@@ -30,6 +30,7 @@ SetCompressor /SOLID lzma
 !endif
 
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "Install WatchLog Site Agent"
 !define MUI_WELCOMEPAGE_TEXT "WatchLog adds intelligence to the CCTV recorder you already use.$\r$\n$\r$\nThis PC must stay at the site on the same network as the recorder. Setup will find the recorder, verify its own login locally and link this installation with your one-time WatchLog enrollment code.$\r$\n$\r$\nRecorder credentials stay on this PC. WatchLog connects outward only; no port forwarding or inbound access is required."
