@@ -11,7 +11,7 @@ $sols = [
   ['solutions/offices','solution-office-commercial','Offices & Commercial','Daily confirmation that nothing happened, and immediate word when a camera stops.'],
 ];
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap" style="max-width:52rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Solutions</span></nav>
     <span class="eyebrow">Solutions</span>
@@ -23,7 +23,7 @@ $sols = [
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap-wide">
     <div class="sol-grid">
       <?php foreach ($sols as $s) {
@@ -37,7 +37,7 @@ $sols = [
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap split">
     <div>
       <span class="eyebrow">Not sure where you fit?</span>

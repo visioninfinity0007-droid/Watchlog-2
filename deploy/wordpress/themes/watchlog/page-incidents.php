@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap" style="max-width:54rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Incidents</span></nav>
     <span class="eyebrow">Incidents</span>
@@ -19,7 +19,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head center"><span class="eyebrow">The distinction that matters</span>
       <h2>An event is not an incident.</h2>
@@ -32,7 +32,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="dark field ai">
+<section class="dark field glow-field grid-bg ai">
   <div class="wrap-wide">
     <div class="sec-head center"><span class="eyebrow">Filtered on site</span>
       <h2>Kept, or dropped, before anything is sent.</h2></div>
@@ -60,7 +60,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">In the portal</span><h2>Search the history, open the moment.</h2></div>
     <div class="grid g3">

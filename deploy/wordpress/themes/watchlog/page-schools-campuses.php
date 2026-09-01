@@ -20,7 +20,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">What matters here</span><h2>The cameras that earn their keep.</h2></div>
     <div class="grid g3">
@@ -34,7 +34,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap feature narrow-media">
     <div class="f-copy">
       <span class="f-kicker"><?php echo watchlog_icon('report',20); ?> Worth reviewing</span>

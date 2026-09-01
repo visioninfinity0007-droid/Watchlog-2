@@ -17,7 +17,7 @@ function wl_action($btnclass, $wa_text, $mail_subject, $fallback_url, $fallback_
   return sprintf('<a class="btn %s" href="%s">%s</a>', $btnclass, esc_url($fallback_url), esc_html($fallback_label));
 }
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap" style="max-width:52rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Contact</span></nav>
     <span class="eyebrow">Contact</span>
@@ -31,7 +31,7 @@ function wl_action($btnclass, $wa_text, $mail_subject, $fallback_url, $fallback_
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">How can we help?</span><h2>Pick the path that fits.</h2></div>
     <div class="paths">

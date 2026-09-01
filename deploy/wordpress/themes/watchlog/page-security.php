@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap" style="max-width:56rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Security</span></nav>
     <span class="eyebrow">Security</span>
@@ -25,7 +25,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="feature narrow-media">
       <div class="f-copy">
@@ -62,7 +62,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap">
     <div class="sec-head center"><span class="eyebrow">Access boundary</span>
       <h2>What WatchLog can and cannot access.</h2></div>
@@ -89,7 +89,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="grid g3">
       <div class="card"><?php echo watchlog_icon('lock',24); ?><h3>Tenant isolation</h3>

@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap-wide page-hero-split wide-media">
     <div>
       <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Setup</span></nav>
@@ -19,7 +19,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">The four things</span><h2>What you need at the site.</h2></div>
     <div class="grid g2">
@@ -34,7 +34,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Installing</span><h2>Step by step, about ten minutes.</h2></div>
     <div class="steps">

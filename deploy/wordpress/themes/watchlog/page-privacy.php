@@ -3,7 +3,7 @@
 if (!defined('ABSPATH')) { exit; }
 get_header();
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap" style="max-width:50rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Privacy</span></nav>
     <span class="eyebrow">Privacy</span>
@@ -13,7 +13,7 @@ get_header();
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="prose">
       <h2>What stays at your site</h2>

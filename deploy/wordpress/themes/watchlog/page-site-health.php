@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap-wide page-hero-split wide-media">
     <div>
       <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Site Health</span></nav>
@@ -19,7 +19,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">What it watches</span><h2>The signals that a site is really working.</h2></div>
     <div class="grid g2">
@@ -31,7 +31,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="dark field">
+<section class="dark field glow-field grid-bg">
   <div class="wrap split">
     <div>
       <span class="eyebrow">Why it matters</span>
@@ -48,7 +48,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap">
     <div class="note-card" style="max-width:46rem;margin-inline:auto;text-align:center">
       <p style="margin:0"><strong>Honest about how you're told.</strong> Site Health appears in your portal

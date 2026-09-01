@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap center" style="max-width:52rem;margin-inline:auto">
     <nav class="crumbs" aria-label="Breadcrumb" style="justify-content:center"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Pricing</span></nav>
     <span class="eyebrow">Pricing</span>
@@ -15,7 +15,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="grid g3 price-grid">
       <div class="price-card">
@@ -59,7 +59,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap">
     <div class="sec-head center"><span class="eyebrow">Good to know</span><h2>The honest small print.</h2></div>
     <div class="faq">

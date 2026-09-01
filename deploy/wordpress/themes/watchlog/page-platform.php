@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap" style="max-width:54rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Platform</span></nav>
     <span class="eyebrow">The platform</span>
@@ -19,7 +19,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="feature narrow-media">
       <div class="f-copy">
@@ -56,7 +56,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="dark field">
+<section class="dark field glow-field grid-bg">
   <div class="wrap split">
     <div>
       <span class="eyebrow">Multi-site &amp; teams</span>
@@ -73,7 +73,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap split">
     <div><?php echo watchlog_shot('product-plan-billing','WatchLog plan and trial state, sandbox clearly identified',1500,1000,'(max-width:900px) 92vw, 48vw',true); ?></div>
     <div>
@@ -86,7 +86,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="dark navy">
+<section class="dark navy glow-field">
   <div class="wrap-wide">
     <div class="sec-head center">
       <span class="eyebrow">Security boundary</span>
