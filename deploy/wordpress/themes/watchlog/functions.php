@@ -199,6 +199,44 @@ function watchlog_redirects() {
 add_action('template_redirect', 'watchlog_redirects');
 
 /**
+ * A reliable XML sitemap at /sitemap.xml.
+ *
+ * WordPress core's /wp-sitemap.xml returns 404 on this install (a core rewrite
+ * quirk, not ours). Rather than depend on it, emit our own from the published
+ * pages — intercepted in template_redirect so no rewrite flush is needed.
+ * Retired/redirected slugs are excluded.
+ */
+function watchlog_sitemap() {
+    $path = trim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH), '/');
+    if ($path !== 'sitemap.xml') { return; }
+    $skip = ['home', 'about', 'features', 'who-its-for'];
+    $pages = get_posts([
+        'post_type' => 'page', 'numberposts' => -1, 'post_status' => 'publish',
+        'orderby' => 'menu_order', 'order' => 'ASC',
+    ]);
+    header('Content-Type: application/xml; charset=UTF-8');
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
+    printf("  <url><loc>%s</loc><priority>1.0</priority></url>\n", esc_url(home_url('/')));
+    foreach ($pages as $p) {
+        if (in_array($p->post_name, $skip, true)) { continue; }
+        printf("  <url><loc>%s</loc><lastmod>%s</lastmod></url>\n",
+            esc_url(get_permalink($p)), esc_html(get_post_modified_time('Y-m-d', true, $p)));
+    }
+    echo '</urlset>';
+    exit;
+}
+add_action('template_redirect', 'watchlog_sitemap', 0);
+
+/** Point robots.txt at our sitemap (and keep crawlers out of wp-admin). */
+function watchlog_robots($output) {
+    $output = "User-agent: *\nDisallow: /wp-admin/\nAllow: /wp-admin/admin-ajax.php\n\n";
+    $output .= 'Sitemap: ' . home_url('/sitemap.xml') . "\n";
+    return $output;
+}
+add_filter('robots_txt', 'watchlog_robots', 20);
+
+/**
  * A theme image, or nothing.
  *
  * Every photograph on this site is optional. The layouts were built to
