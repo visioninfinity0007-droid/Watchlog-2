@@ -94,7 +94,12 @@ $signup = esc_url(watchlog_signup_url());
       <p class="lead measure">Everything in the portal is built from event data and stills the site chose
         to send, all of it outward only. No live access to your cameras, no path back into your recorder.</p>
     </div>
-    <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-privacy','The outbound-only privacy model behind the platform',1800,1000,'','(max-width:1100px) 92vw, 1100px'); ?></div>
+    <div style="max-width:940px;margin:0 auto"><?php echo watchlog_flow([
+      ['lock','Recorder','Never exposed'],
+      ['pc','Credentials','Stay on the site PC'],
+      ['arrow-out','Connection','Outbound only'],
+      ['cloud','WatchLog','Events and one still',true],
+    ], ['aria'=>'The outbound-only privacy model behind the platform']); ?></div>
     <div class="center" style="margin-top:32px"><a class="btn btn-ghost" href="<?php echo watchlog_url('security'); ?>">Explore security</a></div>
   </div>
 </section>

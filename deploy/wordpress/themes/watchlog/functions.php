@@ -73,6 +73,43 @@ function watchlog_mark($height = 22) {
     return file_get_contents($svg);
 }
 
+/**
+ * Inline flow diagram: icon nodes joined by arrows (or plus signs). Replaces the
+ * old flat raster diagram-*.webp with a crisp, on-brand, responsive, themeable
+ * component that matches the homepage architecture flow. Works on light and dark.
+ *
+ * @param array $steps each: [icon, title, sub, highlight(bool)]
+ * @param array $opts  'sep' => 'arrow'|'plus', 'note' => string, 'class' => string, 'aria' => string
+ */
+function watchlog_flow($steps, $opts = []) {
+    $sep   = isset($opts['sep'])   ? $opts['sep']   : 'arrow';
+    $note  = isset($opts['note'])  ? $opts['note']  : '';
+    $extra = isset($opts['class']) ? ' ' . $opts['class'] : '';
+    $aria  = isset($opts['aria'])  ? $opts['aria']  : '';
+    $sepHtml = $sep === 'plus'
+        ? '<span class="wl-flow-sep" aria-hidden="true">+</span>'
+        : '<span class="wl-flow-sep" aria-hidden="true">' . watchlog_icon('arrow-right', 20) . '</span>';
+    $out  = '<figure class="wl-flow' . $extra . '"' . ($aria ? ' aria-label="' . esc_attr($aria) . '"' : '') . '>';
+    $out .= '<div class="wl-flow-track">';
+    $n = count($steps);
+    foreach ($steps as $i => $s) {
+        $ic    = isset($s[0]) ? $s[0] : 'box';
+        $title = isset($s[1]) ? $s[1] : '';
+        $sub   = isset($s[2]) ? $s[2] : '';
+        $hi    = !empty($s[3]) ? ' is-hi' : '';
+        $out  .= '<div class="wl-node' . $hi . '">';
+        $out  .= '<span class="wl-node-ic">' . watchlog_icon($ic, 26) . '</span>';
+        $out  .= '<span class="wl-node-t">' . esc_html($title) . '</span>';
+        if ($sub !== '') { $out .= '<span class="wl-node-s">' . esc_html($sub) . '</span>'; }
+        $out  .= '</div>';
+        if ($i < $n - 1) { $out .= $sepHtml; }
+    }
+    $out .= '</div>';
+    if ($note !== '') { $out .= '<figcaption class="wl-flow-note">' . esc_html($note) . '</figcaption>'; }
+    $out .= '</figure>';
+    return $out;
+}
+
 /** Comments are off: this is a marketing site, not a blog. */
 add_filter('comments_open', '__return_false', 20, 2);
 add_filter('pings_open', '__return_false', 20, 2);

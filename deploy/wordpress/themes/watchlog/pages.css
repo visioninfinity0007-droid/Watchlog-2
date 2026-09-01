@@ -109,6 +109,33 @@
 .access-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}
 .access-col h3{display:flex;align-items:center;gap:10px;font-size:1.15rem;margin-bottom:.8rem}
 
+/* ============================================================ flow diagram (replaces raster diagram-*) */
+.wl-flow{margin:0}
+.wl-flow-track{display:flex;align-items:stretch;justify-content:center;gap:10px;flex-wrap:wrap}
+.wl-node{flex:1 1 0;min-width:148px;max-width:210px;display:flex;flex-direction:column;align-items:center;text-align:center;
+  gap:9px;padding:22px 16px;border-radius:16px;background:#fff;border:1px solid var(--line-light);box-shadow:var(--shadow-card)}
+.dark .wl-node,.field .wl-node,.navy .wl-node{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.1);box-shadow:none}
+.wl-node-ic{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;background:rgba(23,72,211,.09);color:var(--blue)}
+.dark .wl-node-ic,.field .wl-node-ic,.navy .wl-node-ic{background:rgba(114,212,255,.12);color:var(--ice)}
+.wl-node-t{font-weight:650;font-size:1rem;color:var(--ink-900);letter-spacing:-.01em;line-height:1.2}
+.dark .wl-node-t,.field .wl-node-t,.navy .wl-node-t{color:#fff}
+.wl-node-s{font-size:.85rem;color:var(--slate-500);line-height:1.35}
+.dark .wl-node-s,.field .wl-node-s,.navy .wl-node-s{color:rgba(255,255,255,.6)}
+.wl-node.is-hi{border-color:rgba(23,72,211,.4);box-shadow:0 14px 34px -18px rgba(23,72,211,.55)}
+.wl-node.is-hi .wl-node-ic{background:var(--grad-brand);color:#fff}
+.dark .wl-node.is-hi,.field .wl-node.is-hi,.navy .wl-node.is-hi{border-color:rgba(114,212,255,.5);box-shadow:0 14px 34px -18px rgba(114,212,255,.4)}
+.wl-flow-sep{display:flex;align-items:center;color:var(--slate-500);flex:0 0 auto;font-size:1.35rem;font-weight:300}
+.dark .wl-flow-sep,.field .wl-flow-sep,.navy .wl-flow-sep{color:rgba(255,255,255,.4)}
+.wl-flow-sep svg{width:22px;height:22px}
+.wl-flow-note{margin:18px auto 0;text-align:center;font-size:.92rem;color:var(--slate-500);max-width:62ch}
+.dark .wl-flow-note,.field .wl-flow-note,.navy .wl-flow-note{color:rgba(255,255,255,.6)}
+@media (max-width:720px){
+  .wl-flow-track{flex-direction:column;align-items:stretch;gap:8px}
+  .wl-node{max-width:none;flex-direction:row;text-align:left;gap:14px;align-items:center;padding:15px 18px}
+  .wl-node-ic{width:44px;height:44px;flex:none}
+  .wl-flow-sep{transform:rotate(90deg);align-self:center}
+}
+
 @media (max-width:900px){
   .page-hero-split,.page-hero-split.wide-media,.feature,.feature.wide-media,.feature.narrow-media{grid-template-columns:1fr;gap:32px}
   .paths,.access-cols{grid-template-columns:1fr}

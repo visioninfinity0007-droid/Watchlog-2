@@ -36,7 +36,11 @@ $signup = esc_url(watchlog_signup_url());
   <div class="wrap-wide">
     <div class="sec-head center"><span class="eyebrow">Filtered on site</span>
       <h2>Kept, or dropped, before anything is sent.</h2></div>
-    <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-ai-filtering','Raw event to on-site AI to a kept, validated incident; fail-open if the detector cannot run',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?></div>
+    <div style="max-width:920px;margin:0 auto"><?php echo watchlog_flow([
+      ['alert','Raw events','Every motion trigger'],
+      ['cpu','On-site AI','Person, car, motorcycle'],
+      ['check','Validated incident','Only the real ones',true],
+    ], ['note'=>'Rain, headlights and the IR lamp are dropped on site. If the detector cannot run, the event is kept rather than dropped.']); ?></div>
     <div class="ai-strip">
       <div class="ai-col"><span class="ai-lbl kept">Kept as incidents</span>
         <div class="ai-thumbs">

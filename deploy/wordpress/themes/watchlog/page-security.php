@@ -16,7 +16,12 @@ $signup = esc_url(watchlog_signup_url());
       <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
   </div>
   <div class="wrap-wide" style="margin-top:clamp(32px,4vw,52px)">
-    <?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: recorder stays private, credentials stay on site, connection is outbound only',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?>
+    <?php echo watchlog_flow([
+      ['lock','Recorder','Never exposed'],
+      ['pc','Credentials','Stay on the site PC'],
+      ['arrow-out','Connection','Outbound only'],
+      ['cloud','WatchLog','Events and one still',true],
+    ], ['aria'=>'Recorder stays private, credentials stay on site, connection is outbound only']); ?>
   </div>
 </section>
 

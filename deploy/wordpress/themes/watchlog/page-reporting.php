@@ -35,7 +35,11 @@ $signup = esc_url(watchlog_signup_url());
   <div class="wrap-wide">
     <div class="sec-head center"><span class="eyebrow">How it reaches you</span>
       <h2>Composed, then delivered once.</h2></div>
-    <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-report-flow','From incidents to a composed daily summary to delivery on WhatsApp or email',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?></div>
+    <div style="max-width:920px;margin:0 auto"><?php echo watchlog_flow([
+      ['layers','Incidents','Across your sites'],
+      ['report','Daily summary','Counts, after-hours, faults'],
+      ['whatsapp','Delivered','WhatsApp or email, 07:00',true],
+    ], ['aria'=>'From incidents to a composed daily summary to delivery on WhatsApp or email']); ?></div>
     <div class="grid g3" style="margin-top:36px">
       <div class="card"><?php echo watchlog_icon('whatsapp',24); ?><h3>WhatsApp, email, or both</h3><p>Choose a channel per recipient. WhatsApp is a first-class channel, not an afterthought.</p></div>
       <div class="card"><?php echo watchlog_icon('people',24); ?><h3>The right people</h3><p>Per-site recipients, so the branch manager gets their branch, and head office gets the overview.</p></div>

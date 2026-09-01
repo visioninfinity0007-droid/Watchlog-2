@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 ?>
-<section class="page-hero dark field">
+<section class="page-hero dark field glow-field grid-bg">
   <div class="wrap">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>How it works</span></nav>
     <span class="eyebrow">How it works</span>
@@ -13,11 +13,18 @@ $signup = esc_url(watchlog_signup_url());
       already logs, filters them on site, and sends only what matters, outward, never inward.</p>
   </div>
   <div class="wrap-wide" style="margin-top:clamp(32px,4vw,52px)">
-    <?php echo watchlog_pic('diagram-architecture','Recorder to Windows Site Agent to secure outbound connection to WatchLog cloud to portal and reports',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?>
+    <?php echo watchlog_flow([
+      ['recorder','Your recorder','Cameras you own'],
+      ['pc','Site Agent','On a site PC'],
+      ['cpu','On-site AI','Filters the noise'],
+      ['arrow-out','Outbound only','One-way sync'],
+      ['cloud','WatchLog','Event records',true],
+      ['report','Portal and reports','You, each morning'],
+    ], ['aria'=>'Recorder to Site Agent to on-site AI to outbound sync to WatchLog cloud to portal and reports']); ?>
   </div>
 </section>
 
-<section class="light">
+<section class="surface">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Step by step</span><h2>From recorder to report.</h2></div>
     <div class="steps">
@@ -32,7 +39,7 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="cloud">
+<section class="surface-cool">
   <div class="wrap split">
     <div>
       <span class="eyebrow">On the ground</span>
@@ -53,11 +60,15 @@ $signup = esc_url(watchlog_signup_url());
   </div>
 </section>
 
-<section class="dark field ai">
+<section class="dark field glow-field grid-bg ai">
   <div class="wrap-wide">
     <div class="sec-head center"><span class="eyebrow">On-site filtering</span>
       <h2>Noise is removed before it becomes an incident.</h2></div>
-    <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-ai-filtering','Raw event to on-site AI to a validated incident that is kept',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?></div>
+    <div style="max-width:920px;margin:0 auto"><?php echo watchlog_flow([
+      ['alert','Raw events','Every motion trigger'],
+      ['cpu','On-site AI','Person, car, motorcycle'],
+      ['check','Validated incident','Only the real ones',true],
+    ], ['note'=>'Rain, headlights and the IR lamp are dropped on site and never leave the building. If the detector cannot run, the event is kept rather than dropped.']); ?></div>
     <p class="center note-line">Detects person, car and motorcycle. Not facial recognition.</p>
   </div>
 </section>

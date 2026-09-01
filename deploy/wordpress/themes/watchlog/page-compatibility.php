@@ -15,7 +15,12 @@ $signup = esc_url(watchlog_signup_url());
       <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
   </div>
   <div class="wrap-wide" style="margin-top:clamp(32px,4vw,52px)">
-    <?php echo watchlog_pic('diagram-compatibility','Keep your existing cameras and recorder and add WatchLog',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?>
+    <?php echo watchlog_flow([
+      ['camera','Your cameras','Keep them'],
+      ['recorder','Your recorder','Keep it'],
+      ['box','WatchLog Agent','Add it',true],
+      ['report','Daily intelligence','Every morning'],
+    ], ['aria'=>'Keep your existing cameras and recorder and add WatchLog']); ?>
   </div>
 </section>
 
