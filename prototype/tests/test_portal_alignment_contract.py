@@ -9,13 +9,16 @@ TEAM = (ROOT / "portal/app/team/page.js").read_text()
 ONBOARD = (ROOT / "portal/app/onboarding/page.js").read_text()
 DASH = (ROOT / "portal/app/dashboard/page.js").read_text()
 INCIDENTS = (ROOT / "portal/app/incidents/page.js").read_text()
+SITE_HEALTH = (ROOT / "portal/app/site-health/page.js").read_text()
 RECIP = (ROOT / "prototype/supabase/migrations/0031_report_recipient_destinations.sql").read_text()
 AUTHZ = (ROOT / "prototype/supabase/migrations/0032_portal_operational_authz.sql").read_text()
+HEALTH = (ROOT / "prototype/supabase/migrations/0033_site_health_details.sql").read_text()
 NSIS = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text()
 BUILD = (ROOT / "tools/build_windows_release.ps1").read_text()
 WRAPPER = (ROOT / "tools/make_installer.ps1").read_text()
 SETUP = (ROOT / "prototype/agent/setup_wizard.py").read_text()
 AN_SETUP = (ROOT / "prototype/agent/analytics_setup.py").read_text()
+SEED = (ROOT / "tools/seed_demo.py").read_text()
 
 
 def check() -> None:
@@ -29,7 +32,9 @@ def check() -> None:
     assert 'rpc("wl_add_recipient_v2"' in REPORTS
     assert "p_whatsapp:" in REPORTS and "p_email:" in REPORTS
     assert "Number, then edit for email" not in REPORTS
-    assert "WhatsApp and email are independent delivery endpoints" in REPORTS
+    assert "independent delivery endpoints" in REPORTS
+    assert "07:00, site time" not in REPORTS
+    assert "Actual dispatch time comes from the deployed reporting schedule" in REPORTS
 
     # Viewer UI and server write permissions tell the same story.
     assert "Account &amp; Plan" in SETTINGS and "Sites &amp; Setup" in SETTINGS
@@ -39,11 +44,37 @@ def check() -> None:
     assert "create or replace function public.wl_issue_code" in AUTHZ
     assert "wl_require_role(array['owner','admin'])" in RECIP
     assert "ROLE_COPY" in TEAM and "navigator.clipboard.writeText" in TEAM
+    assert "Revoke this pending invitation" in TEAM
+
+    # Billing fails closed: mock is allowed only when explicitly configured.
+    assert 'NEXT_PUBLIC_BILLING_PROVIDER||""' in SETTINGS
+    assert 'NEXT_PUBLIC_BILLING_PROVIDER||"mock"' not in SETTINGS
+    assert "billingConfigured" in SETTINGS
+    assert "No plan change has been created" in SETTINGS
 
     # Core portal surfaces expose the richer review hierarchy, not raw tables only.
     assert "Review Site Health" in DASH
     assert "humanType" in DASH and "loading still" in DASH
     assert "modalBackdrop" in INCIDENTS and "Review" in INCIDENTS
+
+    # Site Health has a dedicated tenant-scoped detail API and exposes all four
+    # signals sold by the product: site, agent, camera activity and faults.
+    assert "create or replace function public.wl_site_health_details" in HEALTH
+    assert "where c.tenant_id = v_tenant" in HEALTH
+    assert "where e.tenant_id = v_tenant" in HEALTH
+    assert "last_activity_at" in HEALTH and "event_type in ('video_loss','tamper','disk_error','disk_full','offline')" in HEALTH
+    assert 'rpc("wl_site_health_details"' in SITE_HEALTH
+    assert "Camera activity" in SITE_HEALTH and "Last reported activity" in SITE_HEALTH
+    assert "Site Agents" in SITE_HEALTH and "Recorder & camera faults" in SITE_HEALTH
+
+    # Dedicated demo tenant is useful but cannot masquerade as customer data.
+    for name in ("Karachi Head Office", "Korangi Warehouse", "Landhi Factory Floor"):
+        assert name in SEED
+    assert '"demo":True' in SEED or '"demo": True' in SEED
+    assert "Rear Perimeter intentionally has no event in the last 24h" in SEED
+    assert '"video_loss"' in SEED
+    assert "demo+sample@watchlog.test" in SEED
+    assert '"report_deliveries"' in SEED
 
     # Onboarding and installer are one story and one release technology.
     assert "Nothing to install" not in ONBOARD
