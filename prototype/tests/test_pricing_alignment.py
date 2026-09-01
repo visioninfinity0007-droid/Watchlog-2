@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-Pricing alignment gate — the website and the billing config must never show
+Pricing alignment gate: the website and billing config must never show
 different numbers.
 
-Fails if the Starter/Growth prices published on the marketing site (the WP
-theme templates) diverge from the effective billing plan prices declared by
-the SQL migration chain. Enterprise is quoted ("Talk to us") and is not a
-self-serve price, so it is excluded from the numeric check but is asserted to
-be contact-only on both sides.
+Fails if Starter/Growth prices published by the WordPress theme diverge from
+the effective billing plan prices declared by the SQL migration chain.
+Enterprise is quoted (Talk to us), so it is excluded from the numeric check
+but must remain contact-only in billing.
 
-Offline (reads repo files only), so it runs in CI.
-
-    python prototype/tests/test_pricing_alignment.py
+Offline: reads repository files only.
 """
 from __future__ import annotations
 
+import html
 import re
 import sys
 from pathlib import Path
@@ -24,37 +22,42 @@ WP = ROOT / "deploy" / "wordpress" / "themes" / "watchlog"
 MIG = ROOT / "prototype" / "supabase" / "migrations"
 
 
+def visible_text(raw: str) -> str:
+    """Collapse PHP/HTML into searchable visible text.
+
+    Pricing markup intentionally separates the PKR label from the amount with
+    spans. The gate must validate what a visitor reads, not depend on whether
+    `PKR` and `6,000` happen to be adjacent bytes in the template.
+    """
+    raw = re.sub(r"<\?php.*?\?>", " ", raw, flags=re.S)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    return re.sub(r"\s+", " ", html.unescape(raw)).strip()
+
+
 def website_prices():
-    """{'starter': 6000, 'growth': 12000} parsed from the WP pricing UIs."""
     out = {}
     for f in [WP / "page-pricing.php", WP / "front-page.php"]:
         if not f.exists():
             continue
-        text = f.read_text(encoding="utf-8", errors="ignore")
-        # find each plan heading, then the first "PKR N,NNN" after it
+        text = visible_text(f.read_text(encoding="utf-8", errors="ignore"))
         for plan in ("Starter", "Growth"):
-            m = re.search(rf"{plan}.*?PKR\s*([\d,]+)", text, re.S | re.I)
+            m = re.search(rf"\b{plan}\b.*?\bPKR\s*([\d,]+)", text, re.I)
             if m:
-                val = int(m.group(1).replace(",", ""))
-                out.setdefault(f.name, {})[plan.lower()] = val
+                out.setdefault(f.name, {})[plan.lower()] = int(m.group(1).replace(",", ""))
     return out
 
 
 def billing_prices():
-    """Effective {'starter': paisa, 'growth': paisa, 'enterprise_active': bool}
-    after applying every migration that touches billing_plans, in order."""
     amt = {}
     active = {"starter": True, "growth": True, "enterprise": True}
     for f in sorted(MIG.glob("*.sql")):
         t = f.read_text(encoding="utf-8", errors="ignore")
-        # seed rows:  ('starter',    250000, 'PKR')
-        for plan, a in re.findall(r"\(\s*'(starter|growth|enterprise)'\s*,\s*(\d+)\s*,", t):
-            amt[plan] = int(a)
-        # updates: set amount_minor = 600000 ... where plan = 'starter'
-        for a, plan in re.findall(r"set\s+amount_minor\s*=\s*(\d+).*?where\s+plan\s*=\s*'(starter|growth|enterprise)'", t, re.S | re.I):
-            amt[plan] = int(a)
-        for val, plan in re.findall(r"set\s+active\s*=\s*(true|false).*?where\s+plan\s*=\s*'(starter|growth|enterprise)'", t, re.S | re.I):
-            active[plan] = (val.lower() == "true")
+        for plan, amount in re.findall(r"\(\s*'(starter|growth|enterprise)'\s*,\s*(\d+)\s*,", t):
+            amt[plan] = int(amount)
+        for amount, plan in re.findall(r"set\s+amount_minor\s*=\s*(\d+).*?where\s+plan\s*=\s*'(starter|growth|enterprise)'", t, re.S | re.I):
+            amt[plan] = int(amount)
+        for value, plan in re.findall(r"set\s+active\s*=\s*(true|false).*?where\s+plan\s*=\s*'(starter|growth|enterprise)'", t, re.S | re.I):
+            active[plan] = value.lower() == "true"
     return amt, active
 
 
@@ -64,31 +67,33 @@ def main() -> int:
     ok = True
     print("website prices:", web)
     print("billing paisa:", amt, "| active:", active)
-
     if not web:
-        print("FAIL: could not parse website prices"); return 1
+        print("FAIL: could not parse website prices")
+        return 1
 
-    # every WP surface must agree with itself
     surfaces = list(web.values())
     for plan in ("starter", "growth"):
-        vals = {s.get(plan) for s in surfaces if plan in s}
+        vals = {surface.get(plan) for surface in surfaces if plan in surface}
         if len(vals) > 1:
-            print(f"FAIL: website surfaces disagree on {plan}: {vals}"); ok = False
+            print(f"FAIL: website surfaces disagree on {plan}: {vals}")
+            ok = False
 
     ref = surfaces[0]
     for plan in ("starter", "growth"):
         web_pkr = ref.get(plan)
         db_pkr = amt.get(plan, 0) / 100
         if web_pkr is None:
-            print(f"FAIL: no website price for {plan}"); ok = False
+            print(f"FAIL: no website price for {plan}")
+            ok = False
         elif web_pkr != db_pkr:
-            print(f"FAIL: {plan} website PKR {web_pkr} != billing PKR {db_pkr}"); ok = False
+            print(f"FAIL: {plan} website PKR {web_pkr} != billing PKR {db_pkr}")
+            ok = False
         else:
             print(f"  OK  {plan}: PKR {web_pkr} (website == billing)")
 
-    # Enterprise is quoted on the site and must be contact-only in billing
     if active.get("enterprise", True):
-        print("FAIL: Enterprise is a self-serve plan in billing but 'Talk to us' on the site"); ok = False
+        print("FAIL: Enterprise is self-serve in billing but contact-only on the site")
+        ok = False
     else:
         print("  OK  enterprise: contact-only on both sides")
 

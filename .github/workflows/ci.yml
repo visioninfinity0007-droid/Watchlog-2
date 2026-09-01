@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Secret scan (tracked tree)
@@ -31,6 +31,12 @@ jobs:
         run: python tools/lint_migrations.py
       - name: Vision false-alarm filter tests
         run: python prototype/tests/test_vision_filter.py
+      - name: Analytics Studio local rule-engine tests
+        run: python prototype/tests/test_analytics_engine.py
+      - name: Analytics Studio report rendering tests
+        run: python prototype/tests/test_analytics_reporting.py
+      - name: Platform admin contract gate
+        run: python prototype/tests/test_platform_admin_contract.py
       - name: Recorder-push parser tests
         run: python prototype/tests/test_push_bridge.py
       - name: Capability-probe tests
@@ -43,9 +49,9 @@ jobs:
         run: python prototype/tests/test_pricing_alignment.py
       - name: No em dashes in public-site copy
         run: python tools/check_no_emdash.py
-    # NOTE: test_tenant_isolation, test_billing_authz and test_team_and_trial
-    # need live Supabase + secrets and (for two of them) write to the DB.
-    # They are deliberately NOT run here — CI must not touch production.
+    # Live tenant isolation, billing authz, team/trial, analytics API and
+    # platform-admin denial checks need a disposable Supabase target. CI must
+    # never mutate production.
 
   portal:
     runs-on: ubuntu-latest
@@ -62,6 +68,5 @@ jobs:
       - name: Production build (static export)
         run: npm run build
         env:
-          # Public-by-design placeholders so the static export builds in CI.
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder

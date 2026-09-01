@@ -1,18 +1,14 @@
 # WatchLog - freeze the agent to a one-file Windows .exe.
 #
-#   Lean (data only, filter fails open):
+#   Lean (diagnostics only; AI/analytics measurement pauses):
 #     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1
 #
-#   Production AI build (bundles onnxruntime + numpy + PIL + yolov8n.onnx):
+#   Production build (bundles onnxruntime + numpy + PIL + tzdata + model):
 #     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1 -WithAI
 #
-# The AI build is the shippable one: it carries the on-site false-alarm
-# filter and its model, so events are filtered before they leave the site.
-# The lean build still works - the filter fails open (agent/vision.py) - but
-# it reports every event unfiltered, so it is for testing only.
-#
-# The exe is UNSIGNED. SmartScreen shows "Windows protected your PC"; a
-# code-signing certificate removes that and is the right fix before rollout.
+# The production entrypoint is analytics_agent.py. It wraps the proven
+# watchlog_agent.py event collector and adds the versioned Analytics Studio
+# worker. --selftest is still delegated to the core agent.
 
 param([switch]$WithAI)
 
@@ -24,37 +20,39 @@ $common = @(
     "--onefile","--name","watchlog-agent","--console","--clean","--noconfirm",
     "--distpath","dist","--workpath","build","--specpath","build",
     "--hidden-import","requests",
+    "--hidden-import","zoneinfo",
+    "--collect-all","tzdata",
     "--exclude-module","torch","--exclude-module","ultralytics",
     "--exclude-module","matplotlib","--exclude-module","tkinter",
     "--exclude-module","pandas","--exclude-module","scipy",
     "--exclude-module","pytest","--exclude-module","IPython"
 )
 
+$entry = "agent\analytics_agent.py"
+
 if ($WithAI) {
     $model = Join-Path $root "models\yolov8n.onnx"
     if (-not (Test-Path $model)) {
         throw "AI build needs the model at prototype\models\yolov8n.onnx. Export it once:
-  yolo export model=yolov8n.pt format=onnx   (in a torch/ultralytics env)
+  yolo export model=yolov8n.pt format=onnx
 then copy it there."
     }
-    Write-Host "Installing AI build dependencies (onnxruntime, numpy, pillow)..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests onnxruntime numpy pillow
-    # numpy is imported dynamically in vision.py, so it must be a hidden import;
-    # onnxruntime ships native DLLs, so collect all of it; PIL is imported lazily.
+    Write-Host "Installing production dependencies (onnxruntime, numpy, pillow, tzdata)..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests onnxruntime numpy pillow tzdata
     $ai = @(
         "--hidden-import","numpy",
         "--hidden-import","onnxruntime","--collect-all","onnxruntime",
         "--hidden-import","PIL.Image",
         "--add-data","$model;."
     )
-    Write-Host "Freezing agent (production AI build)..." -ForegroundColor Cyan
-    python -m PyInstaller @common @ai agent\watchlog_agent.py
+    Write-Host "Freezing WatchLog agent + Analytics Studio runtime..." -ForegroundColor Cyan
+    python -m PyInstaller @common @ai $entry
 } else {
     $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
-    Write-Host "Installing build dependencies..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests
-    Write-Host "Freezing agent (lean; filter fails open)..." -ForegroundColor Cyan
-    python -m PyInstaller @common @lean agent\watchlog_agent.py
+    Write-Host "Installing lean build dependencies..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests tzdata
+    Write-Host "Freezing lean diagnostic build (analytics measurement pauses without AI)..." -ForegroundColor Cyan
+    python -m PyInstaller @common @lean $entry
 }
 
 $exe = Join-Path $root "dist\watchlog-agent.exe"
@@ -63,10 +61,10 @@ $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host ""
 Write-Host "Built $exe ($mb MB)" -ForegroundColor Green
 if ($WithAI) {
-    Write-Host "Verifying the AI filter is packaged (running --selftest)..." -ForegroundColor Cyan
+    Write-Host "Verifying packaged on-site AI (running --selftest)..." -ForegroundColor Cyan
     & $exe --selftest
-    if ($LASTEXITCODE -ne 0) { throw "AI self-test failed (exit $LASTEXITCODE) - the filter is not correctly packaged" }
+    if ($LASTEXITCODE -ne 0) { throw "AI self-test failed (exit $LASTEXITCODE)" }
     Write-Host "AI self-test PASSED." -ForegroundColor Green
 } else {
-    Write-Host "Lean build - filter fails open. Use -WithAI for the shippable build." -ForegroundColor Yellow
+    Write-Host "Lean build: incident filter fails open and analytics measurement pauses. Use -WithAI for release." -ForegroundColor Yellow
 }
