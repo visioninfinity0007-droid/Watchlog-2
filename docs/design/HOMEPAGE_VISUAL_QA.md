@@ -42,5 +42,25 @@ scales identically between them). `H` = rendered section height.
    shadows behind product UI; avoid card overuse.
 6. Consolidate the two security tellings into one chapter. Remove all em dashes.
 
-## Post-rebuild live QA (this file updated with after-measurements)
-_(to be filled after deploy: full-page captures + measurements at 1440/1280/1024/768/430/390)_
+## Post-rebuild live QA (after the design-director pass, theme v2.0.2)
+
+Verified on the deployed homepage.
+
+- **No horizontal overflow at any width:** 1440 (scrollW 1425), 1280 (1265), 1024 (1009),
+  768 (753), 430 (430), 390 (390). Clean everywhere.
+- **Page height:** 13,190px @1440 (was 14,581). The reduction is modest by design: the flat 132px
+  padding is gone (rhythm tokens), and the remaining length is now **used** by interactive content
+  (product explorer, sticky scroll story, AI demo) rather than empty space.
+- **Interactive components verified functional (click/keyboard, aria synced, reduced-motion safe):**
+  product explorer tabs (screenshot + statement + metrics swap), sticky story (scroll-synced visual,
+  mobile stacked cards), AI demo (event to Kept/Filtered + reason), architecture (hover/focus reveals,
+  logo only on the WatchLog node), reporting channel selector, multi-site selector, compatibility
+  toggle, pricing "how many cameras?" helper. No console errors.
+- **Hero:** layered product visual (Overview dominant + floating incident/report/health cards +
+  violet depth glow). Primary CTA prominent.
+- **Mobile (390):** hero cards stack, story becomes cards with inline shots, footer readable, hamburger
+  drawer + accordions work. No overflow.
+- **Em dashes:** 0 in template copy / rendered HTML (guarded by `tools/check_no_emdash.py`, in CI).
+  Known residual: the em dash inside the client-supplied *design-target screenshot images* is baked
+  into the PNG (not template copy); clears when the portal is aligned and literal captures replace them.
+- One 1240 grid; two container widths (1200/1280) unified. Depth via cool surfaces + glows, not card overuse.
