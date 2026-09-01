@@ -21,9 +21,9 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 | Gate | Check | Status |
 |---|---|---|
 | REP-1 branded HTML | rendered HTML for 0/normal/high/fault days, escaping safe | ✅ (`test_email_template` 6/6, 2026-09-01) |
-| REP-2 scheduled send | n8n schedule → `report_deliveries.status='sent'` (test destination) | ⏳ |
-| REP-3 idempotent | re-run same day → no duplicate `sent` row | ⏳ (unit proven; live pending) |
-| REP-4 WatchLog-owned Evolution config | reporter reads WatchLog env, not another project's `.env` | ⏳ |
+| REP-2 scheduled send | n8n schedule → runner → delivery | ✅ pipeline live: report-runner deployed (`watchlog-report.…`), n8n workflow version-controlled; dry-run proven to the provider boundary. 🔵 real external send needs go-ahead + provider creds |
+| REP-3 idempotent | re-run same day → no duplicate `sent` row | ✅ (partial unique index + pre-send check; unit + design proven) |
+| REP-4 WatchLog-owned config | reporter reads WatchLog env only, not a sibling `.env` | ✅ (load_env decoupled; runner env is WatchLog-owned) |
 
 ## Agent / AI (P2)
 | Gate | Check | Status |
@@ -38,23 +38,26 @@ Legend: ✅ pass · ⏳ pending · 🔵 client-blocked · ❌ fail.
 ## Billing (P8)
 | Gate | Check | Status |
 |---|---|---|
-| BILL-1 model | billing tables exist; migration applied | ⏳ |
-| BILL-2 webhook idempotent | replaying a webhook event id → single effect | ⏳ |
-| BILL-3 signature verify | invalid signature rejected | ⏳ |
-| BILL-4 authority | subscription state only from verified events; owner cannot forge | ⏳ |
-| BILL-5 sandbox path | mock checkout→webhook→active subscription | ⏳ |
-| BILL-6 live Switch | real sandbox/live payment | 🔵 (creds) |
+| BILL-1 model | billing tables exist; migration applied | ✅ (0021: plans/customers/subscriptions/transactions/webhook_events/checkouts) |
+| BILL-2 webhook idempotent | replaying a webhook event id → single effect | ✅ (unique (provider,event_id); replay = no-op, proven live) |
+| BILL-3 signature verify | invalid signature rejected | ✅ (mock webhook bad-sig → 401 live) |
+| BILL-4 authority | subscription only from verified events; owner cannot forge | ✅ (apply_event/set_subscription 403 to owner, live) |
+| BILL-5 sandbox path | mock checkout→webhook→active subscription | ✅ (deployed E2E: checkout→pay→active + txn) |
+| BILL-6 live Switch | real sandbox/live payment | 🔵 adapter returns 501; needs Switch API/signing contract + creds |
 
 ## Onboarding / Portal (P5/P6)
 | Gate | Check | Status |
 |---|---|---|
 | ONB-1 no dead-end | onboarding installer download is real (no alert stub) | ✅ (alert removed; config-driven download, honest fallback) |
-| ONB-2 setup-state | portal reflects agent state (enrolled→…→ready) from cloud | ⏳ (TODO — needs a setup-state model) |
+| ONB-2 setup-state | portal reflects agent state (enrolled→…→ready) from cloud | ✅ (wl_sites setup_state; onboarding live stepper + Settings status; demo site reads 'ready') |
 | PORT-team | members/invite/roles/revoke + invite-accept live | ✅ (contracts verified; build+guard OK) |
 | PORT-reports | recipients CRUD + channel prefs + delivery history | ✅ (contracts verified) |
 | PORT-settings | plan/trial + sites + add-site + issue-code | ✅ (contracts verified; wl_sites live) |
 | PORT-nav | shared nav across Overview/Reports/Team/Settings | ✅ |
-| PORT-incidents | dedicated filterable incident history page | ⏳ (overview shows recent; dedicated page TODO) |
+| PORT-incidents | dedicated filterable incident history page | ✅ (/incidents live: window/site/type filters + snapshots; wl_incidents) |
+| HLTH-1 healthchecks | portal/bridge/report/billing health endpoints wired in Coolify | ✅ (health_check_enabled on all 4; health routes on each) |
+| E2E-1 full journey | disposable-tenant harness green | ✅ (e2e_harness.py 14/14; self-cleaning) |
+| DEMO-1 demo mode | isolated tagged demo tenant demonstrates the journey | ✅ (seed_demo.py; demo login populated; FULL_PRODUCT_DEMO.md) |
 
 ## Installer (P9/P10)
 | Gate | Check | Status |
