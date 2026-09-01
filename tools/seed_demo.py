@@ -8,8 +8,8 @@ migrated, operational analytics. It never touches AKSS or another customer.
 
 Every synthetic event is tagged {"demo": true, "note": "SAMPLE - not real footage"}.
 The resulting account is designed to read as a healthy product walkthrough:
-three locations, one Site Agent per location, current camera activity and varied
-business context rather than repeated/offline test rows.
+three locations, one healthy Site Agent per location, varied camera activity,
+one deliberately quiet camera and one recent recorder/camera fault.
 
     python tools/seed_demo.py
 """
@@ -42,18 +42,20 @@ SITES = [
     {"name": "Korangi Warehouse", "type": "warehouse_logistics", "host": "WL-DEMO-WH",
      "vendor": "Hikvision", "model": "DS-7616NI-K2", "driver": "hikvision-isapi",
      "cams": [("1","Main Gate","main_gate"),("2","Loading Bay","loading_bay"),("3","Warehouse Floor","warehouse_floor"),("4","Rear Perimeter","perimeter")]},
-    {"name": "Clifton Retail", "type": "retail", "host": "WL-DEMO-RT",
+    {"name": "Landhi Factory Floor", "type": "manufacturing", "host": "WL-DEMO-MFG",
      "vendor": "Dahua", "model": "NVR4108HS", "driver": "dahua-cgi",
-     "cams": [("1","Store Entrance","entrance_exit"),("2","Checkout","checkout_till"),("3","Sales Floor","custom"),("4","Rear Door","restricted_area")]},
+     "cams": [("1","Main Gate","main_gate"),("2","Production Floor","warehouse_floor"),("3","Packing Line","custom"),("4","Restricted Store","restricted_area")]},
 ]
 
-# hours ago, site index, channel, incident type. Every camera has a recent event.
+# hours ago, site index, channel, incident/fault type.
+# Korangi / Rear Perimeter intentionally has no event in the last 24h. The
+# 38-hour event proves it used to report; Site Health can explain the silence.
 PLAN = [
     (1,0,"1","person"),(2,1,"2","vehicle"),(3,2,"1","person"),(4,0,"4","vehicle"),
     (5,1,"1","motorcycle"),(6,2,"2","person"),(7,0,"2","person"),(8,1,"3","person"),
-    (9,2,"3","person"),(10,0,"3","person"),(11,1,"4","person"),(12,2,"4","person"),
+    (9,2,"3","person"),(10,0,"3","person"),(12,2,"4","person"),(13,1,"2","video_loss"),
     (16,1,"2","vehicle"),(20,2,"1","person"),(26,0,"1","person"),(31,1,"1","vehicle"),
-    (38,1,"4","tamper"),(45,2,"2","person"),(54,0,"4","vehicle"),(67,1,"3","person"),
+    (38,1,"4","person"),(45,2,"2","person"),(54,0,"4","vehicle"),(67,1,"3","person"),
 ]
 FAULTS = {"tamper","video_loss","disk_error","disk_full","offline"}
 COLORS = [(47,66,93),(58,76,63),(77,58,89),(72,68,53)]
@@ -86,7 +88,7 @@ def main():
     print("demo tenant:", tenant)
 
     # Curate the demo account as a whole. This is safer than leaving old test
-    # agents/cameras behind and making the public walkthrough look broken.
+    # agents/cameras behind and making the walkthrough look broken.
     for table in ("report_deliveries", "report_recipients"):
         if has_table(cur, table): cur.execute(f"delete from {table} where tenant_id=%s", (tenant,))
     cur.execute("delete from sites where tenant_id=%s", (tenant,))
@@ -137,18 +139,17 @@ def main():
                 values (%s,%s,'Business hours','Asia/Karachi',%s::jsonb,true) returning id""",
                 (tenant,sid,json.dumps({"days":{d:[["08:00","18:00"]] for d in ("mon","tue","wed","thu","fri")} | {"sat":[],"sun":[]}}))).fetchone()[0]
             rules=[]
-            # Purpose-specific, semantically distinct goals.
-            if spec["type"]=="retail":
-                defs=[("1","Visitor Flow","visitor_flow","line_crossing",["person"]),("2","Checkout Activity","checkout_activity","occupancy",["person"])]
-            elif spec["type"]=="warehouse_logistics":
+            if spec["type"]=="warehouse_logistics":
                 defs=[("1","Vehicle Flow","vehicle_flow","line_crossing",["car","motorcycle"]),("2","Loading Bay Activity","zone_activity","zone_entry",["person","car"])]
+            elif spec["type"]=="manufacturing":
+                defs=[("1","Visitor Flow","visitor_flow","line_crossing",["person"]),("2","Production Zone Activity","zone_activity","zone_entry",["person"]),("4","Restricted Area Dwell","dwell","zone_dwell",["person"])]
             else:
                 defs=[("1","Visitor Flow","visitor_flow","line_crossing",["person"]),("4","Parking Vehicle Flow","vehicle_flow","line_crossing",["car","motorcycle"])]
             for ch,name,key,rtype,classes in defs:
                 geom={"type":"line","points":[[.15,.55],[.85,.55]]} if rtype=="line_crossing" else {"type":"polygon","points":[[.2,.25],[.8,.25],[.8,.8],[.2,.8]]}
-                rid=cur.execute("""insert into monitoring_rules (tenant_id,site_id,camera_id,name,analytic_key,rule_type,object_classes,geometry_json,direction_json,schedule_id,enabled)
-                    values (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,true) returning id""",
-                    (tenant,sid,camera_ids[si][ch],name,key,rtype,classes,json.dumps(geom),json.dumps({"negative_to_positive":"in","positive_to_negative":"out"}),schedule)).fetchone()[0]
+                rid=cur.execute("""insert into monitoring_rules (tenant_id,site_id,camera_id,name,analytic_key,rule_type,object_classes,geometry_json,direction_json,schedule_id,enabled,dwell_seconds)
+                    values (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,true,%s) returning id""",
+                    (tenant,sid,camera_ids[si][ch],name,key,rtype,classes,json.dumps(geom),json.dumps({"negative_to_positive":"in","positive_to_negative":"out"}),schedule,60 if rtype=="zone_dwell" else None)).fetchone()[0]
                 rules.append((rid,ch,key,rtype,classes[0]))
             # 14 days of measurements for charts, deterministic counts per site/day.
             for day in range(14):
@@ -165,18 +166,36 @@ def main():
                             (tenant,sid,camera_ids[si][ch],agents[si],rid,key,etype,obj,f"demo-{day}-{n}",direction,occurred.isoformat(),dedupe,json.dumps(meta)))
                         n_analytics+=1
 
-    # Separate endpoint rows are canonical after 0031. Pre-0031 falls back to
-    # one WhatsApp row and remains runnable for migration-order smoke tests.
+    # Canonical recipient model after 0031 is one row per delivery endpoint.
     if has_column(cur,"report_recipients","whatsapp_destination"):
         cur.execute("""insert into report_recipients (tenant_id,site_id,name,channel,destination,whatsapp_destination,email_destination,enabled)
             values (%s,null,'Demo operations','whatsapp','923000000000','923000000000',null,true),
-                   (%s,null,'Demo operations','email','demo@watchlog.test',null,'demo@watchlog.test',true)""",(tenant,tenant))
+                   (%s,null,'Demo operations','email','demo+sample@watchlog.test',null,'demo+sample@watchlog.test',true)""",(tenant,tenant))
     else:
         cur.execute("insert into report_recipients (tenant_id,site_id,name,channel,destination) values (%s,null,'Demo operations','whatsapp','923000000000')",(tenant,))
 
-    print(f"seeded {len(SITES)} healthy sites, {sum(len(s['cams']) for s in SITES)} cameras, {n_ev} incidents/events, {n_snap} synthetic stills")
+    # A few clearly synthetic delivery rows make Reports useful in a visual
+    # walkthrough without ever contacting a real provider.
+    n_deliveries=0
+    if has_table(cur,"report_deliveries"):
+        for offset in range(1,6):
+            for si,sid in enumerate(site_ids):
+                report_day=(now-dt.timedelta(days=offset)).date()
+                destination="demo+sample@watchlog.test"
+                status="failed" if (offset==2 and si==1) else "sent"
+                error="DEMO SAMPLE - simulated provider timeout" if status=="failed" else None
+                cur.execute("""insert into report_deliveries
+                    (tenant_id,site_id,report_date,channel,destination,status,provider_id,error,events,sent_at)
+                    values (%s,%s,%s,'email',%s,%s,%s,%s,%s,%s::timestamptz)
+                    on conflict do nothing""",
+                    (tenant,sid,report_day,destination,status,f"demo-sample-{offset}-{si}",error,4+offset+si,(now-dt.timedelta(days=offset,hours=-7)).isoformat()))
+                n_deliveries+=1
+
+    print(f"seeded {len(SITES)} sites, {sum(len(s['cams']) for s in SITES)} cameras, {n_ev} incidents/events, {n_snap} synthetic stills")
+    print("controlled health exceptions: Korangi Rear Perimeter quiet 24h+; Loading Bay video-loss sample within 24h")
     if analytics: print(f"seeded {n_analytics} semantic analytics measurements")
     else: print("analytics schema not present; skipped analytics seed safely")
+    print(f"seeded {n_deliveries} synthetic report delivery history rows")
     print("login:",DEMO_EMAIL,"(password in .env PORTAL_DEMO_PASSWORD)")
     conn.close()
 
