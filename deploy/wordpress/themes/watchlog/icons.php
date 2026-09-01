@@ -5,7 +5,7 @@
  * Authored here rather than assembled from the generated brand sheets on
  * purpose. A UI icon set only reads as a set if every icon shares one
  * grid, one stroke weight and one terminal style. Eight images generated
- * separately do not, however good each looks alone — they land at
+ * separately do not, however good each looks alone - they land at
  * different optical weights and the row looks broken.
  *
  * Rules, applied to all of them:

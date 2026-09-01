@@ -1,5 +1,5 @@
 <?php
-/* Solution — Manufacturing. */
+/* Solution: Manufacturing. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -12,7 +12,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="eyebrow">Manufacturing</span>
       <h1>Visibility across every shift.</h1>
       <p class="lead">Shift changes, gates and vehicle movement, and the areas you watch closely. WatchLog turns a
-        night of camera events into a morning read — where a camera fault matters as much as an incident.</p>
+        night of camera events into a morning read, where a camera fault matters as much as an incident.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a></div>
     </div>
@@ -29,7 +29,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="card"><?php echo watchlog_icon('camera',24); ?><h3>Vehicle movement</h3><p>Cars and motorcycles at the gates are kept; rain and headlights are filtered out.</p></div>
       <div class="card"><?php echo watchlog_icon('alert',24); ?><h3>Critical areas</h3><p>The areas you watch most are surfaced first, not buried in the night's counts.</p></div>
       <div class="card"><?php echo watchlog_icon('recorder',24); ?><h3>Camera faults</h3><p>A camera that drops off is flagged the night it happens, not the day you need it.</p></div>
-      <div class="card"><?php echo watchlog_icon('check',24); ?><h3>Site health</h3><p>One status shows every camera reported in — or which ones went quiet.</p></div>
+      <div class="card"><?php echo watchlog_icon('check',24); ?><h3>Site health</h3><p>One status shows every camera reported in, or which ones went quiet.</p></div>
     </div>
   </div>
 </section>
@@ -40,7 +40,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="f-kicker"><?php echo watchlog_icon('report',20); ?> Nothing goes quiet</span>
       <h3>Know when a camera stops.</h3>
       <p>A camera that stops sending events is easy to miss for days. WatchLog checks that every camera
-        reported in, and tells you the moment one goes quiet — before you go looking for the footage.</p>
+        reported in, and tells you the moment one goes quiet, before you go looking for the footage.</p>
       <a class="arrow-link" href="<?php echo watchlog_url('site-health'); ?>">See site health <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
     <div class="f-media"><?php echo watchlog_shot('product-site-health','A WatchLog site-health view for a manufacturing site',1500,1000,'(max-width:900px) 92vw, 55vw',true); ?></div>

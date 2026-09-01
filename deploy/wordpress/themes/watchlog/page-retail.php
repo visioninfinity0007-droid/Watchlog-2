@@ -1,5 +1,5 @@
 <?php
-/* Solution — Retail. */
+/* Solution: Retail. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -12,7 +12,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="eyebrow">Retail</span>
       <h1>One view across every branch.</h1>
       <p class="lead">Understand every store without calling every store. WatchLog turns each branch's night of
-        events into a short morning read — and head office sees the pattern.</p>
+        events into a short morning read, and head office sees the pattern.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a></div>
     </div>
@@ -29,7 +29,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="card"><?php echo watchlog_icon('moon',24); ?><h3>After-hours</h3><p>Movement in a closed store is the number most branches read first each morning.</p></div>
       <div class="card"><?php echo watchlog_icon('camera',24); ?><h3>Vehicle &amp; foot activity</h3><p>People, cars and motorcycles are kept; headlights and weather are filtered out.</p></div>
       <div class="card"><?php echo watchlog_icon('people',24); ?><h3>Per-branch recipients</h3><p>Each branch's report reaches the person who runs it, not one shared inbox.</p></div>
-      <div class="card"><?php echo watchlog_icon('alert',24); ?><h3>Camera health</h3><p>A blind aisle is found the day you need it — unless a stopped camera is flagged sooner.</p></div>
+      <div class="card"><?php echo watchlog_icon('alert',24); ?><h3>Camera health</h3><p>A blind aisle is found the day you need it, unless a stopped camera is flagged sooner.</p></div>
     </div>
   </div>
 </section>
@@ -40,7 +40,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="f-kicker"><?php echo watchlog_icon('report',20); ?> Every location</span>
       <h3>Head office sees the pattern.</h3>
       <p>Every branch reports the same way, so one screen shows which stores were quiet, which were
-        busy after hours, and where a camera went dark — without a call to any of them.</p>
+        busy after hours, and where a camera went dark, without a call to any of them.</p>
       <a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See the platform <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
     <div class="f-media"><?php echo watchlog_shot('product-platform-overview','A WatchLog platform overview across retail branches',1500,1000,'(max-width:900px) 92vw, 55vw',true); ?></div>

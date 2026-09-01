@@ -65,7 +65,7 @@ function watchlog_url($path = '') {
  *
  * Inline rather than an <img> so it inherits colour from its context and
  * cannot flash in late on a cold cache. The path is generated from the
- * identity sheets by tools/build_brand_assets.py — do not hand-edit it.
+ * identity sheets by tools/build_brand_assets.py - do not hand-edit it.
  */
 function watchlog_mark($height = 22) {
     $svg = get_template_directory() . '/mark.svg';
@@ -86,14 +86,14 @@ remove_action('wp_head', 'rsd_link');
  * Where the portal lives, and the two doors into it.
  *
  * Every CTA on this site used to point at "#" because this option was
- * never set — the "no registration button" the buttons were there, they
+ * never set - the "no registration button" the buttons were there, they
  * just went nowhere. The base URL is an option so it can move without a
  * code change; the paths are split so "Sign in" and "Start a trial" go to
  * the right door instead of the same one.
  */
 function watchlog_portal_base() {
     // Configurable: the WP option (set at provisioning from $WATCHLOG_PORTAL_URL),
-    // else the env, else a neutral placeholder — never a hardcoded demo host.
+    // else the env, else a neutral placeholder - never a hardcoded demo host.
     $default = getenv('WATCHLOG_PORTAL_URL') ?: 'https://watchlog.example';
     return rtrim(get_option('watchlog_portal_url', $default), '/');
 }
@@ -101,7 +101,7 @@ function watchlog_signup_url() { return watchlog_portal_base() . '/signup/'; }
 function watchlog_login_url()  { return watchlog_portal_base() . '/login/'; }
 
 /**
- * Contact destinations — configurable, never invented. Set the WP options
+ * Contact destinations - configurable, never invented. Set the WP options
  * (or env) when a real sales/support channel exists; until then the helpers
  * return '' and the UI falls back to the free trial (a real action). This is
  * the same config-over-hardcode pattern as the portal URL.
@@ -132,7 +132,7 @@ function watchlog_head() {
     $t = get_template_directory_uri();
     $desc = 'The intelligence layer for the CCTV you already own. WatchLog turns '
           . 'your recorder\'s events into validated incidents, camera-health '
-          . 'visibility and a daily report — without exposing your recorder to '
+          . 'visibility and a daily report, without exposing your recorder to '
           . 'the internet. Works with Hikvision, Dahua and most ONVIF recorders.';
     $title = wp_get_document_title();
     $url = home_url(add_query_arg([], $GLOBALS['wp']->request ?? ''));
@@ -205,7 +205,7 @@ add_action('template_redirect', 'watchlog_redirects');
  *
  * WordPress core's /wp-sitemap.xml returns 404 on this install (a core rewrite
  * quirk, not ours). Rather than depend on it, emit our own from the published
- * pages — intercepted in template_redirect so no rewrite flush is needed.
+ * pages - intercepted in template_redirect so no rewrite flush is needed.
  * Retired/redirected slugs are excluded.
  */
 function watchlog_sitemap() {

@@ -1,5 +1,5 @@
 <?php
-/* Site Health — the quiet feature that earns its keep. No over-promised alerts. */
+/* Site Health: the quiet feature that earns its keep. No over-promised alerts. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -10,7 +10,7 @@ $signup = esc_url(watchlog_signup_url());
       <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Site Health</span></nav>
       <span class="eyebrow">Site Health</span>
       <h1>A silent camera shouldn't stay silent for weeks.</h1>
-      <p class="lead">The camera you rely on is usually the one that stopped working a month ago —
+      <p class="lead">The camera you rely on is usually the one that stopped working a month ago,
         discovered on the day you need its footage. WatchLog surfaces that far sooner.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('platform'); ?>">See the platform</a></div>
@@ -24,8 +24,8 @@ $signup = esc_url(watchlog_signup_url());
     <div class="sec-head"><span class="eyebrow">What it watches</span><h2>The signals that a site is really working.</h2></div>
     <div class="grid g2">
       <div class="card"><?php echo watchlog_icon('camera',24); ?><h3>Camera last seen</h3><p>When each camera last produced anything. A camera that's gone quiet stands out instead of blending in.</p></div>
-      <div class="card"><?php echo watchlog_icon('recorder',24); ?><h3>Recorder &amp; camera faults</h3><p>Faults the recorder itself reports — including tamper — are surfaced rather than buried in a log.</p></div>
-      <div class="card"><?php echo watchlog_icon('pc',24); ?><h3>Agent reporting status</h3><p>If the site program itself stops reporting, the site shows as quiet — you find out the software went down, not just the cameras.</p></div>
+      <div class="card"><?php echo watchlog_icon('recorder',24); ?><h3>Recorder &amp; camera faults</h3><p>Faults the recorder itself reports, including tamper, are surfaced rather than buried in a log.</p></div>
+      <div class="card"><?php echo watchlog_icon('pc',24); ?><h3>Agent reporting status</h3><p>If the site program itself stops reporting, the site shows as quiet, so you find out the software went down, not just the cameras.</p></div>
       <div class="card"><?php echo watchlog_icon('sites',24); ?><h3>Per-site status</h3><p>Every location's health at a glance, so one bad site doesn't hide behind the others.</p></div>
     </div>
   </div>
@@ -52,7 +52,7 @@ $signup = esc_url(watchlog_signup_url());
   <div class="wrap">
     <div class="note-card" style="max-width:46rem;margin-inline:auto;text-align:center">
       <p style="margin:0"><strong>Honest about how you're told.</strong> Site Health appears in your portal
-        and in the daily report. WatchLog is a daily reporting service — it flags what has gone quiet each
+        and in the daily report. WatchLog is a daily reporting service. It flags what has gone quiet each
         day rather than paging you the instant a camera drops.</p>
     </div>
   </div>

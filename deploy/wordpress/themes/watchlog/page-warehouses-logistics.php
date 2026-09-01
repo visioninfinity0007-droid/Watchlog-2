@@ -1,5 +1,5 @@
 <?php
-/* Solution — Warehouses & Logistics. Reference pattern for the other four. */
+/* Solution: Warehouses & Logistics. Reference pattern for the other four. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -12,7 +12,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="eyebrow">Warehouses &amp; Logistics</span>
       <h1>See what happened after the shift ended.</h1>
       <p class="lead">Large perimeters, few people after hours, and a loading bay that matters. WatchLog
-        turns a night of camera events into a short morning read — and tells you if a camera went dark.</p>
+        turns a night of camera events into a short morning read, and tells you if a camera went dark.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a></div>
     </div>
@@ -28,7 +28,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="card"><?php echo watchlog_icon('sites',24); ?><h3>Perimeters</h3><p>Long fence lines and gates, watched for movement when the yard should be empty.</p></div>
       <div class="card"><?php echo watchlog_icon('camera',24); ?><h3>Vehicle activity</h3><p>Cars and motorcycles are kept; rain and headlights sweeping a wall are filtered out.</p></div>
       <div class="card"><?php echo watchlog_icon('moon',24); ?><h3>After-hours movement</h3><p>The after-hours count is the number most yards read first each morning.</p></div>
-      <div class="card"><?php echo watchlog_icon('alert',24); ?><h3>Camera health</h3><p>A blind spot on a loading bay is found the day you need it — unless you're told sooner.</p></div>
+      <div class="card"><?php echo watchlog_icon('alert',24); ?><h3>Camera health</h3><p>A blind spot on a loading bay is found the day you need it, unless you're told sooner.</p></div>
       <div class="card"><?php echo watchlog_icon('report',24); ?><h3>Per-site reports</h3><p>Each site's report goes to the person who runs it; head office sees the pattern.</p></div>
     </div>
   </div>
@@ -40,7 +40,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="f-kicker"><?php echo watchlog_icon('report',20); ?> Every morning</span>
       <h3>A night of events, in one read.</h3>
       <p>Instead of scrubbing hours of footage, you get counts by camera and type, the after-hours
-        number, first and last event times, and anything that went quiet — in your site's local time.</p>
+        number, first and last event times, and anything that went quiet, all in your site's local time.</p>
       <a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
     <div class="f-media"><?php echo watchlog_shot('product-reports','A WatchLog daily report for a warehouse site',1500,1000,'(max-width:900px) 92vw, 55vw',true); ?></div>

@@ -2,7 +2,7 @@
 /**
  * Default page template.
  *
- * Used by the prose pages — about, privacy, terms — and as the fallback
+ * Used by the prose pages - about, privacy, terms - and as the fallback
  * for anything without a bespoke template. The marketing pages have
  * their own (page-pricing.php and friends).
  *

@@ -1,5 +1,5 @@
 <?php
-/* Privacy — what we hold, why, how long. Precise claims only. */
+/* Privacy: what we hold, why, how long. Precise claims only. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 ?>

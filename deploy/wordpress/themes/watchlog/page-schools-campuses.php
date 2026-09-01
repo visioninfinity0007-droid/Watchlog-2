@@ -1,5 +1,5 @@
 <?php
-/* Solution — Schools & Campuses. */
+/* Solution: Schools & Campuses. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -12,7 +12,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="eyebrow">Schools &amp; Campuses</span>
       <h1>Know what moved after hours.</h1>
       <p class="lead">A campus is quiet by design at night. That makes after-hours movement across gates, boundaries
-        and several buildings worth a look — WatchLog turns the night's events into a short morning read.</p>
+        and several buildings worth a look. WatchLog turns the night's events into a short morning read.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a></div>
     </div>
@@ -39,8 +39,8 @@ $signup = esc_url(watchlog_signup_url());
     <div class="f-copy">
       <span class="f-kicker"><?php echo watchlog_icon('report',20); ?> Worth reviewing</span>
       <h3>Filtered to what matters.</h3>
-      <p>Most of a quiet night is nothing. WatchLog keeps only what's worth a second look — by camera
-        and time — so a morning review takes minutes, not hours of footage.</p>
+      <p>Most of a quiet night is nothing. WatchLog keeps only what's worth a second look, by camera
+        and time, so a morning review takes minutes, not hours of footage.</p>
       <a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">Explore incidents <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
     <div class="f-media"><?php echo watchlog_shot('product-incidents','A WatchLog incidents list filtered for a campus',1500,1000,'(max-width:900px) 92vw, 55vw',true); ?></div>

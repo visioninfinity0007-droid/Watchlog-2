@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 
-/* Navigation model — single source for desktop mega-menu + mobile drawer. */
+/* Navigation model - single source for desktop mega-menu + mobile drawer. */
 $WL_PRODUCT = [
     ['platform',    'layers',   'Platform',    'Every site in one view'],
     ['incidents',   'camera',   'Incidents',   'Validated, with a still'],

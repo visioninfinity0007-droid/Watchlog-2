@@ -1,5 +1,5 @@
 <?php
-/* Setup — what you need + how to install. Conversion page. */
+/* Setup: what you need + how to install. Conversion page. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -24,12 +24,12 @@ $signup = esc_url(watchlog_signup_url());
     <div class="sec-head"><span class="eyebrow">The four things</span><h2>What you need at the site.</h2></div>
     <div class="grid g2">
       <div class="card"><?php echo watchlog_icon('recorder',24); ?><h3>A supported recorder</h3><p>Hikvision or Dahua are validated; HiLook, Imou, CP&nbsp;Plus, Uniview, Tiandy and most ONVIF units are protocol-compatible. Not sure? <a href="<?php echo watchlog_url('contact'); ?>">Send us the label.</a></p></div>
-      <div class="card"><?php echo watchlog_icon('pc',24); ?><h3>A Windows PC at the site</h3><p>On the same network as the recorder, that stays switched on. Any ordinary office machine will do — it runs quietly in the background.</p></div>
+      <div class="card"><?php echo watchlog_icon('pc',24); ?><h3>A Windows PC at the site</h3><p>On the same network as the recorder, that stays switched on. Any ordinary office machine will do. It runs quietly in the background.</p></div>
       <div class="card"><?php echo watchlog_icon('lock',24); ?><h3>The recorder's login</h3><p>Its admin username and password. These are typed into the Agent at the site and never leave that PC.</p></div>
       <div class="card"><?php echo watchlog_icon('cloud',24); ?><h3>An ordinary internet connection</h3><p>No fixed IP, no port forwarding, no firewall changes. The Agent connects outward only.</p></div>
     </div>
     <div class="note-card" style="margin-top:24px"><strong>Not supported:</strong> the cheapest unbranded
-      recorders — typically Xiongmai or Hisilicon boards sold without a brand name — don't speak a standard
+      recorders (typically Xiongmai or Hisilicon boards sold without a brand name) don't speak a standard
       protocol reliably enough. If you're unsure what you have, send a photo of the label first.</div>
   </div>
 </section>
@@ -42,14 +42,14 @@ $signup = esc_url(watchlog_signup_url());
       <div class="step"><div><h3>Download the WatchLog Agent</h3><p>Onto the Windows PC at the site.</p></div></div>
       <div class="step"><div><h3>Run it and point it at the recorder</h3><p>A setup wizard asks for the recorder's address and login, then searches the network if you don't know the address. If it can't reach the recorder, it tells you why in plain language.</p></div></div>
       <div class="step"><div><h3>Paste the enrollment code</h3><p>The site appears in your portal within a minute, and its cameras sync automatically.</p></div></div>
-      <div class="step"><div><h3>Choose who gets the daily report</h3><p>Add recipients and pick a channel — WhatsApp, email, or both.</p></div></div>
+      <div class="step"><div><h3>Choose who gets the daily report</h3><p>Add recipients and pick a channel: WhatsApp, email, or both.</p></div></div>
     </div>
     <div class="feature" style="margin-top:clamp(40px,5vw,64px)">
       <div class="f-media"><?php echo watchlog_shot('product-setup','The WatchLog onboarding stepper: enrollment, recorder, cameras, ready',1500,1000,'(max-width:900px) 92vw, 48vw',true); ?></div>
       <div class="f-copy">
         <span class="f-kicker"><?php echo watchlog_icon('check',20); ?> You'll see it come up live</span>
         <h3>The portal fills in as it connects.</h3>
-        <p>Enrollment, then the recorder, then the cameras, then ready — each step shows in the portal so
+        <p>Enrollment, then the recorder, then the cameras, then ready. Each step shows in the portal so
           you can watch the site come online rather than wonder whether it worked.</p>
       </div>
     </div>

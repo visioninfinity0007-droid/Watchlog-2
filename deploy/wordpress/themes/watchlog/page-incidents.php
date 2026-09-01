@@ -1,5 +1,5 @@
 <?php
-/* Incidents — event vs incident, on-site filtering, real Incidents UI. */
+/* Incidents: event vs incident, on-site filtering, real Incidents UI. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -10,7 +10,7 @@ $signup = esc_url(watchlog_signup_url());
     <span class="eyebrow">Incidents</span>
     <h1>From motion to something worth reviewing.</h1>
     <p class="lead measure">Your recorder logs hundreds of events a night. WatchLog keeps only the ones
-      that matter — each with a still — so what reaches your portal is worth opening.</p>
+      that matter, each with a still, so what reaches your portal is worth opening.</p>
     <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
       <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('platform'); ?>">See the platform</a></div>
   </div>
@@ -23,11 +23,11 @@ $signup = esc_url(watchlog_signup_url());
   <div class="wrap">
     <div class="sec-head center"><span class="eyebrow">The distinction that matters</span>
       <h2>An event is not an incident.</h2>
-      <p class="lead measure">The recorder produces <strong>events</strong> — motion of any kind. WatchLog
+      <p class="lead measure">The recorder produces <strong>events</strong> for motion of any kind. WatchLog
         keeps only the ones with a person, car or motorcycle, and those become <strong>incidents</strong>.</p></div>
     <div class="grid g2" style="max-width:920px;margin-inline:auto">
-      <div class="note-card"><h3 style="margin-top:0">Event</h3><p style="margin-bottom:0">A raw record from the recorder: motion on a camera at a time. Rain, headlights, the IR lamp at dusk, a cat — all events, most of them noise.</p></div>
-      <div class="note-card"><h3 style="margin-top:0">Incident</h3><p style="margin-bottom:0">A validated event that passed on-site filtering — a person, car or motorcycle. Only incidents sync to WatchLog, each with one still.</p></div>
+      <div class="note-card"><h3 style="margin-top:0">Event</h3><p style="margin-bottom:0">A raw record from the recorder: motion on a camera at a time. Rain, headlights, the IR lamp at dusk, a cat are all events, most of them noise.</p></div>
+      <div class="note-card"><h3 style="margin-top:0">Incident</h3><p style="margin-bottom:0">A validated event that passed on-site filtering by showing a person, car or motorcycle. Only incidents sync to WatchLog, each with one still.</p></div>
     </div>
   </div>
 </section>
@@ -35,7 +35,7 @@ $signup = esc_url(watchlog_signup_url());
 <section class="dark field ai">
   <div class="wrap-wide">
     <div class="sec-head center"><span class="eyebrow">Filtered on site</span>
-      <h2>Kept, or dropped — before anything is sent.</h2></div>
+      <h2>Kept, or dropped, before anything is sent.</h2></div>
     <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-ai-filtering','Raw event to on-site AI to a kept, validated incident; fail-open if the detector cannot run',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?></div>
     <div class="ai-strip">
       <div class="ai-col"><span class="ai-lbl kept">Kept as incidents</span>
@@ -52,7 +52,7 @@ $signup = esc_url(watchlog_signup_url());
         </div>
       </div>
     </div>
-    <p class="center note-line">Detects person, car and motorcycle. Not facial recognition. WatchLog reports incidents — it does not watch live or dispatch a response.</p>
+    <p class="center note-line">Detects person, car and motorcycle. Not facial recognition. WatchLog reports incidents. It does not watch live or dispatch a response.</p>
   </div>
 </section>
 

@@ -1,197 +1,272 @@
 <?php
 /**
- * Homepage — WatchLog. 14 sections, dark at the conceptual peaks.
- * Copy is the final deck in docs/design/COPY_DECK.md; claims conform to
- * docs/design/PUBLIC_CLAIMS_MATRIX.md. Product screenshots come from the
- * real demo tenant (watchlog_shot placeholders until captured).
+ * Homepage - WatchLog. Interactive physical-security SaaS experience.
+ * Story: promise, proof, problem, product reveal (explorer), three outcomes
+ * (sticky story), AI differentiation (demo), how it works, daily report,
+ * multi-site, industry fit, trust, compatibility, pricing, conversion.
+ * No em dashes in copy. Copy in docs/design/COPY_DECK.md.
  */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
+
+/* --- data for the interactive product explorer (real demo captures) --- */
+$WL_EXPLORER = [
+  ['overview','Overview','product-platform-overview','Every site, one view.',
+    'Incidents, after-hours activity, camera health and recent events across all your locations.',
+    [['27','incidents, last 24h'],['92%','cameras online']]],
+  ['incidents','Incidents','product-incidents','Only what is worth reviewing.',
+    'Each kept event carries a still, filtered on site. Search by site, camera and type.',
+    [['person','car, motorcycle'],['1 tap','to the moment']]],
+  ['reports','Reports','product-reports','The morning brief, delivered.',
+    'A daily summary to the right people on WhatsApp or email, with a full delivery history.',
+    [['daily','per site'],['WhatsApp','and email']]],
+  ['health','Site Health','product-site-health','Know when a camera goes quiet.',
+    'Camera last-seen, recorder faults and whether each site is reporting at all.',
+    [['last seen','per camera'],['faults','surfaced early']]],
+];
+/* --- three core outcomes (sticky story) --- */
+$WL_STORY = [
+  ['incidents','Incidents','camera','Review only the incidents worth seeing.',
+    'A recorder logs hundreds of events a night. WatchLog keeps the ones with a person, car or motorcycle, each with a still, so what reaches you is worth opening.',
+    'product-incidents','incidents'],
+  ['reporting','Reporting','report','Start every morning already briefed.',
+    'A short daily summary lands before your first coffee: counts by camera and type, after-hours activity, and anything that went quiet, in each site\'s local time.',
+    'product-reports','reporting'],
+  ['health','Site Health','alert','Know when a camera stops doing its job.',
+    'The camera you rely on is usually the one that failed weeks ago. WatchLog surfaces silent cameras and reporting gaps far sooner.',
+    'product-site-health','site-health'],
+];
+/* --- AI demo events (existing CCTV sample assets) --- */
+$WL_AI = [
+  ['person','cctv-person','Person','kept','A person on Main Gate after hours. Kept as an incident.'],
+  ['vehicle','cctv-vehicle','Vehicle','kept','A vehicle at the loading bay. Kept as an incident.'],
+  ['motorcycle','cctv-motorcycle','Motorcycle','kept','A motorcycle at the entrance. Kept as an incident.'],
+  ['rain','cctv-empty-rain','Empty yard, rain','filtered','Rain on an empty yard tripped motion. Filtered at site.'],
+  ['headlights','cctv-headlights','Headlights','filtered','Headlights sweeping a wall, no vehicle in view. Filtered at site.'],
+];
+/* --- multi-site selector --- */
+$WL_SITES = [
+  ['hq','Karachi Head Office','online','12','9','Person, Main Gate','22:16'],
+  ['wh','Warehouse','online','8','14','Vehicle, Loading Bay','03:11'],
+  ['ff','Factory Floor','fault','5','3','Motorcycle, Entrance','21:27'],
+];
+/* --- architecture stages (semantic icons; logo only for WatchLog) --- */
+$WL_ARCH = [
+  ['recorder','Recorder','Your existing NVR or DVR keeps recording as it always has.'],
+  ['pc','Site Agent','A small Windows program on a PC at the site reads the recorder locally.'],
+  ['check','Local filtering','Each still is checked on your own machine for a person, car or motorcycle.'],
+  ['arrow-out','Outbound only','Only validated events and one still per incident are sent out. Nothing connects in.'],
+  ['__mark__','WatchLog','Your private account receives the validated events and stills.'],
+  ['report','Portal and reports','Your team sees incidents and site health, and gets a daily report.'],
+];
 ?>
 
 <!-- 01 · HERO -->
-<section class="hero dark field">
-  <?php echo watchlog_pic('hero-industry-atmosphere', '', 2000, 1125, 'hero-bg', '100vw', true); ?>
+<section class="hero dark field glow-field">
+  <?php echo watchlog_pic('hero-industry-atmosphere','',2000,1125,'hero-bg','100vw',true); ?>
   <div class="wrap-wide hero-grid">
-    <div class="hero-copy reveal in">
+    <div class="hero-copy">
       <span class="eyebrow">CCTV intelligence for businesses</span>
       <h1>Make your existing cameras useful every&nbsp;day.</h1>
-      <p class="lead measure">WatchLog turns your recorder's events into validated incidents,
-        camera-health visibility and a daily report — without exposing your CCTV to the internet.</p>
+      <p class="hero-sub">WatchLog filters recorder events on site, surfaces the incidents worth reviewing,
+        watches camera health, and gives your team a clear daily security picture.</p>
       <div class="cta-row">
-        <a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
-        <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('platform'); ?>">See the platform</a>
+        <a class="btn btn-primary btn-xl" href="<?php echo $signup; ?>">Start free</a>
+        <a class="btn btn-ghost btn-xl js-scroll" href="#explore">See WatchLog in action</a>
       </div>
       <ul class="chips">
-        <li class="chip"><?php echo watchlog_icon('check', 18); ?> Works with existing CCTV</li>
-        <li class="chip"><?php echo watchlog_icon('check', 18); ?> On-site AI filtering</li>
-        <li class="chip"><?php echo watchlog_icon('check', 18); ?> 14-day trial, no card</li>
+        <li class="chip"><?php echo watchlog_icon('check',18); ?> Works with existing CCTV</li>
+        <li class="chip"><?php echo watchlog_icon('check',18); ?> On-site AI filtering</li>
+        <li class="chip"><?php echo watchlog_icon('check',18); ?> 14-day trial</li>
       </ul>
     </div>
-    <div class="hero-shot reveal in glow">
-      <?php echo watchlog_pic('product-hero-composite', 'The WatchLog portal: the Overview dashboard with a daily report showing delivery on WhatsApp and email', 1900, 1240, 'hero-composite', '(max-width:900px) 96vw, 54vw', true); ?>
+    <div class="hero-visual">
+      <div class="hv-main frame"><?php echo watchlog_pic('product-platform-overview','WatchLog Overview dashboard',1900,1200,'shot-img','(max-width:900px) 96vw, 640px',true); ?></div>
+      <div class="hv-card hv-incident">
+        <?php echo watchlog_pic('cctv-person','',1600,900,'hv-thumb','120px'); ?>
+        <div><span class="hv-k">Incident kept</span><b>Person, Main Gate</b><span class="hv-t">22:16 · after hours</span></div>
+      </div>
+      <div class="hv-card hv-report">
+        <span class="hv-ic"><?php echo watchlog_icon('check',18); ?></span>
+        <div><b>Daily report delivered</b><span class="hv-t">WhatsApp and email</span></div>
+      </div>
+      <div class="hv-card hv-health">
+        <span class="hv-dot"></span><div><b>92% cameras online</b><span class="hv-t">23 of 25</span></div>
+      </div>
     </div>
   </div>
 </section>
 
 <!-- 02 · PROOF STRIP -->
-<section class="dark navy proof sec-sm">
+<section class="dark navy proof s-xs">
   <div class="wrap-wide proof-grid">
-    <div class="proof-item"><?php echo watchlog_icon('camera', 22); ?><span>Works with the CCTV you already own</span></div>
-    <div class="proof-item"><?php echo watchlog_icon('check', 22); ?><span>Filters false alarms on site</span></div>
-    <div class="proof-item"><?php echo watchlog_icon('lock', 22); ?><span>No inbound access to your recorder</span></div>
-    <div class="proof-item"><?php echo watchlog_icon('report', 22); ?><span>Portal + a daily report</span></div>
+    <div class="proof-item"><span class="proof-ic"><?php echo watchlog_icon('camera',24); ?></span><div><b>Works with the CCTV you own</b><span>Hikvision, Dahua and most ONVIF recorders</span></div></div>
+    <div class="proof-item"><span class="proof-ic"><?php echo watchlog_icon('check',24); ?></span><div><b>Filtered on site</b><span>False alarms dropped before anything is sent</span></div></div>
+    <div class="proof-item"><span class="proof-ic"><?php echo watchlog_icon('lock',24); ?></span><div><b>No inbound access</b><span>Your recorder is never exposed to the internet</span></div></div>
+    <div class="proof-item"><span class="proof-ic"><?php echo watchlog_icon('report',24); ?></span><div><b>A daily report</b><span>The useful part, on WhatsApp or email</span></div></div>
   </div>
 </section>
 
-<!-- 03 · PROBLEM / CONTEXT -->
-<section class="light">
+<!-- 03 · PROBLEM -->
+<section class="surface problem">
   <div class="wrap split split-5-7">
     <div class="reveal">
       <span class="eyebrow">The gap</span>
-      <h2>Your CCTV creates footage. WatchLog creates visibility.</h2>
+      <h2>Your CCTV records the evidence.<br>WatchLog turns it into visibility.</h2>
       <p class="lead">Most cameras are only ever opened after something has already gone wrong.</p>
-      <p>WatchLog reads the events your recorder already logs and turns them into an operational
-        record you actually use — a short daily read instead of hours of footage.</p>
+      <p>WatchLog reads the events your recorder already logs and turns them into an operational record
+        your team actually uses: a short daily read instead of hours of footage.</p>
     </div>
-    <div class="reveal">
-      <?php echo watchlog_pic('environment-recorder', 'A CCTV recorder on a shelf at a site', 1800, 1200, 'frame-plain', '(max-width:900px) 92vw, 46vw'); ?>
+    <div class="reveal problem-media">
+      <?php echo watchlog_pic('environment-recorder','A CCTV recorder on a shelf at a site',1800,1200,'','(max-width:900px) 92vw, 52vw'); ?>
     </div>
   </div>
 </section>
 
-<!-- 04 · PLATFORM REVEAL -->
-<section class="dark field platform-reveal">
+<!-- 04 · PRODUCT EXPLORER -->
+<section class="dark field glow-field grid-bg explorer" id="explore">
   <div class="wrap-wide">
     <div class="sec-head center reveal">
       <span class="eyebrow">The platform</span>
       <h2>One place to understand every site.</h2>
-      <p class="lead measure">Incidents, site health and after-hours activity across all your
-        locations — in a single view.</p>
+      <p class="lead measure">Click through the surfaces your team lives in. Real screens from a WatchLog
+        demo account.</p>
     </div>
-    <div class="reveal glow platform-shot">
-      <?php echo watchlog_shot('product-platform-overview', 'WatchLog Overview: sites, incidents, after-hours activity and site health', 1900, 1150, '(max-width:1200px) 92vw, 1100px', true); ?>
-    </div>
-    <div class="platform-chips reveal">
-      <span class="pchip"><?php echo watchlog_icon('camera',18); ?> Incidents</span>
-      <span class="pchip"><?php echo watchlog_icon('alert',18); ?> Site health</span>
-      <span class="pchip"><?php echo watchlog_icon('moon',18); ?> After-hours</span>
-      <span class="pchip"><?php echo watchlog_icon('check',18); ?> Camera health</span>
-    </div>
-    <div class="center" style="margin-top:36px">
-      <a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See the platform <?php echo watchlog_icon('arrow-right',18); ?></a>
+    <div class="exp reveal" data-tabs>
+      <div class="exp-tabs" role="tablist" aria-label="Platform surfaces">
+        <?php foreach ($WL_EXPLORER as $k=>$e){ printf(
+          '<button class="exp-tab%s" data-tab="%s" role="tab" aria-selected="%s">%s</button>',
+          $k===0?' active':'', esc_attr($e[0]), $k===0?'true':'false', esc_html($e[1])); } ?>
+      </div>
+      <div class="exp-body">
+        <div class="exp-stage">
+          <?php foreach ($WL_EXPLORER as $k=>$e){ printf(
+            '<figure class="exp-panel%s frame" data-panel="%s">%s</figure>',
+            $k===0?' active':'', esc_attr($e[0]),
+            watchlog_pic($e[2], $e[1].' screen in WatchLog', 1900,1200,'shot-img','(max-width:1100px) 92vw, 760px')); } ?>
+        </div>
+        <div class="exp-side">
+          <?php foreach ($WL_EXPLORER as $k=>$e){
+            printf('<div class="exp-caption%s" data-panel="%s"><h3>%s</h3><p>%s</p><div class="exp-metrics">',
+              $k===0?' active':'', esc_attr($e[0]), esc_html($e[3]), esc_html($e[4]));
+            foreach ($e[5] as $m){ printf('<div class="metric"><b>%s</b><span>%s</span></div>', esc_html($m[0]), esc_html($m[1])); }
+            echo '</div></div>';
+          } ?>
+          <a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See the full platform <?php echo watchlog_icon('arrow-right',18); ?></a>
+        </div>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- 05 · THREE CAPABILITIES -->
-<section class="light">
-  <div class="wrap">
+<!-- 05 · THREE OUTCOMES (sticky story) -->
+<section class="light story-sec">
+  <div class="wrap-wide">
     <div class="sec-head reveal"><span class="eyebrow">What you get</span>
-      <h2>Three things, done properly.</h2></div>
-
-    <div class="cap split split-7-5 reveal">
-      <div class="cap-media"><?php echo watchlog_shot('product-incidents', 'WatchLog Incidents with filters and a person incident selected', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?></div>
-      <div class="cap-copy">
-        <span class="cap-k"><?php echo watchlog_icon('camera',20); ?> Incidents</span>
-        <h3>Know what happened.</h3>
-        <p>Every kept event carries a still, filtered on site so what you review is worth reviewing.
-          Search the history by site, camera and type.</p>
-        <a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">Explore incidents <?php echo watchlog_icon('arrow-right',18); ?></a>
+      <h2>Three outcomes, not three features.</h2></div>
+    <div class="story" data-story>
+      <div class="story-rail">
+        <?php foreach ($WL_STORY as $k=>$s){ printf(
+          '<button class="story-tab%s" data-step="%s"><span class="st-ic">%s</span><span><b>%s</b></span></button>',
+          $k===0?' active':'', esc_attr($s[0]), watchlog_icon($s[2],20), esc_html($s[1])); } ?>
       </div>
-    </div>
-
-    <div class="cap split split-5-7 reveal flip">
-      <div class="cap-copy">
-        <span class="cap-k"><?php echo watchlog_icon('report',20); ?> Reporting</span>
-        <h3>Wake up to the useful part.</h3>
-        <p>A daily summary to the right people, on WhatsApp or email, in each site's local time —
-          with a full history kept in the portal.</p>
-        <a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',18); ?></a>
+      <div class="story-steps">
+        <?php foreach ($WL_STORY as $k=>$s){ printf(
+          '<article class="story-step" data-step="%s"><span class="st-kicker">%s %s</span><h3>%s</h3><p>%s</p>'
+          .'<a class="arrow-link" href="%s">See %s</a>'
+          .'<div class="story-shot-m frame">%s</div></article>',
+          esc_attr($s[0]), watchlog_icon($s[2],18), esc_html($s[1]), esc_html($s[3]), esc_html($s[4]),
+          watchlog_url($s[6]), esc_html(strtolower($s[1])),
+          watchlog_pic($s[5], $s[3], 1500,1000,'shot-img','92vw')); } ?>
       </div>
-      <div class="cap-media"><?php echo watchlog_shot('product-reports', 'WatchLog Reports: a daily report with delivery history and recipients', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?></div>
-    </div>
-
-    <div class="cap split split-7-5 reveal">
-      <div class="cap-media"><?php echo watchlog_shot('product-site-health', 'WatchLog Site Health showing a healthy site and a camera fault', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?></div>
-      <div class="cap-copy">
-        <span class="cap-k"><?php echo watchlog_icon('alert',20); ?> Site Health</span>
-        <h3>Know when something goes quiet.</h3>
-        <p>A camera that stopped three weeks ago is usually found the day you need its footage.
-          WatchLog tells you as soon as a camera or a site goes silent.</p>
-        <a class="arrow-link" href="<?php echo watchlog_url('site-health'); ?>">See site health <?php echo watchlog_icon('arrow-right',18); ?></a>
+      <div class="story-visual" aria-hidden="true">
+        <?php foreach ($WL_STORY as $k=>$s){ printf('<figure class="story-shot%s frame" data-shot="%s">%s</figure>',
+          $k===0?' active':'', esc_attr($s[0]),
+          watchlog_pic($s[5], '', 1500,1000,'shot-img','(max-width:1000px) 92vw, 620px')); } ?>
       </div>
     </div>
   </div>
 </section>
 
-<!-- 06 · LOCAL AI -->
-<section class="dark field ai">
+<!-- 06 · AI DEMO -->
+<section class="dark field glow-field grid-bg aidemo">
   <div class="wrap-wide">
     <div class="sec-head center reveal"><span class="eyebrow">On-site intelligence</span>
       <h2>Less noise. More useful incidents.</h2>
       <p class="lead measure">Rain, headlights and the IR lamp at dusk all trip motion. WatchLog checks
-        each still on your own site PC and keeps only person, car and motorcycle — before anything is sent.</p>
-    </div>
-    <div class="reveal ai-diagram">
-      <?php echo watchlog_pic('diagram-ai-filtering', 'Raw event to local AI to a validated, kept incident; if the detector cannot run, the event is kept rather than dropped', 1800, 1000, '', '(max-width:1200px) 92vw, 1100px'); ?>
-    </div>
-    <div class="ai-strip reveal">
-      <div class="ai-col">
-        <span class="ai-lbl kept">Kept</span>
-        <div class="ai-thumbs">
-          <?php echo watchlog_pic('cctv-person','Example CCTV still: a person',1600,900,'', '30vw'); ?>
-          <?php echo watchlog_pic('cctv-vehicle','Example CCTV still: a vehicle',1600,900,'', '30vw'); ?>
-          <?php echo watchlog_pic('cctv-motorcycle','Example CCTV still: a motorcycle',1600,900,'', '30vw'); ?>
+        each still on your own site PC and keeps only person, car and motorcycle. Try it.</p></div>
+    <div class="ai reveal" data-aidemo>
+      <div class="ai-flow"><span>Raw events</span><?php echo watchlog_icon('arrow-right',18); ?><span>WatchLog filter</span><?php echo watchlog_icon('arrow-right',18); ?><span>Useful incidents</span></div>
+      <div class="ai-grid">
+        <div class="ai-events" role="tablist" aria-label="Example events">
+          <?php foreach ($WL_AI as $k=>$a){ printf(
+            '<button class="ai-event%s" data-event="%s" data-verdict="%s" data-reason="%s" role="tab" aria-selected="%s">%s<span class="ai-lab">%s</span></button>',
+            $k===0?' active':'', esc_attr($a[0]), esc_attr($a[3]), esc_attr($a[4]), $k===0?'true':'false',
+            watchlog_pic($a[1], $a[2], 1600,900,'','120px'), esc_html($a[2])); } ?>
+        </div>
+        <div class="ai-stage">
+          <div class="ai-shot frame"><?php echo watchlog_pic($WL_AI[0][1],'',1600,900,'shot-img js-ai-shot','(max-width:900px) 92vw, 520px'); ?></div>
+          <div class="ai-verdict" data-verdict="kept">
+            <span class="ai-badge js-ai-badge">Kept</span>
+            <p class="js-ai-reason"><?php echo esc_html($WL_AI[0][4]); ?></p>
+            <p class="ai-note">Detects person, car and motorcycle. Not facial recognition. If the detector cannot run, the event is kept rather than dropped.</p>
+          </div>
         </div>
       </div>
-      <div class="ai-col">
-        <span class="ai-lbl dropped">Filtered out</span>
-        <div class="ai-thumbs">
-          <?php echo watchlog_pic('cctv-empty-rain','Example CCTV still: empty scene in rain',1600,900,'', '30vw'); ?>
-          <?php echo watchlog_pic('cctv-headlights','Example CCTV still: headlights sweeping a wall',1600,900,'', '30vw'); ?>
-        </div>
-      </div>
     </div>
-    <p class="center note-line reveal">Detects person, car and motorcycle. Not facial recognition.</p>
   </div>
 </section>
 
-<!-- 07 · HOW IT WORKS -->
-<section class="light">
+<!-- 07 · HOW IT WORKS (semantic architecture) -->
+<section class="light arch-sec">
   <div class="wrap">
     <div class="sec-head reveal"><span class="eyebrow">How it works</span>
       <h2>Your recorder stays private.</h2>
-      <p class="lead measure">A small program on a PC you already have reads the recorder and connects
-        outward only — no port forwarding, no inbound access.</p></div>
-    <div class="reveal hiw-diagram">
-      <?php echo watchlog_pic('diagram-architecture', 'Recorder to Windows Site Agent to secure outbound to WatchLog cloud to portal and reports', 1800, 1000, '', '(max-width:1100px) 92vw, 1000px'); ?>
+      <p class="lead measure">Recorded video stays on the recorder. Recorder credentials stay on the site
+        PC. WatchLog receives validated event data and one incident still when required.</p></div>
+    <div class="arch reveal" data-arch>
+      <?php foreach ($WL_ARCH as $k=>$n){
+        $ic = $n[0]==='__mark__' ? '<span class="arch-mark">'.watchlog_mark(26).'</span>' : watchlog_icon($n[0],26);
+        printf('<button class="arch-node%s%s" data-node="%s" data-text="%s" aria-label="%s"><span class="arch-ic">%s</span><span class="arch-name">%s</span></button>',
+          $k===0?' active':'', $n[0]==='__mark__'?' is-wl':'', esc_attr($k), esc_attr($n[2]), esc_attr($n[1]), $ic, esc_html($n[1]));
+        if ($k < count($WL_ARCH)-1) { echo '<span class="arch-arrow">'.watchlog_icon('arrow-right',20).'</span>'; }
+      } ?>
     </div>
-    <div class="grid g3 hiw-points reveal">
-      <div class="card"><?php echo watchlog_icon('lock',24); ?><h3>Recorder stays private</h3><p>Never exposed to the public internet. No port forwarding, no VPN.</p></div>
-      <div class="card"><?php echo watchlog_icon('pc',24); ?><h3>Credentials stay on site</h3><p>The recorder's login lives in a file on your site PC and is never sent to WatchLog.</p></div>
-      <div class="card"><?php echo watchlog_icon('arrow-out',24); ?><h3>Connection goes outward</h3><p>Only validated event data and one still per incident leave the building.</p></div>
+    <div class="arch-explain reveal"><p class="js-arch-text"><?php echo esc_html($WL_ARCH[0][2]); ?></p></div>
+    <div class="arch-foot reveal">
+      <span><?php echo watchlog_icon('lock',18); ?> No port forwarding</span>
+      <span><?php echo watchlog_icon('arrow-out',18); ?> Outbound only</span>
+      <span><?php echo watchlog_icon('shield-off',18); ?> No live camera access</span>
+      <a class="arrow-link" href="<?php echo watchlog_url('how-it-works'); ?>">How WatchLog works <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
-    <div style="margin-top:36px"><a class="arrow-link" href="<?php echo watchlog_url('how-it-works'); ?>">How WatchLog works <?php echo watchlog_icon('arrow-right',18); ?></a></div>
   </div>
 </section>
 
-<!-- 08 · DAILY OPERATIONS -->
-<section class="cloud">
+<!-- 08 · REPORTING -->
+<section class="surface-cool report-sec">
   <div class="wrap split split-7-5">
-    <div class="reveal">
-      <?php echo watchlog_shot('product-reports', 'A WatchLog daily report in the portal with delivery history', 1500, 1000, '(max-width:900px) 92vw, 55vw', true); ?>
+    <div class="reveal report-media">
+      <div class="report-frame frame"><?php echo watchlog_pic('product-reports','WatchLog daily report',1500,1050,'shot-img','(max-width:900px) 92vw, 55vw'); ?></div>
+      <div class="report-channel" data-report>
+        <span class="rc-label">Delivered on</span>
+        <div class="rc-btns" role="tablist">
+          <button class="rc-btn active" data-ch="whatsapp" role="tab" aria-selected="true"><?php echo watchlog_icon('whatsapp',18); ?> WhatsApp</button>
+          <button class="rc-btn" data-ch="email" role="tab" aria-selected="false"><?php echo watchlog_icon('mail',18); ?> Email</button>
+          <button class="rc-btn" data-ch="both" role="tab" aria-selected="false"><?php echo watchlog_icon('check',18); ?> Both</button>
+        </div>
+        <p class="rc-status js-rc-status">Sent to Operations Manager on WhatsApp at 07:00.</p>
+      </div>
     </div>
     <div class="reveal">
       <span class="eyebrow">Every morning</span>
-      <h2>The useful part, before your first coffee.</h2>
-      <p>Each morning the right people get a short summary — counts by camera and type, how many were
-        after hours, and anything that went quiet.</p>
+      <h2>The useful part, ready before your day starts.</h2>
+      <p>A daily summary of what happened, delivered to the right people. Choose the channel per
+        recipient, in each site's local time.</p>
       <ul class="ticks">
-        <li><?php echo watchlog_icon('whatsapp',20); ?> WhatsApp, email, or both</li>
-        <li><?php echo watchlog_icon('clock',20); ?> Counts in each site's local time</li>
-        <li><?php echo watchlog_icon('report',20); ?> Full delivery history in the portal</li>
+        <li><?php echo watchlog_icon('report',20); ?> Daily summary and after-hours count</li>
+        <li><?php echo watchlog_icon('alert',20); ?> Camera faults flagged</li>
+        <li><?php echo watchlog_icon('people',20); ?> Per-recipient delivery and history</li>
       </ul>
       <a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
@@ -199,131 +274,153 @@ $signup = esc_url(watchlog_signup_url());
 </section>
 
 <!-- 09 · MULTI-SITE -->
-<section class="dark field">
-  <div class="wrap split split-5-7">
-    <div class="reveal">
-      <span class="eyebrow">More than one site</span>
-      <h2>One view across every location.</h2>
-      <p>Head office sees the pattern; each site's report goes to the person who runs it. Roles for
-        owner, admin and read-only, and per-site recipients.</p>
-      <ul class="ticks light-ticks">
-        <li><?php echo watchlog_icon('sites',20); ?> Every site in one overview</li>
-        <li><?php echo watchlog_icon('people',20); ?> Per-site recipients and team roles</li>
-        <li><?php echo watchlog_icon('chart',20); ?> Compare activity across locations</li>
-      </ul>
+<section class="dark field glow-field multisite">
+  <div class="wrap-wide">
+    <div class="sec-head reveal"><span class="eyebrow">More than one site</span>
+      <h2>See every location without chasing every site.</h2></div>
+    <div class="ms reveal" data-sites>
+      <div class="ms-chips" role="tablist" aria-label="Sites">
+        <?php foreach ($WL_SITES as $k=>$s){ printf(
+          '<button class="ms-chip%s" data-site="%s" role="tab" aria-selected="%s"><span class="ms-status %s"></span>%s</button>',
+          $k===0?' active':'', esc_attr($s[0]), $k===0?'true':'false', esc_attr($s[2]), esc_html($s[1])); } ?>
+      </div>
+      <div class="ms-panel">
+        <?php foreach ($WL_SITES as $k=>$s){
+          $badge = $s[2]==='online' ? '<span class="ms-badge ok">Online</span>' : '<span class="ms-badge bad">'.$s[3].' cameras · 1 fault</span>';
+          printf('<div class="ms-detail%s" data-site="%s"><div class="ms-head"><h3>%s</h3>%s</div>'
+            .'<div class="ms-stats"><div class="metric"><b>%s</b><span>cameras</span></div>'
+            .'<div class="metric"><b>%s</b><span>incidents, 24h</span></div>'
+            .'<div class="metric"><b>%s</b><span>last event</span></div></div>'
+            .'<p class="ms-last">Latest: %s</p></div>',
+            $k===0?' active':'', esc_attr($s[0]), esc_html($s[1]), $badge,
+            esc_html($s[3]), esc_html($s[4]), esc_html($s[6]), esc_html($s[5])); } ?>
+      </div>
     </div>
-    <div class="reveal">
-      <?php echo watchlog_shot('product-team','WatchLog Team and sites across multiple locations',1500,1000,'(max-width:900px) 92vw, 55vw',true); ?>
-    </div>
+    <p class="ms-foot reveal">Head office sees the pattern. Each site's report goes to the person who runs it, with roles for owner, admin and read-only.</p>
   </div>
 </section>
 
 <!-- 10 · SOLUTIONS -->
-<section class="light">
+<section class="light solutions-sec">
   <div class="wrap-wide">
     <div class="sec-head reveal"><span class="eyebrow">Built for your sites</span>
       <h2>WatchLog for the sites you already operate.</h2></div>
-    <div class="sol-grid reveal">
+    <div class="sol-editorial reveal">
       <?php
-      $sols = [
+      $sols=[
         ['solutions/warehouses-logistics','solution-warehouse','Warehouses & Logistics','See what happened after the shift ended.'],
         ['solutions/retail','solution-retail','Retail','Understand every branch without calling every branch.'],
         ['solutions/manufacturing','solution-manufacturing','Manufacturing','Visibility across shifts, gates and critical areas.'],
         ['solutions/schools-campuses','solution-school-campus','Schools & Campuses','Know what moved after hours.'],
         ['solutions/offices','solution-office-commercial','Offices & Commercial','Daily visibility without watching screens.'],
       ];
-      foreach ($sols as $s) {
-        printf('<a class="sol-tile" href="%s">%s<div class="sol-body"><h3>%s</h3><p>%s</p>'
-          .'<span class="sol-more">Explore %s</span></div></a>',
-          watchlog_url($s[0]),
-          watchlog_pic($s[1], $s[2], 1800, 1200, 'sol-img', '(max-width:640px) 92vw, (max-width:1000px) 46vw, 30vw'),
-          esc_html($s[2]), esc_html($s[3]), esc_html(strtolower($s[2])));
-      }
+      foreach ($sols as $i=>$s){ printf(
+        '<a class="sol-card%s" href="%s">%s<div class="sol-body"><span class="sol-ind">%s</span><p>%s</p>'
+        .'<span class="sol-more">Explore %s %s</span></div></a>',
+        $i===0?' sol-lead':'', watchlog_url($s[0]),
+        watchlog_pic($s[1],$s[2],1800,1200,'sol-img', $i===0?'(max-width:900px) 92vw, 50vw':'(max-width:900px) 92vw, 25vw'),
+        esc_html($s[2]), esc_html($s[3]), esc_html(strtolower($s[2])), watchlog_icon('arrow-right',16)); }
       ?>
     </div>
   </div>
 </section>
 
-<!-- 11 · SECURITY -->
-<section class="dark navy security">
-  <div class="wrap-wide">
-    <div class="sec-head center reveal">
-      <span class="eyebrow">Security</span>
+<!-- 11 · SECURITY (one trust chapter) -->
+<section class="dark navy glow-field trust">
+  <div class="wrap">
+    <div class="sec-head center reveal"><span class="eyebrow">Security</span>
       <h2>Security by architecture, not by promise.</h2>
       <p class="lead measure">The sensitive parts never have to move. WatchLog only ever holds validated
-        event data and one still per incident.</p>
+        event data and one still per incident.</p></div>
+    <div class="trust-grid reveal">
+      <div class="trust-item"><?php echo watchlog_icon('shield',24); ?><b>No public exposure</b><span>Your recorder is never reachable from the internet.</span></div>
+      <div class="trust-item"><?php echo watchlog_icon('lock',24); ?><b>Credentials stay on site</b><span>The recorder login lives on the site PC, never sent to us.</span></div>
+      <div class="trust-item"><?php echo watchlog_icon('camera',24); ?><b>Footage stays local</b><span>Recorded video stays on your recorder. We cannot browse it.</span></div>
+      <div class="trust-item"><?php echo watchlog_icon('check',24); ?><b>Isolated and tested</b><span>Per-customer isolation, verified by an automated test before every release.</span></div>
     </div>
-    <div class="reveal" style="max-width:1100px;margin:0 auto">
-      <?php echo watchlog_pic('diagram-privacy','WatchLog privacy model: no inbound access, credentials stay on site, recorded video stays local, only validated stills sync, outbound only',1800,1000,'', '(max-width:1100px) 92vw, 1100px'); ?>
-    </div>
-    <ul class="ticks light-ticks reveal" style="max-width:900px;margin:32px auto 0;grid-template-columns:1fr 1fr">
-      <li><?php echo watchlog_icon('shield',20); ?> Recorder never exposed to the public internet</li>
-      <li><?php echo watchlog_icon('lock',20); ?> Credentials stay on the site PC</li>
-      <li><?php echo watchlog_icon('camera',20); ?> Recorded video stays on your recorder</li>
-      <li><?php echo watchlog_icon('check',20); ?> Tenant isolation enforced in the database, tested before every release</li>
-    </ul>
-    <div class="center reveal" style="margin-top:32px">
-      <a class="btn btn-ghost" href="<?php echo watchlog_url('security'); ?>">Explore security</a>
-    </div>
+    <div class="center reveal" style="margin-top:36px"><a class="btn btn-ghost" href="<?php echo watchlog_url('security'); ?>">Explore security</a></div>
   </div>
 </section>
 
 <!-- 12 · COMPATIBILITY -->
-<section class="light">
-  <div class="wrap split split-7-5">
-    <div class="reveal">
-      <?php echo watchlog_pic('diagram-compatibility','Keep your cameras and recorder, add WatchLog',1800,1000,'frame-plain', '(max-width:900px) 92vw, 55vw'); ?>
-    </div>
-    <div class="reveal">
-      <span class="eyebrow">Compatibility</span>
-      <h2>Keep the cameras. Keep the recorder. Add WatchLog.</h2>
-      <p>WatchLog works with the recorder you already own. Hikvision and Dahua are validated; HiLook,
-        Imou, CP&nbsp;Plus, Uniview, Tiandy and most ONVIF recorders are protocol-compatible.</p>
-      <p>Not sure what you have? Send us your recorder's label and we'll confirm before you spend anything.</p>
-      <div class="cta-row"><a class="btn btn-primary" href="<?php echo watchlog_url('compatibility'); ?>">Check my recorder</a></div>
+<section class="surface compat-sec">
+  <div class="wrap">
+    <div class="sec-head center reveal"><span class="eyebrow">Compatibility</span>
+      <h2>Keep the cameras. Keep the recorder. Add WatchLog.</h2></div>
+    <div class="compat-switch reveal" data-compat>
+      <div class="cs-toggle" role="tablist">
+        <button class="cs-btn active" data-c="know" role="tab" aria-selected="true">I know my recorder</button>
+        <button class="cs-btn" data-c="unsure" role="tab" aria-selected="false">I am not sure</button>
+      </div>
+      <div class="cs-panel active" data-c="know">
+        <p><b>Hikvision</b> and <b>Dahua</b> are validated. HiLook, Imou, CP&nbsp;Plus, Uniview, Tiandy and
+          most ONVIF recorders are protocol-compatible. The install itself is the real test, and it takes
+          about ten minutes.</p>
+        <div class="cta-row"><a class="btn btn-primary" href="<?php echo $signup; ?>">Start free</a>
+          <a class="btn btn-secondary" href="<?php echo watchlog_url('compatibility'); ?>">See the full list</a></div>
+      </div>
+      <div class="cs-panel" data-c="unsure">
+        <p>No problem. Send us a photo of the label on the front or back of your recorder and we will
+          confirm compatibility, usually the same day, before you spend anything.</p>
+        <div class="cta-row"><a class="btn btn-primary" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a></div>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- 13 · PRICING / TRIAL -->
-<section class="cloud">
+<!-- 13 · PRICING -->
+<section class="light pricing-sec">
   <div class="wrap">
     <div class="sec-head center reveal"><span class="eyebrow">Pricing</span>
-      <h2>Priced per site. Start free for 14 days.</h2>
-      <p class="lead measure">No setup fee, no hardware to buy. When a trial ends, reporting pauses —
-        your events and history are kept.</p></div>
+      <h2>Start with one site. Prove the value in 14 days.</h2>
+      <p class="lead measure">Priced per site, in rupees. No card for the trial. When a trial ends,
+        reporting pauses and your events and history are kept.</p></div>
+    <div class="price-helper reveal" data-helper>
+      <span class="ph-label">How many cameras at your site?</span>
+      <div class="ph-btns" role="tablist">
+        <button class="ph-btn" data-plan="starter" role="tab">8 or fewer</button>
+        <button class="ph-btn" data-plan="growth" role="tab">9 to 24</button>
+        <button class="ph-btn" data-plan="enterprise" role="tab">More than 24</button>
+      </div>
+    </div>
     <div class="grid g3 price-grid reveal">
-      <div class="price-card">
-        <h3>Starter</h3><p class="price"><span>PKR</span> 6,000<small>/site / month</small></p>
-        <p class="price-for">For smaller sites getting daily visibility.</p>
+      <div class="price-card" data-plan="starter">
+        <h3>Starter</h3><p class="price"><span>PKR</span> 6,000<small>per site / month</small></p>
+        <ul class="ticks" style="margin:0 0 1.4rem"><li><?php echo watchlog_icon('camera',18); ?> Up to 8 cameras</li>
+          <li><?php echo watchlog_icon('clock',18); ?> 7 days of stills</li>
+          <li><?php echo watchlog_icon('report',18); ?> WhatsApp and email reports</li></ul>
         <a class="btn btn-secondary" href="<?php echo $signup; ?>">Start free</a>
       </div>
-      <div class="price-card featured">
-        <span class="price-tag">Most popular</span>
-        <h3>Growth</h3><p class="price"><span>PKR</span> 12,000<small>/site / month</small></p>
-        <p class="price-for">More cameras and a longer history of stills.</p>
+      <div class="price-card featured" data-plan="growth">
+        <span class="price-tag">Most sites</span>
+        <h3>Growth</h3><p class="price"><span>PKR</span> 12,000<small>per site / month</small></p>
+        <ul class="ticks" style="margin:0 0 1.4rem"><li><?php echo watchlog_icon('camera',18); ?> Up to 24 cameras</li>
+          <li><?php echo watchlog_icon('clock',18); ?> 30 days of stills</li>
+          <li><?php echo watchlog_icon('chart',18); ?> Analytics and site health</li></ul>
         <a class="btn btn-primary" href="<?php echo $signup; ?>">Start free</a>
       </div>
-      <div class="price-card">
+      <div class="price-card" data-plan="enterprise">
         <h3>Enterprise</h3><p class="price price-talk">Talk to us</p>
-        <p class="price-for">Multi-site, unlimited cameras, longest retention.</p>
+        <ul class="ticks" style="margin:0 0 1.4rem"><li><?php echo watchlog_icon('camera',18); ?> Unlimited cameras</li>
+          <li><?php echo watchlog_icon('clock',18); ?> 90 days of stills</li>
+          <li><?php echo watchlog_icon('sites',18); ?> Central multi-site view</li></ul>
         <a class="btn btn-secondary" href="<?php echo watchlog_url('contact'); ?>">Talk to us</a>
       </div>
     </div>
-    <p class="center" style="margin-top:24px"><a class="arrow-link" href="<?php echo watchlog_url('pricing'); ?>">View full pricing <?php echo watchlog_icon('arrow-right',18); ?></a></p>
+    <p class="center" style="margin-top:22px"><a class="arrow-link" href="<?php echo watchlog_url('pricing'); ?>">View full pricing <?php echo watchlog_icon('arrow-right',18); ?></a></p>
   </div>
 </section>
 
 <!-- 14 · FINAL CTA -->
-<section class="dark field final-cta">
-  <?php echo watchlog_pic('hero-industry-atmosphere', '', 2000, 1125, 'cta-bg', '100vw'); ?>
-  <div class="wrap center reveal">
+<section class="dark field glow-field final-cta">
+  <?php echo watchlog_pic('hero-industry-atmosphere','',2000,1125,'cta-bg','100vw'); ?>
+  <div class="wrap center">
     <h2>See what your cameras have been telling you.</h2>
-    <p class="lead measure">Install in about ten minutes on a PC you already have. Keep your cameras
-      and recorder — add WatchLog.</p>
+    <p class="lead measure">Connect one site, let WatchLog do the filtering, and start each day with a
+      clearer security picture.</p>
     <div class="cta-row" style="justify-content:center">
-      <a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
-      <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('compatibility'); ?>">Check my recorder</a>
+      <a class="btn btn-primary btn-xl" href="<?php echo $signup; ?>">Start free</a>
+      <a class="btn btn-ghost btn-xl" href="<?php echo watchlog_url('compatibility'); ?>">Check my recorder</a>
     </div>
   </div>
 </section>

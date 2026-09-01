@@ -1,5 +1,5 @@
 <?php
-/* Pricing — verified numbers only: 6,000 / 12,000 / Talk to us. 14-day trial. */
+/* Pricing - verified numbers only: 6,000 / 12,000 / Talk to us. 14-day trial. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -10,7 +10,7 @@ $signup = esc_url(watchlog_signup_url());
     <span class="eyebrow">Pricing</span>
     <h1>Priced per site, in rupees.</h1>
     <p class="lead measure" style="margin-inline:auto">No setup fee, no hardware to buy, no contract.
-      Start free for 14 days — no card. If WatchLog doesn't work with your recorder, you'll know within
+      Start free for 14 days, no card. If WatchLog doesn't work with your recorder, you'll know within
       minutes of installing.</p>
   </div>
 </section>
@@ -54,7 +54,7 @@ $signup = esc_url(watchlog_signup_url());
       </div>
     </div>
     <p class="center" style="margin-top:28px;color:var(--slate-500)">Every plan includes the daily report,
-      incident stills, site health, analytics and unlimited team members. Priced per site — the only thing
+      incident stills, site health, analytics and unlimited team members. Priced per site: the only thing
       that changes the number is adding a site or moving up a camera tier.</p>
   </div>
 </section>
@@ -64,9 +64,9 @@ $signup = esc_url(watchlog_signup_url());
     <div class="sec-head center"><span class="eyebrow">Good to know</span><h2>The honest small print.</h2></div>
     <div class="faq">
       <div class="faq-item"><button aria-expanded="false">Is there really no card for the trial? <?php echo watchlog_icon('chevron',20,'caret'); ?></button>
-        <div class="faq-a">Correct — the 14-day trial needs no card. It exists so you can prove WatchLog works with your recorder before paying, not after.</div></div>
+        <div class="faq-a">Correct. The 14-day trial needs no card. It exists so you can prove WatchLog works with your recorder before paying, not after.</div></div>
       <div class="faq-item"><button aria-expanded="false">What happens when the trial ends? <?php echo watchlog_icon('chevron',20,'caret'); ?></button>
-        <div class="faq-a">Reporting pauses until you subscribe. Your recorded events and history are kept — nothing is deleted — so paying later picks up where you left off.</div></div>
+        <div class="faq-a">Reporting pauses until you subscribe. Your recorded events and history are kept (nothing is deleted), so paying later picks up where you left off.</div></div>
       <div class="faq-item"><button aria-expanded="false">Can I cancel any time? <?php echo watchlog_icon('chevron',20,'caret'); ?></button>
         <div class="faq-a">Yes. Billing is monthly, per site, in advance. Cancel and reporting continues to the end of the paid month.</div></div>
       <div class="faq-item"><button aria-expanded="false">Is anything metered or charged per event? <?php echo watchlog_icon('chevron',20,'caret'); ?></button>

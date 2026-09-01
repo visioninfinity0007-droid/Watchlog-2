@@ -1,14 +1,14 @@
 <?php
-/* Solutions index — editorial, image-led. */
+/* Solutions index: editorial, image-led. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
 $sols = [
-  ['solutions/warehouses-logistics','solution-warehouse','Warehouses & Logistics','See what happened after the shift ended — loading bays, perimeters and after-hours movement.'],
+  ['solutions/warehouses-logistics','solution-warehouse','Warehouses & Logistics','See what happened after the shift ended: loading bays, perimeters and after-hours movement.'],
   ['solutions/retail','solution-retail','Retail','Understand every branch without calling every branch, with a report per store.'],
-  ['solutions/manufacturing','solution-manufacturing','Manufacturing','Visibility across shifts, gates and critical areas — and camera faults, fast.'],
+  ['solutions/manufacturing','solution-manufacturing','Manufacturing','Visibility across shifts, gates and critical areas, plus camera faults, fast.'],
   ['solutions/schools-campuses','solution-school-campus','Schools & Campuses','Know what moved after hours across gates, boundaries and multiple buildings.'],
-  ['solutions/offices','solution-office-commercial','Offices & Commercial','Daily confirmation that nothing happened — and immediate word when a camera stops.'],
+  ['solutions/offices','solution-office-commercial','Offices & Commercial','Daily confirmation that nothing happened, and immediate word when a camera stops.'],
 ];
 ?>
 <section class="page-hero dark field">
@@ -16,7 +16,7 @@ $sols = [
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Solutions</span></nav>
     <span class="eyebrow">Solutions</span>
     <h1>WatchLog for the sites you already operate.</h1>
-    <p class="lead measure">The product is the same everywhere — validated incidents, site health and a
+    <p class="lead measure">The product is the same everywhere: validated incidents, site health and a
       daily report. What changes is which cameras carry the value. Here's how it lands by sector.</p>
     <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
       <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('platform'); ?>">See the platform</a></div>

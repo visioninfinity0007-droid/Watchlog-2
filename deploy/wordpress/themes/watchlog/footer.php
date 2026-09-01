@@ -5,7 +5,7 @@
     <div class="foot-top">
       <div class="foot-brand">
         <a class="brand" href="<?php echo esc_url(home_url('/')); ?>"><?php echo watchlog_mark(); ?><span>WatchLog</span></a>
-        <p>The intelligence layer for the CCTV you already own. Keep your cameras and recorder — add WatchLog.</p>
+        <p>The intelligence layer for the CCTV you already own. Keep your cameras and recorder, and add WatchLog.</p>
       </div>
       <div class="foot-col">
         <h4>Product</h4>
@@ -53,7 +53,7 @@
       </div>
     </div>
     <div class="foot-note">
-      <p>&copy; <?php echo esc_html(date('Y')); ?> WatchLog. Works alongside your security team —
+      <p>&copy; <?php echo esc_html(date('Y')); ?> WatchLog. Works alongside your security team.
          WatchLog observes and reports; it is not a guarding or monitoring service and does not dispatch a response.</p>
     </div>
   </div>

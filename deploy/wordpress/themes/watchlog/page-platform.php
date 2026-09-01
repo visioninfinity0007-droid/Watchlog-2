@@ -1,5 +1,5 @@
 <?php
-/* Platform — the strongest product page after the homepage. Real captures. */
+/* Platform: the strongest product page after the homepage. Real captures. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -9,8 +9,8 @@ $signup = esc_url(watchlog_signup_url());
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Platform</span></nav>
     <span class="eyebrow">The platform</span>
     <h1>One place to understand every site.</h1>
-    <p class="lead measure">Incidents, site health, after-hours activity and a daily report — for one site
-      or a hundred — in a portal scoped to your account and no one else's.</p>
+    <p class="lead measure">Incidents, site health, after-hours activity and a daily report, whether for one site
+      or a hundred, in a portal scoped to your account and no one else's.</p>
     <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
       <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a></div>
   </div>
@@ -37,7 +37,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="f-copy">
         <span class="f-kicker"><?php echo watchlog_icon('alert',20); ?> Site health</span>
         <h3>Know when something goes quiet.</h3>
-        <p>Cameras that have gone silent, recorder faults, and whether the site is reporting at all —
+        <p>Cameras that have gone silent, recorder faults, and whether the site is reporting at all are
           surfaced early, so a blind spot isn't discovered on the day you need the footage.</p>
         <a class="arrow-link" href="<?php echo watchlog_url('site-health'); ?>">See site health <?php echo watchlog_icon('arrow-right',18); ?></a>
       </div>
@@ -80,7 +80,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="eyebrow">Trial &amp; plan</span>
       <h2>Clear about where you stand.</h2>
       <p>Settings shows your trial or plan and whether reporting is active. When a trial ends, reporting
-        pauses and the portal says so plainly — your recorded events and history are always kept.</p>
+        pauses and the portal says so plainly. Your recorded events and history are always kept.</p>
       <a class="arrow-link" href="<?php echo watchlog_url('pricing'); ?>">View pricing <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
   </div>
@@ -92,7 +92,7 @@ $signup = esc_url(watchlog_signup_url());
       <span class="eyebrow">Security boundary</span>
       <h2>The platform never reaches into your network.</h2>
       <p class="lead measure">Everything in the portal is built from event data and stills the site chose
-        to send — outward only. No live access to your cameras, no path back into your recorder.</p>
+        to send, all of it outward only. No live access to your cameras, no path back into your recorder.</p>
     </div>
     <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-privacy','The outbound-only privacy model behind the platform',1800,1000,'','(max-width:1100px) 92vw, 1100px'); ?></div>
     <div class="center" style="margin-top:32px"><a class="btn btn-ghost" href="<?php echo watchlog_url('security'); ?>">Explore security</a></div>

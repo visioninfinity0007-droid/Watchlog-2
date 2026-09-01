@@ -1,10 +1,10 @@
 /*
 Theme Name: WatchLog
 Theme URI: https://watchlog.example
-Description: WatchLog — the intelligence layer for the CCTV you already own. Premium
+Description: WatchLog - the intelligence layer for the CCTV you already own. Premium
   physical-security SaaS marketing theme. Custom, lightweight, no page builder.
 Author: WatchLog
-Version: 2.0.1
+Version: 2.0.2
 */
 
 /* ============================================================
@@ -18,7 +18,8 @@ Version: 2.0.1
   --blue-600:#1039AE;
   --violet:#5B21FF;     /* WatchLog violet */
   --ice:#72D4FF;        /* ice blue (dark accent only) */
-  --cloud:#F4F7FB;
+  --cloud:#F4F7FB;      /* cool off-white surface */
+  --cloud-2:#EEF3FA;    /* slightly deeper cool surface */
   --white:#FFFFFF;
   --ink-900:#0B1522;    /* headings on light */
   --slate-600:#475569;  /* body on light */
@@ -29,15 +30,25 @@ Version: 2.0.1
   --grad-brand-soft:linear-gradient(135deg,#7C4DFF 0%,#3E6BE6 100%);
   --field-dark:radial-gradient(120% 120% at 82% 0%, #12294F 0%, #0B1D3A 46%, #07111F 100%);
 
+  /* ONE grid: 1240 content; wide (1320) is a documented breakout for immersive product blocks */
   --gutter:clamp(20px,5vw,40px);
-  --maxw:1200px;
-  --maxw-wide:1280px;
-  --sec-y:clamp(72px,10vw,132px);
+  --maxw:1240px;
+  --maxw-wide:1320px;
+
+  /* vertical rhythm - used intentionally, not a flat value everywhere */
+  --sp-xs:clamp(44px,6vw,60px);
+  --sp-sm:clamp(60px,7vw,84px);
+  --sp-md:clamp(80px,8.5vw,112px);
+  --sp-lg:clamp(104px,11vw,150px);
+  --sec-y:var(--sp-md);
+
   --radius:14px;
   --radius-sm:10px;
+  --radius-lg:20px;
   --ease:cubic-bezier(.2,.6,.2,1);
-  --shadow-lg:0 30px 80px -30px rgba(3,10,25,.55);
-  --shadow-card:0 1px 2px rgba(15,23,42,.04),0 12px 30px -18px rgba(15,23,42,.18);
+  --shadow-lg:0 40px 90px -40px rgba(3,10,25,.6);
+  --shadow-card:0 1px 2px rgba(15,23,42,.04),0 12px 30px -18px rgba(15,23,42,.16);
+  --shadow-soft:0 2px 4px rgba(15,23,42,.03),0 18px 40px -24px rgba(15,23,42,.14);
 
   --font:"Geist","Inter",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
 }
@@ -74,8 +85,13 @@ ul,ol{margin:0 0 1rem;padding-left:1.2em}
    ============================================================ */
 .wrap{max-width:var(--maxw);margin-inline:auto;padding-inline:var(--gutter)}
 .wrap-wide{max-width:var(--maxw-wide);margin-inline:auto;padding-inline:var(--gutter)}
-section{padding-block:var(--sec-y)}
-.sec-sm{padding-block:clamp(48px,7vw,84px)}
+section{padding-block:var(--sp-md)}
+.s-xs{padding-block:var(--sp-xs)}
+.s-sm{padding-block:var(--sp-sm)}
+.s-lg{padding-block:var(--sp-lg)}
+.sec-sm{padding-block:var(--sp-sm)}
+.pt-0{padding-top:0}
+.pb-0{padding-bottom:0}
 
 .dark{background:var(--ink);color:rgba(255,255,255,.74)}
 .dark.field{background:var(--field-dark)}
@@ -85,6 +101,23 @@ section{padding-block:var(--sec-y)}
 .dark a{color:var(--ice)}
 .light{background:var(--white)}
 .cloud{background:var(--cloud)}
+/* subtle cool surface so light sections don't float on blank white */
+.surface{background:linear-gradient(180deg,#fff 0%,var(--cloud) 100%)}
+.surface-cool{background:var(--cloud);position:relative}
+/* ambient blue/violet glow for major dark product sections */
+.glow-field{position:relative;overflow:hidden}
+.glow-field::before{content:"";position:absolute;z-index:0;pointer-events:none;
+  inset:-20% -10% auto -10%;height:70%;
+  background:radial-gradient(45% 60% at 22% 20%,rgba(23,72,211,.20),transparent 70%),
+    radial-gradient(40% 55% at 82% 8%,rgba(91,33,255,.16),transparent 70%)}
+.glow-field>*{position:relative;z-index:1}
+/* extremely subtle dot grid for dark product sections */
+.grid-bg{position:relative}
+.grid-bg::after{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.5;
+  background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px);background-size:26px 26px;
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 70%,transparent);
+  mask-image:linear-gradient(180deg,transparent,#000 30%,#000 70%,transparent)}
+.grid-bg>*{position:relative;z-index:1}
 
 .eyebrow{
   display:inline-block;font-size:.8rem;font-weight:600;letter-spacing:.14em;

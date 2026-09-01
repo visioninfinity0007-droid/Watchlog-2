@@ -1,5 +1,5 @@
 <?php
-/* Security — the serious page. Precise claims only (see PUBLIC_CLAIMS_MATRIX). */
+/* Security: the serious page. Precise claims only (see PUBLIC_CLAIMS_MATRIX). */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -50,7 +50,7 @@ $signup = esc_url(watchlog_signup_url());
         <span class="f-kicker"><?php echo watchlog_icon('lock',20); ?> Credentials &amp; footage</span>
         <h3>The sensitive parts never move.</h3>
         <p>Your recorder's admin username and password are entered once, at the site, and are never
-          sent to WatchLog. Recorded video stays on your recorder — we never receive it and cannot
+          sent to WatchLog. Recorded video stays on your recorder. We never receive it and cannot
           browse it. Only validated event metadata and a single still per incident are synced.</p>
       </div>
     </div>
@@ -74,7 +74,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="access-col card">
         <h3><?php echo watchlog_icon('shield-off',22); ?> WatchLog cannot access</h3>
         <ul class="ticks" style="margin:0">
-          <li><?php echo watchlog_icon('shield-off',20); ?> Live camera feeds — no viewing, pan or zoom</li>
+          <li><?php echo watchlog_icon('shield-off',20); ?> Live camera feeds (no viewing, pan or zoom)</li>
           <li><?php echo watchlog_icon('shield-off',20); ?> Your recorded footage archive</li>
           <li><?php echo watchlog_icon('shield-off',20); ?> The recorder's credentials</li>
           <li><?php echo watchlog_icon('shield-off',20); ?> Anything on your network beyond the events it is given</li>
@@ -91,7 +91,7 @@ $signup = esc_url(watchlog_signup_url());
         <p>Each customer's data is separated at the database level. That separation is verified by an
           automated test that must pass before every release.</p></div>
       <div class="card"><?php echo watchlog_icon('clock',24); ?><h3>Data retention</h3>
-        <p>Incident stills are kept by your plan — 7, 30 or 90 days — then deleted. Event records
+        <p>Incident stills are kept by your plan (7, 30 or 90 days), then deleted. Event records
           without images are kept while your account is open.</p></div>
       <div class="card"><?php echo watchlog_icon('people',24); ?><h3>Account security</h3>
         <p>Only people you invite can see your data, each with a role: owner, admin or read-only.

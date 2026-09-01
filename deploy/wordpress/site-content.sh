@@ -4,7 +4,7 @@
 #
 # Idempotent: creates the pages the theme's slug-based templates render, sets
 # the front page, and applies site options. Page BODIES live in the templates
-# (page-<slug>.php) under version control — not in the database — so design is
+# (page-<slug>.php) under version control - not in the database - so design is
 # reviewable in git. Nested solution pages are created as children of
 # /solutions/ so their URL path is /solutions/<child>/ (WP still resolves the
 # template by the child slug, e.g. page-retail.php).

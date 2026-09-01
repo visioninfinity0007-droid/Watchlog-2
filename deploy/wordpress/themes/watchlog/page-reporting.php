@@ -1,5 +1,5 @@
 <?php
-/* Reporting — daily report, channels, delivery history. Plain language. */
+/* Reporting: daily report, channels, delivery history. Plain language. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -10,7 +10,7 @@ $signup = esc_url(watchlog_signup_url());
       <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Reporting</span></nav>
       <span class="eyebrow">Reporting</span>
       <h1>Wake up to the useful part.</h1>
-      <p class="lead">Each morning, the right people get a short summary of what happened — not a feed to
+      <p class="lead">Each morning, the right people get a short summary of what happened, not a feed to
         watch, not an inbox to clear. One read, then on with the day.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('platform'); ?>">See the platform</a></div>
@@ -34,11 +34,11 @@ $signup = esc_url(watchlog_signup_url());
 <section class="dark field">
   <div class="wrap-wide">
     <div class="sec-head center"><span class="eyebrow">How it reaches you</span>
-      <h2>Composed, then delivered — once.</h2></div>
+      <h2>Composed, then delivered once.</h2></div>
     <div style="max-width:1100px;margin:0 auto"><?php echo watchlog_pic('diagram-report-flow','From incidents to a composed daily summary to delivery on WhatsApp or email',1800,1000,'',' (max-width:1100px) 92vw, 1100px'); ?></div>
     <div class="grid g3" style="margin-top:36px">
       <div class="card"><?php echo watchlog_icon('whatsapp',24); ?><h3>WhatsApp, email, or both</h3><p>Choose a channel per recipient. WhatsApp is a first-class channel, not an afterthought.</p></div>
-      <div class="card"><?php echo watchlog_icon('people',24); ?><h3>The right people</h3><p>Per-site recipients — the branch manager gets their branch; head office gets the overview.</p></div>
+      <div class="card"><?php echo watchlog_icon('people',24); ?><h3>The right people</h3><p>Per-site recipients, so the branch manager gets their branch, and head office gets the overview.</p></div>
       <div class="card"><?php echo watchlog_icon('report',24); ?><h3>Never sent twice</h3><p>The same day's report is never duplicated, and every send is kept in the portal's delivery history.</p></div>
     </div>
   </div>
@@ -56,7 +56,7 @@ $signup = esc_url(watchlog_signup_url());
     <div class="note-card">
       <h3 style="margin-top:0">A note on live sending</h3>
       <p style="margin-bottom:0">WatchLog is a daily reporting service, not a live alerting one. It tells
-        you what happened, clearly, once a day — it does not watch in real time or dispatch a response.</p>
+        you what happened, clearly, once a day. It does not watch in real time or dispatch a response.</p>
     </div>
   </div>
 </section>

@@ -1,5 +1,5 @@
 <?php
-/* Solution — Offices & Commercial. */
+/* Solution: Offices & Commercial. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 $signup = esc_url(watchlog_signup_url());
@@ -11,7 +11,7 @@ $signup = esc_url(watchlog_signup_url());
       <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><a href="<?php echo watchlog_url('solutions'); ?>">Solutions</a><span class="sep">/</span><span>Offices &amp; Commercial</span></nav>
       <span class="eyebrow">Offices &amp; Commercial</span>
       <h1>Daily visibility without watching screens.</h1>
-      <p class="lead">Smaller sites run a handful of cameras, so the value isn't hours of footage — it's knowing nothing
+      <p class="lead">Smaller sites run a handful of cameras, so the value isn't hours of footage. It's knowing nothing
         happened, and being told the moment a camera stops. It works across every office you run.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('contact'); ?>">Check my recorder</a></div>
@@ -39,7 +39,7 @@ $signup = esc_url(watchlog_signup_url());
     <div class="f-copy">
       <span class="f-kicker"><?php echo watchlog_icon('report',20); ?> Every morning</span>
       <h3>Confirmation nothing happened.</h3>
-      <p>On most mornings the report says nothing happened — and that's the point. When something did,
+      <p>On most mornings the report says nothing happened, and that's the point. When something did,
         or a camera went quiet, it's the first thing you see.</p>
       <a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',18); ?></a>
     </div>
