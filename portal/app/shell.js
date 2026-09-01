@@ -7,6 +7,7 @@ import { supabase } from "../lib/supabase";
 const TABS = [
   ["Overview", "/dashboard/"],
   ["Incidents", "/incidents/"],
+  ["Site Health", "/site-health/"],
   ["Analytics", "/analytics/"],
   ["Reports", "/reports/"],
   ["Team", "/team/"],
@@ -29,7 +30,7 @@ export function Nav({ active, email, right }) {
         {TABS.map(([label, href]) => <a key={href} href={href} className={"navlink" + (active === label ? " active" : "")}>{label}</a>)}
       </nav>
       <span className="spacer" />
-      {platform&&<a href="/admin/" className="navlink hide-sm" style={{color:"var(--color-violet-bright)"}}>Platform</a>}
+      {platform&&<a href="/admin/" className="navlink hide-sm" style={{color:"var(--wl-ice)"}}>Platform</a>}
       {email && <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{email}</span>}
       {right}
       <button className="ghost small" onClick={signOut}>Sign out</button>
