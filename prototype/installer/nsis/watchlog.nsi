@@ -63,8 +63,9 @@ Section "Install"
   IfFileExists "$INSTDIR\watchlog.ini" +2 0
     File "/oname=watchlog.ini" "watchlog.defaults.ini"
 
-  IfFileExists "yolov8n.onnx" 0 +2
-    File "yolov8n.onnx"
+  ; The AI executable normally contains the model. A loose model is supported
+  ; for diagnostic/legacy builds but is genuinely optional at compile time.
+  File /nonfatal "yolov8n.onnx"
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog Site Agent"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
