@@ -49,7 +49,7 @@ export default function Schedules() {
     setEmail(guard.session.user.email || "");
     const {data,error} = await supabase().rpc("wl_analytics_studio");
     if (error) { setError(say(error)); return; }
-    setStudio(data || {sites:[]});
+    setStudio(data || {sites:[],can_manage:false});
     const sites=data?.sites||[];
     setSiteId((old)=>sites.some((s)=>s.id===old)?old:(sites[0]?.id||""));
   },[]);
@@ -58,8 +58,10 @@ export default function Schedules() {
   const sites=studio?.sites||[];
   const site=sites.find((s)=>s.id===siteId);
   const schedules=site?.schedules||[];
+  const canManage=studio?.can_manage!==false;
 
   function newSchedule(preset="business") {
+    if(!canManage)return;
     setEditing(null);
     if (preset === "after") {
       setName("Night shift");
@@ -77,11 +79,12 @@ export default function Schedules() {
   }
 
   function edit(s) {
+    if(!canManage)return;
     setEditing(s.id); setName(s.name); setWindows(fromSchedule(s.schedule));
   }
 
   async function save() {
-    if (!site) return;
+    if (!site || !canManage) return;
     if (!name.trim()) { setError("Give this schedule a name."); return; }
     setBusy(true); setError(""); setNote("");
     const {error}=await supabase().rpc("wl_upsert_monitoring_schedule",{
@@ -92,15 +95,17 @@ export default function Schedules() {
     setBusy(false);
   }
 
-  async function remove(id) {
-    if(!confirm("Delete this schedule? It can only be deleted when no monitoring rule is using it."))return;
+  async function remove(s) {
+    if(!canManage)return;
+    if(Number(s.rule_count||0)>0){setError(`This schedule is used by ${s.rule_count} monitoring rule${Number(s.rule_count)===1?"":"s"}. Reassign those rules first.`);return;}
+    if(!confirm("Delete this schedule?"))return;
     setBusy(true);setError("");
-    const {error}=await supabase().rpc("wl_delete_monitoring_schedule",{p_schedule_id:id});
+    const {error}=await supabase().rpc("wl_delete_monitoring_schedule",{p_schedule_id:s.id});
     if(error)setError(say(error));else{setNote("Schedule deleted.");await load();}
     setBusy(false);
   }
 
-  function setDay(key,patch){setWindows((w)=>({...w,[key]:{...w[key],...patch}}));}
+  function setDay(key,patch){if(canManage)setWindows((w)=>({...w,[key]:{...w[key],...patch}}));}
 
   return <div className="shell">
     <Nav active="Analytics" email={email}/>
@@ -113,29 +118,30 @@ export default function Schedules() {
           {sites.map((s)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
       </div>
       {error&&<div className="err">{error}</div>}{note&&<div className="ok-note">{note}</div>}
+      {!canManage&&<div className={styles.readOnly}>You have read-only access. An Owner or Admin can publish or delete monitoring schedules.</div>}
       {!site?<div className={styles.card}>No site available.</div>:<div className={styles.twoCol}>
         <section className={styles.card}>
           <h2>Published schedules</h2>
           <div className={styles.ruleList}>{schedules.length?schedules.map((s)=><div className={styles.rule} key={s.id}>
-            <div><div className={styles.ruleTitle}>{s.name}</div><div className={styles.ruleMeta}>{s.timezone} · weekly schedule</div></div>
-            <div className={styles.ruleActions}><button className="ghost small" onClick={()=>edit(s)}>Edit</button><button className="btn-danger" onClick={()=>remove(s.id)} disabled={busy}>Delete</button></div>
+            <div><div className={styles.ruleTitle}>{s.name}</div><div className={styles.ruleMeta}>{s.timezone} · weekly schedule · {Number(s.rule_count||0)} rule{Number(s.rule_count||0)===1?"":"s"}</div></div>
+            {canManage&&<div className={styles.ruleActions}><button className="ghost small" onClick={()=>edit(s)}>Edit</button><button className="btn-danger" onClick={()=>remove(s)} disabled={busy||Number(s.rule_count||0)>0}>Delete</button></div>}
           </div>):<div className={styles.empty}>No reusable schedules yet.</div>}</div>
-          <h2>Quick starts</h2><div className={styles.packRow}>
+          {canManage&&<><h2>Quick starts</h2><div className={styles.packRow}>
             <button className={styles.pack} onClick={()=>newSchedule("business")}><strong>Business hours</strong><small>Mon to Fri, 08:00 to 18:00</small></button>
             <button className={styles.pack} onClick={()=>newSchedule("after")}><strong>Night shift</strong><small>Mon to Fri, 18:00 to 08:00</small></button>
             <button className={styles.pack} onClick={()=>newSchedule("weekend")}><strong>Weekend</strong><small>Saturday and Sunday</small></button>
-          </div>
+          </div></>}
         </section>
         <section className={styles.card}>
-          <h2>{editing?"Edit schedule":"Schedule editor"}</h2>
-          <div className={styles.field}><label>Name</label><input value={name} onChange={(e)=>setName(e.target.value)}/></div>
+          <h2>{canManage?(editing?"Edit schedule":"Schedule editor"):"Schedule details"}</h2>
+          <div className={styles.field}><label>Name</label><input disabled={!canManage} value={name} onChange={(e)=>setName(e.target.value)}/></div>
           <div className={styles.scheduleBox}>{DAYS.map(([key,label])=>{const w=windows[key];return <div className={styles.day} key={key}>
-            <label className={styles.check}><input type="checkbox" checked={w.enabled} onChange={(e)=>setDay(key,{enabled:e.target.checked})}/>{label}</label>
-            <input type="time" disabled={!w.enabled} value={w.start} onChange={(e)=>setDay(key,{start:e.target.value})}/>
-            <input type="time" disabled={!w.enabled} value={w.end} onChange={(e)=>setDay(key,{end:e.target.value})}/>
+            <label className={styles.check}><input type="checkbox" disabled={!canManage} checked={w.enabled} onChange={(e)=>setDay(key,{enabled:e.target.checked})}/>{label}</label>
+            <input type="time" disabled={!canManage||!w.enabled} value={w.start} onChange={(e)=>setDay(key,{start:e.target.value})}/>
+            <input type="time" disabled={!canManage||!w.enabled} value={w.end} onChange={(e)=>setDay(key,{end:e.target.value})}/>
           </div>})}</div>
-          <p className="muted" style={{fontSize:"var(--font-size-xs)"}}>If the end time is earlier than the start time, WatchLog treats the window as crossing midnight.</p>
-          <div className={styles.actions}><button disabled={busy} onClick={save}>{busy?"Saving...":"Publish schedule"}</button><button className="ghost" onClick={()=>{setEditing(null);newSchedule("business")}}>Reset</button></div>
+          <p className="muted" style={{fontSize:"var(--font-size-xs)"}}>WatchLog v1 uses one monitoring window per day. If the end time is earlier than the start time, the window crosses midnight.</p>
+          {canManage&&<div className={styles.actions}><button disabled={busy} onClick={save}>{busy?"Saving...":"Publish schedule"}</button><button className="ghost" onClick={()=>{setEditing(null);newSchedule("business")}}>Reset</button></div>}
         </section>
       </div>}
     </main>
