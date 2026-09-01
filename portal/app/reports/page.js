@@ -72,6 +72,48 @@ export default function Reports() {
         {err && <div className="err">{err}</div>}
         {note && <div className="ok-note">{note}</div>}
 
+        <h2>The daily report</h2>
+        <div className="card" style={{ maxWidth: 540 }}>
+          <div style={{ fontSize: "var(--font-size-xs)", textTransform: "uppercase",
+                        letterSpacing: "var(--font-tracking-wide)",
+                        color: "var(--color-muted-dark)", marginBottom: "var(--space-3)" }}>
+            A preview of what recipients get each morning
+          </div>
+          <div style={{ background: "var(--color-canvas)",
+                        border: "1px solid var(--color-line-dark)",
+                        borderRadius: "var(--radius-surface)", padding: "var(--space-5)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8,
+                          marginBottom: "var(--space-2)" }}>
+              <span style={{ width: 8, height: 8, borderRadius: 999,
+                             background: "var(--color-status-ok-dark)" }} />
+              <b>WatchLog daily report</b>
+              <span className="muted" style={{ fontSize: "var(--font-size-xs)",
+                    marginLeft: "auto" }}>07:00, site time</span>
+            </div>
+            <div className="muted" style={{ fontSize: "var(--font-size-sm)",
+                 marginBottom: "var(--space-4)" }}>
+              AKSS Head Office, Tuesday 2 September</div>
+            <b style={{ fontSize: "var(--font-size-sm)" }}>Overnight</b>
+            <ul style={{ margin: "4px 0 var(--space-4)", paddingLeft: "1.1rem",
+                 fontSize: "var(--font-size-sm)" }}>
+              <li>18 incidents: 12 person, 5 vehicle, 1 motorcycle</li>
+              <li>6 after hours, between 21:00 and 06:00</li>
+              <li>First at 21:14, last at 05:47</li>
+            </ul>
+            <b style={{ fontSize: "var(--font-size-sm)" }}>Camera health</b>
+            <ul style={{ margin: "4px 0 0", paddingLeft: "1.1rem",
+                 fontSize: "var(--font-size-sm)" }}>
+              <li>14 of 15 cameras reporting</li>
+              <li>Rear Perimeter silent since 01:00</li>
+            </ul>
+          </div>
+          <p className="muted" style={{ fontSize: "var(--font-size-xs)",
+             margin: "var(--space-3) 0 0" }}>
+            An example layout. Your report is built from your own sites and sent once each
+            morning in the site's local time. Add a recipient below to start.
+          </p>
+        </div>
+
         <h2>Add a recipient</h2>
         <div className="card">
           <form className="row" onSubmit={add}>
@@ -115,7 +157,7 @@ export default function Reports() {
         <h2>Recipients</h2>
         <div className="panel">
           {recips === null ? <div className="empty">Loading…</div> :
-           recips.length === 0 ? <div className="empty">No recipients yet — add one above to start the daily report.</div> : (
+           recips.length === 0 ? <div className="empty">No recipients yet. Add one above to start the daily report.</div> : (
             <table>
               <thead>
                 <tr><th>Destination</th><th>Channel</th><th>Site</th><th>Status</th><th></th></tr>
@@ -162,7 +204,7 @@ export default function Reports() {
                     <td>{d.channel}</td>
                     <td className="muted">{d.destination}</td>
                     <td>{statusPill(d.status)}{d.error && <div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>{d.error}</div>}</td>
-                    <td className="mono">{d.events ?? "—"}</td>
+                    <td className="mono">{d.events ?? "-"}</td>
                   </tr>
                 ))}
               </tbody>
