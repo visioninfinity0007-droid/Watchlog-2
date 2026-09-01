@@ -117,6 +117,11 @@ $WL_ARCH = [
       <p class="lead">Most cameras are only ever opened after something has already gone wrong.</p>
       <p>WatchLog reads the events your recorder already logs and turns them into an operational record
         your team actually uses: a short daily read instead of hours of footage.</p>
+      <div class="pb-contrast">
+        <div class="pb-from"><span class="pb-tag">Today</span><b>Hours of footage</b><span>opened only after an incident</span></div>
+        <span class="pb-arrow"><?php echo watchlog_icon('arrow-right',22); ?></span>
+        <div class="pb-to"><span class="pb-tag">With WatchLog</span><b>A two-minute read</b><span>every morning, before the day starts</span></div>
+      </div>
     </div>
     <div class="reveal problem-media">
       <?php echo watchlog_pic('environment-recorder','A CCTV recorder on a shelf at a site',1800,1200,'','(max-width:900px) 92vw, 52vw'); ?>
@@ -201,6 +206,7 @@ $WL_ARCH = [
           </div>
         </div>
       </div>
+      <p class="center" style="margin-top:34px"><a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">See how filtering becomes incidents <?php echo watchlog_icon('arrow-right',18); ?></a></p>
     </div>
   </div>
 </section>
@@ -220,12 +226,11 @@ $WL_ARCH = [
         if ($k < count($WL_ARCH)-1) { echo '<span class="arch-arrow">'.watchlog_icon('arrow-right',20).'</span>'; }
       } ?>
     </div>
-    <div class="arch-explain reveal"><p class="js-arch-text"><?php echo esc_html($WL_ARCH[0][2]); ?></p></div>
-    <div class="arch-foot reveal">
-      <span><?php echo watchlog_icon('lock',18); ?> No port forwarding</span>
-      <span><?php echo watchlog_icon('arrow-out',18); ?> Outbound only</span>
-      <span><?php echo watchlog_icon('shield-off',18); ?> No live camera access</span>
-      <a class="arrow-link" href="<?php echo watchlog_url('how-it-works'); ?>">How WatchLog works <?php echo watchlog_icon('arrow-right',18); ?></a>
+    <div class="arch-explain reveal"><p class="js-arch-text"><?php echo esc_html($WL_ARCH[0][2]); ?></p>
+      <p class="arch-hint">Hover or tap a step to see what it does. The security promise behind this is on
+        the <a href="<?php echo watchlog_url('security'); ?>">security page</a>.</p></div>
+    <div class="arch-foot reveal center">
+      <a class="btn btn-secondary" href="<?php echo watchlog_url('how-it-works'); ?>">How WatchLog works</a>
     </div>
   </div>
 </section>
@@ -273,17 +278,27 @@ $WL_ARCH = [
       </div>
       <div class="ms-panel">
         <?php foreach ($WL_SITES as $k=>$s){
-          $badge = $s[2]==='online' ? '<span class="ms-badge ok">Online</span>' : '<span class="ms-badge bad">'.$s[3].' cameras · 1 fault</span>';
+          $cams = (int) $s[3];
+          $online = $s[2]==='online' ? $cams : max(0, $cams-1);
+          $pct = $cams ? round($online / $cams * 100) : 0;
+          $badge = $s[2]==='online'
+            ? '<span class="ms-badge ok">'.watchlog_icon('check',15).' All online</span>'
+            : '<span class="ms-badge bad">'.watchlog_icon('alert',15).' 1 camera fault</span>';
           printf('<div class="ms-detail%s" data-site="%s"><div class="ms-head"><h3>%s</h3>%s</div>'
             .'<div class="ms-stats"><div class="metric"><b>%s</b><span>cameras</span></div>'
             .'<div class="metric"><b>%s</b><span>incidents, 24h</span></div>'
             .'<div class="metric"><b>%s</b><span>last event</span></div></div>'
-            .'<p class="ms-last">Latest: %s</p></div>',
+            .'<div class="ms-health"><div class="msh-row"><span>Camera health</span><span>%d / %d online</span></div>'
+            .'<div class="msh-bar %s"><i style="width:%d%%"></i></div></div>'
+            .'<p class="ms-last">%s Latest: %s</p></div>',
             $k===0?' active':'', esc_attr($s[0]), esc_html($s[1]), $badge,
-            esc_html($s[3]), esc_html($s[4]), esc_html($s[6]), esc_html($s[5])); } ?>
+            esc_html($s[3]), esc_html($s[4]), esc_html($s[6]),
+            $online, $cams, $s[2]==='online'?'ok':'bad', $pct,
+            watchlog_icon('clock',15), esc_html($s[5])); } ?>
       </div>
     </div>
-    <p class="ms-foot reveal">Head office sees the pattern. Each site's report goes to the person who runs it, with roles for owner, admin and read-only.</p>
+    <p class="ms-foot reveal">Head office sees the pattern. Each site's report goes to the person who runs it, with roles for owner, admin and read-only.
+      <a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See the platform <?php echo watchlog_icon('arrow-right',18); ?></a></p>
   </div>
 </section>
 
@@ -340,9 +355,19 @@ $WL_ARCH = [
         <button class="cs-btn" data-c="unsure" role="tab" aria-selected="false">I am not sure</button>
       </div>
       <div class="cs-panel active" data-c="know">
-        <p><b>Hikvision</b> and <b>Dahua</b> are validated. HiLook, Imou, CP&nbsp;Plus, Uniview, Tiandy and
-          most ONVIF recorders are protocol-compatible. The install itself is the real test, and it takes
-          about ten minutes.</p>
+        <div class="compat-brands">
+          <span class="cb v"><?php echo watchlog_icon('check',15); ?> Hikvision</span>
+          <span class="cb v"><?php echo watchlog_icon('check',15); ?> Dahua</span>
+          <span class="cb p">HiLook</span>
+          <span class="cb p">Imou</span>
+          <span class="cb p">CP&nbsp;Plus</span>
+          <span class="cb p">Uniview</span>
+          <span class="cb p">Tiandy</span>
+          <span class="cb p">ONVIF</span>
+        </div>
+        <p class="cb-legend"><span class="cb-key v"></span> Validated in the field
+          <span class="cb-key p"></span> Protocol-compatible, confirmed at install</p>
+        <p class="cs-note">The install is the real test and takes about ten minutes.</p>
         <div class="cta-row"><a class="btn btn-primary" href="<?php echo $signup; ?>">Start free</a>
           <a class="btn btn-secondary" href="<?php echo watchlog_url('compatibility'); ?>">See the full list</a></div>
       </div>
