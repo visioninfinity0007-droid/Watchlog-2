@@ -51,7 +51,13 @@ from pathlib import Path
 
 import requests
 
-ROOT = Path(__file__).resolve().parents[2]
+# Project root (to find a local .env when run from source). In the deployed
+# report-runner the file lives flat at /app, so parents[2] does not exist —
+# fall back to the file's own dir; config there comes from the environment.
+try:
+    ROOT = Path(__file__).resolve().parents[2]
+except IndexError:
+    ROOT = Path(__file__).resolve().parent
 TIMEOUT = 30
 
 # The branded HTML body lives next to this file.
