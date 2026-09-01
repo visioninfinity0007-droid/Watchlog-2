@@ -14,6 +14,7 @@ RECIP = (ROOT / "prototype/supabase/migrations/0031_report_recipient_destination
 AUTHZ = (ROOT / "prototype/supabase/migrations/0032_portal_operational_authz.sql").read_text()
 HEALTH = (ROOT / "prototype/supabase/migrations/0033_site_health_details.sql").read_text()
 ENROLL = (ROOT / "prototype/supabase/migrations/0034_enrollment_code_read_authz.sql").read_text()
+BILLING_AUTH = (ROOT / "prototype/supabase/migrations/0035_billing_read_authz.sql").read_text()
 NSIS = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text()
 BUILD = (ROOT / "tools/build_windows_release.ps1").read_text()
 WRAPPER = (ROOT / "tools/make_installer.ps1").read_text()
@@ -53,11 +54,19 @@ def check() -> None:
     assert "case when v_can_manage then agg.open_code else null end" in ENROLL
     assert "ec.tenant_id = v_tenant" in ENROLL
 
-    # Billing fails closed: mock is allowed only when explicitly configured.
+    # Billing fails closed and detailed financial records are Owner-only.
     assert 'NEXT_PUBLIC_BILLING_PROVIDER||""' in SETTINGS
     assert 'NEXT_PUBLIC_BILLING_PROVIDER||"mock"' not in SETTINGS
     assert "billingConfigured" in SETTINGS
     assert "No plan change has been created" in SETTINGS
+    assert 'if(nextRole==="owner")' in SETTINGS
+    assert "Financial records are visible only to an Owner" in SETTINGS
+    assert "create or replace function public.wl_is_owner" in BILLING_AUTH
+    assert "m.role = 'owner'" in BILLING_AUTH
+    for table in ("billing_customers", "subscriptions", "payment_transactions", "billing_checkouts"):
+        assert table in BILLING_AUTH
+    assert "using (public.wl_is_owner(tenant_id))" in BILLING_AUTH
+    assert "v_tenant uuid := wl_require_role(array['owner'])" in BILLING_AUTH
 
     # Core portal surfaces expose the richer review hierarchy, not raw tables only.
     assert "Review Site Health" in DASH
