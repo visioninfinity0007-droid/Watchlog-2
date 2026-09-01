@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
 import { Nav } from "../shell";
 
@@ -18,7 +18,7 @@ function liveness(lastSeen) {
 }
 
 function ago(ts) {
-  if (!ts) return "—";
+  if (!ts) return "never";
   const s = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 1000));
   if (s < 60) return s + "s ago";
   if (s < 3600) return Math.round(s / 60) + "m ago";
@@ -82,15 +82,26 @@ export default function Dashboard() {
 
   const agents = data?.agents || [];
   const health = data?.health || {};
-  const attention = [
-    ...(health.offline_agents || []).map(
-      (a) => `${a.site} — agent on ${a.hostname || "unknown PC"} last seen ${ago(a.last_seen_at)}`),
-    ...(health.silent_cameras || []).map(
-      (c) => `${c.site} — ${c.camera} silent for ${c.hours_silent}h`),
-    ...(health.faults_24h || []).map(
-      (f) => `${f.event_type} on ${f.camera} — ${f.count} in 24h`),
+  // Summarise attention rather than list every raw line: many offline agents on
+  // one site collapse to "N agents offline on <site>", so the banner reads as a
+  // signal, not a wall of near-identical rows.
+  const offlineAgents = health.offline_agents || [];
+  const silentCameras = health.silent_cameras || [];
+  const faults24 = health.faults_24h || [];
+  const attentionCount = offlineAgents.length + silentCameras.length + faults24.length;
+  const offBySite = {};
+  offlineAgents.forEach((a) => { offBySite[a.site] = (offBySite[a.site] || 0) + 1; });
+  const attentionItems = [
+    ...Object.entries(offBySite).map(
+      ([site, n]) => `${n} agent${n > 1 ? "s" : ""} offline on ${site}`),
+    ...(silentCameras.length
+      ? [`${silentCameras.length} camera${silentCameras.length > 1 ? "s" : ""} silent`] : []),
+    ...(faults24.length
+      ? [`${faults24.length} fault${faults24.length > 1 ? "s" : ""} in the last 24h`] : []),
   ];
   const online = agents.filter((a) => liveness(a.last_seen_at)[0] === "s-ok").length;
+  const bySite = {};
+  agents.forEach((a) => { (bySite[a.site] = bySite[a.site] || []).push(a); });
   const withShots = (data?.recent || []).filter((e) => e.has_snapshot).slice(0, 8);
   const maxType = Math.max(1, ...(data?.by_type || []).map((t) => t.count));
 
@@ -113,13 +124,13 @@ export default function Dashboard() {
       <main className="main">
         {error && <div className="err">{error}</div>}
 
-        <div className={"banner" + (attention.length ? "" : " clear")}>
-          {attention.length ? (
+        <div className={"banner" + (attentionCount ? "" : " clear")}>
+          {attentionCount ? (
             <>
-              <b>{attention.length} thing{attention.length > 1 ? "s" : ""} need attention</b>
-              <ul>{attention.slice(0, 6).map((t, i) => <li key={i}>{t}</li>)}</ul>
+              <b>{attentionCount} thing{attentionCount > 1 ? "s" : ""} need attention</b>
+              <ul>{attentionItems.map((t, i) => <li key={i}>{t}</li>)}</ul>
             </>
-          ) : <b>Nothing needs attention.</b>}
+          ) : <b>Everything is reporting normally.</b>}
         </div>
 
         <div className="tiles">
@@ -132,12 +143,16 @@ export default function Dashboard() {
             <div className="l">cameras</div>
           </div>
           <div className="tile">
-            <div className="n">{online}/{agents.length}</div>
+            <div className="n" style={{ color:
+              agents.length && online === 0 ? "var(--color-status-bad-dark)"
+              : online < agents.length ? "var(--color-status-warn-dark)"
+              : agents.length ? "var(--color-status-ok-dark)" : undefined }}>
+              {online}/{agents.length}</div>
             <div className="l">agents online</div>
           </div>
           <div className="tile">
             <div className="n">{data?.totals?.sites ?? 0}</div>
-            <div className="l">sites</div>
+            <div className="l">{(data?.totals?.sites ?? 0) === 1 ? "site" : "sites"}</div>
           </div>
         </div>
 
@@ -153,25 +168,43 @@ export default function Dashboard() {
             <table>
               <thead>
                 <tr>
-                  <th>Site</th><th>Status</th><th>Last seen</th>
+                  <th>Site / agent</th><th>Status</th><th>Last seen</th>
                   <th>Events</th><th className="hide-sm">Recorder</th>
                 </tr>
               </thead>
               <tbody>
-                {agents.map((a) => {
-                  const [cls, label] = liveness(a.last_seen_at);
-                  const device = [a.device_vendor, a.device_model]
-                    .filter(Boolean).join(" ");
+                {Object.entries(bySite).map(([site, list]) => {
+                  const anyOnline = list.some(
+                    (a) => liveness(a.last_seen_at)[0] === "s-ok");
+                  const siteEvents = list.reduce(
+                    (s, a) => s + (a.event_count || 0), 0);
                   return (
-                    <tr key={a.agent_id}>
-                      <td>{a.site}<div className="muted"
-                           style={{ fontSize: "var(--font-size-xs)" }}>
-                           {a.hostname}</div></td>
-                      <td><span className={"pill " + cls}>{label}</span></td>
-                      <td className="mono">{ago(a.last_seen_at)}</td>
-                      <td className="mono">{a.event_count}</td>
-                      <td className="muted hide-sm">{device || "—"}</td>
-                    </tr>
+                    <Fragment key={site}>
+                      <tr style={{ background: "rgba(255,255,255,.025)" }}>
+                        <td><b>{site}</b></td>
+                        <td><span className={"pill " + (anyOnline ? "s-ok" : "s-bad")}>
+                          {anyOnline ? "online" : "offline"}</span></td>
+                        <td></td>
+                        <td className="mono">{siteEvents}</td>
+                        <td className="muted hide-sm">
+                          {list.length} agent{list.length > 1 ? "s" : ""}</td>
+                      </tr>
+                      {list.map((a) => {
+                        const [cls, label] = liveness(a.last_seen_at);
+                        const device = [a.device_vendor, a.device_model]
+                          .filter(Boolean).join(" ");
+                        return (
+                          <tr key={a.agent_id}>
+                            <td className="muted" style={{ paddingLeft: "var(--space-6)" }}>
+                              {a.hostname || "unknown PC"}</td>
+                            <td><span className={"pill " + cls}>{label}</span></td>
+                            <td className="mono">{ago(a.last_seen_at)}</td>
+                            <td className="mono">{a.event_count}</td>
+                            <td className="muted hide-sm">{device || "not set"}</td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -216,7 +249,7 @@ export default function Dashboard() {
                     <td>
                       <span style={{
                         display: "block", height: 8, borderRadius: 3,
-                        background: "var(--color-violet-bright)", opacity: .8,
+                        background: "var(--wl-ice)", opacity: .85,
                         width: `${Math.round((t.count / maxType) * 100)}%`,
                       }} />
                     </td>
