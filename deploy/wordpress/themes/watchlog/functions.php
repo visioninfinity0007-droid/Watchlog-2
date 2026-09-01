@@ -214,6 +214,8 @@ function watchlog_sitemap() {
         'post_type' => 'page', 'numberposts' => -1, 'post_status' => 'publish',
         'orderby' => 'menu_order', 'order' => 'ASC',
     ]);
+    status_header(200);          // override WP's 404 for this virtual route
+    nocache_headers();
     header('Content-Type: application/xml; charset=UTF-8');
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
