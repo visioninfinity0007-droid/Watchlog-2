@@ -4,20 +4,22 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
 import { Nav, requireTenant, setupPill } from "../shell";
 
-const PLANS = [
-  ["starter", "Starter"],
-  ["growth", "Growth"],
-  ["enterprise", "Enterprise"],
-];
-
 const INSTALLER_URL = process.env.NEXT_PUBLIC_INSTALLER_URL || "";
+const BILLING_URL = process.env.NEXT_PUBLIC_BILLING_URL || "";
+const BILLING_PROVIDER = process.env.NEXT_PUBLIC_BILLING_PROVIDER || "mock";
 
 function fmt(ts) { return ts ? new Date(ts).toLocaleString() : "—"; }
+function money(minor, cur) {
+  if (minor == null) return "—";
+  return `${cur || "PKR"} ${(minor / 100).toLocaleString()}`;
+}
 
 export default function Settings() {
   const [email, setEmail] = useState("");
   const [trial, setTrial] = useState(null);
   const [sites, setSites] = useState(null);
+  const [billing, setBilling] = useState(null);
+  const [plans, setPlans] = useState([]);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [newSite, setNewSite] = useState("");
@@ -28,19 +30,36 @@ export default function Settings() {
     if (!g) return;
     setEmail(g.session.user.email || "");
     const sb = supabase();
-    const [t, s] = await Promise.all([sb.rpc("wl_trial_status"), sb.rpc("wl_sites")]);
+    const [t, s, b, p] = await Promise.all([
+      sb.rpc("wl_trial_status"), sb.rpc("wl_sites"),
+      sb.rpc("wl_billing_overview"), sb.rpc("wl_billing_plans"),
+    ]);
     if (t.error) { setErr(say(t.error)); return; }
     setTrial(t.data || {});
     setSites(s.data || []);
+    setBilling(b.data || {});
+    setPlans(p.data || []);
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  async function choosePlan(plan) {
+  async function startCheckout(plan) {
     setErr(""); setNote("");
-    const { data, error } = await supabase().rpc("wl_set_plan", { p_plan: plan });
+    const { data, error } = await supabase().rpc("wl_billing_start_checkout",
+      { p_plan: plan, p_provider: BILLING_PROVIDER });
     if (error) { setErr(say(error)); return; }
-    setNote(data?.note || "Updated.");
+    if (BILLING_URL && data?.checkout_path) {
+      window.location.href = BILLING_URL + data.checkout_path;   // hosted checkout
+      return;
+    }
+    setNote(data?.note || "Checkout created. Complete payment to activate.");
+    load();
+  }
+  async function cancelSub() {
+    setErr(""); setNote("");
+    const { data, error } = await supabase().rpc("wl_billing_cancel");
+    if (error) { setErr(say(error)); return; }
+    setNote(data?.note || "Cancellation requested.");
     load();
   }
   async function addSite(e) {
@@ -86,21 +105,56 @@ export default function Settings() {
                     <b>{t.days_left ?? 0} days left</b>
                     <div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>ends {t.trial_ends_at ? new Date(t.trial_ends_at).toLocaleDateString() : "—"}</div></div>
                 )}
+                {billing?.subscription?.current_period_end && (
+                  <div><div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>Renews</div>
+                    <b>{new Date(billing.subscription.current_period_end).toLocaleDateString()}</b>
+                    {billing.subscription.cancel_at_period_end &&
+                      <div className="muted" style={{ fontSize: "var(--font-size-xs)" }}>cancels at period end</div>}</div>
+                )}
               </div>
-              <div style={{ marginTop: "var(--space-4)" }}>
+
+              <div style={{ marginTop: "var(--space-5)" }}>
                 <div className="muted" style={{ fontSize: "var(--font-size-sm)", marginBottom: 8 }}>
-                  Choose a plan (activates once payment is confirmed at checkout):
+                  {t.status === "active" ? "Change your plan" : "Choose a plan"} — you pay on the
+                  secure checkout; your plan activates when payment is confirmed.
                 </div>
                 <div className="row">
-                  {PLANS.map(([v, l]) => (
-                    <button key={v} className="ghost small" style={{ width: "auto" }}
-                            onClick={() => choosePlan(v)}>{l}</button>
+                  {plans.map((p) => (
+                    <button key={p.plan} className="ghost small" style={{ width: "auto" }}
+                            onClick={() => startCheckout(p.plan)}>
+                      <span style={{ textTransform: "capitalize" }}>{p.plan}</span>
+                      {" — "}{money(p.amount_minor, p.currency)}/mo
+                    </button>
                   ))}
-                  <button className="btn-danger" onClick={() => choosePlan("trial")}>
-                    Downgrade to free
-                  </button>
+                  {t.status === "active" && (
+                    <button className="btn-danger" onClick={cancelSub}>Cancel subscription</button>
+                  )}
                 </div>
+                {plans.some((p) => p.is_draft) && (
+                  <p className="muted" style={{ fontSize: "var(--font-size-xs)", margin: "8px 0 0" }}>
+                    Pricing shown is provisional pending final confirmation.
+                  </p>
+                )}
               </div>
+
+              {(billing?.transactions || []).length > 0 && (
+                <div style={{ marginTop: "var(--space-5)" }}>
+                  <div className="muted" style={{ fontSize: "var(--font-size-xs)", textTransform: "uppercase",
+                       letterSpacing: ".06em", fontWeight: 700, marginBottom: 6 }}>Payment history</div>
+                  <table>
+                    <tbody>
+                      {billing.transactions.map((x, i) => (
+                        <tr key={i}>
+                          <td className="mono">{new Date(x.created_at).toLocaleDateString()}</td>
+                          <td style={{ textTransform: "capitalize" }}>{x.plan || "—"}</td>
+                          <td className="mono">{money(x.amount_minor, x.currency)}</td>
+                          <td><span className={"pill " + (x.status === "succeeded" ? "s-ok" : x.status === "failed" ? "s-bad" : "s-unk")}>{x.status}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </>
           )}
         </div>
