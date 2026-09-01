@@ -13,6 +13,9 @@
 .hero-copy h1{margin:.35em 0 .5em}
 .hero-copy .lead{margin-bottom:1.6rem}
 .hero-shot{position:relative}
+.hero-shot img,.hero-shot picture{width:100%;display:block}
+/* let the self-framed composite breathe slightly past the column on desktop */
+@media (min-width:901px){.hero-composite{width:112%;max-width:none;margin-left:-6%}}
 
 /* ============================================================ 02 PROOF */
 .proof{border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06)}

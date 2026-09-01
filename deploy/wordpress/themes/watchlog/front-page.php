@@ -30,7 +30,7 @@ $signup = esc_url(watchlog_signup_url());
       </ul>
     </div>
     <div class="hero-shot reveal in glow">
-      <?php echo watchlog_shot('product-hero-composite', 'The WatchLog portal: overview, an incident with its still, and a daily report', 1600, 1100, '(max-width:900px) 92vw, 52vw', true, true); ?>
+      <?php echo watchlog_pic('product-hero-composite', 'The WatchLog portal: the Overview dashboard with a daily report showing delivery on WhatsApp and email', 1900, 1240, 'hero-composite', '(max-width:900px) 96vw, 54vw', true); ?>
     </div>
   </div>
 </section>

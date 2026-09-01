@@ -28,3 +28,20 @@ must read as one brand.
 Assemble `product-hero-composite.png` from real captures on a midnight (`#07111F`) field:
 Overview as the dominant plane, an incident-detail card layered front-right, a daily-report /
 WhatsApp proof card to the right, faint site-health status. Export ~2000px wide, then pack WebP.
+Built by `tools/build_hero_composite.py` (Overview + floating Reports card, baked rounded corners +
+soft shadow on transparency). Shipped 1900×1240.
+
+## Status (2026-09-01)
+The client supplied **brand-aligned design-target** screens (1920×1200, real monogram geometry +
+the exact palette) in `Downloads/watchlog_product_screens_brand_aligned/`, with the instruction:
+use these as the visual target on the website now, **align the real portal to this system**, then
+**replace with literal full-resolution captures from the demo tenant**. All 7 + the composite are
+live on the site. These are feature-accurate (incidents, after-hours, cameras-online, faults,
+Person/Vehicle/Motorcycle types, site health, per-recipient WhatsApp/email) and clearly marked
+"DEMO TENANT — Sample data only". They are **not** literal screenshots.
+
+**Follow-ups (documented, not yet done):**
+1. Align the live portal UI (`portal/`) to this navy/blue/violet system (nav rail, stat cards, tables)
+   so it matches both these targets and the website.
+2. Once aligned, capture literal demo-tenant screenshots and swap them in (same filenames → drop in +
+   `build_site_images.py` + `build_hero_composite.py`, no template changes).
