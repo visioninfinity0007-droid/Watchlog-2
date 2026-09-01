@@ -67,14 +67,19 @@ except ImportError:  # running from a different cwd
 # ---------------------------------------------------------------------
 
 def load_env() -> dict:
+    # WatchLog-owned config only. The reporter no longer borrows another
+    # project's .env — Evolution/SendGrid/portal config lives in this
+    # project's own .env (see .env.example), or in the process environment
+    # (how the deployed report-runner service is configured on Coolify).
     env: dict = {}
-    for f in (ROOT / ".env", ROOT.parent / "alkhalid-security-portal" / ".env.local"):
-        if f.exists():
-            for k, v in re.findall(r"^([A-Za-z0-9_]+)\s*=\s*(.*)$",
-                                   f.read_text(errors="replace"), re.M):
-                env.setdefault(k, v.strip().strip('"').strip("'"))
+    f = ROOT / ".env"
+    if f.exists():
+        for k, v in re.findall(r"^([A-Za-z0-9_]+)\s*=\s*(.*)$",
+                               f.read_text(errors="replace"), re.M):
+            env.setdefault(k, v.strip().strip('"').strip("'"))
     env.update({k: v for k, v in os.environ.items()
-                if k.startswith(("SUPABASE_", "EVOLUTION_", "SENDGRID_", "WATCHLOG_"))})
+                if k.startswith(("SUPABASE_", "EVOLUTION_", "SENDGRID_", "WATCHLOG_",
+                                 "REPORT_"))})
     return env
 
 
