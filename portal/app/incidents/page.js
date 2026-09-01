@@ -3,146 +3,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
 import { Nav, requireTenant } from "../shell";
+import ui from "../portal.module.css";
 
-// Enum values like "line_crossing" are for the database, not the operator.
-function humanType(t) {
-  if (!t) return "Event";
-  return t.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
-}
+function humanType(t){if(!t)return"Event";return String(t).replace(/^analytic_/,"").replaceAll("_"," ").replace(/\b\w/g,(c)=>c.toUpperCase());}
+function ago(ts){if(!ts)return"unknown";const s=Math.max(0,Math.round((Date.now()-Date.parse(ts))/1000));if(s<60)return`${s}s ago`;if(s<3600)return`${Math.round(s/60)}m ago`;if(s<86400)return`${Math.round(s/3600)}h ago`;return`${Math.round(s/86400)}d ago`;}
+function exact(ts){try{return new Date(ts).toLocaleString();}catch{return String(ts||"");}}
 
-export default function Incidents() {
-  const [email, setEmail] = useState("");
-  const [rows, setRows] = useState(null);
-  const [sites, setSites] = useState([]);
-  const [err, setErr] = useState("");
-  const [days, setDays] = useState(7);
-  const [site, setSite] = useState("");
-  const [type, setType] = useState("");
-  const shots = useRef(new Map());
-  const [, force] = useState(0);
+export default function Incidents(){
+  const [email,setEmail]=useState(""),[rows,setRows]=useState(null),[sites,setSites]=useState([]),[err,setErr]=useState(""),[days,setDays]=useState(7),[site,setSite]=useState(""),[type,setType]=useState(""),[selected,setSelected]=useState(null);
+  const shots=useRef(new Map());const[,force]=useState(0);
+  const load=useCallback(async(d,s,t)=>{const g=await requireTenant();if(!g)return;setEmail(g.session.user.email||"");const sb=supabase();const[inc,si]=await Promise.all([sb.rpc("wl_incidents",{p_days:d,p_site:s||null,p_type:t||null}),sb.rpc("wl_sites")]);if(inc.error||si.error){setErr(say(inc.error||si.error));return;}setErr("");setRows(inc.data||[]);setSites(si.data||[]);},[]);
+  useEffect(()=>{load(days,site,type);},[days,site,type,load]);
+  async function loadShot(eventId){if(shots.current.has(eventId))return;shots.current.set(eventId,null);const{data}=await supabase().rpc("wl_portal_snapshot",{p_event_id:eventId});shots.current.set(eventId,data?.image_b64?`data:${data.content_type||"image/jpeg"};base64,${data.image_b64}`:false);force((n)=>n+1);}
+  useEffect(()=>{(rows||[]).filter((r)=>r.has_snapshot).slice(0,24).forEach((r)=>loadShot(r.event_id));},[rows]);
+  useEffect(()=>{if(selected?.has_snapshot)loadShot(selected.event_id);},[selected]);
+  useEffect(()=>{if(!selected)return;const onKey=(e)=>{if(e.key==="Escape")setSelected(null);};window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey);},[selected]);
+  const types=Array.from(new Set((rows||[]).map((r)=>r.event_type))).sort();
+  const withStill=(rows||[]).filter((r)=>r.has_snapshot).length;
 
-  const load = useCallback(async (d, s, t) => {
-    const g = await requireTenant();
-    if (!g) return;
-    setEmail(g.session.user.email || "");
-    const sb = supabase();
-    const [inc, si] = await Promise.all([
-      sb.rpc("wl_incidents", { p_days: d, p_site: s || null, p_type: t || null }),
-      sb.rpc("wl_sites"),
-    ]);
-    if (inc.error) { setErr(say(inc.error)); return; }
-    setErr("");
-    setRows(inc.data || []);
-    setSites(si.data || []);
-  }, []);
+  return <div className="shell"><Nav active="Incidents" email={email} right={<select value={days} onChange={(e)=>setDays(Number(e.target.value))} style={{width:"auto",margin:0}} aria-label="Incident date range"><option value={1}>24 hours</option><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option></select>}/>
+    <main className="main">
+      <header className={ui.pageHead}><div><div className={ui.eyebrow}>Incident review</div><h1>Only what is worth reviewing.</h1><p>Validated person, vehicle, motorcycle and promoted analytic incidents, with the still and context needed to understand the moment.</p></div></header>
+      {err&&<div className="err">{err}</div>}
+      <section className={ui.metricGrid}><div className={ui.metric}><div className={ui.metricValue}>{rows?.length??0}</div><div className={ui.metricLabel}>Incidents in window</div></div><div className={ui.metric}><div className={ui.metricValue}>{withStill}</div><div className={ui.metricLabel}>With still</div></div><div className={ui.metric}><div className={ui.metricValue}>{sites.length}</div><div className={ui.metricLabel}>Sites available</div></div><div className={ui.metric}><div className={ui.metricValue}>{types.length}</div><div className={ui.metricLabel}>Incident types</div></div></section>
 
-  useEffect(() => { load(days, site, type); }, [days, site, type, load]);
+      <div className={ui.sectionHead}><div><h2>Incident history</h2><p>Filter the record, then open any row for the full still and exact context.</p></div></div>
+      <div className={ui.card}><div className="row"><div className="field" style={{maxWidth:260}}><label>Site</label><select value={site} onChange={(e)=>setSite(e.target.value)}><option value="">All sites</option>{sites.map((s)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div><div className="field" style={{maxWidth:240}}><label>Type</label><select value={type} onChange={(e)=>setType(e.target.value)}><option value="">All types</option>{types.map((t)=><option key={t} value={t}>{humanType(t)}</option>)}</select></div><div className="field" style={{alignSelf:"flex-end"}}><span className="muted" style={{fontSize:"var(--font-size-sm)"}}>{rows===null?"Loading...":`${rows.length} incident${rows.length===1?"":"s"}`}</span></div></div></div>
 
-  async function loadShot(eventId) {
-    if (shots.current.has(eventId)) return;
-    shots.current.set(eventId, null);
-    const { data } = await supabase().rpc("wl_portal_snapshot", { p_event_id: eventId });
-    if (data && data.image_b64) {
-      shots.current.set(eventId, `data:${data.content_type || "image/jpeg"};base64,${data.image_b64}`);
-      force((n) => n + 1);
-    }
-  }
-  useEffect(() => {
-    (rows || []).filter((r) => r.has_snapshot).slice(0, 24).forEach((r) => loadShot(r.event_id));
-  }, [rows]);
-
-  // type filter options derived from what is present (no extra RPC)
-  const types = Array.from(new Set((rows || []).map((r) => r.event_type))).sort();
-
-  return (
-    <div className="shell">
-      <Nav active="Incidents" email={email} right={
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))}
-                style={{ width: "auto", margin: 0 }}>
-          <option value={1}>24 hours</option>
-          <option value={7}>7 days</option>
-          <option value={30}>30 days</option>
-          <option value={90}>90 days</option>
-        </select>
-      } />
-      <main className="main">
-        {err && <div className="err">{err}</div>}
-
-        <h2>Filter</h2>
-        <div className="card">
-          <div className="row">
-            <div className="field" style={{ maxWidth: 220 }}>
-              <label>Site</label>
-              <select value={site} onChange={(e) => setSite(e.target.value)}>
-                <option value="">All sites</option>
-                {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-            <div className="field" style={{ maxWidth: 200 }}>
-              <label>Type</label>
-              <select value={type} onChange={(e) => setType(e.target.value)}>
-                <option value="">All types</option>
-                {types.map((t) => <option key={t} value={t}>{humanType(t)}</option>)}
-              </select>
-            </div>
-            <div className="field" style={{ alignSelf: "flex-end" }}>
-              <span className="muted" style={{ fontSize: "var(--font-size-sm)" }}>
-                {rows === null ? "" : `${rows.length} incident${rows.length === 1 ? "" : "s"}`}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <h2>Incident history</h2>
-        {rows === null ? (
-          <div className="panel"><div className="empty">Loading…</div></div>
-        ) : rows.length === 0 ? (
-          <div className="panel"><div className="empty">
-            No incidents in this window. Valid events (person, vehicle, motorcycle) appear here after
-            the on-site filter accepts them.
-          </div></div>
-        ) : (
-          <div className="panel">
-            <table>
-              <thead>
-                <tr><th>Still</th><th>Time</th><th>Site</th><th>Camera</th><th>Type</th></tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.event_id}>
-                    <td style={{ width: 96 }}>
-                      {r.has_snapshot && shots.current.get(r.event_id) ? (
-                        <img src={shots.current.get(r.event_id)}
-                             alt={`still from ${r.camera || "camera"}`}
-                             style={{ width: 84, height: 47, objectFit: "cover",
-                                      borderRadius: 6, background: "var(--color-canvas)",
-                                      display: "block" }} />
-                      ) : (
-                        <span style={{ display: "grid", placeItems: "center",
-                                       width: 84, height: 47, borderRadius: 6,
-                                       background: "var(--color-canvas)",
-                                       border: "1px solid var(--color-line-dark)",
-                                       color: "var(--color-muted-dark)",
-                                       fontSize: "var(--font-size-xs)" }}>
-                          {r.has_snapshot ? "loading" : "no still"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="mono">{new Date(r.device_ts).toLocaleString()}</td>
-                    <td>{r.site}</td>
-                    <td>{r.camera || <span className="muted">unassigned</span>}</td>
-                    <td><span style={{ fontSize: "var(--font-size-xs)", fontWeight: 600,
-                                       padding: "3px 9px", borderRadius: 999,
-                                       background: "rgba(114,212,255,.12)",
-                                       color: "var(--wl-ice)" }}>
-                      {humanType(r.event_type)}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </main>
-    </div>
-  );
+      {rows===null?<div className={ui.emptyCard}>Loading incident history...</div>:rows.length===0?<div className={ui.emptyCard}>No incidents in this window. A quiet period stays quiet rather than being filled with raw motion noise.</div>:<div className="panel"><div className={ui.tableWrap}><table><thead><tr><th>Still</th><th>When</th><th>Site</th><th>Camera</th><th>Type</th><th></th></tr></thead><tbody>{rows.map((r)=>{const shot=shots.current.get(r.event_id);return <tr key={r.event_id}><td style={{width:104}}>{r.has_snapshot&&typeof shot==="string"?<img src={shot} alt={`still from ${r.camera||"camera"}`} style={{width:88,height:50,objectFit:"cover",borderRadius:7,background:"var(--color-canvas)",display:"block"}}/>:<span style={{display:"grid",placeItems:"center",width:88,height:50,borderRadius:7,background:"var(--color-canvas)",border:"1px solid var(--color-line-dark)",color:"var(--color-muted-dark)",fontSize:"var(--font-size-xs)"}}>{r.has_snapshot?(shot===false?"unavailable":"loading"):"no still"}</span>}</td><td><b title={exact(r.device_ts)}>{ago(r.device_ts)}</b><div className="muted" style={{fontSize:"var(--font-size-xs)"}}>{new Date(r.device_ts).toLocaleDateString()}</div></td><td>{r.site}</td><td>{r.camera||<span className="muted">unassigned</span>}</td><td><span style={{fontSize:"var(--font-size-xs)",fontWeight:600,padding:"4px 9px",borderRadius:999,background:"rgba(114,212,255,.12)",color:"var(--wl-ice)"}}>{humanType(r.event_type)}</span></td><td style={{textAlign:"right"}}><button className="ghost small" onClick={()=>setSelected(r)}>Review</button></td></tr>;})}</tbody></table></div></div>}
+    </main>
+    {selected&&<div className={ui.modalBackdrop} role="presentation" onMouseDown={(e)=>{if(e.target===e.currentTarget)setSelected(null);}}><section className={ui.modal} role="dialog" aria-modal="true" aria-label="Incident detail"><div className={ui.modalHead}><div><div className={ui.eyebrow}>{selected.site}</div><h2>{humanType(selected.event_type)} · {selected.camera||"Unassigned camera"}</h2></div><button className={ui.closeBtn} onClick={()=>setSelected(null)} aria-label="Close incident detail">Close</button></div><div className={ui.modalBody}>{selected.has_snapshot?(typeof shots.current.get(selected.event_id)==="string"?<img className={ui.modalImage} src={shots.current.get(selected.event_id)} alt={`Incident still from ${selected.camera||"camera"}`}/>:<div className={ui.emptyCard}>{shots.current.get(selected.event_id)===false?"This incident's still is unavailable.":"Loading the incident still..."}</div>):<div className={ui.emptyCard}>This incident does not have a still.</div>}<div className={ui.detailGrid} style={{marginTop:16}}><div className={ui.detailItem}><small>Time</small><b>{exact(selected.device_ts)}</b></div><div className={ui.detailItem}><small>Type</small><b>{humanType(selected.event_type)}</b></div><div className={ui.detailItem}><small>Site</small><b>{selected.site}</b></div><div className={ui.detailItem}><small>Camera</small><b>{selected.camera||"Unassigned"}</b></div></div><p className="muted" style={{fontSize:"var(--font-size-sm)",marginBottom:0}}>This is an event record and one captured still, not live access to the recorder. Continuous video stays at the site.</p></div></section></div>}
+  </div>;
 }
