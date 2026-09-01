@@ -19,6 +19,16 @@ function linePath(values, width=720, height=220, pad=18) {
   }).join(" ");
 }
 
+const GOAL_LABEL = {
+  visitor_flow: "Visitor Flow",
+  vehicle_flow: "Vehicle Flow",
+  boundary_monitoring: "Boundary Monitoring",
+  zone_activity: "Zone Activity",
+  dwell: "Dwell / Time in Zone",
+  checkout_activity: "Checkout Activity",
+  after_hours: "After-Hours Activity",
+};
+
 export default function AnalyticsOverview() {
   const [email, setEmail] = useState("");
   const [studio, setStudio] = useState(null);
@@ -60,10 +70,10 @@ export default function AnalyticsOverview() {
   const selected = siteId ? sites.find((s) => s.id === siteId) : null;
   const hasRetail = selected ? selected.site_type === "retail" : sites.some((s) => s.site_type === "retail");
   const metrics = [
-    metric("Visitors in", summary.visitor_in, "Entrance line crossings"),
-    metric("Visitors out", summary.visitor_out, "Exit line crossings"),
-    metric("Vehicles in", summary.vehicles_in, "Cars + motorcycles"),
-    metric("Zone entries", summary.zone_entries, "Configured areas"),
+    metric("Visitors in", summary.visitor_in, "Configured Visitor Flow"),
+    metric("Visitors out", summary.visitor_out, "Configured Visitor Flow"),
+    metric("Vehicles in", summary.vehicles_in, "Configured Vehicle Flow"),
+    metric("Zone entries", summary.zone_entries, "Configured activity zones"),
     metric("After hours", summary.after_hours, "Outside configured schedules"),
     ...(hasRetail ? [metric("Checkout peak", summary.checkout_peak, "People present in checkout zone")]: []),
   ];
@@ -102,12 +112,13 @@ export default function AnalyticsOverview() {
             <div className={styles.subnav}>
               <a className={styles.current} href="/analytics/">Overview</a>
               <a href="/analytics/studio/">Analytics Studio</a>
+              <a href="/analytics/schedules/">Schedules</a>
             </div>
             <h1 style={{ marginTop: 22 }}>Site intelligence</h1>
             <p>See the operational signals your cameras are responsible for, not just a list of motion events.</p>
           </div>
           <div className={styles.actions}>
-            <a className={styles.primaryLink} href="/analytics/studio/">Configure monitoring</a>
+            {studio?.can_manage !== false && <a className={styles.primaryLink} href="/analytics/studio/">Configure monitoring</a>}
           </div>
         </div>
 
@@ -160,10 +171,10 @@ export default function AnalyticsOverview() {
           <section className={styles.card}>
             <h2>Most active monitoring rules</h2>
             {(overview?.by_rule || []).length ? <table>
-              <thead><tr><th>Monitoring</th><th>Site</th><th>Camera</th><th>Type</th><th>Measurements</th></tr></thead>
+              <thead><tr><th>Monitoring</th><th>Site</th><th>Camera</th><th>Goal</th><th>Measurements</th></tr></thead>
               <tbody>{overview.by_rule.map((r) => <tr key={r.rule_id}>
                 <td><b>{r.name}</b></td><td>{r.site}</td><td>{r.camera || "Camera"}</td>
-                <td>{String(r.rule_type || "").replaceAll("_", " ")}</td>
+                <td>{GOAL_LABEL[r.analytic_key] || String(r.analytic_key || r.rule_type || "").replaceAll("_", " ")}</td>
                 <td className="mono">{Number(r.count || 0).toLocaleString()}</td>
               </tr>)}</tbody>
             </table> : <div className={styles.empty}>
