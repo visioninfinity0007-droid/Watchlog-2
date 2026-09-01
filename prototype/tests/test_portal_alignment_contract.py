@@ -39,6 +39,7 @@ def check() -> None:
     # Viewer UI and server write permissions tell the same story.
     assert "Account &amp; Plan" in SETTINGS and "Sites &amp; Setup" in SETTINGS
     assert "canOperate" in SETTINGS and "canBill" in SETTINGS
+    assert "copyCode" in SETTINGS and "Enrollment code copied" in SETTINGS
     assert "wl_require_role(array['owner','admin'])" in AUTHZ
     assert "create or replace function public.wl_add_site" in AUTHZ
     assert "create or replace function public.wl_issue_code" in AUTHZ
