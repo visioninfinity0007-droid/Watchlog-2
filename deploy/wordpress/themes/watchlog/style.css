@@ -4,7 +4,7 @@ Theme URI: https://watchlog.example
 Description: WatchLog — the intelligence layer for the CCTV you already own. Premium
   physical-security SaaS marketing theme. Custom, lightweight, no page builder.
 Author: WatchLog
-Version: 2.0.0
+Version: 2.0.1
 */
 
 /* ============================================================
@@ -157,6 +157,13 @@ section{padding-block:var(--sec-y)}
 .shot-ph-in{display:flex;flex-direction:column;align-items:center;gap:12px;color:rgba(255,255,255,.4)}
 .shot-ph-in svg{height:34px;width:auto;opacity:.8}
 .shot-ph-in span{font-size:.85rem;letter-spacing:.04em}
+
+/* Diagrams/media on a dark field: frame them so a dark-navy diagram
+   separates from the dark section instead of blending into it. */
+.page-hero-media img,.page-hero-media picture{border-radius:14px}
+.dark .page-hero-media img,.dark .split img:not(.shot-img){
+  border-radius:14px;border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 24px 60px -30px rgba(0,0,0,.65)}
 
 /* ticks list (shared) */
 .ticks{list-style:none;padding:0;margin:1.2rem 0 1.6rem;display:grid;gap:12px}
