@@ -60,8 +60,18 @@ _(updated as pages ship; demo site = watchlogsite.161.97.175.15.sslip.io, app br
   console errors, WebP+srcset images 200, mega-menu, hero (product placeholder + dusk-camera bg),
   platform reveal, editorial capability rows, AI diagram blends into dark section, solutions photo
   tiles, pricing 6,000/12,000/Talk-to-us, product-first footer. Premium, on-message.
-- **Inner pages — built, deploy in progress** (commit 5c9145c): platform, incidents, reporting,
-  site-health, solutions +5, how-it-works, compatibility, security, pricing, setup, contact,
-  privacy, terms. Structural PHP checks pass. Live QA pending this deploy.
-- **Pending:** real product captures (demo tenant, passwordless admin session), hero composite,
-  full responsive/a11y/SEO pass, merge to main.
+- **Inner pages — LIVE VERIFIED** (19 pages): all routes 200, old slugs 301, 0 dead CTAs, 27/27
+  internal links resolve 200 directly (trailing-slash fix), no PHP errors, no console errors.
+  Platform page shows the real Overview in an app-chrome frame; solutions show real photography.
+- **Product imagery — LIVE** (client design-target set): homepage hero composite + all product
+  sections/pages show real brand-aligned UI. Billing screen matches site pricing (6,000/12,000/
+  Talk-to-us, 14-day trial, sandbox badge).
+- **SEO — LIVE:** /sitemap.xml returns 200 (custom), robots points at it, OG card compliant.
+- **Mobile — VERIFIED:** hamburger drawer + accordions work; hero/CTAs stack cleanly at 375px.
+- **Merged to main (ea0d254 → 8b39f5c); Coolify app repointed to main.**
+- **INFRA BLOCKER (recorded):** Coolify build queue on the box is flaky (Redis scan fails
+  intermittently). One clean main-branch build succeeded; the final 2 one-line SEO/URL fixes were
+  applied to the live container by direct sync (git main is the source of truth). See
+  memory reference_coolify_queue_wedge. The next healthy Coolify deploy re-bakes main verbatim.
+- **FOLLOW-UPS (client-directed):** align live portal UI to this navy/blue/violet system; then
+  capture literal demo-tenant screenshots and swap in (same filenames + rerun the two build scripts).
