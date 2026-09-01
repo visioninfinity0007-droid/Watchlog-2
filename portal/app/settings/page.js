@@ -7,6 +7,7 @@ import { Nav, requireTenant, setupPill } from "../shell";
 const INSTALLER_URL = process.env.NEXT_PUBLIC_INSTALLER_URL || "";
 const BILLING_URL = process.env.NEXT_PUBLIC_BILLING_URL || "";
 const BILLING_PROVIDER = process.env.NEXT_PUBLIC_BILLING_PROVIDER || "mock";
+const MARKETING_URL = process.env.NEXT_PUBLIC_MARKETING_URL || "";
 
 function fmt(ts) { return ts ? new Date(ts).toLocaleString() : "—"; }
 function money(minor, cur) {
@@ -20,6 +21,7 @@ export default function Settings() {
   const [sites, setSites] = useState(null);
   const [billing, setBilling] = useState(null);
   const [plans, setPlans] = useState([]);
+  const [entitlement, setEntitlement] = useState(null);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [newSite, setNewSite] = useState("");
@@ -30,15 +32,17 @@ export default function Settings() {
     if (!g) return;
     setEmail(g.session.user.email || "");
     const sb = supabase();
-    const [t, s, b, p] = await Promise.all([
+    const [t, s, b, p, e] = await Promise.all([
       sb.rpc("wl_trial_status"), sb.rpc("wl_sites"),
       sb.rpc("wl_billing_overview"), sb.rpc("wl_billing_plans"),
+      sb.rpc("wl_entitlement"),
     ]);
     if (t.error) { setErr(say(t.error)); return; }
     setTrial(t.data || {});
     setSites(s.data || []);
     setBilling(b.data || {});
     setPlans(p.data || []);
+    setEntitlement(e.data || {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -113,6 +117,19 @@ export default function Settings() {
                 )}
               </div>
 
+              {entitlement && (
+                <div style={{ marginTop: "var(--space-4)" }}>
+                  <span className={"pill " + (entitlement.reporting_enabled ? "s-ok" : "s-bad")}>
+                    Daily reports {entitlement.reporting_enabled ? "active" : "paused"}
+                  </span>
+                  {!entitlement.reporting_enabled && (
+                    <span className="muted" style={{ fontSize: "var(--font-size-sm)", marginLeft: 8 }}>
+                      {entitlement.reason} — subscribe to resume. Your recorded events are kept.
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div style={{ marginTop: "var(--space-5)" }}>
                 <div className="muted" style={{ fontSize: "var(--font-size-sm)", marginBottom: 8 }}>
                   {t.status === "active" ? "Change your plan" : "Choose a plan"} — you pay on the
@@ -126,6 +143,9 @@ export default function Settings() {
                       {" — "}{money(p.amount_minor, p.currency)}/mo
                     </button>
                   ))}
+                  <span className="muted" style={{ fontSize: "var(--font-size-sm)", alignSelf: "center" }}>
+                    Enterprise — <a href={MARKETING_URL ? MARKETING_URL + "/contact/" : "#"}>Talk to us</a>
+                  </span>
                   {t.status === "active" && (
                     <button className="btn-danger" onClick={cancelSub}>Cancel subscription</button>
                   )}

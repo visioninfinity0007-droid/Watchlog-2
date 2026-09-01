@@ -329,9 +329,10 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
             report = conn.execute("select wl_daily_report(%s, %s::date)",
                                   (site_id, day)).fetchone()[0]
             text = compose(report)
-            portal_url = (ENV.get("WATCHLOG_PORTAL_URL")
-                          or "https://watchlog.161.97.175.15.sslip.io")
-            html = render_html(report, portal_url)
+            # Config-driven; no hardcoded host. The deployed runner sets
+            # WATCHLOG_PORTAL_URL; if unset the email simply omits the link.
+            portal_url = ENV.get("WATCHLOG_PORTAL_URL") or ""
+            html = render_html(report, portal_url or "#")
             subj = html_subject(report)
             total = int(report.get("total_events") or 0)
 
@@ -342,10 +343,22 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
                       and (site_id is null or site_id = %s)""",
                 (tenant_id, site_id)).fetchall()
 
-            print(f"  === {name} — {day} — {total} events, "
-                  f"{len(people)} recipient(s) ===")
+            # Entitlement gate (central rule; same one the portal shows). The
+            # marketing site promises reporting stops when the trial ends —
+            # this enforces it. Events/data are untouched; only delivery stops.
+            enabled = conn.execute("select wl_reporting_enabled(%s)",
+                                   (tenant_id,)).fetchone()[0]
+
+            print(f"  === {name} — {day} — {total} events, {len(people)} recipient(s)"
+                  + ("" if enabled else "  [REPORTING DISABLED — trial/subscription]") + " ===")
             print("  " + text.replace("\n", "\n  "))
             print()
+
+            if not enabled:
+                print("    reporting disabled for this tenant (trial expired or not "
+                      "subscribed) — not delivered\n")
+                skipped += len(people)
+                continue
 
             if not people:
                 print("    no recipients configured for this site\n")

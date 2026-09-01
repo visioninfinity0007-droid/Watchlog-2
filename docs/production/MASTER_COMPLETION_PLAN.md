@@ -48,7 +48,7 @@ migrations, runbooks, CI) are sequenced early to keep `main` continuously demons
 | **P9** | Real **NSIS** installer → `WatchLog-Setup.exe`; deterministic build tooling; checksums; config-driven URLs | **CODE DONE** — `prototype/installer/nsis/watchlog.nsi` (MUI2; reuses register-service.ps1) + `tools/build_windows_release.ps1` (builds AI exe → stage → makensis → Setup.exe + SHA256; config-driven publisher URL; optional signtool). Compile pending NSIS toolchain install (winget); Win10/11 acceptance CLIENT-BLOCKED | NSIS compiles a Setup.exe; installs, enrolls, starts agent |
 | **P3** | M1 field validation (SM-HP repair; 2×10 real cameras; FP/FN tuning) | **CLIENT-BLOCKED** | see CLIENT_DEPENDENCIES |
 | **P10** | Windows 10/11 acceptance matrix | **CLIENT-BLOCKED** (needs clean Win VMs/hardware) | `docs/production/WINDOWS_ACCEPTANCE.md` with real evidence |
-| **P11** | Website/portal/installer terminology + capability alignment | TODO | no advertised-but-unbuilt feature; consistent nouns |
+| **P11** | Website/portal/installer terminology + capability alignment | **DONE** — pricing unified to ONE source (website Starter 6,000 / Growth 12,000 / Enterprise "Talk to us"; billing plans 0022 match; portal renders those; enforced by `test_pricing_alignment` in CI). Trial/entitlement wording now matches enforced behaviour (`wl_reporting_enabled`). | no advertised-but-unbuilt feature; website == billing (CI-enforced) ✅ |
 | **P12** | Production domain migration | **CLIENT-BLOCKED** (domain) | all URLs config-driven; cutover checklist ready |
 | **P13** | WordPress polish: sitemap 404, canonical, PHP header, CTAs | TODO | sitemap 200; no stale links |
 | **P14** | CI (GitHub Actions) + branch protection + release check | **IN-PROGRESS** (workflow + secret-scan + migration-lint added; verifying first run; branch protection + release_check pending) | PR CI runs compile/tests/build/secret-scan/migration-lint |
@@ -75,8 +75,30 @@ Scores at baseline: engineering ~68% · live-deploy ~58% · signed-scope ~37% ·
 
 ## Next action (always keep current)
 
-**➤ As of 2026-09-01 (session 2):** P0,P1,P2,P4,P5,P6,P7,P8,P9(src),P14(local),P15,P16,P18,P19,P20
-are DONE (VI-controlled). All demo-journey gates pass. Remaining is **CLIENT/ENV-BLOCKED only**:
-real recorder hardware (M1 field gate), Switch API contract + creds, production domain, SendGrid
-key, authorized live WhatsApp send, code-signing cert, GitHub Actions minutes, an NSIS build box.
-See `CLIENT_DEPENDENCIES.md`. DEMO READY = yes; CONTRACT ACCEPTANCE = blocked on those inputs.
+**➤ As of 2026-09-01 (session 3 — closure pass):** an independent review of `main` found the
+"every VI-controlled gate closed" claim premature and named four real gaps. All four are now
+closed with evidence, plus the control plane:
+
+1. **Pricing alignment (P11):** one authoritative source — website Starter 6,000 / Growth 12,000 /
+   Enterprise "Talk to us"; `0022_pricing_align.sql` makes billing plans match (non-draft) and
+   sets Enterprise contact-only; portal renders those; `test_pricing_alignment.py` **fails CI** if
+   website and billing diverge. (PRICE-1 ✅)
+2. **Trial/entitlement enforcement:** one authoritative `wl_reporting_enabled` + `wl_entitlement`
+   (`0023_entitlement.sql`); the **reporter consults it and skips disabled tenants without deleting
+   any events/data**; the portal shows the same active/paused pill; `test_entitlement.py` 6/6 covers
+   active/past_due(grace)/trial-valid/trial-expired/cancelled/expired. (ENT-1 ✅)
+3. **Temp-URL / env alignment:** no hardcoded `sslip.io`/`161.97.175.15` left in shippable code
+   (reporter, portal, NSIS, Inno, WP theme all env/`-D`-driven); only an env-**overridable** demo
+   default remains in `site-content.sh`. (DOM-1 = PASS for "no temp URL in prod build"; final domain
+   stays separately CLIENT-BLOCKED.)
+4. **True external-boundary E2E:** `e2e_http.py` 9/9 drives the **deployed** HTTP interfaces
+   (auth → RPC → report-runner HTTP → billing **via the deployed billing service** → cross-tenant
+   denial); the dead `if False` probe in `e2e_harness.py` is replaced by a real cross-tenant
+   PostgREST read (still 14/14). (E2E-1 harness + E2E-2 deployed-HTTP ✅)
+5. **Control plane:** duplicate HLTH-1 reconciled to one row; offline CI suite 8/8 green locally;
+   live security/authz/entitlement gates re-run; changed services redeployed + verified.
+
+Everything else is unchanged and **CLIENT/ENV-BLOCKED only**: real recorder hardware (M1 field
+gate), Switch API contract + creds, production domain, SendGrid key, authorized live WhatsApp send,
+code-signing cert, GitHub Actions minutes, an NSIS build box. See `CLIENT_DEPENDENCIES.md`.
+**DEMO READY = yes. CONTRACT ACCEPTANCE = blocked on those external inputs only.**

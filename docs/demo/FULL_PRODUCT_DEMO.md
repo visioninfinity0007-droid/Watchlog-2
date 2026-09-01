@@ -91,13 +91,22 @@ Sign in as `demo@watchlog.test`.
    is generated; the pending-invitations list with revoke. (Owners can change roles.)
 
 10. **Trial & plan.** Open **Settings**.
-    *Expected:* Plan & billing shows the tenant on **trial** with days remaining; the sites table
-    shows each site's **setup status**; enrollment codes can be re-issued; the agent-install card.
+    *Expected:* Plan & billing shows the tenant on **trial** with days remaining, and a
+    **"Daily reports active / paused"** pill that reflects entitlement (reason shown, plus the
+    reassurance *"your recorded events are kept"*). The plan picker shows the **published** tiers —
+    **Starter PKR 6,000/mo**, **Growth PKR 12,000/mo**, and **Enterprise — Talk to us** (contact-only,
+    no self-checkout). These are the same numbers as the marketing site; `test_pricing_alignment`
+    fails CI if they ever diverge. The sites table shows each site's **setup status**; enrollment
+    codes can be re-issued; the agent-install card.
+    *Entitlement note:* if a trial lapses (or a subscription is cancelled), the daily-report job
+    **pauses** for that tenant and the pill flips to **paused** — but **no events or snapshots are
+    deleted**; paying resumes reporting. (`wl_reporting_enabled` is the one authority the reporter and
+    the portal both read; `test_entitlement` covers all six states.)
 
-11. **Billing checkout (sandbox).** In Settings → Plan & billing, pick **Growth**.
+11. **Billing checkout (sandbox).** In Settings → Plan & billing, pick **Growth (PKR 12,000/mo)**.
     *Expected:* you are taken to the hosted checkout at the billing service, clearly banded
     **SANDBOX — TEST PAYMENT**. Click **Pay (test)**. You return to Settings and the plan shows
-    **active**, with a renewal date and a **Payment history** row.
+    **active**, with a renewal date and a **Payment history** row; the reports pill shows **active**.
     *Prove the guardrail:* a customer can request a plan but cannot mark themselves paid — the
     activation happened only via the signed provider webhook (the portal has no way to set paid
     state; `test_billing_authz` + the E2E harness prove `apply_event`/`set_subscription` are denied

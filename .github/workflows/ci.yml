@@ -39,6 +39,8 @@ jobs:
         run: python prototype/tests/test_email_template.py
       - name: ONNX inference test (skips if model absent)
         run: python prototype/tests/test_vision_onnx.py
+      - name: Pricing alignment (website == billing)
+        run: python prototype/tests/test_pricing_alignment.py
     # NOTE: test_tenant_isolation, test_billing_authz and test_team_and_trial
     # need live Supabase + secrets and (for two of them) write to the DB.
     # They are deliberately NOT run here — CI must not touch production.
