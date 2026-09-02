@@ -15,6 +15,7 @@ AUTHZ = (ROOT / "prototype/supabase/migrations/0032_portal_operational_authz.sql
 HEALTH = (ROOT / "prototype/supabase/migrations/0033_site_health_details.sql").read_text()
 ENROLL = (ROOT / "prototype/supabase/migrations/0034_enrollment_code_read_authz.sql").read_text()
 BILLING_AUTH = (ROOT / "prototype/supabase/migrations/0035_billing_read_authz.sql").read_text()
+BILLING_POLICY_FIX = (ROOT / "prototype/supabase/migrations/0036_billing_owner_policy_execution.sql").read_text()
 NSIS = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text()
 REGISTER = (ROOT / "prototype/installer/register-service.ps1").read_text()
 BUILD = (ROOT / "tools/build_windows_release.ps1").read_text()
@@ -78,7 +79,14 @@ def check() -> None:
     assert "m.role = 'owner'" in BILLING_AUTH
     for table in ("billing_customers", "subscriptions", "payment_transactions", "billing_checkouts"):
         assert table in BILLING_AUTH
+        assert table in BILLING_POLICY_FIX
+    # 0035 introduced owner-only RLS but called a helper it also made
+    # non-executable by authenticated. 0036 is the effective policy and must use
+    # helpers that authenticated members are explicitly allowed to execute.
     assert "using (public.wl_is_owner(tenant_id))" in BILLING_AUTH
+    assert "tenant_id = public.wl_my_tenant()" in BILLING_POLICY_FIX
+    assert "public.wl_my_role() = 'owner'" in BILLING_POLICY_FIX
+    assert "grant execute on function public.wl_is_owner" not in BILLING_POLICY_FIX
     assert "v_tenant uuid := wl_require_role(array['owner'])" in BILLING_AUTH
 
     # Core portal surfaces expose the richer review hierarchy, not raw tables only.
