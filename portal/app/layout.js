@@ -1,5 +1,6 @@
 import "./globals.css";
 import "./visual-target.css";
+import "./module-target.css";
 
 export const metadata = {
   title: "WatchLog",
