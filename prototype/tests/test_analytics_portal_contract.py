@@ -43,6 +43,18 @@ def check() -> None:
     assert "purpose_recommendations" in STUDIO
     assert "studio?.can_manage !== false" in STUDIO
 
+    # Geometry must be anchored to a real current camera still. Existing stills
+    # can be refreshed; refresh polling waits for a changed captured_at value and
+    # clears in-progress points so geometry cannot silently remain tied to an old
+    # camera view.
+    assert "snapshotCapturedAt" in STUDIO
+    assert "data.captured_at !== previousCapturedAt" in STUDIO
+    assert "Refresh camera still" in STUDIO
+    assert "Request a current camera still before drawing monitoring geometry" in STUDIO
+    assert "Request a current camera still before publishing a new monitoring line or zone" in STUDIO
+    assert "setRule((r) => r ? ({ ...r, points: [] }) : r)" in STUDIO
+    assert "<polygon" in STUDIO
+
     # All Analytics screens expose one consistent secondary navigation.
     for src in (STUDIO, OVERVIEW):
         assert 'href="/analytics/schedules/"' in src
