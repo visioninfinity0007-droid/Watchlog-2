@@ -12,22 +12,25 @@
 -- financial rows Owner-only without exposing a new helper RPC.
 -- =====================================================================
 
-do $$
-declare t text;
-begin
-  foreach t in array array[
-    'billing_customers',
-    'subscriptions',
-    'payment_transactions',
-    'billing_checkouts'
-  ] loop
-    execute format('drop policy if exists owner_read_%I on public.%I', t, t);
-    execute format(
-      'create policy owner_read_%I on public.%I for select to authenticated using (tenant_id = public.wl_my_tenant() and public.wl_my_role() = ''owner'')',
-      t, t
-    );
-  end loop;
-end $$;
+drop policy if exists owner_read_billing_customers on public.billing_customers;
+create policy owner_read_billing_customers on public.billing_customers
+  for select to authenticated
+  using (tenant_id = public.wl_my_tenant() and public.wl_my_role() = 'owner');
+
+drop policy if exists owner_read_subscriptions on public.subscriptions;
+create policy owner_read_subscriptions on public.subscriptions
+  for select to authenticated
+  using (tenant_id = public.wl_my_tenant() and public.wl_my_role() = 'owner');
+
+drop policy if exists owner_read_payment_transactions on public.payment_transactions;
+create policy owner_read_payment_transactions on public.payment_transactions
+  for select to authenticated
+  using (tenant_id = public.wl_my_tenant() and public.wl_my_role() = 'owner');
+
+drop policy if exists owner_read_billing_checkouts on public.billing_checkouts;
+create policy owner_read_billing_checkouts on public.billing_checkouts
+  for select to authenticated
+  using (tenant_id = public.wl_my_tenant() and public.wl_my_role() = 'owner');
 
 -- wl_is_owner is no longer part of an RLS expression. Keep it unavailable to
 -- client roles; existing database-owner/internal callers are unaffected.
