@@ -5,9 +5,10 @@ Architecture:
 
     n8n Schedule Trigger -> POST /run/<token> -> this service -> daily_report.run()
 
-Analytics Studio extends the existing report payload. The core reporter remains
-unchanged and is wrapped here so scheduled production delivery gains the Site
-Intelligence section without creating a second delivery implementation.
+`daily_report` is the canonical report implementation for both operator CLI and
+scheduled delivery. It already includes Analytics Studio Site Intelligence when
+measurements exist, so this service deliberately does not monkey-patch report
+composition.
 """
 from __future__ import annotations
 
@@ -20,14 +21,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daily_report  # noqa: E402
-import analytics_reporting  # noqa: E402
-
-# Preserve the proven original renderers, then layer analytics on top.
-_BASE_COMPOSE = daily_report.compose
-_BASE_RENDER_HTML = daily_report.render_html
-daily_report.compose = lambda report: analytics_reporting.compose(_BASE_COMPOSE, report)
-daily_report.render_html = lambda report, portal_url="#": analytics_reporting.render_html(
-    _BASE_RENDER_HTML, report, portal_url)
 
 TOKEN = os.environ.get("REPORT_RUNNER_TOKEN", "")
 SEND = os.environ.get("REPORT_SEND", "false").strip().lower() in ("1", "true", "yes")
