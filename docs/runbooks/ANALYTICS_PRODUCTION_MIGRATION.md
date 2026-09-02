@@ -39,10 +39,18 @@ The release train is:
 - `0033_site_health_details.sql`
 - `0034_enrollment_code_read_authz.sql`
 - `0035_billing_read_authz.sql`
+- `0036_billing_owner_policy_execution.sql`
 
 Do not paste only `wl_analytics_studio` into SQL Editor. The portal depends on the
 tables, policies, reporting endpoint model, Site Health detail API and
 authorization hardening created by the full ordered train.
+
+`0036` is part of the release, not optional cleanup. `0035` made detailed billing
+rows Owner-only, but its RLS policies referenced a helper whose EXECUTE privilege
+was intentionally removed from client roles. PostgreSQL evaluates policy
+expressions with the querying user's rights, so `0036` rebuilds those policies
+with the authenticated `wl_my_tenant()` / `wl_my_role()` helpers. This preserves
+Owner-only visibility while allowing a legitimate Owner read to succeed.
 
 ## 2. Apply
 
@@ -51,7 +59,7 @@ python prototype/supabase/apply_migrations.py
 python prototype/supabase/apply_migrations.py --status
 ```
 
-All files through `0035` must report `applied` with repository-matching checksums.
+All files through `0036` must report `applied` with repository-matching checksums.
 
 ## 3. Database smoke test
 
@@ -80,6 +88,10 @@ verify:
 - `wl_sites()` reports `has_open_code` to all members but returns the actual
   `open_code` value only to Owner/Admin.
 - Owner can call `wl_billing_overview()`; Admin/Viewer receive permission denied.
+- Owner can directly SELECT only their own rows from `billing_customers`,
+  `subscriptions`, `payment_transactions` and `billing_checkouts`; Admin/Viewer
+  receive no detailed financial rows. A legitimate Owner read must not fail with
+  a function-EXECUTE permission error.
 - `/analytics/`, `/analytics/studio/`, `/analytics/schedules/` and `/site-health/`
   load without schema-cache errors.
 
@@ -104,7 +116,8 @@ Use disposable users in a test tenant:
 - Billing checkout/cancellation remains Owner-only.
 - Direct SELECTs by Admin/Viewer against `billing_customers`, `subscriptions`,
   `payment_transactions` and `billing_checkouts` return no rows because their RLS
-  policies are Owner-only.
+  policies are Owner-only; the same SELECT as Owner returns only that Owner's
+  tenant rows.
 - A normal tenant user receives no Platform Admin data.
 - `wl_site_health_details` never returns cameras or fault rows from another
   tenant.
@@ -170,7 +183,7 @@ All sample stills/events remain explicitly tagged as demo/synthetic data.
 
 ## 9. Deployment order
 
-1. Production database through `0035`.
+1. Production database through `0036`.
 2. Run schema/auth/reporting/Site Health smoke tests.
 3. Refresh the dedicated demo tenant.
 4. Deploy the matching portal build.
