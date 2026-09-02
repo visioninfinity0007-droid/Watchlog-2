@@ -25,6 +25,10 @@ RULE_STATE_TTL_SECONDS = 30.0
 MATCH_DISTANCE = 0.16
 LINE_EPSILON = 0.002
 SEGMENT_EPSILON = 1e-9
+# Occupancy is especially sensitive to one-frame detector misses. Establish the
+# first observed baseline immediately, but require a changed count to be seen in
+# two consecutive inference samples before it becomes a measurement.
+OCCUPANCY_CHANGE_CONFIRM_SAMPLES = 2
 
 
 def iso(dt: datetime) -> str:
@@ -235,15 +239,17 @@ class AnalyticsEngine:
         self.schedules = {}
         self.cameras = {}
         self.state = {}      # (rule_id, track_id) -> rule-specific state
-        self.occupancy = {}  # rule_id -> last emitted count
+        self.occupancy = {}  # rule_id -> last emitted stable count
+        self.occupancy_pending = {}  # rule_id -> {count, samples}
 
     def configure(self, config: dict | None):
         self.config = config or None
         self.schedules = {str(s["id"]): s for s in (config or {}).get("schedules", [])}
         self.cameras = {str(c["channel"]): c for c in (config or {}).get("cameras", [])}
-        # A geometry/config change invalidates previous crossing state.
+        # A geometry/config change invalidates previous crossing/occupancy state.
         self.state.clear()
         self.occupancy.clear()
+        self.occupancy_pending.clear()
 
     def sample_plan(self):
         """List (channel, minimum sampling seconds) for enabled cameras."""
@@ -395,13 +401,31 @@ class AnalyticsEngine:
                     if (not allowed_classes or track.label in allowed_classes)
                     and point_in_polygon(track.point, polygon))
                 rule_id = str(rule["id"])
-                if (self.occupancy.get(rule_id) != count
-                        and self._schedule_allows(rule, when)):
+                stable = self.occupancy.get(rule_id)
+                should_emit = False
+
+                if stable is None:
+                    # First sample establishes the baseline immediately.
+                    should_emit = True
+                elif count == stable:
+                    # A single contradictory frame has recovered; discard it.
+                    self.occupancy_pending.pop(rule_id, None)
+                else:
+                    pending = self.occupancy_pending.get(rule_id)
+                    if pending and pending.get("count") == count:
+                        pending["samples"] = int(pending.get("samples") or 0) + 1
+                    else:
+                        pending = {"count": count, "samples": 1}
+                        self.occupancy_pending[rule_id] = pending
+                    should_emit = pending["samples"] >= OCCUPANCY_CHANGE_CONFIRM_SAMPLES
+
+                if should_emit and self._schedule_allows(rule, when):
                     synthetic = Track(
                         f"{channel}:occupancy", "person", (0, 0), when, when)
                     emitted.append(self._event(
                         rule, channel, synthetic, "occupancy", when,
                         metadata={"count": count}))
                     self.occupancy[rule_id] = count
+                    self.occupancy_pending.pop(rule_id, None)
 
         return emitted
