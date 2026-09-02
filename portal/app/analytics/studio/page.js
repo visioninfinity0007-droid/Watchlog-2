@@ -55,6 +55,7 @@ export default function AnalyticsStudio() {
   const [siteId, setSiteId] = useState("");
   const [cameraId, setCameraId] = useState("");
   const [snapshot, setSnapshot] = useState(null);
+  const [snapshotCapturedAt, setSnapshotCapturedAt] = useState(null);
   const [rule, setRule] = useState(null);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -107,11 +108,14 @@ export default function AnalyticsStudio() {
   }, [catalog, site?.site_type, camera?.purpose]);
 
   const loadSnapshot = useCallback(async () => {
-    if (!cameraId || !camera?.has_config_snapshot) { setSnapshot(null); return false; }
+    if (!cameraId || !camera?.has_config_snapshot) {
+      setSnapshot(null); setSnapshotCapturedAt(null); return false;
+    }
     const { data, error } = await supabase().rpc("wl_camera_config_snapshot", { p_camera_id: cameraId });
     if (error) { setError(say(error)); return false; }
     if (data?.image_b64) {
       setSnapshot(`data:${data.content_type || "image/jpeg"};base64,${data.image_b64}`);
+      setSnapshotCapturedAt(data.captured_at || null);
       return true;
     }
     return false;
@@ -142,23 +146,30 @@ export default function AnalyticsStudio() {
 
   async function requestSnapshot() {
     if (!camera || !canManage) return;
+    const previousCapturedAt = snapshotCapturedAt;
+    const wasRefresh = !!snapshot;
     setBusy(true); setNote(""); setError("");
     const { error } = await supabase().rpc("wl_request_config_snapshot", { p_camera_id: camera.id });
     if (error) { setError(say(error)); setBusy(false); return; }
-    setNote("Snapshot requested. Waiting for the Site Agent...");
+    setNote(wasRefresh ? "Fresh still requested. Waiting for the Site Agent..." : "Snapshot requested. Waiting for the Site Agent...");
     for (let attempt = 0; attempt < 6; attempt++) {
       await sleep(2500);
       const { data, error: snapError } = await supabase().rpc("wl_camera_config_snapshot", { p_camera_id: camera.id });
       if (snapError) { setError(say(snapError)); break; }
-      if (data?.image_b64) {
+      const isNew = data?.image_b64 && (!previousCapturedAt || data.captured_at !== previousCapturedAt);
+      if (isNew) {
         setSnapshot(`data:${data.content_type || "image/jpeg"};base64,${data.image_b64}`);
-        setNote("Current camera still received. Draw the monitoring line or zone on the image.");
+        setSnapshotCapturedAt(data.captured_at || null);
+        if (wasRefresh) setRule((r) => r ? ({ ...r, points: [] }) : r);
+        setNote(wasRefresh
+          ? "Fresh camera still received. Redraw any in-progress line or zone against this current view."
+          : "Current camera still received. Draw the monitoring line or zone on the image.");
         await load();
         setBusy(false);
         return;
       }
     }
-    setNote("The request is still pending. The still will appear after the Site Agent checks in; you can retry without creating a duplicate request.");
+    setNote("The request is still pending. The new still will appear after the Site Agent checks in; retrying will not create duplicate requests.");
     await load();
     setBusy(false);
   }
@@ -216,7 +227,12 @@ export default function AnalyticsStudio() {
 
   function sceneClick(e) {
     if (!rule || !svgRef.current || !canManage) return;
+    if (!snapshot) {
+      setError("Request a current camera still before drawing monitoring geometry.");
+      return;
+    }
     if (rule.ruleType === "schedule_activity") return;
+    setError("");
     const box = svgRef.current.getBoundingClientRect();
     const p = [Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)),
                Math.max(0, Math.min(1, (e.clientY - box.top) / box.height))];
@@ -231,6 +247,9 @@ export default function AnalyticsStudio() {
     if (!rule || !camera || !canManage) return;
     const geometryNeeded = ["line_crossing", "zone_entry", "zone_dwell", "occupancy"].includes(rule.ruleType);
     const minPoints = rule.ruleType === "line_crossing" ? 2 : 3;
+    if (geometryNeeded && !rule.id && !snapshot) {
+      setError("Request a current camera still before publishing a new monitoring line or zone."); return;
+    }
     if (geometryNeeded && rule.points.length < minPoints) {
       setError(`Draw ${minPoints === 2 ? "two points for the monitoring line" : "at least three points around the monitoring zone"}.`); return;
     }
@@ -316,7 +335,7 @@ export default function AnalyticsStudio() {
             <select value={siteId} onChange={(e) => {
               const nextId = e.target.value;
               const next = sites.find((s) => s.id === nextId);
-              setSiteId(nextId); setCameraId(next?.cameras?.[0]?.id || ""); setRule(null); setSnapshot(null);
+              setSiteId(nextId); setCameraId(next?.cameras?.[0]?.id || ""); setRule(null); setSnapshot(null); setSnapshotCapturedAt(null);
             }}>
               {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
@@ -330,7 +349,7 @@ export default function AnalyticsStudio() {
             <div className={styles.sideTitle}>Cameras</div>
             {cameras.map((c) => <button key={c.id} type="button"
               className={`${styles.cameraBtn} ${c.id === cameraId ? styles.cameraBtnActive : ""}`}
-              onClick={() => { setCameraId(c.id); setRule(null); setSnapshot(null); }}>
+              onClick={() => { setCameraId(c.id); setRule(null); setSnapshot(null); setSnapshotCapturedAt(null); }}>
               <span className={`${styles.dot} ${c.analytics_enabled ? "" : styles.dotMuted}`} />
               <span>{c.name || `Camera ${c.channel}`}</span>
             </button>)}
@@ -452,7 +471,7 @@ export default function AnalyticsStudio() {
                 <div className={styles.geometryTitle}><div><b>Monitoring geometry</b><small>{rule.ruleType === "line_crossing" ? "Draw the line a person or vehicle must cross." : "Draw the area WatchLog should measure."}</small></div></div>
                 <div className={styles.scene}>
                   {snapshot ? <img src={snapshot} alt={`Configuration still from ${camera.name || "camera"}`} /> :
-                    <div className={styles.sceneEmpty}><div><b>No configuration still yet.</b><br />Request one current still from the Site Agent, then draw on the actual scene.</div></div>}
+                    <div className={styles.sceneEmpty}><div><b>No configuration still yet.</b><br />Request one current still from the Site Agent before drawing.</div></div>}
                   <svg ref={svgRef} viewBox="0 0 100 100" preserveAspectRatio="none" onPointerDown={sceneClick}
                        aria-label="Monitoring geometry editor">
                     {rule.ruleType === "line_crossing" && rule.points.length === 2 &&
@@ -467,14 +486,14 @@ export default function AnalyticsStudio() {
                     {rule.points.map((p, i) => <circle key={i} cx={p[0]*100} cy={p[1]*100} r="1.2"
                                                        fill="#72D4FF" stroke="#07111F" strokeWidth=".4" />)}
                   </svg>
-                  <div className={styles.sceneHelp}>{rule.ruleType === "line_crossing" ? "Click two points across the path." : "Click 3 to 8 points around the area."}</div>
+                  <div className={styles.sceneHelp}>{snapshot ? (rule.ruleType === "line_crossing" ? "Click two points across the path." : "Click 3 to 8 points around the area.") : "A current camera still is required before geometry can be drawn."}</div>
                 </div>
                 <div className={styles.geometryActions}>
-                  <span className={styles.geometryStatus}>{rule.points.length} point{rule.points.length === 1 ? "" : "s"} · coordinates stay normalized to the camera frame</span>
+                  <span className={styles.geometryStatus}>{snapshotCapturedAt ? `Still captured ${new Date(snapshotCapturedAt).toLocaleString()} · ` : ""}{rule.points.length} point{rule.points.length === 1 ? "" : "s"} · coordinates stay normalized to the camera frame</span>
                   <div className={styles.actions}>
-                    {!snapshot && <button type="button" className="ghost small" disabled={busy} onClick={requestSnapshot}>
-                      {busy ? "Waiting for still..." : camera.snapshot_requested ? "Check requested still" : "Request camera still"}</button>}
-                    <button type="button" className="ghost small" onClick={() => setRule({ ...rule, points: [] })}>Clear geometry</button>
+                    <button type="button" className="ghost small" disabled={busy} onClick={requestSnapshot}>
+                      {busy ? "Waiting for still..." : snapshot ? "Refresh camera still" : camera.snapshot_requested ? "Check requested still" : "Request camera still"}</button>
+                    <button type="button" className="ghost small" disabled={!rule.points.length} onClick={() => setRule({ ...rule, points: [] })}>Clear geometry</button>
                   </div>
                 </div>
               </div>}
