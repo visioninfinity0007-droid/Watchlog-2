@@ -33,6 +33,8 @@ jobs:
         run: python prototype/tests/test_vision_filter.py
       - name: Analytics Studio local rule-engine tests
         run: python prototype/tests/test_analytics_engine.py
+      - name: Analytics sampler capacity tests
+        run: python prototype/tests/test_analytics_sampler.py
       - name: Analytics Studio report rendering tests
         run: python prototype/tests/test_analytics_reporting.py
       - name: Analytics portal alignment contract
