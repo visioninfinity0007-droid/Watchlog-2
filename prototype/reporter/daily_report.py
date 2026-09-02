@@ -3,7 +3,9 @@
 The daily summary — the thing customers actually receive.
 
 Milestone 1 calls for a "daily WhatsApp event summary". This builds it,
-sends it, and records that it was sent.
+sends it, and records that it was sent. Analytics Studio extends that same
+canonical report with Site Intelligence when measurements exist; there is no
+separate legacy/manual report shape.
 
     python reporter/daily_report.py                 # dry run: render only
     python reporter/daily_report.py --send          # actually deliver
@@ -60,12 +62,16 @@ except IndexError:
     ROOT = Path(__file__).resolve().parent
 TIMEOUT = 30
 
-# The branded HTML body lives next to this file.
+# The branded HTML body and Analytics Studio report extension live next to this
+# file. Keep their base/wrapper distinction explicit so every entrypoint gets
+# the same canonical composition exactly once.
 try:
-    from email_template import render_html, subject as html_subject
+    from email_template import render_html as _render_base_html, subject as html_subject
+    import analytics_reporting
 except ImportError:  # running from a different cwd
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from email_template import render_html, subject as html_subject
+    from email_template import render_html as _render_base_html, subject as html_subject
+    import analytics_reporting
 
 
 # ---------------------------------------------------------------------
@@ -121,8 +127,8 @@ def plural(n: int, one: str, many: str | None = None) -> str:
     return f"{n} {one}" if n == 1 else f"{n} {many or one + 's'}"
 
 
-def compose(report: dict) -> str:
-    """One site, one day, as a person would write it."""
+def _compose_security(report: dict) -> str:
+    """One site's security-event chapter, before optional Site Intelligence."""
     site = report.get("site") or "Site"
     total = int(report.get("total_events") or 0)
     when = report.get("date")
@@ -174,6 +180,16 @@ def compose(report: dict) -> str:
         lines.append(f"First {_hhmm(first, tz)}, last {_hhmm(last, tz)}.")
 
     return "\n".join(lines)
+
+
+def compose(report: dict) -> str:
+    """Canonical plain-text report, including Site Intelligence when present."""
+    return analytics_reporting.compose(_compose_security, report)
+
+
+def render_html(report: dict, portal_url: str = "#") -> str:
+    """Canonical HTML report, including Site Intelligence when present."""
+    return analytics_reporting.render_html(_render_base_html, report, portal_url)
 
 
 def _hhmm(ts: str, tz: str) -> str:
@@ -336,6 +352,9 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
             subj = html_subject(report)
             total = int(report.get("total_events") or 0)
 
+            # 0031 canonicalises recipients to one row per delivery endpoint.
+            # There is therefore no transport ambiguity: every channel is paired
+            # with the destination that belongs to that provider.
             people = conn.execute(
                 """select id, channel, destination, name
                      from report_recipients
@@ -365,6 +384,9 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
                 continue
 
             for _rid, channel, dest, who in people:
+                # Current canonical rows are whatsapp OR email. Retain `both`
+                # defensively for a pre-0031 database, but release ordering
+                # requires 0031 before this reporter is deployed.
                 wanted = ("whatsapp", "email") if channel == "both" else (channel,)
                 for ch_name in wanted:
                     ch = channels[ch_name]
