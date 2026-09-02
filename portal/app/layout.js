@@ -1,4 +1,6 @@
 import "./globals.css";
+import "./visual-target.css";
+import "./module-target.css";
 
 export const metadata = {
   title: "WatchLog",
@@ -20,7 +22,7 @@ export const metadata = {
 export const viewport = {
   // Matches the dark product canvas, so the mobile browser chrome does not
   // flash white against it on load.
-  themeColor: "#101017",
+  themeColor: "#0B1220",
 };
 
 export default function RootLayout({ children }) {

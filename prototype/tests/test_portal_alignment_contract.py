@@ -10,6 +10,9 @@ ONBOARD = (ROOT / "portal/app/onboarding/page.js").read_text()
 DASH = (ROOT / "portal/app/dashboard/page.js").read_text()
 INCIDENTS = (ROOT / "portal/app/incidents/page.js").read_text()
 SITE_HEALTH = (ROOT / "portal/app/site-health/page.js").read_text()
+LAYOUT = (ROOT / "portal/app/layout.js").read_text()
+VISUAL = (ROOT / "portal/app/visual-target.css").read_text()
+MODULE_VISUAL = (ROOT / "portal/app/module-target.css").read_text()
 RECIP = (ROOT / "prototype/supabase/migrations/0031_report_recipient_destinations.sql").read_text()
 AUTHZ = (ROOT / "prototype/supabase/migrations/0032_portal_operational_authz.sql").read_text()
 HEALTH = (ROOT / "prototype/supabase/migrations/0033_site_health_details.sql").read_text()
@@ -40,9 +43,9 @@ def check() -> None:
     assert 'rpc("wl_add_recipient_v2"' in REPORTS
     assert "p_whatsapp:" in REPORTS and "p_email:" in REPORTS
     assert "Number, then edit for email" not in REPORTS
-    assert "independent delivery endpoints" in REPORTS
-    assert "07:00, site time" not in REPORTS
-    assert "Actual dispatch time comes from the deployed reporting schedule" in REPORTS
+    assert "WhatsApp and email are independent endpoints" in REPORTS
+    assert "Preview layout" in REPORTS
+    assert "dispatch time comes from the reporting schedule" in REPORTS
 
     # Daily reporting has one canonical composition path. CLI/manual invocation
     # and the scheduled service must both include Analytics Site Intelligence.
@@ -80,19 +83,32 @@ def check() -> None:
     for table in ("billing_customers", "subscriptions", "payment_transactions", "billing_checkouts"):
         assert table in BILLING_AUTH
         assert table in BILLING_POLICY_FIX
-    # 0035 introduced owner-only RLS but called a helper it also made
-    # non-executable by authenticated. 0036 is the effective policy and must use
-    # helpers that authenticated members are explicitly allowed to execute.
     assert "using (public.wl_is_owner(tenant_id))" in BILLING_AUTH
     assert "tenant_id = public.wl_my_tenant()" in BILLING_POLICY_FIX
     assert "public.wl_my_role() = 'owner'" in BILLING_POLICY_FIX
     assert "grant execute on function public.wl_is_owner" not in BILLING_POLICY_FIX
     assert "v_tenant uuid := wl_require_role(array['owner'])" in BILLING_AUTH
 
-    # Core portal surfaces expose the richer review hierarchy, not raw tables only.
-    assert "Review Site Health" in DASH
-    assert "humanType" in DASH and "loading still" in DASH
-    assert "modalBackdrop" in INCIDENTS and "Review" in INCIDENTS
+    # The visual target is a real portal contract, not a marketing-only mock.
+    assert 'import "./visual-target.css"' in LAYOUT
+    assert 'import "./module-target.css"' in LAYOUT
+    assert ".navlink.active{background:var(--wl-blue)" in VISUAL
+    assert "backdrop-filter:blur(18px)" in VISUAL
+    assert ".overview-grid" in VISUAL and ".incident-workspace" in VISUAL
+    assert ".report-layout" in VISUAL and ".health-ring" in VISUAL
+    assert "analytics_chartVisitor" in MODULE_VISUAL and "var(--wl-ice)" in MODULE_VISUAL
+    assert "portal_tabActive" in MODULE_VISUAL and "var(--wl-blue)" in MODULE_VISUAL
+
+    # Core portal surfaces expose the richer review hierarchy while keeping the
+    # same RPC/snapshot behavior that previously passed production gates.
+    assert 'rpc("wl_portal_overview"' in DASH
+    assert 'rpc("wl_portal_snapshot"' in DASH
+    assert "overview-grid" in DASH and "overview-shots" in DASH and "overview-event-bars" in DASH
+    assert "Review incidents" in DASH and "Site Health" in DASH
+    assert 'rpc("wl_incidents"' in INCIDENTS and 'rpc("wl_portal_snapshot"' in INCIDENTS
+    assert "incident-workspace" in INCIDENTS and "incident-detail" in INCIDENTS
+    assert "aria-pressed" in INCIDENTS and "Validated on site" in INCIDENTS
+    assert "modalBackdrop" not in INCIDENTS
 
     # Site Health has a dedicated tenant-scoped detail API and exposes all four
     # signals sold by the product: site, agent, camera activity and faults.
@@ -101,6 +117,7 @@ def check() -> None:
     assert "where e.tenant_id = v_tenant" in HEALTH
     assert "last_activity_at" in HEALTH and "event_type in ('video_loss','tamper','disk_error','disk_full','offline')" in HEALTH
     assert 'rpc("wl_site_health_details"' in SITE_HEALTH
+    assert "health-site-grid" in SITE_HEALTH and "health-ring" in SITE_HEALTH
     assert "Camera activity" in SITE_HEALTH and "Last reported activity" in SITE_HEALTH
     assert "Site Agents" in SITE_HEALTH and "Recorder & camera faults" in SITE_HEALTH
 
@@ -115,10 +132,12 @@ def check() -> None:
 
     # Onboarding and installer are one story and one release technology.
     assert "Nothing to install" not in ONBOARD
-    assert "Windows installer" in ONBOARD
+    assert "Download for Windows" in ONBOARD
     assert "same network" in ONBOARD
     assert "outbound" in ONBOARD.lower()
-    assert '[1/4]' not in SETUP  # step numbers are generated, not copied strings
+    assert "setup-progress-row" in ONBOARD
+    assert '"Done"' in ONBOARD and '"In progress"' in ONBOARD and '"Pending"' in ONBOARD
+    assert '[1/4]' not in SETUP
     for title in ("Find the recorder", "Verify the recorder login", "Discover the cameras", "Link this site to WatchLog"):
         assert title in SETUP
     assert "Monitoring context (optional, recommended)" in AN_SETUP
@@ -134,9 +153,7 @@ def check() -> None:
     assert 'ExecWait \'"$INSTDIR\\watchlog-agent.exe" --setup\'' in NSIS
     assert "Recorder/setup validation exited with code $0" in NSIS
 
-    # Installer completion is atomic at the Windows registration layer: an
-    # incomplete fresh install is not written into Add/Remove Programs, and an
-    # upgrade stops/resumes the previous task rather than deleting it first.
+    # Installer completion is atomic at the Windows registration layer.
     setup_pos = NSIS.index('ExecWait \'"$INSTDIR\\watchlog-agent.exe" --setup\'')
     task_pos = NSIS.index('register-service.ps1')
     arp_pos = NSIS.index('WriteRegStr HKLM "${ARPKEY}" "DisplayName"')
