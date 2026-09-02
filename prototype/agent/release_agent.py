@@ -20,9 +20,11 @@ import sys
 
 import analytics_agent as app
 
+_ORIGINAL_SETUP = app.analytics_setup.run
+
 
 def _strict_setup(*args, **kwargs):
-    values = app.analytics_setup.run(*args, **kwargs)
+    values = _ORIGINAL_SETUP(*args, **kwargs)
     if not values:
         # core.main historically returned 0 here. For an explicit installer
         # setup that is unsafe because NSIS uses the process exit code as its
