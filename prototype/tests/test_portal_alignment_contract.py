@@ -16,10 +16,15 @@ HEALTH = (ROOT / "prototype/supabase/migrations/0033_site_health_details.sql").r
 ENROLL = (ROOT / "prototype/supabase/migrations/0034_enrollment_code_read_authz.sql").read_text()
 BILLING_AUTH = (ROOT / "prototype/supabase/migrations/0035_billing_read_authz.sql").read_text()
 NSIS = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text()
+REGISTER = (ROOT / "prototype/installer/register-service.ps1").read_text()
 BUILD = (ROOT / "tools/build_windows_release.ps1").read_text()
+AGENT_BUILD = (ROOT / "prototype/agent/build_exe.ps1").read_text()
+RELEASE_ENTRY = (ROOT / "prototype/agent/release_agent.py").read_text()
 WRAPPER = (ROOT / "tools/make_installer.ps1").read_text()
 SETUP = (ROOT / "prototype/agent/setup_wizard.py").read_text()
 AN_SETUP = (ROOT / "prototype/agent/analytics_setup.py").read_text()
+DAILY_REPORT = (ROOT / "prototype/reporter/daily_report.py").read_text()
+REPORT_SERVICE = (ROOT / "prototype/reporter/serve.py").read_text()
 SEED = (ROOT / "tools/seed_demo.py").read_text()
 
 
@@ -37,6 +42,14 @@ def check() -> None:
     assert "independent delivery endpoints" in REPORTS
     assert "07:00, site time" not in REPORTS
     assert "Actual dispatch time comes from the deployed reporting schedule" in REPORTS
+
+    # Daily reporting has one canonical composition path. CLI/manual invocation
+    # and the scheduled service must both include Analytics Site Intelligence.
+    assert "def _compose_security" in DAILY_REPORT
+    assert "return analytics_reporting.compose(_compose_security, report)" in DAILY_REPORT
+    assert "return analytics_reporting.render_html(_render_base_html, report, portal_url)" in DAILY_REPORT
+    assert "monkey-patch" in REPORT_SERVICE.lower() and "does not monkey-patch" in REPORT_SERVICE.lower()
+    assert "analytics_reporting" not in REPORT_SERVICE.replace("does not monkey-patch", "")
 
     # Viewer UI and server write permissions tell the same story.
     assert "Account &amp; Plan" in SETTINGS and "Sites &amp; Setup" in SETTINGS
@@ -102,6 +115,33 @@ def check() -> None:
         assert title in SETUP
     assert "Monitoring context (optional, recommended)" in AN_SETUP
 
+    # The packaged explicit setup command is strict and finite. A cancelled
+    # setup must fail NSIS; a successful one reaches enrollment/camera sync in
+    # core.main and then returns instead of entering the infinite run loop.
+    assert '$entry = "agent\\release_agent.py"' in AGENT_BUILD
+    assert '_ORIGINAL_SETUP = app.analytics_setup.run' in RELEASE_ENTRY
+    assert 'raise SystemExit(1)' in RELEASE_ENTRY
+    assert 'app.enhanced_cmd_run = _setup_validation_complete' in RELEASE_ENTRY
+    assert '"--setup" in sys.argv' in RELEASE_ENTRY
+    assert 'ExecWait \'"$INSTDIR\\watchlog-agent.exe" --setup\'' in NSIS
+    assert "Recorder/setup validation exited with code $0" in NSIS
+
+    # Installer completion is atomic at the Windows registration layer: an
+    # incomplete fresh install is not written into Add/Remove Programs, and an
+    # upgrade stops/resumes the previous task rather than deleting it first.
+    setup_pos = NSIS.index('ExecWait \'"$INSTDIR\\watchlog-agent.exe" --setup\'')
+    task_pos = NSIS.index('register-service.ps1')
+    arp_pos = NSIS.index('WriteRegStr HKLM "${ARPKEY}" "DisplayName"')
+    assert setup_pos < arp_pos
+    assert task_pos < arp_pos
+    assert 'StrCpy $8 "0"' in NSIS and '/Query /TN "${TASKNAME}"' in NSIS
+    assert 'attempting to resume the previous background task' in NSIS
+    assert "Register-ScheduledTask -TaskName $task" in REGISTER
+    assert "-Force | Out-Null" in REGISTER
+    assert "did not reach Running state" in REGISTER
+    assert "schtasks /Delete" not in REGISTER
+    assert "authoritative NSIS installer" in REGISTER
+
     assert '!define APPVERSION "0.3.0"' in NSIS
     assert 'VIProductVersion "0.3.0.0"' in NSIS
     assert '!define PUBLISHER "Vision Infinity"' in NSIS
@@ -113,6 +153,18 @@ def check() -> None:
     assert "makensis" in BUILD.lower()
     assert "build_windows_release.ps1" in WRAPPER
     assert not (ROOT / "prototype/installer/watchlog.iss").exists()
+
+    # Release signing is applied to BOTH executables and the checksum is of the
+    # final distributable bytes, after Authenticode has changed them.
+    sign_agent = BUILD.index("Sign-WatchLogArtifact $exe")
+    stage_agent = BUILD.index('Copy-Item $exe (Join-Path $stage "watchlog-agent.exe")')
+    sign_setup = BUILD.index("Sign-WatchLogArtifact $setup")
+    final_hash = BUILD.index("Get-FileHash $setup -Algorithm SHA256")
+    assert sign_agent < stage_agent
+    assert sign_setup < final_hash
+    assert 'Get-AuthenticodeSignature -FilePath $Path' in BUILD
+    assert 'signature verification failed' in BUILD
+    assert "FINAL SHA256" in BUILD
 
 
 def main() -> int:
