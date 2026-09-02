@@ -81,6 +81,12 @@ class RuleTests(unittest.TestCase):
                 "direction":{"positive_to_negative":"in","negative_to_positive":"out"},
                 "schedule_id":None}
 
+    def occupancy_rule(self):
+        return {"id":"r-occ","name":"Checkout Activity","rule_type":"occupancy",
+                "object_classes":["person"],"enabled":True,"sample_seconds":1,
+                "geometry":{"type":"polygon","points":[[.2,.2],[.8,.2],[.8,.8],[.2,.8]]},
+                "direction":{},"schedule_id":None}
+
     def test_line_crossing_direction_and_no_double_count(self):
         eng = configured(self.line_rule())
         t = datetime(2026, 8, 31, 5, 0, tzinfo=timezone.utc)
@@ -130,15 +136,26 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(1,len(ev));self.assertEqual("schedule_activity",ev[0]["event_type"])
         self.assertEqual([],eng.process("1",[D("person",510,500)],(1000,1000),t+timedelta(seconds=1)))
 
-    def test_occupancy_changes_only(self):
-        rule={"id":"r-occ","name":"Checkout Activity","rule_type":"occupancy",
-              "object_classes":["person"],"enabled":True,"sample_seconds":1,
-              "geometry":{"type":"polygon","points":[[.2,.2],[.8,.2],[.8,.8],[.2,.8]]},"direction":{},"schedule_id":None}
-        eng=configured(rule);t=datetime.now(timezone.utc)
+    def test_occupancy_change_requires_two_consecutive_samples(self):
+        eng=configured(self.occupancy_rule());t=datetime.now(timezone.utc)
         first=eng.process("1",[D("person",500,500)],(1000,1000),t)
         self.assertEqual(1,len(first));self.assertEqual(1,first[0]["metadata"]["count"])
         self.assertEqual([],eng.process("1",[D("person",510,500)],(1000,1000),t+timedelta(seconds=1)))
-        empty=eng.process("1",[],(1000,1000),t+timedelta(seconds=2))
+        # One empty frame is treated as detector jitter and must not create a false zero.
+        self.assertEqual([],eng.process("1",[],(1000,1000),t+timedelta(seconds=2)))
+        # Recovery to the stable count cancels the pending zero candidate.
+        self.assertEqual([],eng.process("1",[D("person",510,500)],(1000,1000),t+timedelta(seconds=3)))
+        self.assertEqual([],eng.process("1",[],(1000,1000),t+timedelta(seconds=4)))
+        empty=eng.process("1",[],(1000,1000),t+timedelta(seconds=5))
+        self.assertEqual(1,len(empty));self.assertEqual(0,empty[0]["metadata"]["count"])
+
+    def test_occupancy_new_count_resets_candidate(self):
+        eng=configured(self.occupancy_rule());t=datetime.now(timezone.utc)
+        eng.process("1",[D("person",400,500)],(1000,1000),t)
+        # Candidate 2 appears once, then candidate 0 appears; neither is stable yet.
+        self.assertEqual([],eng.process("1",[D("person",400,500),D("person",600,500)],(1000,1000),t+timedelta(seconds=1)))
+        self.assertEqual([],eng.process("1",[],(1000,1000),t+timedelta(seconds=2)))
+        empty=eng.process("1",[],(1000,1000),t+timedelta(seconds=3))
         self.assertEqual(1,len(empty));self.assertEqual(0,empty[0]["metadata"]["count"])
 
     def test_class_filter(self):
