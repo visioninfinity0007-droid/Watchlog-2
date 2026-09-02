@@ -6,9 +6,11 @@
 #   Production build (bundles onnxruntime + numpy + PIL + tzdata + model):
 #     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1 -WithAI
 #
-# The production entrypoint is analytics_agent.py. It wraps the proven
-# watchlog_agent.py event collector and adds the versioned Analytics Studio
-# worker. --selftest is still delegated to the core agent.
+# The packaged entrypoint is release_agent.py. It delegates the normal runtime
+# to analytics_agent.py and gives the NSIS --setup path strict finite-process
+# semantics: setup failure returns non-zero; successful setup validates WatchLog
+# enrollment and returns control to the installer instead of running forever.
+# --selftest and every non-setup command still delegate to the existing core.
 
 param([switch]$WithAI)
 
@@ -28,7 +30,7 @@ $common = @(
     "--exclude-module","pytest","--exclude-module","IPython"
 )
 
-$entry = "agent\analytics_agent.py"
+$entry = "agent\release_agent.py"
 
 if ($WithAI) {
     $model = Join-Path $root "models\yolov8n.onnx"
