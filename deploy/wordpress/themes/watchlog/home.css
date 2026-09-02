@@ -40,7 +40,7 @@
   background:linear-gradient(160deg,rgba(114,212,255,.22),rgba(23,72,211,.18));
   border:1px solid rgba(114,212,255,.28);color:var(--ice);
   box-shadow:0 8px 18px -10px rgba(23,72,211,.6),inset 0 1px 0 rgba(255,255,255,.08)}
-.proof-ic svg{width:24px;height:24px;stroke-width:2.1}
+.proof-ic svg{width:24px;height:24px;stroke-width:2.1;color:var(--ice)}
 .proof-item b{display:block;color:#fff;font-weight:600;font-size:1rem;margin-bottom:2px;letter-spacing:-.01em}
 .proof-item span{display:block;color:rgba(255,255,255,.6);font-size:.88rem;line-height:1.4}
 
