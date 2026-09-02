@@ -105,6 +105,10 @@ implemented and what still requires access to external production systems.
 - [x] Checkout fails closed unless both an explicit provider and hosted checkout
   service URL are configured.
 - [x] Detailed billing overview and direct financial-table reads are Owner-only.
+- [x] Owner-only financial-table RLS is executable by legitimate Owners; migration
+  `0036` replaces the non-executable helper policy introduced in `0035` with the
+  authenticated tenant/role helpers while preserving the same authorization
+  boundary.
 - [x] Admin/Viewer can still see non-sensitive plan/account/entitlement state
   without receiving provider customer IDs, checkout records or payment history.
 - [x] Draft pricing remains visibly marked provisional.
@@ -152,7 +156,8 @@ GitHub Actions gates cover:
 - [x] Analytics local engine tests.
 - [x] Analytics report rendering tests.
 - [x] Analytics portal contract.
-- [x] Portal/installer alignment contract.
+- [x] Portal/installer alignment contract, including the effective Owner billing
+  RLS policy contract.
 - [x] Platform Admin contract.
 - [x] Recorder push parser tests.
 - [x] Capability probe tests.
@@ -173,12 +178,14 @@ These are intentionally not marked complete by source code or CI.
 
 - [ ] Confirm the production migration ledger and checksums.
 - [ ] Apply the complete ordered train through
-  `0035_billing_read_authz.sql`.
+  `0036_billing_owner_policy_execution.sql`.
 - [ ] Verify PostgREST exposes the new RPCs after the migration is proven.
 - [ ] Run target-database tenant-isolation and role-authorization tests using
   disposable users/data, including proof that a Viewer receives
-  `open_code = null` from `wl_sites()` and Admin/Viewer cannot read detailed
-  billing tables or `wl_billing_overview()`.
+  `open_code = null` from `wl_sites()`, Admin/Viewer cannot read detailed
+  billing tables or `wl_billing_overview()`, and a legitimate Owner can read
+  only their own detailed billing rows without a policy-function permission
+  error.
 - [ ] Run reporting endpoint and Analytics semantic smoke tests.
 - [ ] Refresh the dedicated demo tenant only after schema compatibility is
   confirmed.
@@ -216,7 +223,7 @@ hardware. They must not be represented as complete until actually executed.
 
 1. Latest PR head passes all repository CI jobs.
 2. Production DB migration ledger is checked for drift.
-3. Apply migrations in order through `0035`.
+3. Apply migrations in order through `0036`.
 4. Run DB/authz/semantic/reporting smoke tests.
 5. Refresh the dedicated demo tenant.
 6. Merge PR #12.
