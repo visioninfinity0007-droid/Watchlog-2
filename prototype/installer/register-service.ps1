@@ -1,20 +1,21 @@
 <#
-  Register the WatchLog background service and harden power settings.
-  Called by the Inno installer AFTER setup has written watchlog.ini.
-  Runs elevated (the installer requires admin).
+  Register the WatchLog background Site Agent and harden power settings.
+  Called by the authoritative NSIS installer AFTER recorder + enrollment setup
+  has completed successfully. Runs elevated (the installer requires admin).
 
   "Service" here is a SYSTEM scheduled task that starts at boot, runs with
-  no window (session 0), and restarts on failure. This meets every
-  requirement - background, no terminal, auto-restart on boot - and, unlike
-  a native service wrapped around a frozen Python exe, it is reliable to
-  package and easy to verify. A true services.msc entry can be added later
-  with a wrapper if the console listing is specifically wanted.
+  no window (session 0), and restarts on failure. This meets the operational
+  requirement: background, no terminal, startup after reboot, and restart after
+  a process failure. Register-ScheduledTask -Force updates an existing task in
+  place so an upgrade does not destructively delete its rollback path first.
 #>
 param([string]$InstallDir = "$env:ProgramFiles\WatchLog")
 
 $ErrorActionPreference = "Stop"
 $task = "WatchLog Agent"
 $data = Join-Path $env:ProgramData "WatchLog"
+$runner = Join-Path $InstallDir "run-agent.cmd"
+if (-not (Test-Path $runner)) { throw "WatchLog runner not found: $runner" }
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 
 # --- keep this PC awake: the agent is only useful while it runs ----------
@@ -28,11 +29,14 @@ try {
   powercfg /hibernate off
 } catch { Write-Host "  (power settings: $($_.Exception.Message))" }
 
-# --- (re)create the startup task -----------------------------------------
-schtasks /Query /TN $task >$null 2>&1
-if ($LASTEXITCODE -eq 0) { schtasks /Delete /TN $task /F >$null 2>&1 }
+# --- create/update the startup task --------------------------------------
+$existing = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+if ($existing -and $existing.State -eq "Running") {
+  Stop-ScheduledTask -TaskName $task -ErrorAction Stop
+  Start-Sleep -Milliseconds 500
+}
 
-$action    = New-ScheduledTaskAction -Execute (Join-Path $InstallDir "run-agent.cmd")
+$action    = New-ScheduledTaskAction -Execute $runner
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings  = New-ScheduledTaskSettingsSet `
@@ -42,8 +46,23 @@ $settings  = New-ScheduledTaskSettingsSet `
 
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null
-Start-ScheduledTask -TaskName $task
+Start-ScheduledTask -TaskName $task -ErrorAction Stop
 
-Start-Sleep -Seconds 2
-$state = (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue).State
-Write-Host "  WatchLog background service registered and started (state: $state)."
+# Registration is not complete until Windows confirms the long-running wrapper
+# is actually running. run-agent.cmd itself owns restart-on-agent-exit, so a
+# healthy task remains Running instead of completing immediately.
+$deadline = (Get-Date).AddSeconds(10)
+$state = $null
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 500
+  $registered = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+  if ($registered) {
+    $state = [string]$registered.State
+    if ($state -eq "Running") { break }
+  }
+}
+if ($state -ne "Running") {
+  throw "WatchLog scheduled task did not reach Running state (state: $state)"
+}
+
+Write-Host "  WatchLog background Site Agent registered and started (state: $state)."
