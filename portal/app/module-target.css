@@ -1,0 +1,34 @@
+/* Visual alignment for existing CSS-module surfaces. Loaded after module-independent globals. */
+[class*="portal_pageHead"]{margin-bottom:24px!important;align-items:flex-end!important}
+[class*="portal_pageHead"] h1{font-size:clamp(1.8rem,2.7vw,2.55rem)!important;max-width:24ch!important}
+[class*="portal_eyebrow"]{color:var(--wl-ice)!important}
+[class*="portal_metricGrid"]{gap:14px!important}
+[class*="portal_metric__"],[class*="portal_metric_"]{background:linear-gradient(180deg,rgba(20,29,44,.96),rgba(16,24,37,.98))!important;border-color:var(--wl-target-line)!important;box-shadow:var(--wl-target-shadow)!important;padding:20px!important}
+[class*="portal_metricLabel"]{text-transform:none!important;letter-spacing:0!important;font-size:13px!important;color:#98a4b5!important}
+[class*="portal_metricValue"]{font-size:2.25rem!important;letter-spacing:-.035em!important}
+[class*="portal_card__"],[class*="portal_card_"],[class*="portal_featureCard"]{background:linear-gradient(180deg,rgba(20,29,44,.96),rgba(16,24,37,.98))!important;border-color:var(--wl-target-line)!important;box-shadow:var(--wl-target-shadow)!important}
+[class*="portal_tabActive"]{background:var(--wl-blue)!important;color:#fff!important;box-shadow:0 8px 20px -14px rgba(23,72,211,.8)!important}
+[class*="portal_statusDot"]{background:var(--wl-ice)!important}
+[class*="portal_progress"]>span{background:linear-gradient(90deg,var(--wl-blue),var(--wl-ice))!important}
+
+[class*="site-health_metric__"],[class*="site-health_metric_"]{background:linear-gradient(180deg,rgba(20,29,44,.96),rgba(16,24,37,.98))!important;border-color:var(--wl-target-line)!important;box-shadow:var(--wl-target-shadow)!important}
+[class*="site-health_metricLabel"]{text-transform:none!important;letter-spacing:0!important;font-size:13px!important}
+[class*="site-health_issueCard"]{background:linear-gradient(180deg,rgba(20,29,44,.96),rgba(16,24,37,.98))!important;border-color:var(--wl-target-line)!important;box-shadow:var(--wl-target-shadow)!important}
+
+[class*="analytics_pageHead"] h1{font-size:clamp(1.8rem,2.7vw,2.55rem)!important}
+[class*="analytics_subnav"]{background:transparent!important;border:0!important;border-bottom:1px solid var(--wl-target-line)!important;border-radius:0!important;padding:0!important;gap:22px!important}
+[class*="analytics_subnav"] a{border-radius:0!important;padding:10px 2px!important;background:transparent!important;border-bottom:2px solid transparent!important}
+[class*="analytics_subnav"] [class*="current"]{background:transparent!important;color:#fff!important;border-bottom-color:var(--wl-ice)!important}
+[class*="analytics_metric__"],[class*="analytics_metric_"]{background:linear-gradient(180deg,rgba(20,29,44,.96),rgba(16,24,37,.98))!important;border-color:var(--wl-target-line)!important;box-shadow:var(--wl-target-shadow)!important}
+[class*="analytics_metricLabel"]{text-transform:none!important;letter-spacing:0!important;font-size:13px!important}
+[class*="analytics_card__"],[class*="analytics_card_"]{background:linear-gradient(180deg,rgba(20,29,44,.96),rgba(16,24,37,.98))!important;border-color:var(--wl-target-line)!important;box-shadow:var(--wl-target-shadow)!important}
+[class*="analytics_chartVisitor"]{stroke:var(--wl-ice)!important;filter:drop-shadow(0 0 7px rgba(114,212,255,.22))}
+[class*="analytics_chartVehicle"]{stroke:var(--wl-blue-bright)!important;opacity:.72}
+[class*="analytics_badge"]{background:rgba(114,212,255,.1)!important;color:var(--wl-ice)!important}
+[class*="analytics_primaryAction"]{background:var(--wl-blue)!important;color:#fff!important}
+[class*="analytics_cameraBtnActive"]{background:rgba(23,72,211,.16)!important}
+[class*="analytics_pack"]:hover:not(:disabled){border-color:rgba(114,212,255,.42)!important;background:rgba(23,72,211,.09)!important}
+[class*="analytics_ruleForm"]{border-color:rgba(114,212,255,.24)!important;background:linear-gradient(180deg,rgba(23,72,211,.055),rgba(16,24,37,.98) 130px)!important}
+[class*="analytics_switchLabel"] input,[class*="analytics_check"] input{accent-color:var(--wl-blue)!important}
+
+@media(max-width:760px){[class*="portal_pageHead"]{align-items:flex-start!important}[class*="analytics_subnav"]{gap:12px!important;overflow:auto!important}}
