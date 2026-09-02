@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reporter"))
 
 import analytics_reporting as ar  # noqa: E402
+import daily_report  # noqa: E402
 
 
 class AnalyticsReportingTests(unittest.TestCase):
@@ -37,6 +38,29 @@ class AnalyticsReportingTests(unittest.TestCase):
         out = ar.render_html(lambda _r, _u: base, report, "#")
         self.assertIn("Site intelligence", out)
         self.assertLess(out.index("Site intelligence"), out.index("CTA"))
+
+    def test_canonical_daily_report_includes_intelligence(self):
+        report = {
+            "site": "Korangi Warehouse",
+            "date": "2026-09-01",
+            "timezone": "Asia/Karachi",
+            "total_events": 0,
+            "analytics": {
+                "measurements": 12,
+                "visitor_in": 5,
+                "visitor_out": 4,
+                "vehicles_in": 2,
+                "vehicles_out": 1,
+                "zone_entries": 0,
+                "after_hours": 0,
+                "checkout_peak": 0,
+            },
+        }
+        out = daily_report.compose(report)
+        self.assertIn("Nothing to report. No events.", out)
+        self.assertIn("Site intelligence", out)
+        self.assertIn("Visitor flow: 5 in, 4 out.", out)
+        self.assertIn("Vehicle flow: 2 in, 1 out.", out)
 
 
 if __name__ == "__main__":
