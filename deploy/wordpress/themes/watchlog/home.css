@@ -36,8 +36,11 @@
 .proof{border-top:1px solid rgba(255,255,255,.07);border-bottom:1px solid rgba(255,255,255,.07)}
 .proof-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:26px}
 .proof-item{display:flex;gap:13px;align-items:flex-start}
-.proof-ic{width:42px;height:42px;flex:none;border-radius:11px;display:grid;place-items:center;
-  background:rgba(114,212,255,.1);color:var(--ice)}
+.proof-ic{width:46px;height:46px;flex:none;border-radius:13px;display:grid;place-items:center;
+  background:linear-gradient(160deg,rgba(114,212,255,.22),rgba(23,72,211,.18));
+  border:1px solid rgba(114,212,255,.28);color:var(--ice);
+  box-shadow:0 8px 18px -10px rgba(23,72,211,.6),inset 0 1px 0 rgba(255,255,255,.08)}
+.proof-ic svg{width:24px;height:24px;stroke-width:2.1}
 .proof-item b{display:block;color:#fff;font-weight:600;font-size:1rem;margin-bottom:2px;letter-spacing:-.01em}
 .proof-item span{display:block;color:rgba(255,255,255,.6);font-size:.88rem;line-height:1.4}
 
