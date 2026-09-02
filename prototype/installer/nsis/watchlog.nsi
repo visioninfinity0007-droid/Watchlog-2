@@ -49,13 +49,27 @@ VIAddVersionKey "FileDescription" "WatchLog Site Agent installer"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 Section "Install"
+  ; An upgrade can have the existing long-running task holding the executable.
+  ; Stop it before replacing files, but do NOT delete the task yet. If the new
+  ; interactive setup fails we can resume the already-registered installation.
+  StrCpy $8 "0"
+  nsExec::ExecToStack '"$SYSDIR\schtasks.exe" /Query /TN "${TASKNAME}"'
+  Pop $9
+  Pop $7
+  ${If} $9 == 0
+    StrCpy $8 "1"
+    DetailPrint "Stopping the existing WatchLog background task for upgrade..."
+    ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"' $9
+  ${EndIf}
+
   SetOutPath "$INSTDIR"
   File "watchlog-agent.exe"
   File "run-agent.cmd"
   File "register-service.ps1"
   File "READ ME FIRST.txt"
 
-  ; Preserve a proven recorder configuration on upgrades.
+  ; Preserve a proven recorder configuration on upgrades. The setup wizard
+  ; writes a replacement only after local recorder checks have succeeded.
   IfFileExists "$INSTDIR\watchlog.ini" +2 0
     File "/oname=watchlog.ini" "watchlog.defaults.ini"
 
@@ -63,6 +77,42 @@ Section "Install"
   ; for diagnostic/legacy builds but is genuinely optional at compile time.
   File /nonfatal "yolov8n.onnx"
 
+  ; Explicit --setup is a finite validation command in the packaged release:
+  ; it proves the recorder locally, validates WatchLog enrollment, syncs camera
+  ; metadata, then exits. Any cancellation/failure is a non-zero process code.
+  DetailPrint "Opening WatchLog recorder setup..."
+  ExecWait '"$INSTDIR\watchlog-agent.exe" --setup' $0
+  DetailPrint "Recorder/setup validation exited with code $0"
+  ${If} $0 != 0
+    ${If} $8 == "1"
+      DetailPrint "Setup did not complete; attempting to resume the previous background task..."
+      ExecWait '"$SYSDIR\schtasks.exe" /Run /TN "${TASKNAME}"' $9
+    ${EndIf}
+    MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete, so this installer will not mark the new installation as ready. The background Site Agent was not newly registered. Local recorder settings may remain on this PC so setup can be retried safely. Correct the recorder, enrollment, or network issue, then run the installer again."
+    Abort "WatchLog recorder/setup validation did not complete"
+  ${EndIf}
+
+  ; Register background startup only after interactive recorder + enrollment
+  ; validation has completed successfully. register-service.ps1 updates the task
+  ; in place with -Force, then proves it reached Running state.
+  DetailPrint "Registering WatchLog to run in the background and start with Windows..."
+  ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\register-service.ps1" -InstallDir "$INSTDIR"' $1
+  DetailPrint "Background startup registration exited with code $1"
+  ${If} $1 != 0
+    ${If} $8 == "1"
+      DetailPrint "Registration failed; attempting to resume the existing WatchLog task..."
+      ExecWait '"$SYSDIR\schtasks.exe" /Run /TN "${TASKNAME}"' $9
+    ${Else}
+      ; A fresh install must not leave a partially-created startup task behind.
+      ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
+    ${EndIf}
+    MessageBox MB_ICONSTOP|MB_OK "The recorder and WatchLog enrollment were validated, but automatic background startup could not be proven. Setup will stop so this is not mistaken for a complete installation. Correct the Windows Task Scheduler issue, then run the installer again."
+    Abort "WatchLog background startup registration failed"
+  ${EndIf}
+
+  ; Only a fully validated installation is registered with Windows. On a fresh
+  ; failure there is therefore no misleading Add/Remove Programs entry; on an
+  ; upgrade the previous registration stays intact until success reaches here.
   WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog Site Agent"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "Publisher" "${PUBLISHER}"
@@ -75,29 +125,11 @@ Section "Install"
   WriteRegDWORD HKLM "${ARPKEY}" "NoModify" 1
   WriteRegDWORD HKLM "${ARPKEY}" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
-
-  DetailPrint "Opening WatchLog recorder setup..."
-  ExecWait '"$INSTDIR\watchlog-agent.exe" --setup' $0
-  DetailPrint "Recorder setup exited with code $0"
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. No untested recorder configuration was saved and the background Site Agent will not be registered. Correct the recorder/setup issue, then run the installer again."
-    Abort "WatchLog recorder setup did not complete"
-  ${EndIf}
-
-  ; Register background startup only after the interactive recorder setup has
-  ; completed successfully. A failed setup must never leave a broken service.
-  DetailPrint "Registering WatchLog to run in the background and start with Windows..."
-  ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\register-service.ps1" -InstallDir "$INSTDIR"' $1
-  DetailPrint "Background startup registration exited with code $1"
-  ${If} $1 != 0
-    MessageBox MB_ICONSTOP|MB_OK "The recorder is configured, but WatchLog could not register automatic background startup. Setup will stop so this is not mistaken for a complete installation."
-    Abort "WatchLog background startup registration failed"
-  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
-  ExecWait 'schtasks.exe /End /TN "${TASKNAME}"'
-  ExecWait 'schtasks.exe /Delete /TN "${TASKNAME}" /F'
+  ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
+  ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
   Delete "$INSTDIR\watchlog-agent.exe"
   Delete "$INSTDIR\run-agent.cmd"
   Delete "$INSTDIR\register-service.ps1"
