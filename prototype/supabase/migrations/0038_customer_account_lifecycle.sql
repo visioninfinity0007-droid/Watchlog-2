@@ -99,6 +99,28 @@ $$;
 revoke all on function public.wl_reporting_enabled(uuid) from public, anon;
 grant execute on function public.wl_reporting_enabled(uuid) to authenticated;
 
+-- Platform lifecycle directory is intentionally narrow so customer lists can
+-- display administrative access state without duplicating the large 0029
+-- customer summary function.
+create or replace function public.wl_platform_customer_lifecycles()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare v_role text:=wl_platform_require(array['platform_owner','platform_admin','platform_support']);
+begin
+  return jsonb_build_object(
+    'role',v_role,
+    'items',coalesce((select jsonb_agg(jsonb_build_object(
+      'tenant_id',t.id,'account_status',t.account_status
+    ) order by t.created_at desc) from tenants t),'[]'::jsonb)
+  );
+end $$;
+revoke all on function public.wl_platform_customer_lifecycles() from public, anon;
+grant execute on function public.wl_platform_customer_lifecycles() to authenticated;
+
 create or replace function public.wl_platform_customer_lifecycle(p_tenant_id uuid)
 returns jsonb
 language plpgsql
@@ -135,7 +157,11 @@ declare v_role text:=wl_platform_require(array['platform_owner','platform_admin'
 begin
   perform wl_platform_assert_tenant(p_tenant_id);
   if p_status not in ('active','suspended') then raise exception 'invalid account status'; end if;
+  if length(btrim(coalesce(p_reason,''))) < 4 then raise exception 'an audit reason is required'; end if;
   select jsonb_build_object('account_status',account_status) into v_before from tenants where id=p_tenant_id;
+  if (v_before->>'account_status')=p_status then
+    return v_before || jsonb_build_object('tenant_id',p_tenant_id,'role',v_role,'unchanged',true);
+  end if;
   update tenants set account_status=p_status where id=p_tenant_id;
   select jsonb_build_object('account_status',account_status) into v_after from tenants where id=p_tenant_id;
   perform wl_platform_write_audit(
@@ -145,7 +171,7 @@ begin
     v_before,
     v_after
   );
-  return v_after || jsonb_build_object('tenant_id',p_tenant_id,'role',v_role);
+  return v_after || jsonb_build_object('tenant_id',p_tenant_id,'role',v_role,'unchanged',false);
 end $$;
 revoke all on function public.wl_platform_set_account_status(uuid,text,text) from public, anon;
 grant execute on function public.wl_platform_set_account_status(uuid,text,text) to authenticated;
