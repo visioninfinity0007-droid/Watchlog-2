@@ -68,7 +68,7 @@ jobs:
         working-directory: portal
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
       - name: Install
@@ -78,6 +78,37 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder
+
+  setup-ui-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build branded windowed setup executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -ExecutionPolicy Bypass -File prototype\agent\build_setup_gui.ps1
+          $exe = Get-Item prototype\dist\watchlog-setup-ui.exe
+          if ($exe.Length -lt 5MB) { throw "setup UI is too small: $($exe.Length)" }
+      - name: Exercise DPAPI round trip and migration mode
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PYTHONPATH = (Resolve-Path prototype\agent).Path
+          python -c "from pathlib import Path; import tempfile; from windows_secret import write_secret,read_secret; p=Path(tempfile.gettempdir())/'wl-dpapi-ci.bin'; write_secret(p,'recorder-test-secret'); assert read_secret(p)=='recorder-test-secret'; p.unlink()"
+          $cfg = Join-Path $env:RUNNER_TEMP "watchlog.ini"
+          @"
+          [watchlog]
+          supabase_url = https://example.supabase.co
+          supabase_publishable_key = ci-placeholder
+          enrollment_code =
+          nvr_driver = auto
+          "@ | Set-Content $cfg -Encoding UTF8
+          & prototype\dist\watchlog-setup-ui.exe --migrate-only --config $cfg
+          if ($LASTEXITCODE -ne 0) { throw "setup UI migration mode failed: $LASTEXITCODE" }
 
   installer-contract:
     runs-on: windows-latest
