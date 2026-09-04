@@ -4,16 +4,23 @@ import { useState } from "react";
 import { supabase, say } from "../../lib/supabase";
 import Mark from "../mark";
 
+function confirmRedirect() {
+  return `${window.location.origin}/auth/confirm/`;
+}
+
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function onSubmit(e) {
     e.preventDefault();
     setBusy(true);
     setError("");
+    setNotice("");
 
     const { error } = await supabase().auth.signInWithPassword({
       email: email.trim(),
@@ -25,9 +32,25 @@ export default function Login() {
       setBusy(false);
       return;
     }
-    // Let the entry page decide between onboarding and dashboard, so the
-    // routing rule lives in exactly one place.
     location.replace("/");
+  }
+
+  async function resendConfirmation() {
+    if (!email.trim()) {
+      setError("Enter your email first.");
+      return;
+    }
+    setResending(true);
+    setError("");
+    setNotice("");
+    const { error } = await supabase().auth.resend({
+      type: "signup",
+      email: email.trim(),
+      options: { emailRedirectTo: confirmRedirect() },
+    });
+    if (error) setError(say(error));
+    else setNotice("If this account is awaiting confirmation, a new link has been sent. Use the newest email only.");
+    setResending(false);
   }
 
   return (
@@ -42,6 +65,7 @@ export default function Login() {
         <p className="sub">See what your cameras saw.</p>
 
         {error && <div className="err">{error}</div>}
+        {notice && <div className="ok-note">{notice}</div>}
 
         <label htmlFor="email">Email</label>
         <input id="email" type="email" autoComplete="email" required
@@ -54,6 +78,11 @@ export default function Login() {
 
         <button type="submit" disabled={busy}>
           {busy ? "Signing in..." : "Sign in"}
+        </button>
+
+        <p className="alt"><a href="/forgot-password/">Forgot password?</a></p>
+        <button className="ghost" type="button" onClick={resendConfirmation} disabled={resending}>
+          {resending ? "Sending..." : "Resend confirmation email"}
         </button>
 
         <p className="alt">
