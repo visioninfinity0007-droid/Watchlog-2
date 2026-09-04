@@ -6,12 +6,9 @@
 #   ...\build_windows_release.ps1 -Lean
 #   ...\build_windows_release.ps1 -SignPfx cert.pfx -SignPassword ****
 #
-# One authoritative path: agent exe -> optional Authenticode signing -> staged
-# public config -> NSIS -> optional installer signing -> FINAL SHA256.
-#
-# Production defaults to the AI-enabled agent. The script deliberately rejects
-# suspiciously small payloads so the CI manifest stub can never be distributed
-# as a customer release.
+# Authoritative path:
+#   AI Site Agent -> branded setup UI -> optional inner signing -> staged
+#   public config -> NSIS -> optional installer signing -> FINAL SHA256.
 
 param(
   [string]$Code = "",
@@ -26,8 +23,6 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# Resolve signing once. A release that was explicitly asked to sign must fail
-# closed if the Windows SDK signing tool is unavailable.
 $signtool = $null
 if ($SignPfx) {
   $signtool = (Get-Command signtool -ErrorAction SilentlyContinue).Source
@@ -71,38 +66,49 @@ function Read-DotEnv([string]$Path) {
   return $values
 }
 
-# 1) Build the Site Agent executable. The AI build is the production default.
+# 1) Build the operational Site Agent. Production defaults to AI enabled.
 $buildArgs = @()
 if (-not $Lean) { $buildArgs += "-WithAI" }
 Write-Host "Building WatchLog Site Agent..." -ForegroundColor Cyan
 & powershell -ExecutionPolicy Bypass -File "prototype\agent\build_exe.ps1" @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "Site Agent build failed (exit $LASTEXITCODE)" }
-$exe = Join-Path $root "prototype\dist\watchlog-agent.exe"
-if (-not (Test-Path $exe)) { throw "agent exe not built at $exe" }
-$agentBytes = (Get-Item $exe).Length
+$agentExe = Join-Path $root "prototype\dist\watchlog-agent.exe"
+if (-not (Test-Path $agentExe)) { throw "agent exe not built at $agentExe" }
+$agentBytes = (Get-Item $agentExe).Length
 $minimumAgentBytes = if ($Lean) { 1MB } else { 5MB }
 if ($agentBytes -lt $minimumAgentBytes) {
   throw "agent executable is suspiciously small ($agentBytes bytes); refusing to package a stub/incomplete build"
 }
 
-# Sign the inner executable BEFORE it is embedded in the installer. Signing only
-# the outer setup leaves the long-running executable itself unsigned.
-Sign-WatchLogArtifact $exe
+# 2) Build the customer-facing windowed setup application.
+Write-Host "Building branded WatchLog setup UI..." -ForegroundColor Cyan
+& powershell -ExecutionPolicy Bypass -File "prototype\agent\build_setup_gui.ps1"
+if ($LASTEXITCODE -ne 0) { throw "WatchLog setup UI build failed (exit $LASTEXITCODE)" }
+$setupUiExe = Join-Path $root "prototype\dist\watchlog-setup-ui.exe"
+if (-not (Test-Path $setupUiExe)) { throw "setup UI exe not built at $setupUiExe" }
+$setupUiBytes = (Get-Item $setupUiExe).Length
+if ($setupUiBytes -lt 5MB) {
+  throw "setup UI is suspiciously small ($setupUiBytes bytes); refusing to package an incomplete build"
+}
 
-# 2) Stage the exact NSIS payload.
+# Sign both inner executables before embedding them in NSIS.
+Sign-WatchLogArtifact $agentExe
+Sign-WatchLogArtifact $setupUiExe
+
+# 3) Stage the exact NSIS payload.
 $stage = Join-Path $env:TEMP ("wl-nsis-" + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 try {
   $inst = Join-Path $root "prototype\installer"
-  Copy-Item $exe (Join-Path $stage "watchlog-agent.exe")
-  foreach ($f in @("run-agent.cmd","register-service.ps1","READ ME FIRST.txt","setup.ico")) {
+  Copy-Item $agentExe (Join-Path $stage "watchlog-agent.exe")
+  Copy-Item $setupUiExe (Join-Path $stage "watchlog-setup-ui.exe")
+  foreach ($f in @("run-agent.ps1","register-service.ps1","READ ME FIRST.txt","setup.ico")) {
     Copy-Item (Join-Path $inst $f) (Join-Path $stage $f)
   }
   Copy-Item (Join-Path $inst "nsis\watchlog.nsi") (Join-Path $stage "watchlog.nsi")
 
-  # Public defaults only. Recorder credentials are collected and proven locally
-  # during first run and are never baked into a release artifact.
-  # Resolution order: explicit arguments -> process environment -> local .env.
+  # Public defaults only. Recorder credentials are collected/protected locally
+  # by the graphical setup app and are never baked into a release artifact.
   $cfg = Read-DotEnv (Join-Path $root ".env")
   $supaUrl = $SupabaseUrl
   if (-not $supaUrl) { $supaUrl = $env:SUPABASE_URL }
@@ -121,8 +127,7 @@ enrollment_code = $Code
 nvr_driver = auto
 "@ | Set-Content -Path (Join-Path $stage "watchlog.defaults.ini") -Encoding UTF8
 
-  # 3) Compile with NSIS. The publisher URL is deliberately omitted unless a
-  # real production URL is supplied; release metadata must never ship a fake URL.
+  # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"
   New-Item -ItemType Directory -Force -Path $out | Out-Null
   $setup = Join-Path $out "WatchLog-Setup.exe"
@@ -147,23 +152,22 @@ nvr_driver = auto
   if ($rc -ne 0 -or -not (Test-Path $setup)) { throw "makensis failed (exit $rc)" }
 
   $setupBytes = (Get-Item $setup).Length
-  $minimumSetupBytes = if ($Lean) { 1MB } else { 5MB }
+  $minimumSetupBytes = if ($Lean) { 5MB } else { 10MB }
   if ($setupBytes -lt $minimumSetupBytes) {
     throw "WatchLog-Setup.exe is suspiciously small ($setupBytes bytes); refusing to publish a stub/incomplete installer"
   }
 
-  # 4) Sign the FINAL installer. The checksum is intentionally generated only
-  # after this step because Authenticode changes the file bytes.
+  # 5) Sign final installer, then calculate checksum of the exact distributed bytes.
   Sign-WatchLogArtifact $setup
-
-  # 5) Final checksum of the exact artifact that will be distributed.
   $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
   Set-Content -Path "$setup.sha256" -Value "$hash  WatchLog-Setup.exe" -Encoding ascii
   $mb = [math]::Round($setupBytes / 1MB, 1)
   Write-Host ""
   Write-Host "Built $setup ($mb MB)" -ForegroundColor Green
+  Write-Host "  Site Agent $([math]::Round($agentBytes / 1MB, 1)) MB" -ForegroundColor Gray
+  Write-Host "  Setup UI $([math]::Round($setupUiBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  FINAL SHA256 $hash" -ForegroundColor Green
-  if ($SignPfx) { Write-Host "  Agent + installer Authenticode signatures verified." -ForegroundColor Green }
+  if ($SignPfx) { Write-Host "  Agent + setup UI + installer signatures verified." -ForegroundColor Green }
   else { Write-Host "  UNSIGNED: supply -SignPfx for a production release." -ForegroundColor Yellow }
   if ($PublisherUrl) { Write-Host "  Publisher URL $PublisherUrl" -ForegroundColor Gray }
   else { Write-Host "  Publisher URL omitted (supply -PublisherUrl for production metadata)." -ForegroundColor Yellow }

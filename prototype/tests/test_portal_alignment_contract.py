@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Static contract for the portal / reporting / installer alignment release."""
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,45 +131,53 @@ def check() -> None:
     assert "demo+sample@watchlog.test" in SEED
     assert '"report_deliveries"' in SEED
 
-    # Onboarding and installer are one story and one release technology.
+    # Portal onboarding and the shipped Windows installer tell the same story.
     assert "Nothing to install" not in ONBOARD
     assert "Download for Windows" in ONBOARD
     assert "same network" in ONBOARD
     assert "outbound" in ONBOARD.lower()
     assert "setup-progress-row" in ONBOARD
     assert '"Done"' in ONBOARD and '"In progress"' in ONBOARD and '"Pending"' in ONBOARD
+    # The terminal wizard remains a diagnostic/internal path, but is no longer
+    # the customer installer surface.
     assert '[1/4]' not in SETUP
     for title in ("Find the recorder", "Verify the recorder login", "Discover the cameras", "Link this site to WatchLog"):
         assert title in SETUP
     assert "Monitoring context (optional, recommended)" in AN_SETUP
 
-    # The packaged explicit setup command is strict and finite. A cancelled
-    # setup must fail NSIS; a successful one reaches enrollment/camera sync in
-    # core.main and then returns instead of entering the infinite run loop.
+    # The background agent remains the proven production entrypoint, while
+    # customer setup is now handled by a separate branded graphical executable.
     assert '$entry = "agent\\release_agent.py"' in AGENT_BUILD
     assert '_ORIGINAL_SETUP = app.analytics_setup.run' in RELEASE_ENTRY
     assert 'raise SystemExit(1)' in RELEASE_ENTRY
     assert 'app.enhanced_cmd_run = _setup_validation_complete' in RELEASE_ENTRY
     assert '"--setup" in sys.argv' in RELEASE_ENTRY
-    assert 'ExecWait \'"$INSTDIR\\watchlog-agent.exe" --setup\'' in NSIS
-    assert "Recorder/setup validation exited with code $0" in NSIS
+    assert 'File "watchlog-setup-ui.exe"' in NSIS
+    assert 'ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --config "$INSTDIR\\watchlog.ini"\'' in NSIS
+    assert "WatchLog setup exited with code $0" in NSIS
+    assert 'watchlog-agent.exe" --setup' not in NSIS
 
     # Installer completion is atomic at the Windows registration layer.
-    setup_pos = NSIS.index('ExecWait \'"$INSTDIR\\watchlog-agent.exe" --setup\'')
-    task_pos = NSIS.index('register-service.ps1')
+    setup_pos = NSIS.index('ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --config "$INSTDIR\\watchlog.ini"\'')
+    task_exec = 'ExecWait \'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\\register-service.ps1"'
+    task_pos = NSIS.index(task_exec)
     arp_pos = NSIS.index('WriteRegStr HKLM "${ARPKEY}" "DisplayName"')
     assert setup_pos < arp_pos
     assert task_pos < arp_pos
     assert 'StrCpy $8 "0"' in NSIS and '/Query /TN "${TASKNAME}"' in NSIS
-    assert 'attempting to resume the previous background task' in NSIS
+    assert '/Run /TN "${TASKNAME}"' in NSIS
+    assert 'nvr_password.dpapi' in NSIS
+    assert NSIS.index('nvr_password.dpapi') < task_pos
     assert "Register-ScheduledTask -TaskName $task" in REGISTER
     assert "-Force | Out-Null" in REGISTER
     assert "did not reach Running state" in REGISTER
     assert "schtasks /Delete" not in REGISTER
     assert "authoritative NSIS installer" in REGISTER
 
-    assert '!define APPVERSION "0.3.0"' in NSIS
-    assert 'VIProductVersion "0.3.0.0"' in NSIS
+    version_match = re.search(r'!define APPVERSION "([0-9]+\.[0-9]+\.[0-9]+)"', NSIS)
+    assert version_match, "NSIS APPVERSION missing"
+    app_version = version_match.group(1)
+    assert f'VIProductVersion "{app_version}.0"' in NSIS
     assert '!define PUBLISHER "Vision Infinity"' in NSIS
     assert '!include "LogicLib.nsh"' in NSIS
     assert "watchlog.example" not in NSIS and "watchlog.pk" not in NSIS
@@ -179,13 +188,16 @@ def check() -> None:
     assert "build_windows_release.ps1" in WRAPPER
     assert not (ROOT / "prototype/installer/watchlog.iss").exists()
 
-    # Release signing is applied to BOTH executables and the checksum is of the
-    # final distributable bytes, after Authenticode has changed them.
-    sign_agent = BUILD.index("Sign-WatchLogArtifact $exe")
-    stage_agent = BUILD.index('Copy-Item $exe (Join-Path $stage "watchlog-agent.exe")')
+    # Release signing is applied to both inner executables and the checksum is
+    # of the final distributable bytes, after Authenticode has changed them.
+    sign_agent = BUILD.index("Sign-WatchLogArtifact $agentExe")
+    stage_agent = BUILD.index('Copy-Item $agentExe (Join-Path $stage "watchlog-agent.exe")')
+    sign_ui = BUILD.index("Sign-WatchLogArtifact $setupUiExe")
+    stage_ui = BUILD.index('Copy-Item $setupUiExe (Join-Path $stage "watchlog-setup-ui.exe")')
     sign_setup = BUILD.index("Sign-WatchLogArtifact $setup")
     final_hash = BUILD.index("Get-FileHash $setup -Algorithm SHA256")
     assert sign_agent < stage_agent
+    assert sign_ui < stage_ui
     assert sign_setup < final_hash
     assert 'Get-AuthenticodeSignature -FilePath $Path' in BUILD
     assert 'signature verification failed' in BUILD

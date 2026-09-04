@@ -1,67 +1,84 @@
 WatchLog — installing on your site PC
 =====================================
 
-Thank you. This takes about ten minutes, and most of that is the program
-finding your recorder.
+WatchLog connects this Windows PC to the CCTV recorder already installed at
+your site. Setup is graphical and normally takes only a few minutes plus local
+network discovery time.
 
 WHAT YOU NEED
 -------------
-  1. This PC on the SAME network as your CCTV recorder, and left switched on.
-  2. Your recorder's admin username and password.
-  3. The one-time setup code we sent you (unless it is already filled in).
+  1. This PC on the SAME network as your CCTV recorder, kept switched on.
+  2. Your recorder's own username and password.
+  3. The one-time WatchLog site code from Settings > Sites & Setup.
 
-You do NOT need to know any IP addresses, and nothing about your network
-has to be changed. WatchLog only ever connects OUTWARD, like a web browser.
+You do not need port forwarding, a VPN or inbound firewall changes. WatchLog
+connects outward only.
 
 
 HOW TO INSTALL
 --------------
-  1. Right-click  "Install WatchLog.cmd"  and choose  "Run as administrator".
-       (Windows needs this to install the program and to start it
-        automatically each time the PC turns on.)
+  1. Run WatchLog-Setup.exe.
 
-  2. If Windows shows a blue "Windows protected your PC" box, click
-       "More info"  ->  "Run anyway".
-       This appears because the program is new, not because anything is
-       wrong. (Ask us if you would rather check first.)
+  2. Approve the Windows administrator prompt. WatchLog needs administrator
+     access to install the Site Agent and register its background startup task.
 
-  3. Follow the prompts. The program will:
-       - search your network and find your recorder,
-       - ask for the recorder's admin password,
-       - ask for the setup code (if it is not already filled in),
-       - test everything, then start monitoring.
+  3. Follow the WatchLog setup wizard:
+       - enter the WatchLog site code,
+       - let WatchLog find the recorder (or enter its local IP address),
+       - enter the recorder login,
+       - confirm discovered cameras and their purposes,
+       - wait for WatchLog to link the site and synchronize cameras.
 
-  4. When it says "WatchLog is installed and running", you are done.
-     You can close the window. Your site will show up in the WatchLog
-     portal within a minute.
+  4. Finish only after the wizard says "WatchLog is ready". The installer does
+     not register a new background task when required setup validation fails.
+
+
+YOUR RECORDER PASSWORD
+----------------------
+  - The recorder password stays on this Windows PC.
+  - New customer releases protect it with Windows machine-scoped DPAPI in:
+        C:\ProgramData\WatchLog\nvr_password.dpapi
+  - It is not written in plaintext to watchlog.ini.
+  - Existing engineering installations are migrated during upgrade when their
+    old local plaintext credential is detected.
 
 
 AFTER INSTALLING
 ----------------
-  - WatchLog starts by itself every time this PC boots. You do not need to
-    open anything or log in on this PC.
-  - It runs quietly in the background. There is no window to keep open.
-  - If you ever want to check it, the activity log is at:
+  - WatchLog starts automatically with Windows as a SYSTEM scheduled task.
+  - There is no terminal window to keep open.
+  - Local support logs are stored at:
         C:\ProgramData\WatchLog\agent.log
+        C:\ProgramData\WatchLog\setup.log
+  - A WatchLog Start Menu folder contains setup/reconfiguration and uninstall
+    shortcuts.
 
 
 IF THE RECORDER IS NOT FOUND
 ----------------------------
-  - Make sure this PC and the recorder are on the same network (the same
-    router/switch), not a guest wifi.
-  - Make sure the recorder is switched on.
-  - You can type the recorder's IP address by hand when asked, if you
-    know it (it is on the recorder's own screen under Menu > Network).
-  - Still stuck? Send us a photo of the label on the recorder and we will
-    help.
+  - Make sure this PC and the recorder are on the same local network rather
+    than a guest Wi-Fi network.
+  - Make sure the recorder is switched on and its HTTP/HTTPS web service is
+    enabled.
+  - Enter the recorder's local IP address manually if automatic discovery does
+    not find it. The recorder's own screen normally shows this under Network.
+  - Compatibility varies by recorder model and firmware. A successful protocol
+    connection is not the same thing as broad field validation for every model.
 
 
 TO REMOVE IT
 ------------
-  Right-click  "Uninstall-WatchLog.ps1"  ->  "Run with PowerShell"
-  (as administrator), or just ask us.
+  Use Windows Settings > Apps > Installed apps > WatchLog Site Agent > Uninstall,
+  or the Uninstall WatchLog shortcut in the WatchLog Start Menu folder.
+
+Uninstall removes the protected recorder credential. Local logs, spool history
+and agent state in C:\ProgramData\WatchLog are deliberately retained for support
+or reinstall continuity unless a full local data wipe is requested.
 
 
-Your recorder's password and your video never leave this building. We
-receive only a short record of each event and one still image. We cannot
-watch your cameras live or browse your recordings.
+PRIVACY BOUNDARY
+----------------
+Recorded video stays on your recorder. Recorder credentials stay on the site
+PC. WatchLog sends validated business/event metadata and approved incident or
+configuration stills required by the product. WatchLog does not provide live
+camera browsing or facial recognition.
