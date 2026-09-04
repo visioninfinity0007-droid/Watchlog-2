@@ -3,16 +3,21 @@
 The recorder password never needs to leave the site PC. Customer releases store
 it as a machine-scoped DPAPI blob in ProgramData so both the elevated setup UI
 and the SYSTEM background task can use it. The blob cannot be decrypted on a
-different Windows machine.
+different Windows machine. Because LOCAL_MACHINE DPAPI can be unwrapped by
+other accounts on the same PC, the file ACL is restricted to SYSTEM and local
+Administrators.
 """
 from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
 from ctypes import wintypes
 from pathlib import Path
 
 CRYPTPROTECT_LOCAL_MACHINE = 0x4
+SYSTEM_SID = "*S-1-5-18"
+ADMINISTRATORS_SID = "*S-1-5-32-544"
 
 
 class SecretError(RuntimeError):
@@ -42,7 +47,6 @@ def protect_bytes(payload: bytes) -> bytes:
     ok = crypt32.CryptProtectData(
         ctypes.byref(source), "WatchLog recorder credential", None, None, None,
         CRYPTPROTECT_LOCAL_MACHINE, ctypes.byref(result))
-    # Keep source_buffer alive through CryptProtectData.
     _ = source_buffer
     if not ok:
         raise SecretError(f"CryptProtectData failed ({kernel32.GetLastError()})")
@@ -83,11 +87,25 @@ def unprotect_text(payload: bytes) -> str:
         raise SecretError("protected recorder credential is unreadable") from exc
 
 
+def _lock_acl(path: Path) -> None:
+    if os.name != "nt":
+        return
+    command = [
+        "icacls", str(path), "/inheritance:r", "/grant:r",
+        f"{SYSTEM_SID}:(F)", f"{ADMINISTRATORS_SID}:(F)",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if result.returncode != 0:
+        raise SecretError("Windows could not restrict access to the protected recorder credential")
+
+
 def write_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(protect_text(secret))
     tmp.replace(path)
+    _lock_acl(path)
 
 
 def read_secret(path: Path) -> str:
