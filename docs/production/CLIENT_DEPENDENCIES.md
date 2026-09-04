@@ -19,25 +19,28 @@ Status: 🔵 waiting on client/external access · 🟡 access/tooling limitation
 ## 2. 🟡 WatchLog production Supabase access from this connector
 
 - **Blocked here:** direct execution/re-verification of WatchLog production migrations/auth/schema.
-- **Current connector visibility:** only the unrelated `Al khalid` project (`jssitaduuhjvyznldfoc`) is available. The WatchLog project is not exposed to this ChatGPT Supabase connector.
-- **Do not:** apply WatchLog migrations to the Al khalid project.
+- **Current connector visibility:** only the unrelated `Al khalid` project (`jssitaduuhjvyznldfoc`) is listed. A direct project lookup for WatchLog `oyvgubyxmjlijiczjona` is permission-denied in this ChatGPT connection.
+- **Do not:** apply WatchLog migrations to the Al khalid project or change the expected project-ref guard merely to make another database pass.
 - **Latest direct operator evidence:** WatchLog production was at the `0023` boundary when queried on 2026-09-04; later migrations were absent at that time.
-- **Acceptance when access is available:** backup → prove boundary → apply only pending migrations → security/RLS/role verification → route smoke → advisor review.
+- **Repository handoff now available:** `tools/watchlog_production_preflight.py`, `docs/runbooks/PRODUCTION_PREFLIGHT_READONLY.md`, and `docs/runbooks/PRODUCTION_PARITY_0024_0036.md`.
+- **Acceptance when access is available:** run the read-only preflight → record recoverable backup/snapshot → reconcile boundary/ledger → apply only genuinely pending migrations → security/RLS/role verification → route smoke → Security Advisor review.
 - **Handoff path:** Claude/local Supabase admin can perform this bounded procedure if connector access remains unavailable.
 
 ## 3. 🟡 Coolify / deployed-service access
 
-- **Blocked here:** proving exact deployed portal/WordPress/bridge/report/billing revision, environment variables and service health.
-- **Current limitation:** no Coolify connector is available in this session; sslip hostnames were not resolvable from the audit runtime on 2026-09-04.
-- **Acceptance:** record deployed revision/image for each service, verify health endpoints, verify portal build vars/installer URL, and run authenticated route smoke.
+- **Blocked here:** proving exact deployed portal/WordPress/bridge/report/billing revision, environment variables and authenticated service behavior.
+- **Current limitation:** no usable Coolify integration is available in this session. The sslip hostnames could not be resolved from this runtime on 2026-09-04; a direct-IP request using the known host IP plus the correct TLS hostname/SNI also could not connect to port 443. Treat this as **verification unavailable from this runtime**, not proof that production is down.
+- **Repository handoff now available:** `tools/watchlog_deployment_smoke.py` and `docs/runbooks/DEPLOYMENT_SMOKE_READONLY.md` provide GET-only public-surface verification from a reachable operator network.
+- **Acceptance:** record deployed revision/image for each service, verify environment/build variables, run the read-only public-surface smoke, verify portal build vars/installer URL, and run authenticated tenant/platform route smoke.
 - **Handoff path:** Claude/local server admin if this access remains unavailable.
 
-## 4. 🔵 Final production domain and DNS
+## 4. 🔵 Final production domain, DNS and public installer distribution
 
-- **Blocked:** final customer domain, TLS cutover, canonical/OG/Auth redirect URLs and durable installer publisher/download URLs.
-- **Needs:** approved domain + DNS control/delegation.
-- **Built around it:** production URLs are intended to remain configuration-driven rather than hardcoded to the temporary sslip host.
-- **Acceptance:** DNS/TLS live, Auth redirects correct, canonical/OG correct, installer/portal links correct, no stale temporary production URLs.
+- **Blocked:** final customer domain, TLS cutover, canonical/OG/Auth redirect URLs and a durable customer-accessible installer publisher/download URL.
+- **Needs:** approved domain + DNS control/delegation **and** a public release-hosting destination for `WatchLog-Setup.exe`.
+- **Important:** the WatchLog repository is private. GitHub Actions artifacts and private-repository release assets are operator channels, not a durable unauthenticated customer download path.
+- **Built around it:** production URLs are configuration-driven rather than hardcoded to the temporary sslip host; the portal already supports `NEXT_PUBLIC_INSTALLER_URL`.
+- **Acceptance:** DNS/TLS live, Auth redirects correct, canonical/OG correct, a versioned installer is published to the approved public host, a stable latest URL resolves, `NEXT_PUBLIC_INSTALLER_URL` points to it, and no stale temporary production URLs remain.
 
 ## 5. 🔵 Windows code-signing certificate
 
@@ -126,15 +129,19 @@ Status: 🔵 waiting on client/external access · 🟡 access/tooling limitation
 
 ### ✅ Google Drive project-folder access
 
-The shared WatchLog directory is now visible to `muhammad.awais@codup.co`, and the master audit/sprint plan has been moved into it.
+The shared WatchLog directory is visible to the authorized project account, and the master audit/sprint plan is maintained there.
 
 ### ✅ GitHub Actions availability (current evidence)
 
-The older register said hosted Actions minutes were exhausted. That is no longer the current evidence: `main` CI run `33611100973` completed successfully on 2026-09-02. Do not list Actions minutes as an active blocker unless a new run proves the quota problem has returned.
+Hosted Actions are working. Current Sprint 2/3/Sprint 1 repository CI runs have completed successfully; do not list Actions minutes as an active blocker unless a new run proves a quota problem.
 
 ### ✅ Published pricing exists
 
-The older register described final pricing as unpublished/draft. Current code/content is already aligned to Starter 6,000 / Growth 12,000 / Enterprise contact-only. The open item is now **package naming/approval**, especially Starter vs Standard, not absence of pricing.
+Current code/content is aligned to Starter 6,000 / Growth 12,000 / Enterprise contact-only. The open item is **package naming/approval**, especially Starter vs Standard, not absence of pricing.
+
+### ✅ Graphical Windows setup + protected recorder credential storage
+
+Sprint 2 replaced the customer terminal setup with a branded GUI, moved recorder-password persistence out of plaintext INI into machine-scoped DPAPI storage, added restricted ACL handling and legacy migration, and exercises the frozen setup/DPAPI path in Windows CI. Remaining Windows dependencies are publication, signing and clean lifecycle/field acceptance—not reimplementation of the GUI or credential protection.
 
 ---
 
@@ -143,13 +150,13 @@ The older register described final pricing as unpublished/draft. Current code/co
 The following should continue without waiting on the client unless they reach one of the external gates above:
 
 - source-of-truth cleanup;
+- read-only production/deployment evidence tooling;
 - release workflow hardening;
-- graphical installer implementation;
-- secure local credential-storage implementation;
-- portal/website changes;
-- Control Room v1 code;
+- portal/website maintenance;
 - reporting hierarchy code;
 - support/admin operations code;
 - integration-framework code;
 - tests/contracts/runbooks;
 - product maturity labels and honest public copy.
+
+Control Room v1 remains intentionally sequenced **after core production parity is proven**, even though its repository implementation is technically under team control.
