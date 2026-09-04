@@ -54,7 +54,7 @@ def main() -> int:
             "Available</span><h3>Fire" not in public
             and "Available</span><h3>Smoke" not in public,
         "live video wall is described as absent":
-            "does not offer a live video wall" in platform
+            "does not currently offer a live video wall" in platform
             and "does not provide a live video wall" in solutions,
         "compatibility no longer says broad field validation":
             "Validated in the field" not in home,
