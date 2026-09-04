@@ -21,7 +21,8 @@ if (-not (Test-Path $secretPath)) {
   throw "Protected recorder credential is missing. Run WatchLog Setup again."
 }
 
-# Keep one rollover file at about 5 MB.
+try { Add-Type -AssemblyName System.Security -ErrorAction Stop } catch { }
+
 if ((Test-Path $log) -and (Get-Item $log).Length -gt 5000000) {
   Move-Item -Force $log $oldLog
 }
