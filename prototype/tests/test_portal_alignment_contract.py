@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Static contract for the portal / reporting / installer alignment release."""
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -173,8 +174,10 @@ def check() -> None:
     assert "schtasks /Delete" not in REGISTER
     assert "authoritative NSIS installer" in REGISTER
 
-    assert '!define APPVERSION "0.3.0"' in NSIS
-    assert 'VIProductVersion "0.3.0.0"' in NSIS
+    version_match = re.search(r'!define APPVERSION "([0-9]+\.[0-9]+\.[0-9]+)"', NSIS)
+    assert version_match, "NSIS APPVERSION missing"
+    app_version = version_match.group(1)
+    assert f'VIProductVersion "{app_version}.0"' in NSIS
     assert '!define PUBLISHER "Vision Infinity"' in NSIS
     assert '!include "LogicLib.nsh"' in NSIS
     assert "watchlog.example" not in NSIS and "watchlog.pk" not in NSIS
@@ -185,7 +188,7 @@ def check() -> None:
     assert "build_windows_release.ps1" in WRAPPER
     assert not (ROOT / "prototype/installer/watchlog.iss").exists()
 
-    # Release signing is applied to BOTH inner executables and the checksum is
+    # Release signing is applied to both inner executables and the checksum is
     # of the final distributable bytes, after Authenticode has changed them.
     sign_agent = BUILD.index("Sign-WatchLogArtifact $agentExe")
     stage_agent = BUILD.index('Copy-Item $agentExe (Join-Path $stage "watchlog-agent.exe")')
