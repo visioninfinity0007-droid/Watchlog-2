@@ -5,9 +5,9 @@ product architecture. Status: **SUPPORTED** (ship as-is) · **QUALIFY** (ship on
 precise wording) · **REMOVE** (never present as an available capability) · **CLIENT CONFIRMATION REQUIRED**
 (omit until AKSS/VI confirm).
 
-This file was re-baselined on **2026-09-04** against the Analytics Studio v1 implementation and
-`docs/audit/CURRENT_STATE_2026-09-04.md`. A capability can exist in code while still requiring field
-validation before stronger accuracy/production claims are made.
+This file was re-baselined on **2026-09-04** against Analytics Studio v1, the graphical Windows
+installer and Windows-local DPAPI credential protection merged in Sprint 2. A capability can exist
+in code while still requiring field validation before stronger accuracy/production claims are made.
 
 ## Security / privacy
 
@@ -18,22 +18,22 @@ validation before stronger accuracy/production claims are made.
 | No port forwarding / firewall change | SUPPORTED | "No port forwarding. No inbound firewall changes. No VPN." |
 | Recorded video location | QUALIFY | "Recorded video stays on your recorder." (NOT "footage never leaves the building".) |
 | Credentials location | SUPPORTED | "Recorder credentials remain on the site PC and are never sent to WatchLog." |
-| Recorder credential encryption | REMOVE | Current production setup stores recorder credentials locally, but Windows-native protected storage is still an upgrade item. Do not claim local encryption until implemented and verified. |
-| What syncs outward | SUPPORTED | "Only validated event metadata and one incident still are sent to your private WatchLog account." |
+| Recorder credential protection | SUPPORTED | "On supported Windows installs, the recorder password is stored using machine-scoped Windows DPAPI with file access restricted to SYSTEM and local Administrators." Do not call this end-to-end encryption. |
+| What syncs outward | QUALIFY | WatchLog may receive validated event metadata, incident stills, configured Analytics Studio measurements, health/status data and on-demand camera configuration stills. Do not say "only one incident still" as a universal statement now that Analytics Studio is active. |
 | No live camera access | SUPPORTED | "No live camera browsing through WatchLog. WatchLog cannot pan, zoom, or view live." |
 | No public RTSP | SUPPORTED | "No public RTSP stream is opened." |
 | Tenant isolation | QUALIFY | "Each customer's data is isolated in the database and covered by automated isolation tests." Do not say "before every release" unless the exact release gate ran against an appropriate target. |
-| "Nothing of yours is on the internet" | REMOVE | Too absolute — event metadata + one still DO go to the cloud account. |
+| "Nothing of yours is on the internet" | REMOVE | Too absolute. Operational data and stills do go to the private cloud account. |
 | "Your footage never leaves the building" | REMOVE | Replace with "Recorded video stays on your recorder." |
 | Facial recognition | SUPPORTED (as a negative) | "WatchLog does not do facial recognition." Never imply it does. |
-| Encryption specifics (E2E, "military-grade") | REMOVE | No unverified crypto claims. "In transit over HTTPS" only. |
+| Encryption specifics (E2E, "military-grade") | REMOVE | No unverified crypto claims. "In transit over HTTPS" and the exact DPAPI wording above are allowed. |
 | SOC 2 / ISO / certifications | REMOVE | None held. Do not imply. |
 
 ## AI / analytics
 
 | Claim | Status | Wording |
 |---|---|---|
-| On-site incident filtering | SUPPORTED | "False alarms are filtered on your own site PC before anything is sent." |
+| On-site incident filtering | SUPPORTED | "False alarms are filtered on your own site PC before incident data is sent." |
 | Detection scope | QUALIFY | "The current production detector recognizes person, car and motorcycle." Never "any object" / broad detection. |
 | Fail-open incident filtering | SUPPORTED | "If the detector can't run, the event is kept rather than silently dropped." |
 | Video analytics platform | QUALIFY | "WatchLog can turn configured cameras into business measurements such as visitor flow, vehicle flow, boundary activity, zone activity, dwell/time-in-zone and after-hours activity." Camera setup and field conditions affect measurement quality. |
@@ -57,7 +57,7 @@ validation before stronger accuracy/production claims are made.
 |---|---|---|
 | Control Room | QUALIFY | May be presented as **Pilot / Coming Soon** until the dedicated Control Room module is implemented and validated. |
 | Multi-camera saved layouts | REMOVE | Not implemented on the 2026-09-04 baseline. Do not present as Available. |
-| Current/latest still | QUALIFY | A camera configuration still can be requested through the existing Site Agent path. Label it as a current/latest still, not a live stream. |
+| Current/latest still | QUALIFY | A camera configuration still can be requested through the existing Site Agent path. Label it as a current/latest configuration still, not a live stream. |
 | Live video wall | REMOVE | Not implemented. Do not call refreshed stills or event images "live video." |
 | Recorded clip extraction | REMOVE | Requires recorder-specific field validation and clip/playback adapter work. |
 
@@ -88,7 +88,8 @@ validation before stronger accuracy/production claims are made.
 
 | Category | Status | Members / wording |
 |---|---|---|
-| Validated (driver exercised vs simulator; Dahua seen on real hardware once) | QUALIFY | "Validated: Hikvision (ISAPI), Dahua (CGI)." Label real-hardware status honestly — Dahua seen on one real unit; broad field validation is ongoing. |
+| Driver implementation / simulator validation | QUALIFY | Hikvision (ISAPI) and Dahua (CGI) have implemented drivers and simulator coverage. Do not label both broadly "field validated." |
+| Real-hardware experience | QUALIFY | Dahua has been seen on one real unit. Broad model/firmware acceptance is still ongoing. |
 | Protocol-compatible / requires check | QUALIFY | "Protocol-compatible, confirm your unit: HiLook, Imou, CP Plus, Uniview, Tiandy, and most ONVIF recorders." Do NOT present as field-proven. |
 | Unsupported | SUPPORTED | "Unbranded Xiongmai / Hisilicon boards are not supported." |
 | "Works with every camera" | REMOVE | Never. |
