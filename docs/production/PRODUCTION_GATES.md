@@ -1,39 +1,40 @@
 # WatchLog — Production Gates
 
-Re-baselined **2026-09-04** against `docs/audit/CURRENT_STATE_2026-09-04.md`.
+Re-baselined **2026-09-04** against the current repository state after the merged Sprint 2, Sprint 3 and Sprint 1 read-only preflight work.
 
 A gate is only green for the layer explicitly named in the check. **Repository/CI success is not proof that the deployed production system is running the same schema/build.**
 
-Legend: ✅ verified · 🟡 code ready / live verification pending · ⏳ pending · 🔵 external/client/field input required · ❌ known gap/failure.
+Legend: ✅ verified at the stated layer · 🟡 code ready / live verification pending · ⏳ pending · 🔵 external/client/field input required · ❌ known gap/failure.
 
 ## 0. Production truth / parity
 
 | Gate | Check | Status |
 |---|---|---|
-| TRUTH-1 current repo baseline | `main` commit and latest CI identified | ✅ `4efa9a645cc0c2bffe10f0f5f360195fb2fbf751`; CI run `33611100973` success (2026-09-02) |
-| TRUTH-2 current DB boundary | read production schema markers before any DDL | 🟡 latest direct operator evidence showed `0023` boundary; must re-read because another operator/tool may have changed it afterwards |
-| TRUTH-3 deployed service revisions | record exact portal/WP/bridge/report/billing deployed revision/image | ⏳ no Coolify connector/live DNS proof in this audit environment |
-| TRUTH-4 live route smoke | authenticated smoke of portal + admin + marketing routes | ⏳ live sslip hostnames were not resolvable from this audit environment |
-| TRUTH-5 source-of-truth docs | current-state, gates, dependencies and claims agree | ✅ re-baselined on Sprint 0 branch; branch CI run `33863464289` succeeded |
+| TRUTH-1 current repo baseline | `main` commit and latest CI identified | ✅ `c8aad36816d3a0593cd6da7e76df0924f41aeec8`; PR #18 CI `33870598028` success; post-merge main CI `33871119061` running at this update |
+| TRUTH-2 current DB boundary | read production schema markers before any DDL | 🟡 latest direct operator evidence showed the `0023` boundary; `tools/watchlog_production_preflight.py` is now merged for a fail-closed fresh read, but the WatchLog project remains permission-denied in this connector |
+| TRUTH-3 deployed service revisions | record exact portal/WP/bridge/report/billing deployed revision/image | ⏳ no usable Coolify integration in this session; deployment revision remains unverified |
+| TRUTH-4 live route smoke | authenticated smoke of portal + admin + marketing routes | ⏳ live deployment/auth smoke still required |
+| TRUTH-5 source-of-truth docs | current-state, gates, dependencies, master plan and claims agree | 🟡 master plan/claims are current; this gate file is being synchronized after Sprint 2/3 and the merged preflight work |
 
 ## 1. Security / database
 
-Historical security gates through migration `0023` remain valid evidence for the time they were run, but the full set must be re-run after the pending production migration train is reconciled.
+Historical security gates through migration `0023` remain valid evidence for the time they were run, but the full set must be re-run after the production migration train is reconciled.
 
 | Gate | Check | Status |
 |---|---|---|
-| SEC-1 tenant isolation baseline | `prototype/tests/test_tenant_isolation.py` → 9/9 on appropriate target | ✅ historical baseline; **rerun after production parity** |
+| SEC-1 tenant isolation baseline | `prototype/tests/test_tenant_isolation.py` on appropriate target | ✅ historical baseline; **rerun after production parity** |
 | SEC-2 anon customer-data | anon PostgREST access denied/empty on tenant data | ✅ historical baseline; rerun after parity |
-| SEC-3 app migration ledger locked | `public.schema_migrations` RLS + anon/public grants removed | ✅ migration `0016` exists and was previously verified live |
+| SEC-3 app migration ledger locked | `public.schema_migrations` RLS + anon/public grants removed | ✅ migration `0016` exists and was previously verified live; current ledger existence/shape must still be re-read |
 | SEC-4 no self-service paid state | tenant owner cannot forge authoritative paid state | ✅ historical billing-authz verification; rerun after parity |
 | SEC-5 SECURITY DEFINER hygiene | no unsafe definer functions / pinned search path where required | 🟡 code contracts exist; re-audit after `0024–0036` parity |
 | SEC-6 write grants minimized | authenticated/anon do not gain unintended direct app-table writes | 🟡 re-audit after parity |
+| DB-0 read-only production preflight | wrong project rejected, transaction forced read-only, schema/ledger/admin evidence collected without DDL | ✅ code + CI contract merged in PR #18; live execution requires authorized WatchLog DB access |
 | DB-1 Analytics Studio schema | `monitoring_rules` + 0024 columns/functions exist in production | ⏳ absent in latest direct SQL evidence |
 | DB-2 platform admin schema | `platform_admins` + `wl_platform_me()` exist in production | ⏳ absent in latest direct SQL evidence |
 | DB-3 Site Health details | later Site Health RPC exists in production | ⏳ absent in latest direct SQL evidence |
 | DB-4 later authz | enrollment/billing authz from `0034–0036` exists in production | ⏳ absent in latest direct SQL evidence |
-| DB-5 migration parity | production schema == current migrations through `0036` | ⏳ Sprint 1; backup + boundary proof required before apply |
-| DB-6 post-DDL advisor | Supabase security advisor reviewed after parity | ⏳ Sprint 1 |
+| DB-5 migration parity | production schema == current migrations through `0036` | ⏳ Sprint 1; authorized environment must run the read-only preflight first, then backup + bounded migration runbook |
+| DB-6 post-DDL advisor | Supabase Security Advisor reviewed after parity | ⏳ Sprint 1 |
 
 ## 2. Reporting
 
@@ -53,7 +54,7 @@ Historical security gates through migration `0023` remain valid evidence for the
 | Gate | Check | Status |
 |---|---|---|
 | AI-1 ONNX runtime/model packaged | production AI build includes runtime/model | ✅ code + prior frozen-exe evidence |
-| AI-2 packaged self-test | `watchlog-agent.exe --selftest` passes | ✅ prior full AI build evidence; new release workflow repeats this gate |
+| AI-2 packaged self-test | `watchlog-agent.exe --selftest` passes | ✅ prior full AI build evidence; real release workflow repeats this gate |
 | AI-3 current detector classes | person/car/motorcycle only | ✅ explicit product/code scope |
 | AI-4 fail-open incident filtering | detector failure keeps event | ✅ tests |
 | ANA-1 Analytics Studio engine | line/zone/dwell/schedule rules deterministic | ✅ code/tests |
@@ -79,7 +80,7 @@ Historical security gates through migration `0023` remain valid evidence for the
 
 | Gate | Check | Status |
 |---|---|---|
-| PORT-1 static production build | Next.js production export | ✅ latest main CI |
+| PORT-1 static production build | Next.js production export | ✅ PR #18 CI and preceding main CI |
 | PORT-2 core navigation | Overview / Incidents / Site Health / Analytics / Reports / Team / Settings | ✅ code |
 | PORT-3 platform admin routes | Overview / Tenants / Operations / Billing / Admins / Audit | ✅ code; production DB schema pending |
 | PORT-4 Analytics Studio UI | site/camera/rule/schedule configuration | ✅ code |
@@ -93,13 +94,13 @@ Historical security gates through migration `0023` remain valid evidence for the
 | Gate | Check | Status |
 |---|---|---|
 | INS-0 NSIS packaging source | real `.nsi` and authoritative release script exist | ✅ |
-| INS-1 fast NSIS contract | CI compiles NSIS with an explicit stub payload to validate manifest syntax only | ✅ latest main CI; **not a distributable release** |
-| INS-2 release-script parser | authoritative PowerShell script parses on Windows | 🟡 `$Path:` parser defect fixed on Sprint 0 branch; full release workflow still needs first run |
-| INS-3 genuine AI release workflow | Windows runner builds full agent, self-tests, packages, size-checks, checksums and uploads | 🟡 workflow added on Sprint 0 branch; repository public-release variables + first green run pending |
-| INS-4 customer GUI setup | no terminal/input() wizard in normal customer setup | ❌ current baseline is terminal-driven; Sprint 2 |
-| INS-5 silent background agent | no console window during normal background runtime | ❌ current PyInstaller production entry uses `--console`; Sprint 2 architecture change |
-| INS-6 secure recorder credential storage | password not persisted as plaintext INI | ❌ current baseline stores local password in INI; Sprint 2 |
-| INS-7 stable download | versioned artifact + stable latest URL | ⏳ Sprint 2 |
+| INS-1 fast NSIS contract | CI compiles NSIS with explicit stub payloads to validate manifest syntax only | ✅ main/PR CI; **not a distributable release** |
+| INS-2 release-script source | authoritative PowerShell release script parser defect fixed | ✅ merged Sprint 0 source |
+| INS-3 genuine AI release workflow | Windows runner builds full agent, self-tests, packages, size-checks, checksums and uploads | 🟡 workflow exists; repository public-release variables + first configured green run still required |
+| INS-4 customer GUI setup | branded graphical WatchLog setup replaces terminal/input() customer path | ✅ merged Sprint 2; Windows `setup-ui-build` repeatedly green |
+| INS-5 silent background agent | no customer-visible console during normal background runtime | ✅ merged Sprint 2 hidden SYSTEM launcher/background path; field lifecycle acceptance remains external |
+| INS-6 secure recorder credential storage | password not persisted in plaintext INI | ✅ machine-scoped DPAPI storage + SYSTEM/Administrators ACL + legacy migration; CI DPAPI round-trip passed |
+| INS-7 stable download | durable customer-accessible versioned artifact + stable latest URL | ⏳ hosting/distribution not finalized; private Actions artifacts are not a customer download channel |
 | INS-8 signed | Authenticode valid for inner agent + final installer | 🔵 code path exists; certificate required |
 | INS-9 Win10/11 lifecycle | install/enroll/reboot/upgrade/uninstall acceptance | 🔵 clean Windows test environments/hardware |
 
@@ -108,12 +109,12 @@ Historical security gates through migration `0023` remain valid evidence for the
 | Gate | Check | Status |
 |---|---|---|
 | WEB-1 custom WatchLog theme | current WordPress theme/site architecture exists | ✅ code |
-| WEB-2 current core positioning | existing CCTV + incidents + reports + Site Health | ✅ code/content |
-| WEB-3 Analytics Studio claims | public claims match implemented analytics without exaggeration | 🟡 claims matrix corrected on Sprint 0 branch; website copy update is Sprint 3 |
-| WEB-4 broader product positioning | Video Analytics & CCTV Intelligence + maturity labels | ⏳ Sprint 3 |
-| WEB-5 customer/partner honesty | no KFC/McDonald's/AWS/manufacturer false customer/partner claims | ✅ guardrail documented; verify during site update |
-| WEB-6 sitemap | custom `/sitemap.xml` route returns 200 and `robots.txt` points to it | 🟡 code implements the custom route because WP core `/wp-sitemap.xml` is unreliable on this install; live `/sitemap.xml` verification pending |
-| WEB-7 canonical/OG/robots | canonical/OG/robots are implemented in theme; verify output live | 🟡 code verified; live production verification pending |
+| WEB-2 core + analytics positioning | existing CCTV, incidents, analytics, reports and Site Health are represented | ✅ Sprint 3 code/content |
+| WEB-3 Analytics Studio claims | public claims match implemented analytics without exaggeration | ✅ Sprint 3 claims matrix + public-claims CI contract |
+| WEB-4 broader product positioning | Video Analytics & CCTV Intelligence with current vs roadmap separation | ✅ Sprint 3 repository content; live WordPress deployment still unverified |
+| WEB-5 customer/partner honesty | no false KFC/McDonald's/AWS/manufacturer customer/partner claims | ✅ guarded by source + public-claims contract |
+| WEB-6 sitemap | custom `/sitemap.xml` route returns 200 and `robots.txt` points to it | 🟡 code implements the custom route; live verification pending |
+| WEB-7 canonical/OG/robots | canonical/OG/robots implemented in theme | 🟡 code verified; live production verification pending |
 | WEB-8 final domain | production DNS/TLS/Auth/canonical/installer URLs | 🔵 final domain + DNS control |
 | PRICE-1 current website == billing | Starter 6,000 / Growth 12,000 / Enterprise contact-only | ✅ code contract/CI |
 | PRICE-2 Starter vs Standard naming | one approved naming convention everywhere | 🔵 latest meeting differs from current published naming; client decision required |
@@ -122,12 +123,12 @@ Historical security gates through migration `0023` remain valid evidence for the
 
 | Gate | Check | Status |
 |---|---|---|
-| CI-1 normal PR/push CI | backend tests + portal build + NSIS manifest contract | ✅ latest Sprint 0 branch run `33863464289` succeeded; latest main run `33611100973` also succeeded |
+| CI-1 normal PR/push CI | backend tests + PHP lint + preflight contract + portal build + NSIS + setup UI/DPAPI | ✅ PR #18 CI `33870598028`; preceding main run `33870037809` succeeded |
 | CI-2 secret scan | tracked tree scan | ✅ in CI |
 | CI-3 migration lint | migration lint | ✅ in CI |
-| CI-4 real Windows release | separate full AI artifact workflow | 🟡 added Sprint 0; first green run pending |
-| CI-5 branch protection | required checks / protected `main` | ⏳ `main` currently not protected per GitHub branch metadata |
-| REL-1 stable release distribution | durable versioned customer download + latest pointer | ⏳ Sprint 2 |
+| CI-4 real Windows release | separate full AI artifact workflow | 🟡 workflow exists; first configured green `Windows Release` run not yet evidenced |
+| CI-5 branch protection | required checks / protected `main` | ⏳ not currently proven/enforced from available metadata |
+| REL-1 stable release distribution | durable versioned customer download + latest pointer | ⏳ external hosting/distribution path still required |
 
 ## 9. Control Room / QSR pilot
 
@@ -170,9 +171,9 @@ The September staging checkpoint is green only when all of the following are tru
 3. core portal routes smoke clean against production;
 4. Analytics Studio current capabilities are available against production;
 5. reporting and entitlement paths are coherent;
-6. website claims match maturity;
-7. an actual installer download path exists;
+6. the updated website is deployed and its claims match maturity;
+7. an actual customer-accessible installer download path exists;
 8. no critical security/RLS regression is open;
 9. a demo/pilot tenant can be demonstrated end to end.
 
-Fire/smoke, true live streaming, POS/Shopify, attendance identity and every vertical custom solution are **not** staging prerequisites.
+Current staging-critical blockers are therefore **production DB parity, deployed-service/live-route verification, installer distribution, and end-to-end field/demo acceptance**. Fire/smoke, true live streaming, POS/Shopify, attendance identity and every vertical custom solution are **not** staging prerequisites.
