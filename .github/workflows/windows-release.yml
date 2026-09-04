@@ -1,0 +1,126 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publisher_url:
+        description: Optional production WatchLog URL for installer metadata
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-real-installer:
+    name: Build real AI-enabled WatchLog installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ vars.WATCHLOG_SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.WATCHLOG_SUPABASE_PUBLISHABLE_KEY }}
+      PUBLISHER_URL: ${{ inputs.publisher_url || vars.WATCHLOG_PUBLISHER_URL }}
+      SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
+      SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis -y --no-progress
+
+      - name: Validate public release configuration
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:SUPABASE_URL) {
+            throw 'Repository variable WATCHLOG_SUPABASE_URL is required for a customer release.'
+          }
+          if (-not $env:SUPABASE_PUBLISHABLE_KEY) {
+            throw 'Repository variable WATCHLOG_SUPABASE_PUBLISHABLE_KEY is required for a customer release.'
+          }
+          if ($env:SUPABASE_URL -notmatch '^https://') {
+            throw 'WATCHLOG_SUPABASE_URL must be an https URL.'
+          }
+          Write-Host 'Public WatchLog release configuration is present.'
+
+      - name: Build production Site Agent and NSIS installer
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseArgs = @(
+            '-SupabaseUrl', $env:SUPABASE_URL,
+            '-SupabasePublishableKey', $env:SUPABASE_PUBLISHABLE_KEY
+          )
+          if ($env:PUBLISHER_URL) {
+            $releaseArgs += @('-PublisherUrl', $env:PUBLISHER_URL)
+          }
+
+          $pfx = $null
+          try {
+            if ($env:SIGN_PFX_B64) {
+              if (-not $env:SIGN_PASSWORD) {
+                throw 'WATCHLOG_SIGN_PFX_B64 exists but WATCHLOG_SIGN_PASSWORD is missing.'
+              }
+              $pfx = Join-Path $env:RUNNER_TEMP 'watchlog-signing.pfx'
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_B64))
+              $releaseArgs += @('-SignPfx', $pfx, '-SignPassword', $env:SIGN_PASSWORD)
+            }
+
+            & .\tools\build_windows_release.ps1 @releaseArgs
+            if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
+          }
+          finally {
+            if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }
+          }
+
+      - name: Verify real payload, AI self-test and checksum
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $agent = Get-Item '.\prototype\dist\watchlog-agent.exe'
+          $setup = Get-Item '.\dist-installer\WatchLog-Setup.exe'
+          $checksumPath = '.\dist-installer\WatchLog-Setup.exe.sha256'
+
+          if ($agent.Length -lt 5MB) {
+            throw "watchlog-agent.exe is too small ($($agent.Length) bytes); refusing a stub/incomplete release."
+          }
+          if ($setup.Length -lt 5MB) {
+            throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
+          }
+          if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
+
+          & $agent.FullName --selftest
+          if ($LASTEXITCODE -ne 0) { throw "packaged agent self-test failed with exit $LASTEXITCODE" }
+
+          $expected = ((Get-Content $checksumPath -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
+          $actual = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($expected -ne $actual) {
+            throw "SHA-256 mismatch: expected $expected, actual $actual"
+          }
+
+          Write-Host "Verified real agent: $([math]::Round($agent.Length / 1MB, 1)) MB"
+          Write-Host "Verified installer: $([math]::Round($setup.Length / 1MB, 1)) MB"
+          Write-Host "Verified SHA-256: $actual"
+
+      - name: Upload WatchLog Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: WatchLog-Windows-${{ github.run_number }}
+          path: |
+            dist-installer/WatchLog-Setup.exe
+            dist-installer/WatchLog-Setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 30

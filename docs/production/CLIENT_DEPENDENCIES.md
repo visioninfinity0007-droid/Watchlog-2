@@ -1,95 +1,155 @@
-# WatchLog — Client Dependencies
+# WatchLog — Client / External Dependencies
 
-Items that **cannot** be completed by Vision Infinity alone. For each: what is blocked, why, the
-exact acceptance procedure once the input arrives, and what has been built around it so no other
-work is stalled.
+Re-baselined **2026-09-04**. This file lists work that cannot be completed by repository changes alone.
 
-Status: 🔵 = waiting on client. When the input arrives, run the acceptance procedure and flip the
-matching gate in `PRODUCTION_GATES.md`.
+A dependency is not permission to mark the related feature complete. When the input arrives, run the acceptance procedure in `PRODUCTION_GATES.md` and record evidence.
 
----
-
-## 1. 🔵 Real-hardware M1 field validation
-- **Blocked:** M1 field gate (2 sites × 10 real cameras, stable soak, FP/FN tuning).
-- **Needs from client:** (a) `C:\ProgramData\WatchLog\agent.log` + Task-Scheduler screenshot from
-  **SM-HP** (to fix the 3-min stop + 0-camera sync on the real DH-XVR1B08-I); (b) two live sites with
-  10 cameras each and NVR admin access; (c) permission to collect a labelled footage sample.
-- **Built around it:** agent is code-complete; real-Dahua `list_channels` fix + simulator kept in sync;
-  a controlled soak checklist in `docs/production/M1_FIELD_VALIDATION.md` (created in P3).
-- **Acceptance when unblocked:** install → enroll → recorder found → cameras synced → >1 h stable soak →
-  events+snapshots+filtered sync → portal shows them → agent survives restart; then 2×10 across two sites.
-
-## 2. 🔵 Switch merchant credentials
-- **Blocked:** live Switch payment (BILL-6).
-- **Needs from client:** Switch merchant/sandbox API credentials + the exact Switch API/webhook contract
-  (or confirmation of the doc set to follow).
-- **Built around it:** full billing DB model, provider abstraction, webhook endpoint + signature
-  verification, idempotency, portal billing UI, and a deterministic **sandbox fixture** for testing
-  (P8). Everything except the live-provider handshake is done and tested.
-- **Acceptance when unblocked:** sandbox checkout → signed webhook → subscription `active`; replay →
-  single effect; owner cannot forge paid state.
-
-## 3. 🔵 Production domain
-- **Blocked:** the **final domain choice** only — TLS on the real domain, canonical/OG/Auth-redirect/installer
-  URLs pointing at it. (The "no temporary hostname baked into the production build" half of DOM-1 is **done** —
-  see below.)
-- **Needs from client:** the chosen domain (e.g. `watchlog.pk`) + DNS control (or delegation).
-- **Built around it:** every URL is **config-driven** (P11/P12) — reporter portal-link, portal
-  `NEXT_PUBLIC_*`, NSIS/Inno publisher URL, WP theme portal-URL all read env / build-define with a neutral
-  `watchlog.example` placeholder. A repo grep for `sslip.io`/`161.97.175.15` now returns **only** an
-  env-overridable demo default in `site-content.sh` + docs — **no shippable code** carries the temp host, so
-  **DOM-1 (no temp URL in prod build) = PASS**. sslip remains solely the **demo** environment. A cutover
-  checklist is ready.
-- **Acceptance when unblocked:** set the domain env/DNS, run the cutover checklist; the grep gate stays at 0
-  stale URLs in shippable code and the live site serves on the real domain with valid TLS.
-
-## 4. 🔵 SendGrid account + domain authentication
-- **Blocked:** live branded-HTML email delivery.
-- **Needs from client:** SendGrid API key + a verified sender / DKIM-authenticated domain.
-- **Built around it:** branded responsive HTML template + plain-text fallback + render tests + runtime
-  config by env-name (P7). Sends `skipped` (logged) until a key exists.
-- **Acceptance when unblocked:** one authorized test email delivered; `report_deliveries.status='sent'`.
-
-## 5. 🔵 Live WhatsApp send authorization
-- **Blocked:** REP-2 live send to a real recipient.
-- **Needs from client:** go-ahead + a designated **test** destination number.
-- **Built around it:** full n8n schedule → report → Evolution → delivery-log pipeline; runs to the test
-  destination only until authorized (P4).
-- **Acceptance when unblocked:** scheduled run delivers to the test number; `report_deliveries.status='sent'`.
-
-## 6. 🔵 Windows code-signing certificate
-- **Blocked:** INS-3 (signed installer; no SmartScreen warning).
-- **Needs from client:** an OV/EV code-signing certificate (or budget approval to buy one).
-- **Built around it:** NSIS build with a `signtool` step gated on cert presence; unsigned build works for
-  testing with documented SmartScreen behavior (P9).
-- **Acceptance when unblocked:** signed `WatchLog-Setup.exe`; signature validates; no SmartScreen block.
-
-## 7. 🔵 Clean Windows 10/11 machines for acceptance
-- **Blocked:** P10 Windows acceptance matrix (reboot/logon/power-loss/crash/uninstall lifecycle).
-- **Needs from client (or VI infra):** clean Win10 + Win11 environments (VMs acceptable).
-- **Built around it:** installer + agent lifecycle logic complete; `WINDOWS_ACCEPTANCE.md` checklist ready
-  to fill with real run evidence (P10).
-
-## 8. 🔵 GitHub Actions minutes (private repo)
-- **Blocked:** the CI workflow running on GitHub's hosted runners. CI is correctly configured and
-  **passed green** while minutes were available (run 4cc0fb7); every run since dies at startup with
-  0 steps — the signature of **exhausted free Actions minutes** on the account (`Alkalid-security`
-  is a **User** account, private repo → 2000 free min/month shared across all its private repos).
-- **Needs from client:** either add an Actions spending limit / minutes to the account, make the repo
-  public (unlimited Actions), or provide a self-hosted runner.
-- **Built around it:** the pipeline is done and verified — every CI step passes **locally**
-  (`tools/secret_scan.py`, `tools/lint_migrations.py`, the 5 offline suites incl. real ONNX, portal
-  build). Merges this session were gated on that local run, not the quota-blocked runner.
-- **Acceptance when unblocked:** a pushed commit turns the CI checks green on GitHub.
-
-## 9. 🔵 Final pricing approval
-- **Blocked:** publishing production pricing on the marketing site + portal plan picker.
-- **Needs from client:** approved final tiers/amounts.
-- **Built around it:** pricing is data-driven; the current `03_Design/PRICING.md` is explicitly marked
-  draft/unvalidated and will not be presented as production until approved.
+Status: 🔵 waiting on client/external access · 🟡 access/tooling limitation in this ChatGPT session · ✅ resolved.
 
 ---
 
-**Not blocked on the client (VI-controlled, in progress):** security foundation, SendGrid HTML template,
-n8n pipeline wiring, agent AI packaging, portal surfaces, billing code+model+sandbox, NSIS source,
-CI, runbooks, demo mode, domain-configurability, WordPress polish.
+## 1. 🔵 Real-hardware field validation
+
+- **Blocked:** stable recorder soak, real camera sync, people/vehicle/dwell measurement accuracy, clip/playback research and camera-placement calibration.
+- **Needs:** live recorder/site access, recorder admin credentials provided through an approved secure channel, representative cameras, and permission to collect labelled test footage where required.
+- **Known historical field issue:** SM-HP Site Agent previously stopped after roughly three minutes and synced zero cameras; this must be re-tested rather than assumed fixed.
+- **Built around it:** recorder drivers, discovery, local analytics engine, simulator tests, Site Health, configuration snapshot requests and field-validation documentation.
+- **Acceptance:** install/enroll → recorder proven → cameras synced → >1h soak → restart/reboot survives → events/analytics reach portal → measured FP/FN/count/dwell results recorded.
+
+## 2. 🟡 WatchLog production Supabase access from this connector
+
+- **Blocked here:** direct execution/re-verification of WatchLog production migrations/auth/schema.
+- **Current connector visibility:** only the unrelated `Al khalid` project (`jssitaduuhjvyznldfoc`) is available. The WatchLog project is not exposed to this ChatGPT Supabase connector.
+- **Do not:** apply WatchLog migrations to the Al khalid project.
+- **Latest direct operator evidence:** WatchLog production was at the `0023` boundary when queried on 2026-09-04; later migrations were absent at that time.
+- **Acceptance when access is available:** backup → prove boundary → apply only pending migrations → security/RLS/role verification → route smoke → advisor review.
+- **Handoff path:** Claude/local Supabase admin can perform this bounded procedure if connector access remains unavailable.
+
+## 3. 🟡 Coolify / deployed-service access
+
+- **Blocked here:** proving exact deployed portal/WordPress/bridge/report/billing revision, environment variables and service health.
+- **Current limitation:** no Coolify connector is available in this session; sslip hostnames were not resolvable from the audit runtime on 2026-09-04.
+- **Acceptance:** record deployed revision/image for each service, verify health endpoints, verify portal build vars/installer URL, and run authenticated route smoke.
+- **Handoff path:** Claude/local server admin if this access remains unavailable.
+
+## 4. 🔵 Final production domain and DNS
+
+- **Blocked:** final customer domain, TLS cutover, canonical/OG/Auth redirect URLs and durable installer publisher/download URLs.
+- **Needs:** approved domain + DNS control/delegation.
+- **Built around it:** production URLs are intended to remain configuration-driven rather than hardcoded to the temporary sslip host.
+- **Acceptance:** DNS/TLS live, Auth redirects correct, canonical/OG correct, installer/portal links correct, no stale temporary production URLs.
+
+## 5. 🔵 Windows code-signing certificate
+
+- **Blocked:** Authenticode-signed inner agent and final `WatchLog-Setup.exe`, reduced SmartScreen friction.
+- **Needs:** appropriate OV/EV code-signing certificate and secure signing credentials/process.
+- **Built around it:** release script supports optional fail-closed signing and signature verification.
+- **Acceptance:** inner agent and final installer show valid Authenticode signature; timestamp verifies.
+
+## 6. 🔵 Clean Windows 10/11 acceptance environments
+
+- **Blocked:** customer lifecycle acceptance for graphical installer/background agent.
+- **Needs:** clean Windows 10 and Windows 11 machines/VMs; real hardware for recorder-specific paths where necessary.
+- **Acceptance:** fresh install, enrollment, discovery, background start, logon/reboot, crash recovery, upgrade, uninstall/reinstall, DPI 100/125/150%, failure/cancel paths.
+
+## 7. 🔵 Live payment-provider contract and credentials
+
+- **Blocked:** real Switch/payment-provider sandbox/live checkout and webhook handshake.
+- **Needs:** exact provider API/signing contract + sandbox/live credentials.
+- **Built around it:** billing model, provider abstraction, idempotent webhook model, entitlement path and mock/sandbox flow.
+- **Acceptance:** real sandbox checkout → verified webhook → authoritative active state → replay no-op → tenant cannot forge paid state.
+
+## 8. 🔵 Interim bank-transfer workflow decision
+
+- **Blocked:** whether WatchLog should ship payment-proof upload/admin verification before the final gateway.
+- **Needs:** client decision on whether this interim commercial path is required.
+- **If approved:** build authenticated private proof upload, amount/reference/status, admin verification, audit trail and backend-only subscription activation.
+- **If not approved:** do not create temporary payment complexity; proceed directly with provider integration.
+
+## 9. 🔵 SendGrid account/domain authentication
+
+- **Blocked:** authorized real branded email send.
+- **Needs:** SendGrid API key and verified sender/domain/DKIM as appropriate.
+- **Built around it:** branded HTML + plain-text fallback and rendering tests.
+- **Acceptance:** approved test recipient receives the message and delivery is recorded as sent.
+
+## 10. 🔵 Live WhatsApp send authorization/provider state
+
+- **Blocked:** real scheduled delivery to an approved number.
+- **Needs:** explicit go-ahead, test destination, and working Evolution/provider credentials/state.
+- **Acceptance:** scheduled run sends once, delivery log records success, no duplicate same-day delivery.
+
+## 11. 🔵 Pricing package naming approval
+
+- **Current verified public/code alignment:** Starter PKR 6,000/month, Growth PKR 12,000/month, Enterprise “Talk to us”.
+- **New ambiguity:** latest client meeting used “Standard / Growth / Enterprise”.
+- **Needs:** decision whether Starter is renamed Standard and whether any packaging/allowance changes accompany it.
+- **Do not:** rename one surface in isolation. Pricing website, billing seed/config, portal and tests must change together.
+
+## 12. 🔵 Production camera allowances if hard-enforced
+
+- **Current website positioning:** up to 8 / 24 / unlimited cameras.
+- **Needs:** client confirmation if these are contractual hard limits and, if so, enforcement behavior.
+- **Acceptance:** one authoritative plan definition used by website, portal, billing and backend entitlement checks.
+
+## 13. 🔵 QSR / Control Room pilot site
+
+- **Blocked:** field acceptance of the first QSR/control-room configuration.
+- **Needs:** pilot site, camera map/purposes, recorder access, operating hours, analytics questions and designated stakeholders.
+- **Acceptance:** saved camera layout, real health/event state, configured people/dwell rules, report output and measured field behavior.
+- **Important:** KFC/McDonald's are target/example use cases unless an actual customer engagement is formally confirmed. Do not claim customer status.
+
+## 14. 🔵 Fire/smoke dataset and safety positioning
+
+- **Blocked:** fire/smoke R&D validation.
+- **Needs:** approved dataset/model strategy, representative CCTV test footage and product/legal decision on safety positioning.
+- **Acceptance:** defined model, held-out test set, measured precision/recall, failure semantics, controlled pilot.
+- **Never:** market WatchLog as a certified fire-safety system without the relevant certification and evidence.
+
+## 15. 🔵 Integration pilot choice and system access
+
+- **Blocked:** first production connector.
+- **Candidate systems:** POS, Shopify, attendance machine, CRM/API.
+- **Needs:** one prioritized signed pilot, API/docs/sandbox credentials, data ownership/reconciliation rules and acceptance criteria.
+- **Do not:** build every connector simultaneously.
+- **Shopify note:** stock updates should start as a reconciliation/approval workflow, not autonomous mutation based only on vision confidence.
+
+## 16. 🔵 Formal partnerships / logo permissions
+
+- **AWS:** do not claim partnership or use partner badges until formal status is confirmed.
+- **Camera/manufacturer companies:** compatibility does not equal partnership.
+- **Customers/case studies:** logos, names and case studies require verified status/permission.
+
+---
+
+## Resolved since the older dependency register
+
+### ✅ Google Drive project-folder access
+
+The shared WatchLog directory is now visible to `muhammad.awais@codup.co`, and the master audit/sprint plan has been moved into it.
+
+### ✅ GitHub Actions availability (current evidence)
+
+The older register said hosted Actions minutes were exhausted. That is no longer the current evidence: `main` CI run `33611100973` completed successfully on 2026-09-02. Do not list Actions minutes as an active blocker unless a new run proves the quota problem has returned.
+
+### ✅ Published pricing exists
+
+The older register described final pricing as unpublished/draft. Current code/content is already aligned to Starter 6,000 / Growth 12,000 / Enterprise contact-only. The open item is now **package naming/approval**, especially Starter vs Standard, not absence of pricing.
+
+---
+
+## Work controlled by the repository team (not a client blocker)
+
+The following should continue without waiting on the client unless they reach one of the external gates above:
+
+- source-of-truth cleanup;
+- release workflow hardening;
+- graphical installer implementation;
+- secure local credential-storage implementation;
+- portal/website changes;
+- Control Room v1 code;
+- reporting hierarchy code;
+- support/admin operations code;
+- integration-framework code;
+- tests/contracts/runbooks;
+- product maturity labels and honest public copy.

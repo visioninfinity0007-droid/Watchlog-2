@@ -2,15 +2,22 @@
 #
 #   powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1
 #   ...\build_windows_release.ps1 -Code WL-XXXX-XXXX -PublisherUrl https://<production-domain>
+#   ...\build_windows_release.ps1 -SupabaseUrl https://<project>.supabase.co -SupabasePublishableKey <public-key>
 #   ...\build_windows_release.ps1 -Lean
 #   ...\build_windows_release.ps1 -SignPfx cert.pfx -SignPassword ****
 #
 # One authoritative path: agent exe -> optional Authenticode signing -> staged
 # public config -> NSIS -> optional installer signing -> FINAL SHA256.
+#
+# Production defaults to the AI-enabled agent. The script deliberately rejects
+# suspiciously small payloads so the CI manifest stub can never be distributed
+# as a customer release.
 
 param(
   [string]$Code = "",
   [string]$PublisherUrl = "",
+  [string]$SupabaseUrl = "",
+  [string]$SupabasePublishableKey = "",
   [switch]$Lean,
   [string]$SignPfx = "",
   [string]$SignPassword = ""
@@ -48,9 +55,20 @@ function Sign-WatchLogArtifact([string]$Path) {
   if ($LASTEXITCODE -ne 0) { throw "signtool failed for $Path" }
   $signature = Get-AuthenticodeSignature -FilePath $Path
   if ($signature.Status -ne "Valid") {
-    throw "signature verification failed for $Path: $($signature.Status) $($signature.StatusMessage)"
+    throw "signature verification failed for ${Path}: $($signature.Status) $($signature.StatusMessage)"
   }
   Write-Host "  Authenticode signature valid." -ForegroundColor Green
+}
+
+function Read-DotEnv([string]$Path) {
+  $values = @{}
+  if (-not (Test-Path $Path)) { return $values }
+  Get-Content $Path | ForEach-Object {
+    if ($_ -match '^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$') {
+      $values[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'")
+    }
+  }
+  return $values
 }
 
 # 1) Build the Site Agent executable. The AI build is the production default.
@@ -61,6 +79,11 @@ Write-Host "Building WatchLog Site Agent..." -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "Site Agent build failed (exit $LASTEXITCODE)" }
 $exe = Join-Path $root "prototype\dist\watchlog-agent.exe"
 if (-not (Test-Path $exe)) { throw "agent exe not built at $exe" }
+$agentBytes = (Get-Item $exe).Length
+$minimumAgentBytes = if ($Lean) { 1MB } else { 5MB }
+if ($agentBytes -lt $minimumAgentBytes) {
+  throw "agent executable is suspiciously small ($agentBytes bytes); refusing to package a stub/incomplete build"
+}
 
 # Sign the inner executable BEFORE it is embedded in the installer. Signing only
 # the outer setup leaves the long-running executable itself unsigned.
@@ -79,13 +102,16 @@ try {
 
   # Public defaults only. Recorder credentials are collected and proven locally
   # during first run and are never baked into a release artifact.
-  $cfg = @{}
-  Get-Content (Join-Path $root ".env") | ForEach-Object {
-    if ($_ -match '^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'") }
-  }
-  $supaUrl = $cfg["SUPABASE_URL"]; $pubKey = $cfg["SUPABASE_PUBLISHABLE_KEY"]
-  if (-not $supaUrl) { throw "no SUPABASE_URL in .env" }
-  if (-not $pubKey) { throw "no SUPABASE_PUBLISHABLE_KEY in .env" }
+  # Resolution order: explicit arguments -> process environment -> local .env.
+  $cfg = Read-DotEnv (Join-Path $root ".env")
+  $supaUrl = $SupabaseUrl
+  if (-not $supaUrl) { $supaUrl = $env:SUPABASE_URL }
+  if (-not $supaUrl) { $supaUrl = $cfg["SUPABASE_URL"] }
+  $pubKey = $SupabasePublishableKey
+  if (-not $pubKey) { $pubKey = $env:SUPABASE_PUBLISHABLE_KEY }
+  if (-not $pubKey) { $pubKey = $cfg["SUPABASE_PUBLISHABLE_KEY"] }
+  if (-not $supaUrl) { throw "no Supabase URL supplied (-SupabaseUrl, SUPABASE_URL, or .env)" }
+  if (-not $pubKey) { throw "no Supabase publishable key supplied (-SupabasePublishableKey, SUPABASE_PUBLISHABLE_KEY, or .env)" }
   @"
 ; WatchLog public installation defaults.
 [watchlog]
@@ -120,6 +146,12 @@ nvr_driver = auto
   }
   if ($rc -ne 0 -or -not (Test-Path $setup)) { throw "makensis failed (exit $rc)" }
 
+  $setupBytes = (Get-Item $setup).Length
+  $minimumSetupBytes = if ($Lean) { 1MB } else { 5MB }
+  if ($setupBytes -lt $minimumSetupBytes) {
+    throw "WatchLog-Setup.exe is suspiciously small ($setupBytes bytes); refusing to publish a stub/incomplete installer"
+  }
+
   # 4) Sign the FINAL installer. The checksum is intentionally generated only
   # after this step because Authenticode changes the file bytes.
   Sign-WatchLogArtifact $setup
@@ -127,7 +159,7 @@ nvr_driver = auto
   # 5) Final checksum of the exact artifact that will be distributed.
   $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
   Set-Content -Path "$setup.sha256" -Value "$hash  WatchLog-Setup.exe" -Encoding ascii
-  $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+  $mb = [math]::Round($setupBytes / 1MB, 1)
   Write-Host ""
   Write-Host "Built $setup ($mb MB)" -ForegroundColor Green
   Write-Host "  FINAL SHA256 $hash" -ForegroundColor Green
