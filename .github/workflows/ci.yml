@@ -35,6 +35,8 @@ jobs:
         run: python tools/secret_scan.py
       - name: Migration lint
         run: python tools/lint_migrations.py
+      - name: Production preflight read-only contract
+        run: python prototype/tests/test_watchlog_production_preflight.py
       - name: Vision false-alarm filter tests
         run: python prototype/tests/test_vision_filter.py
       - name: Analytics Studio local rule-engine tests
