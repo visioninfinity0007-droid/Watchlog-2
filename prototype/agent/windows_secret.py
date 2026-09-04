@@ -101,11 +101,26 @@ def _lock_acl(path: Path) -> None:
 
 
 def write_secret(path: Path, secret: str) -> None:
+    """Protect and atomically publish a credential with a restrictive ACL.
+
+    Lock the temporary file before the rename so there is no interval in which
+    the final path exists with inherited ProgramData permissions. Re-apply the
+    ACL after replacement as a defensive verification of the published file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(protect_text(secret))
-    tmp.replace(path)
-    _lock_acl(path)
+    try:
+        tmp.write_bytes(protect_text(secret))
+        _lock_acl(tmp)
+        tmp.replace(path)
+        _lock_acl(path)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def read_secret(path: Path) -> str:
