@@ -5,9 +5,10 @@ import { supabase } from "../../lib/supabase";
 
 const TABS = [
   ["Overview", "/admin/"],
-  ["Tenants", "/admin/tenants/"],
+  ["Customers", "/admin/tenants/"],
   ["Operations", "/admin/operations/"],
-  ["Billing", "/admin/billing/"],
+  ["Commercial", "/admin/billing/"],
+  ["Support", "/admin/support/"],
   ["Audit", "/admin/audit/"],
   ["Admins", "/admin/admins/"],
 ];
@@ -46,14 +47,14 @@ export function AdminNav({ active, admin }) {
     <a href="/admin/" className="brandlink">
       <Mark size={26} />
       <b>WatchLog</b>
-      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", color: "var(--color-violet-bright)" }}>PLATFORM</span>
+      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", color: "var(--color-violet-bright)" }}>OPERATIONS</span>
     </a>
     <nav className="nav">
       {TABS.filter(([label]) => label !== "Admins" || admin?.role === "platform_owner").map(([label, href]) =>
         <a key={href} href={href} className={"navlink" + (active === label ? " active" : "")}>{label}</a>)}
     </nav>
     <span className="spacer" />
-    {admin?.has_tenant && <a href="/dashboard/" className="navlink hide-sm">Customer portal</a>}
+    {admin?.has_tenant && <a href="/dashboard/" className="navlink hide-sm">My customer account</a>}
     <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{admin?.email}</span>
     <button className="ghost small" onClick={signOut}>Sign out</button>
   </header>;
