@@ -86,24 +86,42 @@ jobs:
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }
           }
 
-      - name: Verify real payload, AI self-test and checksum
+      - name: Verify real payloads, setup UI, AI self-test and checksum
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $agent = Get-Item '.\prototype\dist\watchlog-agent.exe'
+          $setupUi = Get-Item '.\prototype\dist\watchlog-setup-ui.exe'
           $setup = Get-Item '.\dist-installer\WatchLog-Setup.exe'
           $checksumPath = '.\dist-installer\WatchLog-Setup.exe.sha256'
 
           if ($agent.Length -lt 5MB) {
             throw "watchlog-agent.exe is too small ($($agent.Length) bytes); refusing a stub/incomplete release."
           }
-          if ($setup.Length -lt 5MB) {
+          if ($setupUi.Length -lt 5MB) {
+            throw "watchlog-setup-ui.exe is too small ($($setupUi.Length) bytes); refusing a stub/incomplete release."
+          }
+          if ($setup.Length -lt 10MB) {
             throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
           }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
 
+          # Prove the packaged AI runtime/model, not just the Python source tree.
           & $agent.FullName --selftest
           if ($LASTEXITCODE -ne 0) { throw "packaged agent self-test failed with exit $LASTEXITCODE" }
+
+          # Prove the windowed setup executable can start in a deterministic,
+          # non-interactive mode. A blank config means migration is a safe no-op.
+          $cfg = Join-Path $env:RUNNER_TEMP 'watchlog-release-ui-check.ini'
+          @"
+          [watchlog]
+          supabase_url = $env:SUPABASE_URL
+          supabase_publishable_key = $env:SUPABASE_PUBLISHABLE_KEY
+          enrollment_code =
+          nvr_driver = auto
+          "@ | Set-Content $cfg -Encoding UTF8
+          & $setupUi.FullName --migrate-only --config $cfg
+          if ($LASTEXITCODE -ne 0) { throw "packaged setup UI migration mode failed with exit $LASTEXITCODE" }
 
           $expected = ((Get-Content $checksumPath -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
           $actual = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
@@ -112,6 +130,7 @@ jobs:
           }
 
           Write-Host "Verified real agent: $([math]::Round($agent.Length / 1MB, 1)) MB"
+          Write-Host "Verified setup UI: $([math]::Round($setupUi.Length / 1MB, 1)) MB"
           Write-Host "Verified installer: $([math]::Round($setup.Length / 1MB, 1)) MB"
           Write-Host "Verified SHA-256: $actual"
 
