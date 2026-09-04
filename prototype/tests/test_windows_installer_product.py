@@ -22,6 +22,7 @@ def main():
     nsis = text("prototype/installer/nsis/watchlog.nsi")
     build_ui = text("prototype/agent/build_setup_gui.ps1")
     release = text("tools/build_windows_release.ps1")
+    release_workflow = text(".github/workflows/windows-release.yml")
 
     checks = {
         "GUI is real PySide6": "from PySide6" in gui,
@@ -29,6 +30,8 @@ def main():
         "GUI covers recorder discovery": "discover_recorders" in gui and "test_recorder" in gui,
         "GUI performs real finalization": "finalize_install" in gui,
         "DPAPI local-machine protection": "CRYPTPROTECT_LOCAL_MACHINE" in secret,
+        "DPAPI file ACL is restricted": "icacls" in secret and "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret,
+        "protected temp file is locked before publish": secret.index("_lock_acl(tmp)") < secret.index("tmp.replace(path)"),
         "backend never writes plaintext nvr_password key": 'section["nvr_password"]' not in backend,
         "background launcher unwraps DPAPI": "ProtectedData]::Unprotect" in launcher,
         "password exists only in child process environment": "WATCHLOG_NVR_PASSWORD" in launcher,
@@ -37,6 +40,7 @@ def main():
         "NSIS no longer launches agent --setup": 'watchlog-agent.exe\" --setup' not in nsis,
         "release packages setup UI": "watchlog-setup-ui.exe" in release,
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
+        "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,
         "uninstall removes protected credential": "nvr_password.dpapi" in nsis,
     }
 
