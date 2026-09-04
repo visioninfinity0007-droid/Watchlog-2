@@ -47,7 +47,6 @@ def validate_target(project_ref: str, db_host: str, db_user: str) -> None:
             f"{EXPECTED_PROJECT_REF!r}"
         )
 
-    # Direct Supabase database hosts embed the project ref. Pooler hosts do not.
     host = db_host.lower()
     if host.startswith("db.") and host.endswith(".supabase.co"):
         expected_host = f"db.{EXPECTED_PROJECT_REF}.supabase.co"
@@ -56,8 +55,6 @@ def validate_target(project_ref: str, db_host: str, db_user: str) -> None:
                 f"database host does not match WatchLog project: {db_host!r}"
             )
 
-    # Session-pooler users commonly use postgres.<project-ref>. A plain
-    # `postgres` user is also valid for some direct connection paths.
     user = db_user.strip()
     if user.startswith("postgres.") and user != f"postgres.{EXPECTED_PROJECT_REF}":
         raise RuntimeError(
@@ -70,8 +67,7 @@ def classify_boundary(markers: dict[str, Any]) -> str:
     has_0023 = bool(markers.get("entitlement_0023")) and bool(
         markers.get("reporting_0023")
     )
-
-    later_keys = (
+    through_0036_keys = (
         "monitoring_rules_0024",
         "site_type_0024",
         "camera_purpose_0024",
@@ -82,15 +78,35 @@ def classify_boundary(markers: dict[str, Any]) -> str:
         "site_health_0033",
         "billing_owner_policies_0036",
     )
-    later = [bool(markers.get(key)) for key in later_keys]
+    ops_0037_keys = (
+        "commercial_invoices_0037",
+        "support_sessions_0037",
+        "platform_commercial_0037",
+    )
+    lifecycle_0038_keys = (
+        "account_status_0038",
+        "my_account_0038",
+        "account_lifecycle_0038",
+    )
 
-    if has_0023 and all(later):
-        return "0036_candidate_requires_authz_smoke"
-    if has_0023 and not any(later):
+    old = [bool(markers.get(key)) for key in through_0036_keys]
+    ops = [bool(markers.get(key)) for key in ops_0037_keys]
+    lifecycle = [bool(markers.get(key)) for key in lifecycle_0038_keys]
+    any_after_0023 = any(old + ops + lifecycle)
+
+    if has_0023 and all(old):
+        if all(ops) and all(lifecycle):
+            return "0038_candidate_requires_authz_smoke"
+        if all(ops) and not any(lifecycle):
+            return "0037_exact_candidate"
+        if not any(ops) and not any(lifecycle):
+            return "0036_exact_candidate"
+        return "partial_after_0036_stop_and_reconcile"
+    if has_0023 and not any_after_0023:
         return "0023_exact_candidate"
-    if has_0023 and any(later):
+    if has_0023 and any_after_0023:
         return "partial_after_0023_stop_and_reconcile"
-    if any(later):
+    if any_after_0023:
         return "inconsistent_or_unknown_stop_and_reconcile"
     return "before_0023_or_unknown_stop_and_reconcile"
 
@@ -183,7 +199,16 @@ def _collect_report(admin_email: str | None = None) -> dict[str, Any]:
                       and cmd='SELECT'
                       and coalesce(qual, '') like '%wl_my_tenant%'
                       and coalesce(qual, '') like '%wl_my_role%'
-                  ) as billing_owner_policies_0036
+                  ) as billing_owner_policies_0036,
+                  to_regclass('public.commercial_invoices') is not null as commercial_invoices_0037,
+                  to_regclass('public.platform_support_sessions') is not null as support_sessions_0037,
+                  to_regprocedure('public.wl_platform_commercial(uuid)') is not null as platform_commercial_0037,
+                  exists (
+                    select 1 from information_schema.columns
+                    where table_schema='public' and table_name='tenants' and column_name='account_status'
+                  ) as account_status_0038,
+                  to_regprocedure('public.wl_my_account()') is not null as my_account_0038,
+                  to_regprocedure('public.wl_platform_set_account_status(uuid,text,text)') is not null as account_lifecycle_0038
                 """
             ).fetchone()
 
@@ -195,7 +220,6 @@ def _collect_report(admin_email: str | None = None) -> dict[str, Any]:
             }
             for table in ("tenants", "sites", "cameras"):
                 if markers[f"{table}_core"]:
-                    # Table names are fixed constants, never user input.
                     counts[table] = conn.execute(
                         f"select count(*) as n from public.{table}"
                     ).fetchone()["n"]
