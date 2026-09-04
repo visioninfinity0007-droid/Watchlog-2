@@ -63,6 +63,7 @@ jobs:
 
   portal:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: portal
@@ -72,7 +73,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install
-        run: npm ci
+        run: npm ci --no-audit --no-fund
       - name: Production build (static export)
         run: npm run build
         env:
