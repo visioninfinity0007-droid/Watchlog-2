@@ -158,7 +158,8 @@ def check() -> None:
 
     # Installer completion is atomic at the Windows registration layer.
     setup_pos = NSIS.index('ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --config "$INSTDIR\\watchlog.ini"\'')
-    task_pos = NSIS.index('register-service.ps1')
+    task_exec = 'ExecWait \'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\\register-service.ps1"'
+    task_pos = NSIS.index(task_exec)
     arp_pos = NSIS.index('WriteRegStr HKLM "${ARPKEY}" "DisplayName"')
     assert setup_pos < arp_pos
     assert task_pos < arp_pos
