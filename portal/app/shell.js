@@ -14,8 +14,8 @@ const TABS = [
   ["Settings", "/settings/"],
 ];
 
-/** The shared top bar + primary navigation. Used on every signed-in page so
- *  the portal reads as one product, not a set of disconnected screens. */
+/** Shared customer navigation. Internal platform/admin terminology stays out
+ *  of the customer experience unless the signed-in user is also platform staff. */
 export function Nav({ active, email, right }) {
   const [platform,setPlatform]=useState(null);
   useEffect(()=>{let live=true;(async()=>{const {data}=await supabase().rpc("wl_platform_me");if(live&&data?.role)setPlatform(data);})();return()=>{live=false;};},[]);
@@ -26,11 +26,9 @@ export function Nav({ active, email, right }) {
   return (
     <header className="topbar">
       <a href="/dashboard/" className="brandlink"><Mark size={26} /><b>WatchLog</b></a>
-      <nav className="nav">
-        {TABS.map(([label, href]) => <a key={href} href={href} className={"navlink" + (active === label ? " active" : "")}>{label}</a>)}
-      </nav>
+      <nav className="nav">{TABS.map(([label, href]) => <a key={href} href={href} className={"navlink" + (active === label ? " active" : "")}>{label}</a>)}</nav>
       <span className="spacer" />
-      {platform&&<a href="/admin/" className="navlink hide-sm" style={{color:"var(--wl-ice)"}}>Platform</a>}
+      {platform&&<a href="/admin/" className="navlink hide-sm" style={{color:"var(--wl-ice)"}}>WatchLog Admin</a>}
       {email && <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{email}</span>}
       {right}
       <button className="ghost small" onClick={signOut}>Sign out</button>
@@ -39,16 +37,16 @@ export function Nav({ active, email, right }) {
 }
 
 export const SETUP_STEPS = [
-  ["awaiting_agent", "Waiting for the site PC"],
-  ["enrolled", "Agent enrolled"],
-  ["recorder_connected", "Recorder connected"],
-  ["cameras_discovered", "Cameras discovered"],
-  ["ready", "Reporting"],
+  ["awaiting_agent", "Waiting for setup"],
+  ["enrolled", "WatchLog connected"],
+  ["recorder_connected", "Camera system connected"],
+  ["cameras_discovered", "Cameras ready"],
+  ["ready", "Ready"],
 ];
 
 export function setupPill(state, online) {
   const idx = SETUP_STEPS.findIndex(([k]) => k === state);
-  const label = idx >= 0 ? SETUP_STEPS[idx][1] : "Unknown";
+  const label = idx >= 0 ? SETUP_STEPS[idx][1] : "Setup status unavailable";
   if (state === "ready") return [label, online ? "s-ok" : "s-warn"];
   if (state === "awaiting_agent") return [label, "s-unk"];
   return [label, "s-warn"];
