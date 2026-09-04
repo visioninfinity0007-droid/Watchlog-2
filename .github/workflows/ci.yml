@@ -37,6 +37,8 @@ jobs:
         run: python tools/lint_migrations.py
       - name: SaaS operations security contract
         run: python prototype/tests/test_saas_operations_contract.py
+      - name: Customer lifecycle contract
+        run: python prototype/tests/test_customer_lifecycle_contract.py
       - name: Customer portal language contract
         run: python prototype/tests/test_customer_portal_language.py
       - name: Production preflight read-only contract
