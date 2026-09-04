@@ -4,26 +4,34 @@ import { useState } from "react";
 import { supabase, say } from "../../lib/supabase";
 import Mark from "../mark";
 
+function confirmRedirect() {
+  return `${window.location.origin}/auth/confirm/`;
+}
+
 export default function SignUp() {
   const [company, setCompany] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [confirm, setConfirm] = useState(false);
 
   async function onSubmit(e) {
     e.preventDefault();
     setBusy(true);
     setError("");
+    setNotice("");
 
     const sb = supabase();
     const { data, error } = await sb.auth.signUp({
       email: email.trim(),
       password,
-      // Carried through so onboarding can name the tenant without asking
-      // twice, whether the account is confirmed now or by email later.
-      options: { data: { company: company.trim() } },
+      options: {
+        data: { company: company.trim() },
+        emailRedirectTo: confirmRedirect(),
+      },
     });
 
     if (error) {
@@ -32,15 +40,26 @@ export default function SignUp() {
       return;
     }
 
-    // With email confirmation switched on, signUp returns a user but no
-    // session. Say so plainly rather than dropping them on a page that
-    // silently does nothing.
     if (!data.session) {
       setConfirm(true);
       setBusy(false);
       return;
     }
     location.replace("/onboarding/");
+  }
+
+  async function resendConfirmation() {
+    setResending(true);
+    setError("");
+    setNotice("");
+    const { error } = await supabase().auth.resend({
+      type: "signup",
+      email: email.trim(),
+      options: { emailRedirectTo: confirmRedirect() },
+    });
+    if (error) setError(say(error));
+    else setNotice("A new confirmation link has been sent. Use the newest email only.");
+    setResending(false);
   }
 
   if (confirm) {
@@ -50,10 +69,15 @@ export default function SignUp() {
           <div className="brand"><Mark /><span className="brand-name">WatchLog</span></div>
           <h1>Check your email</h1>
           <p className="sub">
-            We sent a confirmation link to <b>{email}</b>. Open it, then sign
-            in and we will get your first site connected.
+            We sent a confirmation link to <b>{email}</b>. Open the newest link,
+            then WatchLog will bring you back to the portal.
           </p>
-          <a href="/login/"><button type="button">Go to sign in</button></a>
+          {error && <div className="err">{error}</div>}
+          {notice && <div className="ok-note">{notice}</div>}
+          <button type="button" onClick={resendConfirmation} disabled={resending}>
+            {resending ? "Sending..." : "Resend confirmation"}
+          </button>
+          <p className="alt"><a href="/login/">Go to sign in</a></p>
         </div>
       </div>
     );
@@ -69,7 +93,7 @@ export default function SignUp() {
 
         <h1>Create your account</h1>
         <p className="sub">
-          Works with the Hikvision and Dahua recorders you already own.
+          Works with compatible CCTV recorders already installed at your site.
         </p>
 
         {error && <div className="err">{error}</div>}
