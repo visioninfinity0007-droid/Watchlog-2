@@ -116,15 +116,15 @@ def _write_ini(path: Path, ini: configparser.ConfigParser) -> None:
 def discover_recorders(progress: Callable[[str], None] | None = None) -> list[dict]:
     progress = progress or (lambda _message: None)
     results: dict[str, dict] = {}
-    progress("Asking the local network for ONVIF devices…")
+    progress("Looking for compatible CCTV devices…")
     try:
         for item in wsdiscovery.discover(log=lambda _m: None):
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
-            results[item.ip] = {"ip": item.ip, "label": label or "ONVIF recorder", "source": "ONVIF"}
+            results[item.ip] = {"ip": item.ip, "label": label or "Compatible recorder", "source": "ONVIF"}
     except Exception:
         pass
 
-    progress("Scanning the local network for CCTV recorder services…")
+    progress("Checking the local network for CCTV recorders…")
     try:
         for ip, ports in discover.sweep(None, log=lambda _m: None):
             ports = sorted(ports)
@@ -171,7 +171,7 @@ def test_recorder(address: str, username: str, password: str,
         raise ValueError("Enter the recorder username and password.")
     last_errors = []
     for url in _candidate_urls(address):
-        progress(f"Testing recorder at {url}…")
+        progress("Checking the recorder connection…")
         driver = None
         try:
             driver, info = autodetect(url, username.strip(), password, timeout=7,
@@ -203,10 +203,9 @@ def test_recorder(address: str, username: str, password: str,
                     driver.close()
                 except Exception:
                     pass
-    detail = last_errors[-1] if last_errors else "no compatible recorder service answered"
     raise ValueError(
         "WatchLog could not connect to that recorder. Check that this PC is on the same network, "
-        f"the recorder web service is enabled, and the address is correct. ({detail})")
+        "the recorder web service is enabled, and the address is correct.")
 
 
 def suggest_purpose(camera_name: str, site_type: str) -> str:
@@ -302,17 +301,17 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         }
         core.save_state(state_path, state)
 
-    progress("Synchronizing cameras…")
+    progress("Adding cameras to this WatchLog site…")
     try:
         mapping = cloud.call(
             "wl_sync_cameras", p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
             p_cameras=recorder["channels"])
     except Exception as exc:
-        raise ValueError("The site linked to WatchLog, but camera synchronization failed. Try again.") from exc
+        raise ValueError("The site linked to WatchLog, but its cameras could not be added. Try again.") from exc
 
     capabilities = recorder.get("capabilities")
     if capabilities and capabilities.get("channels"):
-        progress("Synchronizing recorder capabilities…")
+        progress("Confirming camera capabilities…")
         try:
             cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
                        p_agent_key=state["agent_key"], p_capabilities=capabilities)
@@ -335,7 +334,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     try:
         core.heartbeat(cloud, state, device)
     except Exception as exc:
-        raise ValueError("WatchLog linked the site but could not confirm the final heartbeat. Try again.") from exc
+        raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
     _clear_consumed_code(config_path)
     return {

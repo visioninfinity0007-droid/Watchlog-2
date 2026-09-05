@@ -143,7 +143,7 @@ class SetupWindow(QMainWindow):
         sl = QVBoxLayout(side)
         sl.setContentsMargins(26, 28, 20, 24)
         sl.addWidget(label("W  WatchLog", "brand"))
-        sl.addWidget(label("SITE AGENT SETUP", "eyebrow"))
+        sl.addWidget(label("SITE CONNECTION SETUP", "eyebrow"))
         sl.addSpacing(24)
         self.step_labels = []
         for i, name in enumerate(self.STEPS):
@@ -266,7 +266,7 @@ class SetupWindow(QMainWindow):
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
         cl.addWidget(self.password_edit)
-        cl.addWidget(label("Protected with Windows DPAPI on this PC after setup succeeds.", "muted"))
+        cl.addWidget(label("Your recorder password is protected securely on this PC after setup succeeds.", "muted"))
         l.addWidget(c)
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
@@ -318,11 +318,11 @@ class SetupWindow(QMainWindow):
 
         # Success
         page, l = self._page("Ready", "WatchLog is ready",
-            "This Site Agent is connected and will run securely in the background when setup closes.")
+            "This WatchLog connection is ready and will run securely in the background when setup closes.")
         c, cl = card_layout()
         self.success_summary = label("")
         cl.addWidget(self.success_summary)
-        cl.addWidget(label("You can now return to the WatchLog portal. Site Health and Analytics will update as the background agent checks in.", "muted"))
+        cl.addWidget(label("You can now return to the WatchLog portal. WatchLog will keep Site Health and Analytics up to date automatically.", "muted"))
         l.addWidget(c)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -394,7 +394,8 @@ class SetupWindow(QMainWindow):
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, row["ip"])
             self.recorder_list.addItem(item)
-        self.status.setText(f"Found {len(rows)} recorder candidate(s).")
+        recorder_word = "recorder" if len(rows) == 1 else "recorders"
+        self.status.setText(f"Found {len(rows)} possible {recorder_word}.")
 
     def recorder_selected(self):
         items = self.recorder_list.selectedItems()
@@ -423,9 +424,8 @@ class SetupWindow(QMainWindow):
 
     def connection_ok(self, result):
         self.recorder_result = result
-        note = "field-validated driver" if result["verified_against_hardware"] else "protocol connected; model still needs field acceptance"
         self.recorder_summary.setText(
-            f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  {note}")
+            f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
         site_default = self.public.get("site_type", "custom")
         idx = self.site_type.findData(site_default)
         self.site_type.setCurrentIndex(idx if idx >= 0 else self.site_type.findData("custom"))
@@ -487,7 +487,7 @@ class SetupWindow(QMainWindow):
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
         self.success_summary.setText(
-            f"✓ Recorder verified\n✓ WatchLog site linked\n✓ {result['camera_count']} camera(s) synchronized\n"
+            f"✓ Recorder verified\n✓ WatchLog site linked\n✓ {result['camera_count']} camera(s) connected\n"
             f"✓ Recorder credential protected on this PC\n\n{result['vendor']} {result['model']}")
         self.go(6)
 
