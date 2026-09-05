@@ -45,5 +45,8 @@ begin
 end
 $$;
 
+comment on function public.wl_agent_fail_clip(uuid,text,uuid,text,boolean)
+  is 'WatchLog 0041: validate agent claim before deleting incident clip chunks';
+
 revoke all on function public.wl_agent_fail_clip(uuid,text,uuid,text,boolean) from public;
 grant execute on function public.wl_agent_fail_clip(uuid,text,uuid,text,boolean) to anon,authenticated;
