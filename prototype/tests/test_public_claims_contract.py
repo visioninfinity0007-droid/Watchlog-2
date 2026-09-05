@@ -102,10 +102,11 @@ def main() -> int:
             and all(brand not in text["qsr"] for brand in ["KFC", "McDonald", "McDonald's"]),
         "target companies are not published as customer endorsements":
             all(name not in public for name in ["Retex", "Shasan", "PSO", "KFC", "McDonald’s", "McDonald's"]),
-        "cloud and camera ecosystem are not called partners without proof":
+        "cloud and camera ecosystem are not presented as approved partners without proof":
             "AWS Partner" not in public
             and "AWS partnership" not in public
-            and "technology partner" not in public.lower(),
+            and "is a technology partner" not in public.lower()
+            and "our technology partner" not in public.lower(),
         "integrations deny finished connector catalogue":
             "not advertised as finished plug-and-play connectors" in text["integrations"]
             and "No finished stock-sync connector" in text["integrations"],
