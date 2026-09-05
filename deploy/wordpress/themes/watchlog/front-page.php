@@ -72,8 +72,8 @@ $signup = esc_url(watchlog_signup_url());
       <div class="card"><span class="eyebrow">Available</span><h3>Analytics Studio</h3><p>Configure lines, zones, schedules and thresholds around the operational question each camera view needs to answer.</p><a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See analytics <?php echo watchlog_icon('arrow-right',16); ?></a></div>
       <div class="card"><span class="eyebrow">Available</span><h3>Site Health</h3><p>See whether the site, recorder and cameras are still reporting so blind spots are visible operationally.</p><a class="arrow-link" href="<?php echo watchlog_url('site-health'); ?>">See Site Health <?php echo watchlog_icon('arrow-right',16); ?></a></div>
       <div class="card"><span class="eyebrow">Available</span><h3>Scheduled reporting</h3><p>Send configured summaries by WhatsApp, email or both, with delivery history available in the portal.</p><a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',16); ?></a></div>
-      <div class="card"><span class="eyebrow">Available</span><h3>Multi-site SaaS</h3><p>Bring multiple locations into one customer account while keeping site context and customer access separated.</p></div>
-      <div class="card"><span class="eyebrow">Available</span><h3>Team access</h3><p>Give customer users access through the portal while preserving platform support and audit boundaries.</p></div>
+      <div class="card"><span class="eyebrow">Available</span><h3>Multi-site SaaS</h3><p>Bring multiple locations into one customer account while keeping site context and customer access separated.</p><a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See platform <?php echo watchlog_icon('arrow-right',16); ?></a></div>
+      <div class="card"><span class="eyebrow">Available</span><h3>Team access</h3><p>Give customer users access through the portal while preserving platform support and audit boundaries.</p><a class="arrow-link" href="<?php echo watchlog_url('security'); ?>">See security <?php echo watchlog_icon('arrow-right',16); ?></a></div>
     </div>
   </div>
 </section>

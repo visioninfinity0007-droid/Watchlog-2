@@ -327,3 +327,6 @@ section{padding-block:var(--sp-md)}
   .btn:hover{transform:none}
   .arrow-link:hover svg{transform:none}
 }
+
+/* Keep the price unit on its own line so the amount and unit never glue at narrow widths. */
+.price small{display:block;margin-top:.15rem}
