@@ -1,56 +1,57 @@
 <?php
-/* Privacy: what we hold, why, how long. Precise claims only. */
+/* Privacy: current data boundary, account data and merchant-facing processing. */
 if (!defined('ABSPATH')) { exit; }
 get_header();
 ?>
 <section class="page-hero dark field glow-field grid-bg">
-  <div class="wrap" style="max-width:50rem">
+  <div class="wrap" style="max-width:54rem">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Privacy</span></nav>
     <span class="eyebrow">Privacy</span>
-    <h1>What we hold, why, and for how long.</h1>
-    <p class="lead measure">WatchLog is built so the sensitive material never has to move. Here is exactly
-      what stays at your site and what reaches us.</p>
+    <h1>What stays at the site, what reaches WatchLog and why.</h1>
+    <p class="lead measure">WatchLog is designed around local video handling. Recorded video stays on the recorder while selected product data reaches the SaaS platform.</p>
   </div>
 </section>
 
 <section class="surface">
-  <div class="wrap">
-    <div class="prose">
-      <h2>What stays at your site</h2>
-      <ul>
-        <li><strong>Your recorded video.</strong> It stays on your recorder. We never receive it and cannot browse it.</li>
-        <li><strong>Your recorder's username and password.</strong> Held in a file on your site PC; never sent to WatchLog.</li>
-        <li><strong>Frames that didn't pass the on-site filter.</strong> Discarded on your machine and never uploaded.</li>
-      </ul>
+  <div class="wrap"><div class="prose">
+    <h2>What stays at your site</h2>
+    <ul>
+      <li><strong>Recorded video.</strong> The current WatchLog architecture does not continuously upload recorded video to the cloud and does not provide remote archive browsing.</li>
+      <li><strong>Recorder credentials.</strong> Recorder credentials remain on the site PC. On supported Windows installs, the recorder password is protected using machine-scoped Windows DPAPI rather than being stored as plaintext in the application configuration.</li>
+      <li><strong>Local processing state.</strong> Temporary frames and tracking state used for on-site analysis are not treated as a cloud video archive.</li>
+    </ul>
 
-      <h2>What we receive</h2>
-      <ul>
-        <li>Event records: time, camera, and event type.</li>
-        <li>One still image per event that passed the on-site filter.</li>
-        <li>Health signals: when each site and camera was last heard from.</li>
-        <li>Your account details and the addresses reports are sent to.</li>
-      </ul>
+    <h2>What WatchLog may receive</h2>
+    <ul>
+      <li>Event records such as time, camera, event type and operational metadata.</li>
+      <li>Selected event stills that are approved by the product flow.</li>
+      <li>Configuration stills used when setting up lines, zones or camera-purpose rules.</li>
+      <li>Configured Analytics Studio measurements and aggregates.</li>
+      <li>Site and camera health signals, including when a site or camera last reported.</li>
+      <li>Account, team, report-recipient and support information needed to operate the service.</li>
+      <li>Billing profile, invoice, contract and payment-record information needed to administer commercial accounts.</li>
+    </ul>
 
-      <h2>What we do not do</h2>
-      <p>We do not have live access to your cameras, cannot pan or zoom them, and cannot browse your
-        recorded footage. WatchLog does not perform facial recognition.</p>
+    <h2>What WatchLog does not do</h2>
+    <p>WatchLog does not perform facial recognition. The current product does not provide live camera browsing, pan or zoom control, or remote recorded-video archive access.</p>
 
-      <h2>How long stills are kept</h2>
-      <p>By your plan: 7, 30 or 90 days. After that they are deleted. Event records without images are
-        kept for as long as your account is open.</p>
+    <h2>People in event or configuration stills</h2>
+    <p>Selected stills may contain identifiable people depending on the camera view. Customers are responsible for having the right to operate their cameras and use the service in their environment. WatchLog processes approved product data to provide the contracted service.</p>
 
-      <h2>Who can see it</h2>
-      <p>Only people you have invited to your account. Data is separated per customer at the database
-        level, and that separation is verified by an automated test before every release. Traffic to
-        WatchLog is over HTTPS.</p>
+    <h2>Retention</h2>
+    <p>Incident-still retention is plan-dependent in the current product. Starter, Growth and quoted Enterprise tiers can use different retention periods. Account, commercial and audit records may need different retention because they support billing, support, security and legal obligations.</p>
 
-      <h2>People in the images</h2>
-      <p>Stills may contain identifiable people. You are the controller of that material; we process it
-        on your behalf to produce your reports. If you need images removed, ask and we will delete them.</p>
+    <h2>Customer access and tenant separation</h2>
+    <p>Customer access is controlled through authenticated accounts and tenant-scoped authorization. Internal support access is designed to preserve platform-admin identity and audit context rather than silently sharing or replacing a customer login.</p>
 
-      <h2>Your data if you leave</h2>
-      <p>Export your event history before closing the account. After closure it is deleted within thirty days.</p>
-    </div>
-  </div>
+    <h2>Payment information</h2>
+    <p>WatchLog may keep billing profiles, invoices, contract references and payment records. If an external payment gateway is enabled, its own payment processing and privacy terms may also apply. The website should not claim a payment gateway is active until one is actually enabled.</p>
+
+    <h2>Integrations and custom solutions</h2>
+    <p>POS, Shopify, attendance, CRM and other integrations are customer-specific work unless and until a connector is productized. The data shared with an external system depends on the approved integration scope and permissions.</p>
+
+    <h2>Questions or data requests</h2>
+    <p>Use the <a href="<?php echo watchlog_url('contact'); ?>">Contact</a> page for privacy, account or data questions. Any deletion or export request is subject to account ownership, security checks and records that must be retained for legitimate commercial or legal reasons.</p>
+  </div></div>
 </section>
 <?php get_footer(); ?>
