@@ -2,10 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
-import { Nav } from "../shell";
+import { Nav, requireTenant } from "../shell";
 import ui from "../portal.module.css";
 
 const REFRESH_MS = 10000;
+const GOAL_LABEL = {
+  visitor_flow: "Visitor Flow",
+  vehicle_flow: "Vehicle Flow",
+  boundary_monitoring: "Boundary Monitoring",
+  zone_activity: "Zone Activity",
+  dwell: "Dwell / Time in Zone",
+  checkout_activity: "Checkout Activity",
+  after_hours: "After-Hours Activity",
+};
 
 function liveness(lastSeen) {
   if (!lastSeen) return ["s-unk", "not connected"];
@@ -41,34 +50,59 @@ function matchSite(item, selectedSite) {
   return site === selectedSite;
 }
 
+function number(value) {
+  return Number(value || 0).toLocaleString();
+}
+
 export default function ControlRoom() {
   const [data, setData] = useState(null);
+  const [studio, setStudio] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
   const [error, setError] = useState("");
+  const [analyticsError, setAnalyticsError] = useState("");
   const [email, setEmail] = useState("");
   const [stamp, setStamp] = useState("");
   const [selectedSite, setSelectedSite] = useState("all");
+  const [shots, setShots] = useState({});
 
   const load = useCallback(async () => {
+    const guard = await requireTenant();
+    if (!guard) return;
+    setEmail(guard.session.user.email || "");
     const sb = supabase();
-    const { data: auth } = await sb.auth.getSession();
-    if (!auth?.session) {
-      location.replace("/login/");
-      return;
-    }
-    setEmail(auth.session.user.email || "");
-    const { data: result, error: rpcError } = await sb.rpc("wl_portal_overview", { p_days: 1 });
-    if (rpcError) {
-      setError(say(rpcError));
+    const [{ data: result, error: rpcError }, { data: studioResult, error: studioRpcError }] = await Promise.all([
+      sb.rpc("wl_portal_overview", { p_days: 1 }),
+      sb.rpc("wl_analytics_studio"),
+    ]);
+    if (rpcError || studioRpcError) {
+      setError(say(rpcError || studioRpcError));
       return;
     }
     if (!result?.tenant) {
       location.replace("/onboarding/");
       return;
     }
+
+    const sites = studioResult?.sites || [];
+    const selected = selectedSite === "all" ? null : sites.find((site) => site.name === selectedSite);
+    let analyticsResult = { summary: {}, by_rule: [], daily: [] };
+    let analyticsRpcError = null;
+    if (selectedSite === "all" || selected?.id) {
+      const response = await sb.rpc("wl_analytics_overview", {
+        p_days: 1,
+        p_site_id: selected?.id || null,
+      });
+      analyticsResult = response.data || analyticsResult;
+      analyticsRpcError = response.error;
+    }
+
     setData(result);
+    setStudio(studioResult || { sites: [] });
+    setAnalytics(analyticsResult);
     setError("");
+    setAnalyticsError(analyticsRpcError ? say(analyticsRpcError) : "");
     setStamp(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-  }, []);
+  }, [selectedSite]);
 
   useEffect(() => {
     load();
@@ -101,15 +135,9 @@ export default function ControlRoom() {
       : recent.filter((event) => eventSite(event) === selectedSite);
 
     const onlineConnections = filteredAgents.filter((agent) => liveness(agent.last_seen_at)[0] === "s-ok").length;
-    const sitesNeedingAttention = new Set([
-      ...filteredOffline.map((item) => item.site).filter(Boolean),
-      ...filteredSilent.map((item) => item.site).filter(Boolean),
-      ...filteredFaults.map((item) => item.site).filter(Boolean),
-    ]).size;
-
     const queue = [
       ...filteredOffline.map((item) => ({
-        key: `offline-${item.agent_id || item.site || Math.random()}`,
+        key: `offline-${item.agent_id || item.site || "connection"}`,
         severity: "critical",
         title: `${item.site || "Site"} connection offline`,
         detail: item.hostname ? `${item.hostname} has stopped reporting.` : "The WatchLog connection has stopped reporting.",
@@ -117,7 +145,7 @@ export default function ControlRoom() {
         href: "/site-health/",
       })),
       ...filteredSilent.map((item) => ({
-        key: `silent-${item.camera_id || item.camera || Math.random()}`,
+        key: `silent-${item.camera_id || item.camera || item.site || "camera"}`,
         severity: "attention",
         title: `${item.camera || "Camera"} is quiet${item.site ? ` at ${item.site}` : ""}`,
         detail: "No recent camera activity has been observed for this configured source.",
@@ -125,7 +153,7 @@ export default function ControlRoom() {
         href: "/site-health/",
       })),
       ...filteredFaults.map((item) => ({
-        key: `fault-${item.event_id || item.camera || Math.random()}`,
+        key: `fault-${item.event_id || item.camera || item.site || "fault"}`,
         severity: "attention",
         title: `${item.camera || "Camera system"} fault${item.site ? ` at ${item.site}` : ""}`,
         detail: humanType(item.event_type || item.type || "camera system fault"),
@@ -134,7 +162,8 @@ export default function ControlRoom() {
       })),
     ].slice(0, 12);
 
-    const siteRows = sites.map((site) => {
+    const rowSites = selectedSite === "all" ? sites : sites.filter((site) => site === selectedSite);
+    const siteRows = rowSites.map((site) => {
       const list = agents.filter((agent) => agent.site === site);
       const online = list.filter((agent) => liveness(agent.last_seen_at)[0] === "s-ok").length;
       const silent = silentCameras.filter((camera) => camera.site === site).length;
@@ -150,17 +179,42 @@ export default function ControlRoom() {
       queue,
       siteRows,
       onlineConnections,
-      sitesNeedingAttention,
       silentCount: filteredSilent.length,
-      faultCount: filteredFaults.length,
     };
   }, [data, selectedSite]);
+
+  const analyticsModel = useMemo(() => {
+    const sites = studio?.sites || [];
+    const scopedSites = selectedSite === "all" ? sites : sites.filter((site) => site.name === selectedSite);
+    const configuredRules = scopedSites.reduce((total, site) => total + (site.cameras || []).reduce((cameraTotal, camera) => cameraTotal + (camera.rules || []).filter((rule) => rule.enabled).length, 0), 0);
+    return {
+      configuredRules,
+      summary: analytics?.summary || {},
+      active: analytics?.by_rule || [],
+    };
+  }, [analytics, selectedSite, studio]);
+
+  useEffect(() => {
+    const targets = model.recent
+      .filter((event) => event.has_snapshot && event.event_id && shots[event.event_id] === undefined)
+      .slice(0, 6);
+    if (!targets.length) return;
+    let live = true;
+    targets.forEach(async (event) => {
+      const { data: shot } = await supabase().rpc("wl_portal_snapshot", { p_event_id: event.event_id });
+      if (!live) return;
+      const value = shot?.image_b64 ? `data:${shot.content_type || "image/jpeg"};base64,${shot.image_b64}` : false;
+      setShots((current) => ({ ...current, [event.event_id]: value }));
+    });
+    return () => { live = false; };
+  }, [model.recent, shots]);
 
   if (!data && !error) return <div className="center"><p className="muted">Loading Control Room...</p></div>;
 
   const totalCameras = data?.totals?.cameras || 0;
   const eventCount = selectedSite === "all" ? (data?.totals?.events || 0) : model.recent.length;
   const currentSites = selectedSite === "all" ? (data?.totals?.sites || model.sites.length) : 1;
+  const qsr = analyticsModel.summary;
 
   return <div className="shell">
     <Nav
@@ -188,6 +242,7 @@ export default function ControlRoom() {
       </header>
 
       {error && <div className="err">{error}</div>}
+      {analyticsError && <div className="banner"><b>Analytics could not refresh.</b><div className="muted" style={{ fontSize: "var(--font-size-sm)", marginTop: 4 }}>{analyticsError}</div></div>}
 
       <div className={ui.callout}>
         <span className={ui.statusDot} />
@@ -203,6 +258,23 @@ export default function ControlRoom() {
         <div className={ui.metric}><div className={ui.metricValue}>{selectedSite === "all" ? totalCameras : model.silentCount ? `${model.silentCount} quiet` : "Clear"}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Cameras" : "Camera attention"}</div></div>
         <div className={ui.metric}><div className={ui.metricValue}>{eventCount}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Events in 24 hours" : "Recent site events"}</div></div>
       </section>
+
+      <div className={ui.sectionHead}><div><h2>QSR activity</h2><p>Configured analytics only, measured over the last 24 hours. Checkout-zone values describe people presence, not sales.</p></div><a className={ui.secondaryLink} href="/analytics/">Open Analytics</a></div>
+      {analyticsModel.configuredRules === 0 ? <div className={ui.emptyCard}>No analytics setup is configured in this view yet. Add entrance, queue, checkout-zone or after-hours rules in Analytics Setup before using these numbers operationally.</div> : <>
+        <section className={ui.metricGrid} aria-label="QSR analytics summary">
+          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.visitor_in)}</div><div className={ui.metricLabel}>Visitor entries</div></div>
+          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.checkout_peak)}</div><div className={ui.metricLabel}>Checkout-zone peak</div></div>
+          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.zone_entries)}</div><div className={ui.metricLabel}>Zone entries</div></div>
+          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.after_hours)}</div><div className={ui.metricLabel}>After-hours signals</div></div>
+        </section>
+        <div className={ui.sectionHead}><div><h2>Most active analytics</h2><p>Which configured branch measurements produced the most activity in this view.</p></div></div>
+        <section className={ui.card}>
+          {analyticsModel.active.length === 0 ? <div className={ui.emptyCard}>Analytics is configured, but no measurement activity has been received in the last 24 hours.</div> : <div className={ui.splitList}>{analyticsModel.active.slice(0, 6).map((item) => <div className={ui.listRow} key={item.rule_id}>
+            <span className="pill s-ok">{number(item.count)}</span>
+            <div><strong>{item.name || GOAL_LABEL[item.analytic_key] || humanType(item.rule_type)}</strong><small>{[item.site, item.camera, GOAL_LABEL[item.analytic_key]].filter(Boolean).join(" · ")}</small></div>
+          </div>)}</div>}
+        </section>
+      </>}
 
       <div className={ui.sectionHead}><div><h2>Operational queue</h2><p>Connection and camera-system issues that should be checked first.</p></div><a className={ui.secondaryLink} href="/site-health/">Open Site Health</a></div>
       <section className={ui.twoCol}>
@@ -240,12 +312,15 @@ export default function ControlRoom() {
         </div>
       </section>
 
-      <div className={ui.sectionHead}><div><h2>Recent activity</h2><p>Latest tenant events in the current site view.</p></div><a className={ui.secondaryLink} href="/incidents/">View all incidents</a></div>
+      <div className={ui.sectionHead}><div><h2>Recent activity</h2><p>Latest tenant events in the current site view, with approved incident stills where available.</p></div><a className={ui.secondaryLink} href="/incidents/">View all incidents</a></div>
       <section className={ui.card}>
-        {model.recent.length === 0 ? <div className={ui.emptyCard}>No recent events are available for this site filter yet.</div> : <div className={ui.splitList}>{model.recent.slice(0, 12).map((event, index) => <a className={ui.listRow} href="/incidents/" key={event.event_id || `${event.device_ts}-${index}`} style={{ color: "inherit", textDecoration: "none" }}>
-          <span className="pill s-ok">Event</span>
-          <div><strong>{humanType(event.event_type)}</strong><small>{[eventSite(event), event.camera].filter(Boolean).join(" · ") || "Camera event"}{event.device_ts ? ` · ${ago(event.device_ts)}` : ""}</small></div>
-        </a>)}</div>}
+        {model.recent.length === 0 ? <div className={ui.emptyCard}>No recent events are available for this site filter yet.</div> : <div className={ui.splitList}>{model.recent.slice(0, 12).map((event, index) => {
+          const shot = event.event_id ? shots[event.event_id] : undefined;
+          return <a className={ui.listRow} href="/incidents/" key={event.event_id || `${event.device_ts}-${index}`} style={{ color: "inherit", textDecoration: "none" }}>
+            {event.has_snapshot ? shot ? <img src={shot} alt={`still from ${event.camera || "camera"}`} style={{ width: 82, height: 52, objectFit: "cover", borderRadius: 8, border: "1px solid var(--color-line-dark)", flex: "none" }} /> : <span style={{ width: 82, height: 52, borderRadius: 8, border: "1px solid var(--color-line-dark)", display: "grid", placeItems: "center", flex: "none" }} className="muted">{shot === false ? "no image" : "loading"}</span> : <span className="pill s-ok">Event</span>}
+            <div><strong>{humanType(event.event_type)}</strong><small>{[eventSite(event), event.camera].filter(Boolean).join(" · ") || "Camera event"}{event.device_ts ? ` · ${ago(event.device_ts)}` : ""}</small></div>
+          </a>;
+        })}</div>}
       </section>
     </main>
   </div>;
