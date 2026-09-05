@@ -13,7 +13,8 @@ for text in FORBIDDEN_SAMPLE_METRICS:
     assert text not in PAGE, f"customer Reports page still exposes hard-coded sample metric: {text!r}"
 
 assert "WatchLog daily report preview" in PAGE
-assert "Layout preview — not live tenant metrics" in PAGE
-assert "This card intentionally shows no sample counts." in PAGE
+assert "Layout preview — not your live figures" in PAGE
+assert "This preview intentionally shows no sample counts." in PAGE
+assert "Your actual figures appear in sent reports and delivery history." in PAGE
 
 print("OK: reports preview cannot present sample metrics as tenant data")

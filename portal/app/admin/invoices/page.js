@@ -1,0 +1,34 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Mark from "../../mark";
+import { supabase, say } from "../../../lib/supabase";
+import { AdminNav, canOperate, requirePlatformAdmin } from "../admin-shell";
+import styles from "../admin.module.css";
+
+const money=(n,c="PKR")=>n==null?"-":`${c} ${(Number(n)/100).toLocaleString()}`;
+const dateOnly=(v)=>v?new Date(`${v}T00:00:00`).toLocaleDateString():"-";
+
+export default function InvoiceWorkspace(){
+  const[admin,setAdmin]=useState(null),[data,setData]=useState(null),[error,setError]=useState(""),[reason,setReason]=useState("Invoice status updated"),[busy,setBusy]=useState(false);
+  const id=typeof window!=="undefined"?new URLSearchParams(location.search).get("invoice"):null;
+  async function load(invoiceId=id){if(!invoiceId)return;const{data,error}=await supabase().rpc("wl_platform_invoice",{p_invoice_id:Number(invoiceId)});if(error){setError(say(error));return;}setData(data);setError("");}
+  useEffect(()=>{(async()=>{const guard=await requirePlatformAdmin();if(!guard)return;setAdmin(guard.admin);await load();})();},[]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function setStatus(status){if(!id)return;setBusy(true);const{error}=await supabase().rpc("wl_platform_set_invoice_status",{p_invoice_id:Number(id),p_status:status,p_reason:reason.trim()});setBusy(false);if(error){setError(say(error));return;}await load();}
+  const invoice=data?.invoice||{},tenant=data?.tenant||{},profile=data?.billing_profile||{},items=data?.items||[],payments=data?.payments||[];
+  return <div className="shell"><div className="no-print"><AdminNav active="Commercial" admin={admin}/></div><main className="main">
+    {error&&<div className="err no-print">{error}</div>}
+    {!data?<div className={styles.card}>Loading invoice...</div>:<>
+      <div className="no-print" style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"center",marginBottom:18}}><div><a className={styles.link} href={`/admin/tenants/?tenant=${tenant.id}`}>← Back to {tenant.name}</a></div><div className={styles.actions}><input aria-label="Audit reason" value={reason} onChange={e=>setReason(e.target.value)} style={{width:260}}/><button className="ghost small" onClick={()=>window.print()}>Print / Save PDF</button>{canOperate(admin?.role)&&invoice.status!=="sent"&&invoice.status!=="paid"&&<button className="small" disabled={busy||reason.trim().length<4} onClick={()=>setStatus("sent")}>Mark sent</button>}{canOperate(admin?.role)&&invoice.status!=="paid"&&invoice.status!=="void"&&<button className="small" disabled={busy||reason.trim().length<4} onClick={()=>setStatus("paid")}>Mark paid</button>}{canOperate(admin?.role)&&invoice.status!=="void"&&<button className="btn-danger" disabled={busy||reason.trim().length<4} onClick={()=>setStatus("void")}>Void</button>}</div></div>
+      <article className={styles.card} style={{maxWidth:900,margin:"0 auto",background:"#fff",color:"#162033",padding:42}}>
+        <header style={{display:"flex",justifyContent:"space-between",gap:32,alignItems:"flex-start",borderBottom:"1px solid #dfe5ee",paddingBottom:24,marginBottom:28}}><div style={{display:"flex",gap:12,alignItems:"center"}}><Mark size={34}/><div><strong style={{fontSize:24}}>WatchLog</strong><div style={{fontSize:12,color:"#657083"}}>Video Analytics & CCTV Intelligence</div></div></div><div style={{textAlign:"right"}}><div style={{fontSize:13,color:"#657083",textTransform:"uppercase",letterSpacing:".08em"}}>Invoice</div><div style={{fontSize:24,fontWeight:800}}>{invoice.invoice_number}</div><div style={{marginTop:6,textTransform:"capitalize"}}>{invoice.status}</div></div></header>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:32,marginBottom:30}}><section><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:".08em",color:"#657083",marginBottom:8}}>Bill to</div><strong>{profile.legal_name||tenant.name}</strong>{profile.billing_email&&<div>{profile.billing_email}</div>}{profile.billing_address&&<div style={{whiteSpace:"pre-line",marginTop:4}}>{profile.billing_address}</div>}{profile.tax_id&&<div style={{marginTop:4}}>Tax / Registration: {profile.tax_id}</div>}</section><section style={{textAlign:"right"}}><div><b>Issue date:</b> {dateOnly(invoice.issue_date)}</div><div><b>Due date:</b> {dateOnly(invoice.due_date)}</div><div><b>Currency:</b> {invoice.currency}</div></section></div>
+        <table style={{width:"100%",borderCollapse:"collapse",marginBottom:26}}><thead><tr style={{borderBottom:"1px solid #bcc6d3"}}><th style={{textAlign:"left",padding:"10px 6px"}}>Description</th><th style={{textAlign:"right",padding:"10px 6px"}}>Qty</th><th style={{textAlign:"right",padding:"10px 6px"}}>Unit</th><th style={{textAlign:"right",padding:"10px 6px"}}>Amount</th></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderBottom:"1px solid #edf1f5"}}><td style={{padding:"12px 6px"}}>{x.description}</td><td style={{padding:"12px 6px",textAlign:"right"}}>{x.quantity}</td><td style={{padding:"12px 6px",textAlign:"right"}}>{money(x.unit_amount_minor,invoice.currency)}</td><td style={{padding:"12px 6px",textAlign:"right"}}>{money(x.amount_minor,invoice.currency)}</td></tr>)}</tbody></table>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:32}}><div>{invoice.notes&&<><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:".08em",color:"#657083",marginBottom:6}}>Notes</div><div style={{whiteSpace:"pre-line"}}>{invoice.notes}</div></>}</div><div><div style={{display:"flex",justifyContent:"space-between",padding:"7px 0"}}><span>Subtotal</span><strong>{money(invoice.subtotal_minor,invoice.currency)}</strong></div><div style={{display:"flex",justifyContent:"space-between",padding:"7px 0"}}><span>Tax</span><strong>{money(invoice.tax_minor,invoice.currency)}</strong></div><div style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderTop:"2px solid #162033",fontSize:18}}><span>Total</span><strong>{money(invoice.total_minor,invoice.currency)}</strong></div></div></div>
+        {payments.length>0&&<div style={{marginTop:28,paddingTop:18,borderTop:"1px solid #dfe5ee"}}><strong>Payments recorded</strong>{payments.map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",marginTop:8}}><span>{p.method}{p.reference?` · ${p.reference}`:""}</span><span>{money(p.amount_minor,p.currency)}</span></div>)}</div>}
+        <footer style={{marginTop:38,paddingTop:18,borderTop:"1px solid #dfe5ee",fontSize:11,color:"#657083"}}>Issued by WatchLog. Please use the invoice number as the payment reference where applicable.</footer>
+      </article>
+    </>}
+    <style jsx global>{`@media print {.no-print,.topbar{display:none!important}.main{padding:0!important}.shell{background:#fff!important}body{background:#fff!important}}`}</style>
+  </main></div>;
+}
