@@ -58,7 +58,15 @@ def main():
         "portal/app/analytics/studio/page.js":["Analytics Setup","Save analytics setup"],
         "portal/app/reports/page.js":["Report recipients"],
         "portal/app/account-suspended/page.js":["temporarily paused","have not been deleted","WatchLog support channel"],
-        "portal/app/control-room/page.js":["Control Room Pilot","QSR operating lens","does not provide a live video wall","Exact transactions and till reconciliation are not inferred from CCTV alone."],
+        "portal/app/control-room/page.js":[
+            "Control Room Pilot",
+            "QSR operating lens",
+            "does not provide a live video wall",
+            "Exact transactions and till reconciliation are not inferred from CCTV alone.",
+            "Configured analytics only",
+            "Checkout-zone peak",
+            "approved incident stills",
+        ],
     }
     for rel,phrases in required.items():
         text=(ROOT/rel).read_text(encoding="utf-8")
@@ -70,6 +78,12 @@ def main():
     shell=(ROOT/"portal/app/shell.js").read_text(encoding="utf-8")
     if 'rpc("wl_portal_overview"' not in control:
         problems.append("control room must reuse the tenant-scoped portal overview contract")
+    if 'requireTenant' not in control:
+        problems.append("control room must use the shared tenant/account-status guard")
+    if 'rpc("wl_analytics_studio"' not in control or 'rpc("wl_analytics_overview"' not in control:
+        problems.append("control room must reuse the tenant-scoped analytics contracts")
+    if 'rpc("wl_portal_snapshot"' not in control:
+        problems.append("control room incident stills must use the existing tenant-scoped snapshot contract")
     if '["Control Room", "/control-room/"]' not in shell:
         problems.append("customer navigation must expose Control Room")
     for unsafe in ("rtsp://", "<video", "autoplay", "continuous cloud video feed"):
