@@ -1,4 +1,4 @@
-; WatchLog Site Agent - authoritative production installer (NSIS).
+; WatchLog Windows connector - authoritative production installer (NSIS).
 ;
 ; NSIS owns elevation, files, Windows registration, upgrade/uninstall and the
 ; background task. The customer setup experience itself is the branded
@@ -29,12 +29,12 @@ SetCompressor /SOLID lzma
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !define MUI_ABORTWARNING
-!define MUI_WELCOMEPAGE_TITLE "Install WatchLog Site Agent"
-!define MUI_WELCOMEPAGE_TEXT "WatchLog connects this Windows PC to the CCTV recorder already installed at your site.$\r$\n$\r$\nThe next step opens the branded WatchLog setup wizard to find the recorder, verify its local login, discover cameras and link the site securely.$\r$\n$\r$\nNo port forwarding or inbound recorder access is required."
+!define MUI_WELCOMEPAGE_TITLE "Install WatchLog"
+!define MUI_WELCOMEPAGE_TEXT "WatchLog connects this Windows PC to the CCTV recorder already installed at your site.$\r$\n$\r$\nThe next step opens WatchLog Setup to find the recorder, verify its local login, discover cameras and connect the site securely.$\r$\n$\r$\nNo port forwarding or inbound recorder access is required."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TITLE "WatchLog is installed"
-!define MUI_FINISHPAGE_TEXT "The WatchLog Site Agent is registered to start automatically with Windows.$\r$\n$\r$\nReturn to the WatchLog portal to confirm Site Health and Analytics. Local support logs are kept under C:\ProgramData\WatchLog."
+!define MUI_FINISHPAGE_TEXT "WatchLog is set to start automatically with Windows.$\r$\n$\r$\nReturn to the WatchLog portal to confirm Site Health and Analytics. Local support logs are kept under C:\ProgramData\WatchLog."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -45,7 +45,7 @@ VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileVersion" "${APPVERSION}"
 VIAddVersionKey "ProductVersion" "${APPVERSION}"
-VIAddVersionKey "FileDescription" "WatchLog Site Agent installer"
+VIAddVersionKey "FileDescription" "WatchLog Windows installer"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 Section "Install"
@@ -63,7 +63,7 @@ Section "Install"
   Pop $7
   ${If} $9 == 0
     StrCpy $8 "1"
-    DetailPrint "Stopping the existing WatchLog background task for upgrade..."
+    DetailPrint "Stopping the existing WatchLog background connection for upgrade..."
     ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"' $9
   ${EndIf}
 
@@ -95,11 +95,11 @@ Section "Install"
       Abort "WatchLog credential migration failed"
     ${EndIf}
   ${Else}
-    DetailPrint "Opening branded WatchLog setup..."
+    DetailPrint "Opening WatchLog Setup..."
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background Site Agent was not registered. Run the installer again when the recorder, site code and network are ready."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
       Abort "WatchLog setup did not complete"
     ${EndIf}
   ${EndIf}
@@ -111,7 +111,7 @@ Section "Install"
 
   ; Register/update background startup only after customer setup (fresh) or
   ; credential migration (upgrade) has completed successfully.
-  DetailPrint "Registering WatchLog to run securely in the background..."
+  DetailPrint "Setting WatchLog to run securely in the background..."
   ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\register-service.ps1" -InstallDir "$INSTDIR"' $1
   DetailPrint "Background startup registration exited with code $1"
   ${If} $1 != 0
@@ -128,7 +128,7 @@ Section "Install"
   CreateDirectory "${STARTMENU}"
   CreateShortcut "${STARTMENU}\WatchLog Setup.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
 
-  WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog Site Agent"
+  WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "Publisher" "${PUBLISHER}"
   !ifdef PUBLISHER_URL
