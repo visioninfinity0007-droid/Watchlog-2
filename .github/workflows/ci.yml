@@ -43,6 +43,8 @@ jobs:
         run: python prototype/tests/test_customer_portal_language.py
       - name: Control Room security/product contract
         run: python prototype/tests/test_control_room_contract.py
+      - name: Control Room reporting contract
+        run: python prototype/tests/test_control_room_reporting_contract.py
       - name: Production preflight read-only contract
         run: python prototype/tests/test_watchlog_production_preflight.py
       - name: Deployment smoke read-only contract
