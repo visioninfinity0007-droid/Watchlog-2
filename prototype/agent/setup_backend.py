@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import platform
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -17,10 +18,10 @@ from typing import Callable
 import discover
 import watchlog_agent as core
 import wsdiscovery
-from drivers import DriverError, autodetect
+from drivers import DriverError, build
 from windows_secret import SecretError, write_secret
 
-SETUP_AGENT_VERSION = "0.3.0"
+SETUP_AGENT_VERSION = "0.3.2"
 
 SITE_TYPES = [
     ("retail", "Retail / QSR"),
@@ -139,48 +140,223 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
                 hint = "Unsupported Xiongmai-family device"
             results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
             results[ip]["ports"] = ports
+            results[ip]["vendor_hint"] = _vendor_hint_from_ports(ports)
     except Exception:
         pass
     return sorted(results.values(), key=lambda row: row["ip"])
 
 
-def _candidate_urls(address: str) -> list[str]:
-    value = address.strip().rstrip("/")
-    if not value:
-        return []
-    if value.startswith("http://") or value.startswith("https://"):
-        return [value]
-    ports = [80, 443, 8000, 8080, 81, 88, 8081]
-    try:
-        found = [row.port for row in discover.scan(value, log=lambda _m: None)
-                 if row.open and row.kind in ("http", "https")]
-        ports = found + [port for port in ports if port not in found]
-    except Exception:
-        pass
+# --- Step 04 recorder login: fast, deterministic, port/vendor-aware ---------
+#
+# Discovery (Step 03) already learns the open ports and the recorder family.
+# The login test reuses that instead of blind-probing every driver against
+# every candidate URL. A native vendor port identifies the family (37777 ->
+# Dahua, 8000 -> Hikvision, 34567 -> unsupported Xiongmai); the test then tries
+# the RIGHT driver on the recorder's real web port first, with a short per-probe
+# timeout and a hard overall deadline so the UI can never appear to hang for
+# minutes. Capabilities discovery is deliberately deferred to the background
+# agent so Step 04 only proves identity + credentials + channels.
+
+RECORDER_PROBE_TIMEOUT = 5          # seconds per driver probe
+RECORDER_DEADLINE = 18             # seconds hard cap for the whole login test
+
+_WEB_PORTS = (80, 8000, 8080, 81, 88, 8081, 443, 8443)
+_DAHUA_SDK_PORTS = (37777, 37778)
+_XIONGMAI_PORTS = (34567, 9000)
+
+_DRIVERS_BY_VENDOR = {
+    "dahua": ["dahua-cgi", "onvif"],
+    "hikvision": ["hikvision-isapi", "onvif"],
+}
+
+_CUSTOMER_ERROR = {
+    "wrong_credentials": "The recorder rejected that username or password.",
+    "web_unreachable": "WatchLog found the recorder, but its web service is not reachable. "
+                       "Check that the recorder's HTTP or HTTPS service is enabled.",
+    "unsupported": "WatchLog found this recorder, but this model is not yet supported.",
+    "network": "WatchLog cannot reach the recorder from this PC. Confirm this PC and the "
+               "recorder are on the same local network.",
+    "timeout": "The recorder did not respond in time. WatchLog found the device but could "
+               "not complete the login check.",
+    "connect": "WatchLog could not connect to that recorder. Check that this PC is on the "
+               "same network, the recorder's web service is enabled, and the address is correct.",
+}
+
+
+def _vendor_hint_from_ports(ports) -> str | None:
+    ps = set(ports or [])
+    if ps & set(_DAHUA_SDK_PORTS):
+        return "dahua"
+    if 8000 in ps:
+        return "hikvision"
+    if ps & set(_XIONGMAI_PORTS):
+        return "xiongmai"
+    return None
+
+
+def _ordered_drivers(vendor_hint: str | None) -> list[str]:
+    if vendor_hint in _DRIVERS_BY_VENDOR:
+        return list(_DRIVERS_BY_VENDOR[vendor_hint])
+    return ["hikvision-isapi", "dahua-cgi", "onvif"]
+
+
+def _web_target_urls(host: str, open_ports) -> list[str]:
     urls = []
-    for port in ports:
-        scheme = "https" if port == 443 else "http"
-        urls.append(f"{scheme}://{value}" if port in (80, 443) else f"{scheme}://{value}:{port}")
+    for port in _WEB_PORTS:
+        if port in open_ports:
+            scheme = "https" if port in (443, 8443) else "http"
+            urls.append(f"{scheme}://{host}" if port in (80, 443)
+                        else f"{scheme}://{host}:{port}")
     return urls
 
 
+def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
+    """Return (attempts, hard_error).
+
+    attempts is an ordered, bounded list of (driver_name, url). hard_error is a
+    customer-error key when the port evidence already rules the login test out:
+    an unsupported family, a recorder whose web service is not reachable (e.g.
+    Dahua SDK 37777 open but no HTTP), or nothing on the network at all.
+    """
+    open_ports = set(open_ports or [])
+    hint = vendor_hint or _vendor_hint_from_ports(open_ports)
+    web_ports = [p for p in _WEB_PORTS if p in open_ports]
+    has_dahua_sdk = bool(open_ports & set(_DAHUA_SDK_PORTS))
+    has_xiongmai = bool(open_ports & set(_XIONGMAI_PORTS))
+
+    if not open_ports:
+        return [], "network"
+    if not web_ports:
+        if has_xiongmai and not has_dahua_sdk:
+            return [], "unsupported"
+        return [], "web_unreachable"           # Dahua SDK-only, or web disabled
+    if has_xiongmai and hint == "xiongmai" and not has_dahua_sdk:
+        return [], "unsupported"
+
+    targets = _web_target_urls(host, web_ports)
+    drivers = _ordered_drivers(hint)
+    attempts: list[tuple[str, str]] = []
+    for url in targets[:2]:                     # best web port, then one fallback
+        for driver_name in drivers:
+            pair = (driver_name, url)
+            if pair not in attempts:
+                attempts.append(pair)
+    return attempts[:5], None                   # bounded: never minutes of probing
+
+
+def _classify_exception(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "401" in text or "unauthor" in text or "403" in text:
+        return "wrong_credentials"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if ("refused" in text or "no route" in text or "unreachable" in text
+            or "getaddrinfo" in text or "failed to establish" in text
+            or "connection aborted" in text):
+        return "web_unreachable"
+    if ("no driver" in text or "not recognis" in text or "unparseable" in text
+            or "http 404" in text or "returned nothing" in text):
+        return "unsupported"
+    return "connect"
+
+
+def _redact(text: str, password: str) -> str:
+    out = (text or "").splitlines()
+    out = out[-1] if out else ""
+    out = out[:200]
+    if password:
+        out = out.replace(password, "***")
+    return out
+
+
+def _setup_log(message: str) -> None:
+    """Append one diagnostic line to setup.log. Never called with secrets."""
+    try:
+        path = programdata_dir() / "setup.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[recorder-test] {message}\n")
+    except Exception:
+        pass
+
+
 def test_recorder(address: str, username: str, password: str,
-                  progress: Callable[[str], None] | None = None) -> dict:
+                  progress: Callable[[str], None] | None = None,
+                  hint: dict | None = None, _scan=None, _build=None) -> dict:
+    """Prove recorder identity + credentials + channel list — fast and bounded.
+
+    `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
+    When present the network scan is skipped entirely. Capabilities discovery is
+    NOT done here; it is deferred to the background agent.
+    """
     progress = progress or (lambda _message: None)
+    scan_fn = _scan or (lambda h: discover.scan(h, log=lambda _m: None))
+    build_fn = _build or build
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
-    last_errors = []
-    for url in _candidate_urls(address):
-        progress("Checking the recorder connection…")
-        driver = None
-        try:
-            driver, info = autodetect(url, username.strip(), password, timeout=7,
-                                      log=lambda _m: None)
-            channels = driver.list_channels()
+
+    host = discover.host_of(address)
+    is_url = address.strip().lower().startswith(("http://", "https://"))
+    started = time.monotonic()
+    progress(f"Checking recorder at {host}…")
+
+    hint = hint or {}
+    vendor_hint = hint.get("vendor_hint")
+    open_ports = list(hint.get("ports") or [])
+
+    if is_url:
+        drivers = _ordered_drivers(vendor_hint or _vendor_hint_from_ports(open_ports))
+        attempts = [(driver_name, address.strip().rstrip("/")) for driver_name in drivers][:3]
+        hard_error = None
+    else:
+        if not open_ports:
             try:
-                capabilities = driver.capabilities()
-            except Exception:
-                capabilities = None
+                results = scan_fn(host)
+                open_ports = [r.port for r in results if getattr(r, "open", False)]
+                if not vendor_hint:
+                    for r in results:
+                        guess = (getattr(r, "vendor_guess", "") or "").lower()
+                        if "dahua" in guess or "cp plus" in guess:
+                            vendor_hint = "dahua"; break
+                        if "hikvision" in guess or "hilook" in guess:
+                            vendor_hint = "hikvision"; break
+                        if "xiongmai" in guess:
+                            vendor_hint = "xiongmai"; break
+            except Exception as exc:
+                _setup_log(f"scan failed host={host}: {_redact(str(exc), password)}")
+                open_ports = []
+        attempts, hard_error = plan_recorder_probes(host, open_ports, vendor_hint)
+
+    fam = vendor_hint or _vendor_hint_from_ports(open_ports)
+    _setup_log(f"host={host} ports={sorted(open_ports)} vendor_hint={fam} "
+               f"attempts={[(d, u.split('://')[-1]) for d, u in attempts]} hard={hard_error}")
+
+    if hard_error:
+        raise ValueError(_CUSTOMER_ERROR[hard_error])
+
+    if fam == "dahua":
+        progress("Detected Dahua-compatible recorder.")
+    elif fam == "hikvision":
+        progress("Detected Hikvision-compatible recorder.")
+    else:
+        progress("Detected a compatible recorder.")
+
+    last_class = "connect"
+    for driver_name, url in attempts:
+        if time.monotonic() - started > RECORDER_DEADLINE:
+            last_class = "timeout"
+            break
+        progress("Signing in to the recorder…")
+        driver = None
+        attempt_started = time.monotonic()
+        try:
+            driver = build_fn(driver_name, url, username.strip(), password,
+                              RECORDER_PROBE_TIMEOUT)
+            info = driver.probe()
+            progress("Reading camera channels…")
+            channels = driver.list_channels()
+            _setup_log(f"OK driver={driver_name} identity=1 channels={len(channels)} "
+                       f"elapsed={time.monotonic() - attempt_started:.1f}s")
             return {
                 "url": url,
                 "vendor": info.vendor or "Recorder",
@@ -188,24 +364,27 @@ def test_recorder(address: str, username: str, password: str,
                 "firmware": info.firmware or "",
                 "driver": driver.name,
                 "verified_against_hardware": bool(driver.verified_against_hardware),
-                "channels": [{"channel": str(row.channel), "name": row.name or f"Camera {row.channel}"}
+                "channels": [{"channel": str(row.channel),
+                              "name": row.name or f"Camera {row.channel}"}
                              for row in channels],
-                "capabilities": capabilities,
+                "capabilities": None,           # deferred to the background agent
             }
-        except DriverError as exc:
-            text = str(exc).lower()
-            if "401" in text or "unauthor" in text:
-                raise ValueError("The recorder rejected that username or password.") from None
-            last_errors.append(str(exc).splitlines()[-1][:160] if str(exc) else "no response")
+        except Exception as exc:   # noqa: BLE001 — classify, do not mask
+            cls = _classify_exception(exc)
+            _setup_log(f"fail driver={driver_name} class={cls} "
+                       f"elapsed={time.monotonic() - attempt_started:.1f}s "
+                       f"detail={_redact(str(exc), password)}")
+            if cls == "wrong_credentials":
+                raise ValueError(_CUSTOMER_ERROR["wrong_credentials"]) from None
+            last_class = cls
         finally:
             if driver:
                 try:
                     driver.close()
                 except Exception:
                     pass
-    raise ValueError(
-        "WatchLog could not connect to that recorder. Check that this PC is on the same network, "
-        "the recorder web service is enabled, and the address is correct.")
+
+    raise ValueError(_CUSTOMER_ERROR.get(last_class, _CUSTOMER_ERROR["connect"]))
 
 
 def suggest_purpose(camera_name: str, site_type: str) -> str:
@@ -254,7 +433,8 @@ def _clear_consumed_code(config_path: Path) -> None:
 
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
-                     profiles: list[dict], progress: Callable[[str], None] | None = None) -> dict:
+                     profiles: list[dict], progress: Callable[[str], None] | None = None,
+                     hint: dict | None = None) -> dict:
     """Prove local recorder + WatchLog enrollment and persist only protected secrets."""
     progress = progress or (lambda _message: None)
     if not public.get("supabase_url") or not public.get("supabase_publishable_key"):
@@ -263,7 +443,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         raise ValueError("Enter the WatchLog site code from the portal.")
 
     progress("Verifying the recorder one more time…")
-    recorder = test_recorder(address, username, password, progress)
+    recorder = test_recorder(address, username, password, progress=progress, hint=hint)
 
     progress("Protecting recorder credentials on this PC…")
     try:

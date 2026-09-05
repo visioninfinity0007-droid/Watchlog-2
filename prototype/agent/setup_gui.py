@@ -120,6 +120,8 @@ class SetupWindow(QMainWindow):
         self.recorder_user = self.public.get("nvr_username", "admin")
         self.recorder_password = ""
         self.recorder_result = None
+        self.recorder_hint = None
+        self._discovered = {}
         self.final_result = None
         self._busy = False
 
@@ -350,9 +352,9 @@ class SetupWindow(QMainWindow):
         self.search_btn.setEnabled(not busy)
         self.login_next.setEnabled(not busy)
 
-    def run_worker(self, fn, args, on_success, busy_message: str):
+    def run_worker(self, fn, args, on_success, busy_message: str, **kwargs):
         self.set_busy(True, busy_message)
-        worker = Worker(fn, *args)
+        worker = Worker(fn, *args, **kwargs)
         worker.signals.progress.connect(self.status.setText)
         worker.signals.finished.connect(lambda result: self._worker_ok(on_success, result))
         worker.signals.failed.connect(self._worker_error)
@@ -386,6 +388,7 @@ class SetupWindow(QMainWindow):
         self.run_worker(backend.discover_recorders, (), self.show_recorders, "Searching the local network…")
 
     def show_recorders(self, rows):
+        self._discovered = {row["ip"]: row for row in rows}
         if not rows:
             self.status.setText("No recorder was found automatically. Enter its local IP address below.")
             return
@@ -408,7 +411,12 @@ class SetupWindow(QMainWindow):
             QMessageBox.warning(self, "WatchLog Setup", "Select a discovered recorder or enter its local IP address.")
             return
         self.recorder_address = address
-        self.selected_recorder.setText(f"Recorder: {address}")
+        row = self._discovered.get(address)
+        self.recorder_hint = ({"ports": row.get("ports"),
+                               "vendor_hint": row.get("vendor_hint"),
+                               "source": row.get("source")} if row else None)
+        detail = f"  ({row['label']})" if row and row.get("label") else ""
+        self.selected_recorder.setText(f"Recorder: {address}{detail}")
         self.go(3)
 
     def test_connection(self):
@@ -420,7 +428,7 @@ class SetupWindow(QMainWindow):
             return
         self.recorder_user, self.recorder_password = user, password
         self.run_worker(backend.test_recorder, (address, user, password), self.connection_ok,
-                        "Testing the recorder connection…")
+                        "Testing the recorder connection…", hint=self.recorder_hint)
 
     def connection_ok(self, result):
         self.recorder_result = result
@@ -478,7 +486,8 @@ class SetupWindow(QMainWindow):
         args = (self.config_path, public, self.code_edit.text().strip(), self.recorder_address,
                 self.recorder_user, self.recorder_password,
                 self.site_type.currentData() or "custom", self.profiles())
-        self.run_worker(backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…")
+        self.run_worker(backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
+                        hint=self.recorder_hint)
         # On the connecting page use the page-local progress label too.
         self.status.setText("")
 
