@@ -33,6 +33,8 @@ def base_markers():
         "account_status_0038":False,
         "my_account_0038":False,
         "account_lifecycle_0038":False,
+        "control_room_layouts_0039":False,
+        "control_room_layout_rpc_0039":False,
     }
 
 
@@ -51,6 +53,11 @@ def set_0037(m):
 
 def set_0038(m):
     for key in ("account_status_0038","my_account_0038","account_lifecycle_0038"):
+        m[key]=True
+
+
+def set_0039(m):
+    for key in ("control_room_layouts_0039","control_room_layout_rpc_0039"):
         m[key]=True
 
 
@@ -78,9 +85,19 @@ def test_partial_after_0036_stops():
     assert preflight.classify_boundary(m)=="partial_after_0036_stop_and_reconcile"
 
 
-def test_0038_candidate_requires_smoke():
+def test_exact_0038_boundary():
     m=base_markers();set_through_0036(m);set_0037(m);set_0038(m)
-    assert preflight.classify_boundary(m)=="0038_candidate_requires_authz_smoke"
+    assert preflight.classify_boundary(m)=="0038_exact_candidate"
+
+
+def test_0039_candidate_requires_smoke():
+    m=base_markers();set_through_0036(m);set_0037(m);set_0038(m);set_0039(m)
+    assert preflight.classify_boundary(m)=="0039_candidate_requires_authz_smoke"
+
+
+def test_partial_0039_stops():
+    m=base_markers();set_through_0036(m);set_0037(m);set_0038(m);m["control_room_layouts_0039"]=True
+    assert preflight.classify_boundary(m)=="partial_after_0038_stop_and_reconcile"
 
 
 def test_target_guard_accepts_watchlog():
@@ -113,6 +130,12 @@ def test_tool_is_structurally_read_only():
 
 
 if __name__=="__main__":
-    tests=[test_exact_0023_boundary,test_partial_after_0023_stops,test_exact_0036_boundary,test_exact_0037_boundary,test_partial_after_0036_stops,test_0038_candidate_requires_smoke,test_target_guard_accepts_watchlog,test_target_guard_rejects_other_project,test_target_guard_rejects_mismatched_connection_metadata,test_tool_is_structurally_read_only]
+    tests=[
+        test_exact_0023_boundary,test_partial_after_0023_stops,test_exact_0036_boundary,
+        test_exact_0037_boundary,test_partial_after_0036_stops,test_exact_0038_boundary,
+        test_0039_candidate_requires_smoke,test_partial_0039_stops,test_target_guard_accepts_watchlog,
+        test_target_guard_rejects_other_project,test_target_guard_rejects_mismatched_connection_metadata,
+        test_tool_is_structurally_read_only,
+    ]
     for test in tests:test()
     print(f"OK: {len(tests)} production preflight contract tests passed")
