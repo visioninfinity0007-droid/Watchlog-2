@@ -88,18 +88,27 @@ def classify_boundary(markers: dict[str, Any]) -> str:
         "my_account_0038",
         "account_lifecycle_0038",
     )
+    control_room_0039_keys = (
+        "control_room_layouts_0039",
+        "control_room_layout_rpc_0039",
+    )
 
     old = [bool(markers.get(key)) for key in through_0036_keys]
     ops = [bool(markers.get(key)) for key in ops_0037_keys]
     lifecycle = [bool(markers.get(key)) for key in lifecycle_0038_keys]
-    any_after_0023 = any(old + ops + lifecycle)
+    control_room = [bool(markers.get(key)) for key in control_room_0039_keys]
+    any_after_0023 = any(old + ops + lifecycle + control_room)
 
     if has_0023 and all(old):
         if all(ops) and all(lifecycle):
-            return "0038_candidate_requires_authz_smoke"
-        if all(ops) and not any(lifecycle):
+            if all(control_room):
+                return "0039_candidate_requires_authz_smoke"
+            if not any(control_room):
+                return "0038_exact_candidate"
+            return "partial_after_0038_stop_and_reconcile"
+        if all(ops) and not any(lifecycle) and not any(control_room):
             return "0037_exact_candidate"
-        if not any(ops) and not any(lifecycle):
+        if not any(ops) and not any(lifecycle) and not any(control_room):
             return "0036_exact_candidate"
         return "partial_after_0036_stop_and_reconcile"
     if has_0023 and not any_after_0023:
@@ -208,7 +217,9 @@ def _collect_report(admin_email: str | None = None) -> dict[str, Any]:
                     where table_schema='public' and table_name='tenants' and column_name='account_status'
                   ) as account_status_0038,
                   to_regprocedure('public.wl_my_account()') is not null as my_account_0038,
-                  to_regprocedure('public.wl_platform_set_account_status(uuid,text,text)') is not null as account_lifecycle_0038
+                  to_regprocedure('public.wl_platform_set_account_status(uuid,text,text)') is not null as account_lifecycle_0038,
+                  to_regclass('public.control_room_layouts') is not null as control_room_layouts_0039,
+                  to_regprocedure('public.wl_control_room_layouts()') is not null as control_room_layout_rpc_0039
                 """
             ).fetchone()
 
