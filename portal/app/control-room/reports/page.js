@@ -99,8 +99,9 @@ export default function ControlRoomReports() {
 
   const model = useMemo(() => {
     const byRule = analytics?.by_rule || [];
+    const selectedCameraSite = selectedSite?.name || selectedCamera?.siteName || "";
     const scopedRules = selectedCamera
-      ? byRule.filter((item) => item.camera === selectedCamera.name && (!selectedSite || item.site === selectedSite.name))
+      ? byRule.filter((item) => item.camera === selectedCamera.name && item.site === selectedCameraSite)
       : byRule;
     const analyticsSignals = scopedRules.reduce((total, item) => total + Number(item.count || 0), 0);
     const scopedSites = selectedSite ? [selectedSite] : sites;
