@@ -20,10 +20,8 @@ def test_dahua_native_smd_and_ivs_provenance():
     assert smart.payload["native_ai"] is True
     assert smart.payload["source"] == "recorder_native_ai"
     assert smart.payload["native_code"] == "SmartMotionHuman"
-
     generic = driver._parse_line("Code=VideoMotion;action=Start;index=1;data={}")
-    assert generic is not None
-    assert generic.event_type == "motion"
+    assert generic is not None and generic.event_type == "motion"
     assert not generic.payload.get("native_ai")
     assert generic.payload["source"] == "recorder_event"
     driver.close()
@@ -38,8 +36,7 @@ def test_hikvision_native_smart_event_provenance():
       <activePostCount>1</activePostCount>
     </EventNotificationAlert>"""
     event = driver._parse_alert(raw)
-    assert event is not None
-    assert event.event_type == "line_crossing"
+    assert event is not None and event.event_type == "line_crossing"
     assert event.payload["native_ai"] is True
     assert event.payload["source"] == "recorder_native_ai"
     driver.close()
@@ -51,48 +48,48 @@ def test_packaged_collector_prefers_native_ai():
     native_block = src.split("if native_ai:", 1)[1].split("elif detector", 1)[0]
     assert "classify_event" not in native_block
     assert "recorder-native AI" in native_block
-    assert "classify_event(raw)" in src, "generic recorder motion should keep local false-alarm filtering"
+    assert "classify_event(raw)" in src
 
 
 def test_dahua_clip_is_on_demand_and_bounded():
     src = (AGENT / "drivers" / "native_recorder.py").read_text(encoding="utf-8")
+    compact = src.replace(" ", "")
     assert "/cgi-bin/loadfile.cgi" in src
-    assert '"action": "startLoad"' in src
-    assert "CLIP_MAX_BYTES = 32 * 1024 * 1024" in src
-    assert "getCurrentTime" in src, "playback should translate event time into recorder-local time"
+    assert '"action":"startLoad"' in compact
+    assert "CLIP_MAX_BYTES=32*1024*1024" in compact
+    assert "getCurrentTime" in src
     assert "continuous" in src.lower()
 
 
-def test_clip_migration_is_fail_closed_and_short_lived():
-    sql = (ROOT / "prototype" / "supabase" / "migrations" /
-           "0040_incident_footage_requests.sql").read_text(encoding="utf-8")
-    lower = sql.lower()
+def test_clip_migrations_are_fail_closed_short_lived_and_physically_pruned():
+    migrations = ROOT / "prototype" / "supabase" / "migrations"
+    sql40 = (migrations / "0040_incident_footage_requests.sql").read_text(encoding="utf-8")
+    sql41 = (migrations / "0041_incident_clip_fail_authz_hardening.sql").read_text(encoding="utf-8")
+    lower = sql40.lower()
     for table in ("incident_clip_requests", "incident_clip_chunks"):
         assert f"alter table public.{table} enable row level security" in lower
         assert f"revoke all on table public.{table}" in lower
     for rpc in (
-        "wl_request_incident_clip",
-        "wl_incident_clip_status",
-        "wl_incident_clip_chunk",
-        "wl_agent_claim_clip_requests",
-        "wl_agent_upload_clip_chunk",
-        "wl_agent_complete_clip",
-        "wl_agent_fail_clip",
+        "wl_request_incident_clip","wl_incident_clip_status","wl_incident_clip_chunk",
+        "wl_agent_claim_clip_requests","wl_agent_upload_clip_chunk",
+        "wl_agent_complete_clip","wl_agent_fail_clip",
     ):
-        assert rpc in sql
-    assert "wl_require_role(array['owner','admin'])" in sql
-    assert "32 mb pilot limit" in lower
-    assert "24 hours" in lower
-    assert "60 seconds" in lower
-    assert "recorder_url" not in lower
-    assert "recorder_password" not in lower
+        assert rpc in sql40
+    assert "wl_require_role(array['owner','admin'])" in sql40
+    assert "32 mb pilot limit" in lower and "24 hours" in lower and "60 seconds" in lower
+    assert "recorder_url" not in lower and "recorder_password" not in lower
+    hardened = sql41.lower()
+    assert "clip request not claimed by this agent" in hardened
+    assert "delete from public.incident_clip_chunks" in hardened
+    assert "r.expires_at<=now()" in hardened
+    # Claim ownership is resolved before failure-path media deletion.
+    assert hardened.index("select * into v_request") < hardened.index("delete from public.incident_clip_chunks")
 
 
 def test_release_entrypoint_activates_both_policies():
     src = (AGENT / "release_agent.py").read_text(encoding="utf-8")
     assert "app.core.collector = native_event_collector.collector" in src
     assert "incident_evidence.wrap_cmd_run" in src
-    # Explicit installer validation must not start the long-running clip worker.
     assert 'if explicit_setup:' in src
     assert "_setup_validation_complete" in src
 
