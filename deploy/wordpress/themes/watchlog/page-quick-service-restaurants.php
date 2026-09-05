@@ -11,7 +11,7 @@ $signup = esc_url(watchlog_signup_url());
       <nav class="crumbs" aria-label="Breadcrumb"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><a href="<?php echo watchlog_url('solutions'); ?>">Solutions</a><span class="sep">/</span><span>Quick-Service Restaurants</span></nav>
       <span class="eyebrow">Quick-Service Restaurants</span>
       <h1>Turn branch cameras into daily operational visibility.</h1>
-      <p class="lead">Use configured camera views for people flow, queue and checkout-zone activity, after-hours movement, site health and branch reporting. Multi-site Control Room workflows are the next pilot layer, not an available live video wall today.</p>
+      <p class="lead">Use configured camera views for people flow, queue and checkout-zone activity, after-hours movement, site health and branch reporting. Multi-site Control Room workflows are the next pilot layer. WatchLog does not provide a live video wall today.</p>
       <div class="cta-row"><a class="btn btn-primary btn-lg" href="<?php echo $signup; ?>">Start free</a>
         <a class="btn btn-ghost btn-lg" href="<?php echo watchlog_url('contact'); ?>">Discuss a QSR pilot</a></div>
     </div>
