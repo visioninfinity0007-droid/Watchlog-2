@@ -9,7 +9,7 @@ $signup = esc_url(watchlog_signup_url());
     <nav class="crumbs" aria-label="Breadcrumb" style="justify-content:center"><a href="<?php echo esc_url(home_url('/')); ?>">Home</a><span class="sep">/</span><span>Pricing</span></nav>
     <span class="eyebrow">SaaS pricing</span>
     <h1>Simple per-site pricing in PKR.</h1>
-    <p class="lead measure" style="margin-inline:auto">Start with the current product for 14 days with no card. Starter and Growth are monthly SaaS plans. Enterprise, pilots and custom integrations are discussed separately when the scope is not standard.</p>
+    <p class="lead measure" style="margin-inline:auto">Start with the current product for 14 days with no card. The standard tiers are monthly SaaS plans. Enterprise, pilots and custom integrations are discussed separately when the scope is not standard.</p>
   </div>
 </section>
 
