@@ -1,9 +1,12 @@
 -- =====================================================================
--- 0041 - Incident clip failure-path authorization hardening
+-- 0041 - Incident clip authorization + retention hardening
 --
--- 0040 validates tenant/site/claim ownership before upload and completion.
--- Apply the same ordering to the failure path: never delete chunks for a
--- request until the authenticated agent has proven it owns that claim.
+-- 0040 establishes the on-demand request/chunk transport. This forward
+-- hardening closes two fail-closed requirements before the feature can ship:
+-- 1) validate agent claim ownership BEFORE deleting chunks on failure;
+-- 2) physically purge expired footage bytes during the normal authenticated
+--    site-agent request poll, so 24-hour retention is enforced in storage and
+--    is not merely a portal visibility rule.
 -- =====================================================================
 
 create or replace function public.wl_agent_fail_clip(
@@ -50,3 +53,70 @@ comment on function public.wl_agent_fail_clip(uuid,text,uuid,text,boolean)
 
 revoke all on function public.wl_agent_fail_clip(uuid,text,uuid,text,boolean) from public;
 grant execute on function public.wl_agent_fail_clip(uuid,text,uuid,text,boolean) to anon,authenticated;
+
+-- Re-define claim to enforce storage expiry before returning new work. The
+-- authenticated agent can purge only its own tenant/site evidence.
+create or replace function public.wl_agent_claim_clip_requests(
+  p_agent_id uuid,p_agent_key text,p_limit int default 1
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_agent public.agents;
+  v_limit int := least(greatest(coalesce(p_limit,1),1),2);
+begin
+  v_agent := wl_auth_agent(p_agent_id,p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent not recognised' using errcode='28000';
+  end if;
+
+  -- Physically remove expired media bytes before changing request state.
+  delete from public.incident_clip_chunks c
+   using public.incident_clip_requests r
+   where c.request_id=r.id
+     and r.tenant_id=v_agent.tenant_id
+     and r.site_id=v_agent.site_id
+     and r.expires_at<=now();
+
+  update public.incident_clip_requests
+     set status='expired'
+   where tenant_id=v_agent.tenant_id
+     and site_id=v_agent.site_id
+     and expires_at<=now()
+     and status in ('pending','processing','ready');
+
+  return coalesce((
+    with picked as (
+      select r.id
+        from public.incident_clip_requests r
+       where r.site_id=v_agent.site_id
+         and r.tenant_id=v_agent.tenant_id
+         and r.status='pending'
+         and r.expires_at>now()
+       order by r.requested_at
+       for update skip locked
+       limit v_limit
+    ), claimed as (
+      update public.incident_clip_requests r
+         set status='processing',claimed_by_agent_id=v_agent.id,started_at=now(),error_message=null
+        from picked p
+       where r.id=p.id
+      returning r.*
+    )
+    select jsonb_agg(jsonb_build_object(
+      'request_id',r.id,'event_id',r.event_id,'camera_id',r.camera_id,
+      'channel',c.channel,'start_at',r.start_at,'end_at',r.end_at
+    ) order by r.requested_at)
+      from claimed r
+      join public.cameras c on c.id=r.camera_id and c.site_id=v_agent.site_id
+  ),'[]'::jsonb);
+end
+$$;
+
+comment on function public.wl_agent_claim_clip_requests(uuid,text,int)
+  is 'WatchLog 0041: claim own-site clip requests and purge own-site expired footage bytes';
+
+revoke all on function public.wl_agent_claim_clip_requests(uuid,text,int) from public;
+grant execute on function public.wl_agent_claim_clip_requests(uuid,text,int) to anon,authenticated;
