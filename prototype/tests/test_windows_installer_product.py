@@ -2,8 +2,9 @@
 """Static product-contract gates for the customer Windows installer.
 
 These do not pretend to replace Win10/11 acceptance. They prevent easy
-regressions back to the terminal wizard, plaintext credential storage or an
-NSIS manifest that packages only the agent.
+regressions back to the terminal wizard, plaintext credential storage,
+implementation-oriented customer copy or an NSIS manifest that packages only
+the agent.
 """
 from pathlib import Path
 
@@ -20,6 +21,7 @@ def main():
     secret = text("prototype/agent/windows_secret.py")
     launcher = text("prototype/installer/run-agent.ps1")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
+    readme = text("prototype/installer/READ ME FIRST.txt")
     build_ui = text("prototype/agent/build_setup_gui.ps1")
     release = text("tools/build_windows_release.ps1")
     release_workflow = text(".github/workflows/windows-release.yml")
@@ -42,6 +44,14 @@ def main():
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
         "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,
         "uninstall removes protected credential": "nvr_password.dpapi" in nsis,
+        "setup sidebar uses customer language": "SITE CONNECTION SETUP" in gui and "SITE AGENT SETUP" not in gui,
+        "setup does not expose DPAPI terminology": "Protected with Windows DPAPI" not in gui,
+        "setup does not expose engineering validation labels": "field-validated driver" not in gui and "model still needs field acceptance" not in gui,
+        "setup ready state uses WatchLog connection language": "This WatchLog connection is ready" in gui and "This Site Agent" not in gui,
+        "raw recorder driver detail is not surfaced": "({detail})" not in backend,
+        "Windows product name is WatchLog": 'MUI_WELCOMEPAGE_TITLE "Install WatchLog"' in nsis and '"DisplayName" "WatchLog"' in nsis,
+        "customer guide avoids Site Agent product name": "WatchLog Site Agent" not in readme and "install the Site Agent" not in readme,
+        "customer guide avoids DPAPI implementation detail": "machine-scoped DPAPI" not in readme,
     }
 
     failed = [name for name, ok in checks.items() if not ok]
