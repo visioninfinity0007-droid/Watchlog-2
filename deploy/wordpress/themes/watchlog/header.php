@@ -1,20 +1,22 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 
-/* Navigation model - single source for desktop mega-menu + mobile drawer. */
 $WL_PRODUCT = [
-    ['platform',    'layers',   'Platform',    'Every site in one view'],
-    ['incidents',   'camera',   'Incidents',   'Validated, with a still'],
-    ['reporting',   'report',   'Reporting',   'A daily summary that matters'],
-    ['site-health', 'alert',    'Site Health', 'Know when a camera goes quiet'],
+    ['platform',     'layers',   'Platform',     'Video analytics across every site'],
+    ['incidents',    'camera',   'Incidents',    'Validated events with stills'],
+    ['reporting',    'report',   'Reporting',    'Operational summaries by site'],
+    ['site-health',  'alert',    'Site Health',  'Know when a camera goes quiet'],
+    ['integrations', 'box',      'Integrations', 'POS, Shopify, attendance and CRM'],
 ];
 $WL_SOLUTIONS = [
-    ['solutions',                        'sites',    'Overview',               'WatchLog across your sites'],
-    ['solutions/warehouses-logistics',   'box',      'Warehouses & Logistics', 'After-hours and loading bays'],
-    ['solutions/retail',                 'store',    'Retail',                 'Every branch in one view'],
-    ['solutions/manufacturing',          'factory',  'Manufacturing',          'Shifts, gates, critical areas'],
-    ['solutions/schools-campuses',       'school',   'Schools & Campuses',     'Boundaries, after hours'],
-    ['solutions/offices',                'building', 'Offices & Commercial',   'Daily visibility, small sites'],
+    ['solutions',                              'sites',    'Overview',                  'Available, pilot and custom use cases'],
+    ['solutions/quick-service-restaurants',    'store',    'Quick-Service Restaurants','Branch analytics and Control Room pilot'],
+    ['solutions/warehouses-logistics',         'box',      'Warehouses & Logistics',   'Flow, loading areas and site reporting'],
+    ['solutions/retail',                       'store',    'Retail',                    'Visitor flow and branch visibility'],
+    ['solutions/manufacturing',                'factory',  'Manufacturing & Textiles', 'Gates, zones, dwell and shift visibility'],
+    ['solutions/fuel-forecourt',               'sites',    'Fuel & Forecourt',          'Custom operational analytics'],
+    ['solutions/schools-campuses',             'school',   'Schools & Campuses',       'Boundaries and after-hours visibility'],
+    ['solutions/offices',                      'building', 'Offices & Commercial',     'Visitor flow and site health'],
 ];
 function wl_mega_item($it) {
     printf(
@@ -60,10 +62,9 @@ function wl_mega_item($it) {
         </div>
       </div>
 
-      <a class="nav-link" href="<?php echo watchlog_url('how-it-works'); ?>">How it works</a>
-      <a class="nav-link" href="<?php echo watchlog_url('compatibility'); ?>">Compatibility</a>
       <a class="nav-link" href="<?php echo watchlog_url('security'); ?>">Security</a>
       <a class="nav-link" href="<?php echo watchlog_url('pricing'); ?>">Pricing</a>
+      <a class="nav-link" href="<?php echo watchlog_url('faq'); ?>">FAQ</a>
     </nav>
 
     <div class="nav-cta">
@@ -77,7 +78,6 @@ function wl_mega_item($it) {
   </div>
 </header>
 
-<!-- Mobile drawer -->
 <div class="m-drawer" id="m-drawer" aria-hidden="true">
   <div class="m-top">
     <a class="brand" href="<?php echo esc_url(home_url('/')); ?>"><?php echo watchlog_mark(); ?><span>WatchLog</span></a>
@@ -99,6 +99,7 @@ function wl_mega_item($it) {
   <a class="m-link" href="<?php echo watchlog_url('compatibility'); ?>">Compatibility</a>
   <a class="m-link" href="<?php echo watchlog_url('security'); ?>">Security</a>
   <a class="m-link" href="<?php echo watchlog_url('pricing'); ?>">Pricing</a>
+  <a class="m-link" href="<?php echo watchlog_url('faq'); ?>">FAQ</a>
   <div class="m-cta">
     <a class="btn btn-primary btn-lg" href="<?php echo esc_url(watchlog_signup_url()); ?>">Start free</a>
     <a class="btn btn-ghost btn-lg" href="<?php echo esc_url(watchlog_login_url()); ?>">Sign in</a>
