@@ -24,9 +24,11 @@ def main() -> int:
     assert "Print / save PDF" in src
 
     # Camera reporting must be derived from the existing by_rule aggregate,
-    # never by claiming unsupported per-camera transaction semantics.
+    # scoped by both camera and site so duplicate camera names cannot mix data.
     assert "by_rule" in src
     assert "item.camera === selectedCamera.name" in src
+    assert "selectedCameraSite" in src
+    assert "item.site === selectedCameraSite" in src
     assert "Analytics signals" in src
 
     # Product truth boundaries.
