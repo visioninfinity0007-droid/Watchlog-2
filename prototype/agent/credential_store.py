@@ -26,6 +26,7 @@ Invariants (from the Phase-2 security review):
 from __future__ import annotations
 
 import configparser
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -262,12 +263,19 @@ def is_enrolled() -> bool:
 def credential_generation() -> str:
     """A cheap generation token that changes whenever Setup rewrites the recorder
     credential. The agent watches this to wake its auth breaker immediately on a
-    credential change instead of waiting out a 30-minute backoff."""
+    credential change instead of waiting out a 30-minute backoff.
+
+    The token folds in a hash of the (still-ENCRYPTED) blob bytes — no decryption,
+    the file is tiny — so it changes whenever the credential CONTENT changes, even
+    if two writes land in the same filesystem mtime tick at the same size (mtime+
+    size alone is not guaranteed to differ). This is what makes 'the breaker wakes
+    on credential replacement' reliable rather than timing-dependent."""
     path = nvr_credential_path()
     if not path.exists():
         return "absent"
     try:
-        st = path.stat()
-        return f"{st.st_mtime_ns}:{st.st_size}"
+        data = path.read_bytes()
+        digest = hashlib.blake2b(data, digest_size=8).hexdigest()
+        return f"{path.stat().st_mtime_ns}:{len(data)}:{digest}"
     except OSError:
         return "unknown"

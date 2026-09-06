@@ -1,7 +1,10 @@
 name: Windows Security Gate
 
-# Proves the WatchLog secret store's locked invariants on REAL Windows, with
-# REAL identities and TWO separate machines — not mocked in Python.
+# Proves the WatchLog secret store's locked invariants on REAL Windows with REAL OS
+# identities (standard user + SYSTEM) — not mocked in Python. NOTE: GitHub-hosted
+# runners are cloned from one VM image and SHARE a DPAPI LocalMachine key, so the
+# cross-runner job below is INFORMATIONAL. Genuine machine binding (a different
+# machine cannot decrypt) is proven on distinct hardware: docs/security/MACHINE_BINDING.md.
 on:
   workflow_dispatch: {}
   push:
@@ -12,8 +15,9 @@ permissions:
   contents: read
 
 jobs:
-  # --- machine binding: encrypt on runner A, prove runner B (a different
-  #     machine) cannot decrypt the copied LocalMachine-DPAPI blob ------------
+  # --- machine binding: encrypt on runner A and upload the blob. A 2nd hosted
+  #     runner is only an INFORMATIONAL probe (hosted runners share a DPAPI key);
+  #     genuine denial is proven on distinct hardware (MACHINE_BINDING.md). -------
   machine-binding-encrypt:
     name: Machine binding — encrypt on runner A
     runs-on: windows-latest
@@ -30,7 +34,7 @@ jobs:
           path: blob.bin
 
   machine-binding-decrypt:
-    name: Machine binding — a different machine must fail
+    name: Machine binding — cross-runner probe (informational; hosted runners share a key)
     needs: machine-binding-encrypt
     runs-on: windows-latest
     steps:
@@ -39,9 +43,9 @@ jobs:
         with: { python-version: '3.12' }
       - uses: actions/download-artifact@v4
         with: { name: dpapi-canary-blob }
-      - name: Runner B must NOT decrypt runner A's blob
+      - name: Cross-runner decrypt probe (informational — real denial proven on distinct hardware)
         shell: pwsh
-        run: python prototype/tests/windows_security_gate.py decrypt-must-fail blob.bin
+        run: python prototype/tests/windows_security_gate.py cross-machine-probe blob.bin
 
   # --- DACL/owner/self-repair, corrupt-blob, migration, and REAL
   #     standard-user / SYSTEM identity tests on one elevated runner ----------

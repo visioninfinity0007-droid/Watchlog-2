@@ -114,6 +114,14 @@ def _no_window() -> int:
 # is repaired, not merely left in place for the verifier to reject forever.
 _SECURE_PS = (
     "$ErrorActionPreference='Stop';"
+    # Windows PowerShell 5.1 AUTOloading of Microsoft.PowerShell.Security (Get-Acl/
+    # Set-Acl) can fail on some hosts — e.g. CI runners where PSModulePath is aimed at
+    # PowerShell 7, or where a broken manifest elsewhere on the path aborts the
+    # autoload sweep: "the command was found ... but the module could not be loaded".
+    # Load it explicitly by name so hardening never depends on autoload enumeration,
+    # and fail loudly with the REAL reason (not the opaque autoload wrapper) otherwise.
+    "if($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage'){throw ('PowerShell LanguageMode is '+$ExecutionContext.SessionState.LanguageMode+'; WatchLog needs FullLanguage to harden the secret store')};"
+    "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop;"
     "$p=$env:WL_ACL_PATH; $container=($env:WL_ACL_CONTAINER -eq '1');"
     "$acl=Get-Acl -LiteralPath $p;"
     "$acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')));"  # owner=Administrators (owner holds implicit WRITE_DAC)
@@ -141,8 +149,20 @@ def _secure_and_verify(path: Path, container: bool) -> None:
     EXACTLY SYSTEM + BUILTIN\\Administrators, each FullControl (any other
     principal, any right, is rejected)."""
     env = dict(os.environ, WL_ACL_PATH=str(path), WL_ACL_CONTAINER=("1" if container else "0"))
+    # Pin Windows PowerShell's OWN system module path (and its absolute exe) so
+    # Import-Module/Get-Acl always resolve Microsoft.PowerShell.Security regardless of
+    # an inherited PSModulePath that points at PowerShell 7 (the CI failure mode).
+    windir = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    progfiles = os.environ.get("ProgramFiles", r"C:\Program Files")
+    env["PSModulePath"] = os.pathsep.join((
+        os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "Modules"),
+        os.path.join(progfiles, "WindowsPowerShell", "Modules"),
+    ))
+    ps_exe = os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if not os.path.exists(ps_exe):
+        ps_exe = "powershell"
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _SECURE_PS],
+        [ps_exe, "-NoProfile", "-NonInteractive", "-Command", _SECURE_PS],
         capture_output=True, text=True, timeout=30, env=env, creationflags=_no_window())
     if result.returncode != 0:
         raise SecretError(f"could not secure/verify DACL of {path}: {(result.stderr or result.stdout).strip()}")
