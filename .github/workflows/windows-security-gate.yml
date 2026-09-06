@@ -1,0 +1,112 @@
+name: Windows Security Gate
+
+# Proves the WatchLog secret store's locked invariants on REAL Windows, with
+# REAL identities and TWO separate machines — not mocked in Python.
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - fix/installer-0.3.4-stabilization
+
+permissions:
+  contents: read
+
+jobs:
+  # --- machine binding: encrypt on runner A, prove runner B (a different
+  #     machine) cannot decrypt the copied LocalMachine-DPAPI blob ------------
+  machine-binding-encrypt:
+    name: Machine binding — encrypt on runner A
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Encrypt canary with LocalMachine DPAPI
+        shell: pwsh
+        run: python prototype/tests/windows_security_gate.py encrypt-canary blob.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dpapi-canary-blob
+          path: blob.bin
+
+  machine-binding-decrypt:
+    name: Machine binding — a different machine must fail
+    needs: machine-binding-encrypt
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/download-artifact@v4
+        with: { name: dpapi-canary-blob }
+      - name: Runner B must NOT decrypt runner A's blob
+        shell: pwsh
+        run: python prototype/tests/windows_security_gate.py decrypt-must-fail blob.bin
+
+  # --- DACL/owner/self-repair, corrupt-blob, migration, and REAL
+  #     standard-user / SYSTEM identity tests on one elevated runner ----------
+  security-scenarios:
+    name: DACL/owner, self-repair, migration, standard-user + SYSTEM
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: In-process (write/verify, owner+DACL self-repair, corrupt, migration)
+        shell: pwsh
+        run: python prototype/tests/windows_security_gate.py inprocess
+
+      - name: Real standard-user denial + control + SYSTEM decrypt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py   = (Get-Command python).Source
+          $work = "$env:TEMP\wlsec"
+          New-Item -ItemType Directory -Force "$work\tests","$work\agent" | Out-Null
+          Copy-Item "prototype\tests\windows_security_gate.py" "$work\tests\"
+          Copy-Item "prototype\agent\windows_secret.py","prototype\agent\credential_store.py" "$work\agent\"
+          $gate = "$work\tests\windows_security_gate.py"
+          # Make the work dir reachable by a standard user (the Secrets subdir is
+          # re-hardened to SYSTEM+Admins-only by write-secret, overriding this).
+          icacls $work /grant "*S-1-1-0:(OI)(CI)(F)" | Out-Null
+
+          $secrets = "$work\Secrets"
+          $blob    = "$secrets\nvr_credential.dpapi"
+          $control = "$work\control.dpapi"
+          & $py $gate write-secret $blob            # DACL-locked secret (SYSTEM+Admins)
+          & $py $gate encrypt-canary $control       # world-readable LocalMachine blob (control)
+
+          $pw = 'Wl!Sec' + (Get-Random -Maximum 99999) + 'gX9'
+          cmd /c "net user wlstd $pw /add" 2>&1 | Out-Host
+
+          function Invoke-AsIdentity($identity, $pass, $name, $sub) {
+            $res = "$work\$name.result"
+            $log = "$work\$name.log"
+            if (Test-Path $res) { Remove-Item $res -Force }
+            $inner = "`"$py`" `"$gate`" --result `"$res`" $sub > `"$log`" 2>&1"
+            if ($identity -eq 'SYSTEM') {
+              schtasks /create /tn $name /ru SYSTEM /sc once /st 23:59 /tr "cmd /c $inner" /f | Out-Null
+            } else {
+              schtasks /create /tn $name /ru $identity /rp $pass /sc once /st 23:59 /tr "cmd /c $inner" /f | Out-Null
+            }
+            schtasks /run /tn $name | Out-Null
+            $deadline = (Get-Date).AddSeconds(90)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $res)) { Start-Sleep 2 }
+            schtasks /delete /tn $name /f | Out-Null
+            Write-Host "----- $name log -----"
+            Get-Content $log -ErrorAction SilentlyContinue | Out-Host
+            if (-not (Test-Path $res)) { throw "$name produced no verdict (task did not run)" }
+            $verdict = (Get-Content $res -Raw).Trim()
+            Write-Host "$name verdict: $verdict"
+            if ($verdict -ne 'PASS') { throw "$name FAILED: $verdict" }
+          }
+
+          try {
+            Invoke-AsIdentity 'wlstd' $pw 'user_denied'  "user-cannot-read `"$blob`" `"$secrets`""
+            Invoke-AsIdentity 'wlstd' $pw 'user_control' "user-control-decrypt `"$control`""
+            Invoke-AsIdentity 'SYSTEM' ''  'system_ok'   "system-can-decrypt `"$blob`""
+          } finally {
+            cmd /c "net user wlstd /delete" 2>&1 | Out-Host
+          }
+          Write-Host "All identity-based security checks passed."
