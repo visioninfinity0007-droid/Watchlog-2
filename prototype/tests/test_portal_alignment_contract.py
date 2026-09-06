@@ -163,7 +163,7 @@ def check():
     arp_pos=NSIS.index('WriteRegStr HKLM "${ARPKEY}" "DisplayName"')
     assert setup_pos < arp_pos and task_pos < arp_pos
     assert 'StrCpy $8 "0"' in NSIS and '/Query /TN "${TASKNAME}"' in NSIS and '/Run /TN "${TASKNAME}"' in NSIS
-    assert 'watchlog.env' in NSIS and NSIS.index('watchlog.env') < task_pos
+    assert 'nvr_credential.dpapi' in NSIS and NSIS.index('nvr_credential.dpapi') < task_pos
     assert "Register-ScheduledTask -TaskName $task" in REGISTER
     assert "-Force | Out-Null" in REGISTER
     assert "did not reach Running state" in REGISTER

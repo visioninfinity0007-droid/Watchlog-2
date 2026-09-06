@@ -504,7 +504,7 @@ class SetupWindow(QMainWindow):
         self.progress_bar.setValue(1)
         self.success_summary.setText(
             f"✓ Recorder verified\n✓ WatchLog site linked\n✓ {result['camera_count']} camera(s) connected\n"
-            f"✓ Recorder credential saved on this PC\n\n{result['vendor']} {result['model']}")
+            f"✓ Recorder credential encrypted on this PC\n\n{result['vendor']} {result['model']}")
         self.go(6)
 
     def finish(self):

@@ -31,6 +31,9 @@ __pycache__/
 # is version-controlled.
 _drop/
 dist-installer/
+# Local release staging/build trees (each ~650MB of PyInstaller + NSIS output).
+# Reproducible via tools/build_windows_release.ps1 — never version-controlled.
+_build_*/
 # Ignore the models dir CONTENTS (so scratch exports stay out) but commit the
 # one production model, so the AI build is reproducible with onnxruntime alone
 # (no torch/ultralytics needed). Negating a file only works when the dir itself

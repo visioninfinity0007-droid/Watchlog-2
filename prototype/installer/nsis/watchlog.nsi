@@ -110,7 +110,7 @@ Section "Install"
     ; removed (uninstall deletes it), and pre-env-store installs have no env
     ; file to migrate. If there is still no credential, open setup to re-enter
     ; it rather than dead-ending on the check below.
-    ${IfNot} ${FileExists} "${DATAROOT}\watchlog.env"
+    ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
       DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
@@ -130,7 +130,7 @@ Section "Install"
   ${EndIf}
 
   ; The recorder credential must exist before a background task can start.
-  ${IfNot} ${FileExists} "${DATAROOT}\watchlog.env"
+  ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
     MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after setup. Run WatchLog Setup again."
     Abort "Recorder credential missing"
   ${EndIf}
@@ -188,9 +188,11 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
 
-  ; Remove the recorder credential on uninstall. Logs/spool/state remain in
-  ; ProgramData intentionally for support/reinstall continuity; delete that
-  ; folder manually only when a full local data wipe is required.
+  ; Remove the encrypted credential + agent key (the whole Secrets directory)
+  ; and any legacy plaintext/blob remnants. Non-secret state and logs remain in
+  ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
+  ; because is_enrolled requires a decryptable key, which is now gone.
+  RMDir /r "${DATAROOT}\Secrets"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
 SectionEnd

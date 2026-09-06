@@ -61,6 +61,7 @@ import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 
+import credential_store
 from wl_version import VERSION as AGENT_VERSION  # single source of truth
 
 HEARTBEAT_SECONDS = 60
@@ -119,34 +120,8 @@ def default_state_dir() -> Path:
 
 # --- config ------------------------------------------------------------
 
-def _load_program_credentials() -> None:
-    """Load ProgramData\\WatchLog\\watchlog.env into the process environment.
-
-    The recorder credential is stored there as ACL-restricted plaintext. Doing
-    this here means the agent resolves nvr_password identically in every launch
-    context — the SYSTEM background task, a support terminal, or --probe — with
-    no decrypt step. Values already present in the environment win, so an
-    explicit export (a test, or a manual override) still takes precedence.
-    """
-    try:
-        program_data = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
-        env_path = program_data / "WatchLog" / "watchlog.env"
-        if not env_path.exists():
-            return
-        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not raw or raw.lstrip().startswith("#") or "=" not in raw:
-                continue
-            key, _, value = raw.partition("=")
-            key = key.strip()
-            if key and key not in os.environ:
-                os.environ[key] = value
-    except OSError:
-        pass
-
-
 class Config:
     def __init__(self) -> None:
-        _load_program_credentials()
         ini = configparser.ConfigParser()
         ini_path = base_dir() / "watchlog.ini"
         section: dict[str, str] = {}
@@ -184,6 +159,11 @@ class Config:
         self.nvr_username = get("nvr_username") or ""
         self.nvr_password = get("nvr_password") or ""
         self.nvr_driver = (get("nvr_driver") or "auto").strip().lower()
+        self._ini_path = ini_path
+        # Production: the recorder credential lives in the encrypted split store
+        # and is self-decrypted here, so every launch context resolves it the
+        # same way. A corrupt/foreign store is fatal (no plaintext fallback).
+        self.load_recorder_credential()
         self.snapshots = (str(get("snapshots") or "true").strip().lower()
                           not in ("0", "false", "no", "off"))
         self.snapshot_min_interval = int(
@@ -207,6 +187,24 @@ class Config:
 
         self.heartbeat_seconds = int(get("heartbeat_seconds") or HEARTBEAT_SECONDS)
         self.upload_seconds = int(get("upload_seconds") or UPLOAD_SECONDS)
+
+    def load_recorder_credential(self) -> None:
+        """(Re)load the recorder credential from the encrypted split store so
+        every launch context (SYSTEM task, terminal, --probe) resolves it
+        identically. Called at startup and whenever Setup changes it (the
+        interruptible auth breaker). A corrupt or foreign-machine store is fatal
+        — never a plaintext fallback."""
+        if os.name != "nt":
+            return  # dev/lean builds use the env/ini values already set
+        try:
+            cred = credential_store.load_nvr_credential(self._ini_path)
+        except credential_store.SecretError as exc:
+            raise SystemExit(
+                "FATAL: the recorder credential could not be read (corrupt, or a "
+                f"blob copied from another machine). Repair WatchLog.\n  {exc}")
+        if cred:
+            self.nvr_username = cred.get("username") or self.nvr_username
+            self.nvr_password = cred.get("password") or ""
 
     def require_cloud(self) -> None:
         missing = [n for n, v in (("supabase_url", self.supabase_url),
@@ -274,19 +272,41 @@ class Cloud:
 # --- local state -------------------------------------------------------
 
 def load_state(path: Path) -> dict | None:
+    """Load non-secret state and inject the agent key from the encrypted store.
+    "Enrolled" requires BOTH the state AND a decryptable agent key — a state file
+    without a usable key is a half-installed state and is treated as unenrolled."""
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        state = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         log(f"WARNING: state file at {path} unreadable ({e}); treating as unenrolled")
         return None
+    if os.name == "nt" and not state.get("agent_key"):
+        try:
+            key = credential_store.load_agent_key()
+        except credential_store.SecretError as e:
+            raise SystemExit(
+                f"FATAL: the agent identity key is unreadable ({e}). Repair WatchLog.")
+        if key:
+            state["agent_key"] = key
+        else:
+            log("WARNING: agent_state.json present but no decryptable agent key; "
+                "treating as unenrolled (half-installed state)")
+            return None
+    return state
 
 
 def save_state(path: Path, state: dict) -> None:
+    """Persist ONLY non-secret identity; the bearer agent key is written
+    separately to the encrypted Secrets store, never into agent_state.json."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and state.get("agent_key"):
+        credential_store.save_agent_key(state["agent_key"])   # encrypted + DACL-locked
+    public = {k: v for k, v in state.items() if k != "agent_key"}
+    public.setdefault("credential_store_version", credential_store.CREDENTIAL_STORE_VERSION)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(public, indent=2), encoding="utf-8")
     tmp.replace(path)
     if os.name != "nt":
         os.chmod(path, 0o600)
@@ -346,13 +366,54 @@ def enroll(cfg: Config, cloud: Cloud, device) -> dict:
 
 # --- workers -----------------------------------------------------------
 
+_AUTH_BACKOFF_SECONDS = (300, 900, 1800)   # 5, 15, 30 min for CONFIRMED auth failures
+
+
+def _is_auth_failure(err: Exception) -> bool:
+    s = str(err).lower()
+    return ("rejected the username or password" in s or "http 401" in s
+            or "http 403" in s or "invalid username or password" in s
+            or "sender not authorized" in s)
+
+
+def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
+                    last_gen: str) -> tuple[str, str]:
+    """Interruptible backoff between driver reconnects. Returns (outcome, gen).
+
+    Confirmed auth failures escalate 5->15->30 min so a wrong password never
+    hammers the recorder (lockout risk); everything else uses the short
+    DRIVER_RETRY_SECONDS. A credential change (Setup rewriting the DPAPI blob)
+    wakes the wait immediately, reloads the credential and lets the caller retry
+    now — never wait out 30 minutes after the operator fixes the password."""
+    if auth_failures > 0:
+        total = float(_AUTH_BACKOFF_SECONDS[min(auth_failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)])
+        log(f"recorder authentication is failing; backing off {int(total) // 60} min "
+            f"(will retry immediately if the credential is updated in Setup)")
+    else:
+        total = float(DRIVER_RETRY_SECONDS)
+    waited, step = 0.0, 5.0
+    while waited < total:
+        if stop.wait(min(step, total - waited)):
+            return "stop", last_gen
+        waited += step
+        gen = credential_store.credential_generation()
+        if gen != last_gen:
+            log("recorder credential changed in Setup; reloading and retrying now")
+            cfg.load_recorder_credential()
+            return "reload", gen
+    return "timeout", last_gen
+
+
 def collector(cfg: Config, spool, stop: threading.Event) -> None:
     """Driver thread. Never dies: on error it backs off and re-opens."""
     # Built once, outside the reconnect loop: loading the weights costs
     # seconds, and a flapping NVR must not re-pay that on every retry.
     detector = vision.build(cfg, log)
+    auth_failures = 0
+    last_gen = credential_store.credential_generation()
     while not stop.is_set():
         driver = None
+        auth_error = False
         try:
             driver, info = open_driver(cfg)
             log(f"driver {driver.name}: {info.vendor} {info.model or ''} "
@@ -412,6 +473,7 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
                     log(f"WARNING: spool over capacity, dropped {dropped} "
                         f"oldest events")
         except (DriverError, requests.RequestException, RuntimeError) as e:
+            auth_error = _is_auth_failure(e)
             # Log every line. The first line alone is "no driver recognised
             # the device", which tells whoever is reading the log nothing
             # they can act on; the per-driver reasons are the diagnosis.
@@ -431,8 +493,12 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
             if driver:
                 driver.close()
         if not stop.is_set():
-            log(f"driver reconnecting in {DRIVER_RETRY_SECONDS}s")
-            stop.wait(DRIVER_RETRY_SECONDS)
+            auth_failures = auth_failures + 1 if auth_error else 0
+            if not auth_error:
+                log(f"driver reconnecting in {DRIVER_RETRY_SECONDS}s")
+            outcome, last_gen = _reconnect_wait(stop, cfg, auth_failures, last_gen)
+            if outcome == "reload":
+                auth_failures = 0       # fresh credential -> reset breaker, retry now
 
 
 def upload_once(cloud: Cloud, state: dict, spool) -> int:
