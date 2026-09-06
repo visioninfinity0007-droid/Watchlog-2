@@ -61,7 +61,7 @@ import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 
-AGENT_VERSION = "0.3.3"
+from wl_version import VERSION as AGENT_VERSION  # single source of truth
 
 HEARTBEAT_SECONDS = 60
 UPLOAD_SECONDS = 15

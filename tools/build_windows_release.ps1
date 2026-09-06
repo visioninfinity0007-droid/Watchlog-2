@@ -118,6 +118,16 @@ try {
   if (-not $pubKey) { $pubKey = $cfg["SUPABASE_PUBLISHABLE_KEY"] }
   if (-not $supaUrl) { throw "no Supabase URL supplied (-SupabaseUrl, SUPABASE_URL, or .env)" }
   if (-not $pubKey) { throw "no Supabase publishable key supplied (-SupabasePublishableKey, SUPABASE_PUBLISHABLE_KEY, or .env)" }
+
+  # Fail-closed guards against the 0.3.3 argument-binding class of bug: a leaked
+  # parameter name ('-SupabaseUrl', '-SignPfx', ...) must never be baked into a
+  # shipped config.
+  if ($supaUrl -notmatch '^https://') { throw "SupabaseUrl is not an https URL: '$supaUrl' (argument-binding leak?)" }
+  if ($pubKey -match '^\s*-' -or $pubKey.Length -lt 20) { throw "publishable key looks wrong/leaked: '$pubKey'" }
+  if ($Code -and $Code -notmatch '^WL-') { throw "enrollment code is not a WL- code: '$Code' (argument-binding leak?)" }
+  if ($PublisherUrl -and $PublisherUrl -notmatch '^https://') { throw "PublisherUrl is not an https URL: '$PublisherUrl' (argument-binding leak?)" }
+
+  $defaultsPath = Join-Path $stage "watchlog.defaults.ini"
   @"
 ; WatchLog public installation defaults.
 [watchlog]
@@ -125,7 +135,13 @@ supabase_url = $supaUrl
 supabase_publishable_key = $pubKey
 enrollment_code = $Code
 nvr_driver = auto
-"@ | Set-Content -Path (Join-Path $stage "watchlog.defaults.ini") -Encoding UTF8
+"@ | Set-Content -Path $defaultsPath -Encoding UTF8
+
+  # Verify the STAGED config before packaging (defense in depth).
+  $staged = Get-Content $defaultsPath -Raw
+  if ($staged -notmatch '(?m)^supabase_url = https://') { throw "staged watchlog.defaults.ini has an invalid supabase_url:`n$staged" }
+  if ($staged -match '(?m)^enrollment_code = -')       { throw "staged watchlog.defaults.ini has a leaked enrollment_code:`n$staged" }
+  Write-Host "Staged public config verified (supabase_url https, no leaked args)." -ForegroundColor Green
 
   # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"
@@ -140,16 +156,28 @@ nvr_driver = auto
   if (-not $makensis) { throw "makensis not found. Install NSIS: winget install NSIS.NSIS" }
 
   Write-Host "Compiling WatchLog-Setup.exe with NSIS..." -ForegroundColor Cyan
-  $nsisArgs = @("/DICON=setup.ico", "/DOUTFILE=$setup")
+  # Single version source: pass wl_version.py's VERSION into NSIS.
+  $verFile = Join-Path $root "prototype\agent\wl_version.py"
+  $verMatch = Select-String -Path $verFile -Pattern '^VERSION\s*=\s*"([^"]+)"'
+  if (-not $verMatch) { throw "could not read VERSION from $verFile" }
+  $appVersion = $verMatch.Matches[0].Groups[1].Value
+  Write-Host "  Version (from wl_version.py): $appVersion" -ForegroundColor Gray
+  $nsisArgs = @("/DICON=setup.ico", "/DOUTFILE=$setup", "/DAPPVERSION=$appVersion")
   if ($PublisherUrl) { $nsisArgs += "/DPUBLISHER_URL=$PublisherUrl" }
   Push-Location $stage
   try {
-    & $makensis @nsisArgs "watchlog.nsi" | Out-Host
+    $nsisOut = & $makensis @nsisArgs "watchlog.nsi" 2>&1 | Out-String
     $rc = $LASTEXITCODE
   } finally {
     Pop-Location
   }
+  Write-Host $nsisOut
   if ($rc -ne 0 -or -not (Test-Path $setup)) { throw "makensis failed (exit $rc)" }
+  # Zero-warning release gate: an ignored NSIS warning is exactly how the
+  # invalid $PROGRAMDATA paths shipped in 0.3.3.
+  $nsisWarnings = ($nsisOut -split "`r?`n") | Where-Object { $_ -match 'warning \d+:' }
+  if ($nsisWarnings) { throw "NSIS emitted warnings (fatal for a release build):`n$($nsisWarnings -join "`n")" }
+  Write-Host "  NSIS compiled with zero warnings." -ForegroundColor Green
 
   $setupBytes = (Get-Item $setup).Length
   $minimumSetupBytes = if ($Lean) { 5MB } else { 10MB }

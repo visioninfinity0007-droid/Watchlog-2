@@ -28,7 +28,7 @@ import watchlog_agent as core
 from drivers import DriverError
 from spool import Spool
 
-AGENT_VERSION = "0.3.0"
+from wl_version import VERSION as AGENT_VERSION  # single source of truth (was a stale 0.3.0 that overrode core)
 ANALYTICS_UPLOAD_BATCH = 500
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2

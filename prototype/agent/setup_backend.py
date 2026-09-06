@@ -21,7 +21,7 @@ import wsdiscovery
 from drivers import DriverError, build
 from windows_secret import NVR_PASSWORD_ENV_KEY, SecretError, write_env_file
 
-SETUP_AGENT_VERSION = "0.3.3"
+from wl_version import VERSION as SETUP_AGENT_VERSION  # single source of truth
 
 SITE_TYPES = [
     ("retail", "Retail / QSR"),

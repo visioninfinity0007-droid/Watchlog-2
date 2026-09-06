@@ -60,13 +60,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $releaseArgs = @(
-            '-SupabaseUrl', $env:SUPABASE_URL,
-            '-SupabasePublishableKey', $env:SUPABASE_PUBLISHABLE_KEY
-          )
-          if ($env:PUBLISHER_URL) {
-            $releaseArgs += @('-PublisherUrl', $env:PUBLISHER_URL)
+          # Named (hashtable) splat — NOT an array. Array splatting binds
+          # POSITIONALLY: in 0.3.3 that shifted '-SupabaseUrl' into -Code and the
+          # real URL into -PublisherUrl, baking an INVALID backend URL and
+          # '-SupabaseUrl' as the site code. A hashtable binds by parameter name.
+          $releaseArgs = @{
+            SupabaseUrl            = $env:SUPABASE_URL
+            SupabasePublishableKey = $env:SUPABASE_PUBLISHABLE_KEY
           }
+          if ($env:PUBLISHER_URL) { $releaseArgs['PublisherUrl'] = $env:PUBLISHER_URL }
 
           $pfx = $null
           try {
@@ -76,7 +78,8 @@ jobs:
               }
               $pfx = Join-Path $env:RUNNER_TEMP 'watchlog-signing.pfx'
               [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_B64))
-              $releaseArgs += @('-SignPfx', $pfx, '-SignPassword', $env:SIGN_PASSWORD)
+              $releaseArgs['SignPfx'] = $pfx
+              $releaseArgs['SignPassword'] = $env:SIGN_PASSWORD
             }
 
             & .\tools\build_windows_release.ps1 @releaseArgs

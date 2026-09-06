@@ -7,7 +7,11 @@
 Unicode true
 
 !define APPNAME "WatchLog"
-!define APPVERSION "0.3.3"
+; Single version source: build passes /DAPPVERSION from wl_version.py. The
+; fallback must be kept in step (a contract test asserts it).
+!ifndef APPVERSION
+  !define APPVERSION "0.3.4"
+!endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
 !define ARPKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WatchLog"
@@ -40,7 +44,7 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "0.3.3.0"
+VIProductVersion "${APPVERSION}.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileVersion" "${APPVERSION}"
@@ -49,10 +53,16 @@ VIAddVersionKey "FileDescription" "WatchLog Windows installer"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 Section "Install"
+  ; Per-machine install (elevated). Resolve $APPDATA/$SMPROGRAMS to the
+  ; machine-wide locations: under this context $APPDATA == C:\ProgramData,
+  ; matching what the agent uses. NOTE: the PROGRAMDATA constant is NOT valid
+  ; in NSIS and silently broke credential/upgrade/uninstall path logic in
+  ; 0.3.3 (NSIS warning 6000); $APPDATA (all-users) is the correct one.
+  SetShellVarContext all
   ; Detect an already-enrolled installation before replacing any binaries.
   StrCpy $6 "0"
   IfFileExists "$INSTDIR\watchlog.ini" 0 +3
-  IfFileExists "$PROGRAMDATA\WatchLog\agent_state.json" 0 +2
+  IfFileExists "$APPDATA\WatchLog\agent_state.json" 0 +2
     StrCpy $6 "1"
 
   ; An upgrade may have the existing long-running task holding files. Stop it,
@@ -98,7 +108,7 @@ Section "Install"
     ; removed (uninstall deletes it), and pre-env-store installs have no env
     ; file to migrate. If there is still no credential, open setup to re-enter
     ; it rather than dead-ending on the check below.
-    ${IfNot} ${FileExists} "$PROGRAMDATA\WatchLog\watchlog.env"
+    ${IfNot} ${FileExists} "$APPDATA\WatchLog\watchlog.env"
       DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
@@ -118,7 +128,7 @@ Section "Install"
   ${EndIf}
 
   ; The recorder credential must exist before a background task can start.
-  ${IfNot} ${FileExists} "$PROGRAMDATA\WatchLog\watchlog.env"
+  ${IfNot} ${FileExists} "$APPDATA\WatchLog\watchlog.env"
     MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after setup. Run WatchLog Setup again."
     Abort "Recorder credential missing"
   ${EndIf}
@@ -158,6 +168,7 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  SetShellVarContext all
   ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
   ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
   Delete "${STARTMENU}\WatchLog Setup.lnk"
@@ -179,6 +190,6 @@ Section "Uninstall"
   ; Remove the recorder credential on uninstall. Logs/spool/state remain in
   ; ProgramData intentionally for support/reinstall continuity; delete that
   ; folder manually only when a full local data wipe is required.
-  Delete "$PROGRAMDATA\WatchLog\watchlog.env"
-  Delete "$PROGRAMDATA\WatchLog\nvr_password.dpapi"
+  Delete "$APPDATA\WatchLog\watchlog.env"
+  Delete "$APPDATA\WatchLog\nvr_password.dpapi"
 SectionEnd

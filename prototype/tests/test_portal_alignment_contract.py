@@ -173,7 +173,8 @@ def check():
     version_match=re.search(r'!define APPVERSION "([0-9]+\.[0-9]+\.[0-9]+)"',NSIS)
     assert version_match
     app_version=version_match.group(1)
-    assert f'VIProductVersion "{app_version}.0"' in NSIS
+    # VIProductVersion derives from the ${APPVERSION} macro (single version source).
+    assert 'VIProductVersion "${APPVERSION}.0"' in NSIS
     assert '!define PUBLISHER "Vision Infinity"' in NSIS
     assert '!include "LogicLib.nsh"' in NSIS
     assert "watchlog.example" not in NSIS and "watchlog.pk" not in NSIS
