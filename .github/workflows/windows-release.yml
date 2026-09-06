@@ -128,18 +128,64 @@ jobs:
             throw "packaged agent reports the wrong version (expected 0.3.4):`n$agentSelftest"
           }
 
-          # Prove the windowed setup executable can start in a deterministic,
-          # non-interactive mode. A blank config means migration is a safe no-op.
-          $cfg = Join-Path $env:RUNNER_TEMP 'watchlog-release-ui-check.ini'
-          @"
-          [watchlog]
-          supabase_url = $env:SUPABASE_URL
-          supabase_publishable_key = $env:SUPABASE_PUBLISHABLE_KEY
-          enrollment_code =
-          nvr_driver = auto
-          "@ | Set-Content $cfg -Encoding UTF8
-          & $setupUi.FullName --migrate-only --config $cfg
-          if ($LASTEXITCODE -ne 0) { throw "packaged setup UI migration mode failed with exit $LASTEXITCODE" }
+          # PACKAGED-EXE DPAPI PROOF: prove the FROZEN setup UI actually drives
+          # credential_store -> DPAPI, not merely that it launches. Seed a legacy
+          # watchlog.env in an isolated ProgramData, run --migrate-only, then prove a
+          # real, decryptable, DACL-locked Secrets\nvr_credential.dpapi is published.
+          Add-Type -AssemblyName System.Security
+          Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+          $origPd = $env:PROGRAMDATA
+          $pd = Join-Path $env:RUNNER_TEMP 'wl-pkgproof'
+          if (Test-Path $pd) { Remove-Item $pd -Recurse -Force }
+          $wlDir = Join-Path $pd 'WatchLog'
+          New-Item -ItemType Directory -Force $wlDir | Out-Null
+          $tuser = 'pkgproof_op'
+          $tpass = 'Pkg-DPAPI-Proof-9471'
+          $envFile = Join-Path $wlDir 'watchlog.env'
+          Set-Content -Path $envFile -Encoding ASCII -Value "WATCHLOG_NVR_PASSWORD=$tpass"
+          $cfg = Join-Path $wlDir 'watchlog.ini'
+          Set-Content -Path $cfg -Encoding UTF8 -Value @('[watchlog]', "nvr_username = $tuser", "supabase_url = $env:SUPABASE_URL", "supabase_publishable_key = $env:SUPABASE_PUBLISHABLE_KEY", 'nvr_driver = auto')
+          try {
+            $env:PROGRAMDATA = $pd
+            & $setupUi.FullName --migrate-only --config $cfg
+            if ($LASTEXITCODE -ne 0) { throw "packaged setup UI --migrate-only failed with exit $LASTEXITCODE" }
+          } finally {
+            $env:PROGRAMDATA = $origPd
+          }
+          $blobPath = Join-Path $wlDir 'Secrets\nvr_credential.dpapi'
+          if (-not (Test-Path $blobPath)) { throw 'packaged exe did not create Secrets\nvr_credential.dpapi — DPAPI store not exercised' }
+          if (Test-Path $envFile) { throw 'legacy watchlog.env was not removed after migration' }
+          $blobBytes = [IO.File]::ReadAllBytes($blobPath)
+          function Test-ByteSubseq($hay, $needle) {
+            for ($i=0; $i -le $hay.Length - $needle.Length; $i++) {
+              $m=$true; for ($j=0; $j -lt $needle.Length; $j++) { if ($hay[$i+$j] -ne $needle[$j]) { $m=$false; break } }
+              if ($m) { return $true }
+            }
+            return $false
+          }
+          if ((Test-ByteSubseq $blobBytes ([Text.Encoding]::UTF8.GetBytes($tpass))) -or (Test-ByteSubseq $blobBytes ([Text.Encoding]::Unicode.GetBytes($tpass)))) {
+            throw 'plaintext recorder password found inside the DPAPI blob'
+          }
+          $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($blobBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+          $obj = [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
+          if ($obj.username -ne $tuser) { throw "decrypted username '$($obj.username)' != '$tuser'" }
+          if ($obj.password -ne $tpass) { throw 'decrypted password does not match the seeded value' }
+          if (-not $obj.credential_version) { throw 'decrypted credential is missing credential_version' }
+          foreach ($p in @((Join-Path $wlDir 'Secrets'), $blobPath)) {
+            $acl = Get-Acl -LiteralPath $p
+            $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+            if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { throw "$p owner $owner is not SYSTEM/Administrators" }
+            if (-not $acl.AreAccessRulesProtected) { throw "$p inheritance is not disabled" }
+            foreach ($r in $acl.Access) {
+              if ($r.AccessControlType -eq 'Allow') {
+                $sid = $r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+                if ($sid -notin @('S-1-5-18','S-1-5-32-544')) { throw "$p grants unexpected principal $sid" }
+              }
+            }
+          }
+          Remove-Item $pd -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "  Packaged-EXE DPAPI proof PASSED: frozen setup UI -> credential_store -> DPAPI."
+          Write-Host "    username=$($obj.username) credential_version=$($obj.credential_version) plaintext-in-blob=NO owner/DACL=SYSTEM+Admins"
           # Best-effort direct version echo (a windowed exe's console-attach may
           # not be pipe-captured on the runner; the agent self-test above and the
           # shared wl_version.py are the authoritative proof the setup UI is 0.3.4).

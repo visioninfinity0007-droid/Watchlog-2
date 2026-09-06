@@ -66,7 +66,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $py   = (Get-Command python).Source
-          $work = "$env:TEMP\wlsec"
+          # A short, space-free root keeps the schtasks /tr wrapper path well under
+          # the 261-char cap and removes path/quoting noise from the security test.
+          $work = "C:\wlsec"
+          if (Test-Path $work) { Remove-Item $work -Recurse -Force }
           New-Item -ItemType Directory -Force "$work\tests","$work\agent" | Out-Null
           Copy-Item "prototype\tests\windows_security_gate.py" "$work\tests\"
           Copy-Item "prototype\agent\windows_secret.py","prototype\agent\credential_store.py" "$work\agent\"
@@ -87,12 +90,17 @@ jobs:
           function Invoke-AsIdentity($identity, $pass, $name, $sub) {
             $res = "$work\$name.result"
             $log = "$work\$name.log"
+            $cmdFile = "$work\$name.cmd"
             if (Test-Path $res) { Remove-Item $res -Force }
-            $inner = "`"$py`" `"$gate`" --result `"$res`" $sub > `"$log`" 2>&1"
+            # schtasks caps /tr at 261 chars; the full python+gate+result+log+two
+            # Secrets paths command blows past that ("Value for '/tr' option cannot
+            # be more than 261 character(s)"), so run it from a tiny wrapper .cmd and
+            # keep /tr = 'cmd /c <wrapper>'. The wrapper is world-readable via $work.
+            Set-Content -Path $cmdFile -Encoding Ascii -Value "`"$py`" `"$gate`" --result `"$res`" $sub > `"$log`" 2>&1"
             if ($identity -eq 'SYSTEM') {
-              schtasks /create /tn $name /ru SYSTEM /sc once /st 23:59 /tr "cmd /c $inner" /f | Out-Null
+              schtasks /create /tn $name /ru SYSTEM /sc once /st 23:59 /tr "cmd /c $cmdFile" /f | Out-Null
             } else {
-              schtasks /create /tn $name /ru $identity /rp $pass /sc once /st 23:59 /tr "cmd /c $inner" /f | Out-Null
+              schtasks /create /tn $name /ru $identity /rp $pass /sc once /st 23:59 /tr "cmd /c $cmdFile" /f | Out-Null
             }
             schtasks /run /tn $name | Out-Null
             $deadline = (Get-Date).AddSeconds(90)
