@@ -2,11 +2,12 @@
 -- 0041 - Incident clip authorization + retention hardening
 --
 -- 0040 establishes the on-demand request/chunk transport. This forward
--- hardening closes two fail-closed requirements before the feature can ship:
+-- hardening closes three fail-closed requirements before the feature can ship:
 -- 1) validate agent claim ownership BEFORE deleting chunks on failure;
 -- 2) physically purge expired footage bytes during the normal authenticated
---    site-agent request poll, so 24-hour retention is enforced in storage and
---    is not merely a portal visibility rule.
+--    site-agent request poll;
+-- 3) independently sweep expired footage even when the originating site agent
+--    is offline, so retention is not dependent on the site reconnecting.
 -- =====================================================================
 
 create or replace function public.wl_agent_fail_clip(
@@ -120,3 +121,21 @@ comment on function public.wl_agent_claim_clip_requests(uuid,text,int)
 
 revoke all on function public.wl_agent_claim_clip_requests(uuid,text,int) from public;
 grant execute on function public.wl_agent_claim_clip_requests(uuid,text,int) to anon,authenticated;
+
+-- ---------------------------------------------------------------------
+-- Independent physical-retention sweep.
+--
+-- Agent polling is a useful opportunistic cleanup path, but cannot be the only
+-- deletion mechanism: a site may go offline immediately after uploading a
+-- ready clip. Supabase Cron is backed by pg_cron; use a named job so reapplying
+-- this pre-release migration definition replaces the same job rather than
+-- multiplying schedules. The customer-facing clip becomes unreadable at
+-- expires_at; this sweep removes the underlying bytea chunks shortly after.
+-- ---------------------------------------------------------------------
+create extension if not exists pg_cron;
+
+select cron.schedule(
+  'watchlog-prune-incident-clips',
+  '*/15 * * * *',
+  $$select public.wl_prune_incident_clips(24);$$
+);
