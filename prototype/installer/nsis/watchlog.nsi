@@ -7,7 +7,7 @@
 Unicode true
 
 !define APPNAME "WatchLog"
-!define APPVERSION "0.3.1"
+!define APPVERSION "0.3.3"
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
 !define ARPKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WatchLog"
@@ -40,7 +40,7 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "0.3.1.0"
+VIProductVersion "0.3.3.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileVersion" "${APPVERSION}"
@@ -84,15 +84,28 @@ Section "Install"
 
   ${If} $6 == "1"
     DetailPrint "Updating the existing WatchLog installation..."
-    ; Existing engineering builds stored nvr_password in plaintext. Migrate it
-    ; silently to machine-scoped DPAPI before the SYSTEM task is restarted.
+    ; Older builds stored nvr_password as plaintext in the INI. Migrate it into
+    ; the ACL-restricted env credential file before the SYSTEM task restarts.
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --migrate-only --config "$INSTDIR\watchlog.ini"' $0
     ${If} $0 != 0
       ${If} $8 == "1"
         ExecWait '"$SYSDIR\schtasks.exe" /Run /TN "${TASKNAME}"' $9
       ${EndIf}
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not securely migrate the existing recorder credential. The upgrade was stopped so the site is not left in a misleading state."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not migrate the existing recorder credential. The upgrade was stopped so the site is not left in a misleading state."
       Abort "WatchLog credential migration failed"
+    ${EndIf}
+    ; A reinstall can keep enrollment state while the credential file was
+    ; removed (uninstall deletes it), and pre-env-store installs have no env
+    ; file to migrate. If there is still no credential, open setup to re-enter
+    ; it rather than dead-ending on the check below.
+    ${IfNot} ${FileExists} "$PROGRAMDATA\WatchLog\watchlog.env"
+      DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
+      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
+      DetailPrint "WatchLog setup exited with code $0"
+      ${If} $0 != 0
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+        Abort "WatchLog setup did not complete"
+      ${EndIf}
     ${EndIf}
   ${Else}
     DetailPrint "Opening WatchLog Setup..."
@@ -104,10 +117,11 @@ Section "Install"
     ${EndIf}
   ${EndIf}
 
-  ; The protected credential must exist before a background task can start.
-  IfFileExists "$PROGRAMDATA\WatchLog\nvr_password.dpapi" +3 0
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the protected recorder credential after setup. Run WatchLog Setup again."
-    Abort "Protected recorder credential missing"
+  ; The recorder credential must exist before a background task can start.
+  ${IfNot} ${FileExists} "$PROGRAMDATA\WatchLog\watchlog.env"
+    MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after setup. Run WatchLog Setup again."
+    Abort "Recorder credential missing"
+  ${EndIf}
 
   ; Register/update background startup only after customer setup (fresh) or
   ; credential migration (upgrade) has completed successfully.
@@ -165,5 +179,6 @@ Section "Uninstall"
   ; Remove the recorder credential on uninstall. Logs/spool/state remain in
   ; ProgramData intentionally for support/reinstall continuity; delete that
   ; folder manually only when a full local data wipe is required.
+  Delete "$PROGRAMDATA\WatchLog\watchlog.env"
   Delete "$PROGRAMDATA\WatchLog\nvr_password.dpapi"
 SectionEnd

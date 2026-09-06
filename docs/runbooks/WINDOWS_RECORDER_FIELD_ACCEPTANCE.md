@@ -31,7 +31,11 @@ Current `main` installs to:
 
 - Program files: `C:\Program Files\WatchLog`
 - Local data: `C:\ProgramData\WatchLog`
-- Protected recorder credential: `C:\ProgramData\WatchLog\nvr_password.dpapi`
+- Recorder credential (0.3.3+): `C:\ProgramData\WatchLog\watchlog.env` — plaintext
+  `WATCHLOG_NVR_PASSWORD=...`, file ACL restricted to SYSTEM + local
+  Administrators (no encryption; read directly by the agent in any launch).
+  A support terminal must be **Run as Administrator** to read it. Legacy
+  builds used `nvr_password.dpapi` (DPAPI); it is superseded on upgrade.
 - Agent log: `C:\ProgramData\WatchLog\agent.log`
 - Setup log: `C:\ProgramData\WatchLog\setup.log`
 - Local state: `C:\ProgramData\WatchLog\agent_state.json`
@@ -42,7 +46,11 @@ Current `main` installs to:
 
 The installer must not register/start `WatchLog Agent` after an incomplete or failed fresh setup.
 
-Uninstall intentionally removes the protected recorder credential and Windows task, while retaining local logs/state under `C:\ProgramData\WatchLog` for support/reinstall continuity.
+Uninstall intentionally removes the recorder credential (`watchlog.env`, plus any
+legacy `nvr_password.dpapi`) and the Windows task, while retaining local
+logs/state under `C:\ProgramData\WatchLog` for support/reinstall continuity. A
+reinstall that finds retained enrollment state but no credential re-opens setup
+to re-enter the recorder password (it no longer dead-ends).
 
 ## 3. Evidence rules
 

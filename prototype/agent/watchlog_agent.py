@@ -61,7 +61,7 @@ import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 
-AGENT_VERSION = "0.2.0-prototype"
+AGENT_VERSION = "0.3.3"
 
 HEARTBEAT_SECONDS = 60
 UPLOAD_SECONDS = 15
@@ -119,8 +119,34 @@ def default_state_dir() -> Path:
 
 # --- config ------------------------------------------------------------
 
+def _load_program_credentials() -> None:
+    """Load ProgramData\\WatchLog\\watchlog.env into the process environment.
+
+    The recorder credential is stored there as ACL-restricted plaintext. Doing
+    this here means the agent resolves nvr_password identically in every launch
+    context — the SYSTEM background task, a support terminal, or --probe — with
+    no decrypt step. Values already present in the environment win, so an
+    explicit export (a test, or a manual override) still takes precedence.
+    """
+    try:
+        program_data = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+        env_path = program_data / "WatchLog" / "watchlog.env"
+        if not env_path.exists():
+            return
+        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not raw or raw.lstrip().startswith("#") or "=" not in raw:
+                continue
+            key, _, value = raw.partition("=")
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except OSError:
+        pass
+
+
 class Config:
     def __init__(self) -> None:
+        _load_program_credentials()
         ini = configparser.ConfigParser()
         ini_path = base_dir() / "watchlog.ini"
         section: dict[str, str] = {}

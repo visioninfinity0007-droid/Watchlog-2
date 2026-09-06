@@ -19,9 +19,9 @@ import discover
 import watchlog_agent as core
 import wsdiscovery
 from drivers import DriverError, build
-from windows_secret import SecretError, write_secret
+from windows_secret import NVR_PASSWORD_ENV_KEY, SecretError, write_env_file
 
-SETUP_AGENT_VERSION = "0.3.2"
+SETUP_AGENT_VERSION = "0.3.3"
 
 SITE_TYPES = [
     ("retail", "Retail / QSR"),
@@ -66,7 +66,13 @@ def programdata_dir() -> Path:
     return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
 
 
-def secret_path() -> Path:
+def credential_path() -> Path:
+    """ACL-restricted plaintext env file holding the recorder password."""
+    return programdata_dir() / "watchlog.env"
+
+
+def legacy_secret_path() -> Path:
+    """Old machine-scoped DPAPI blob (0.2–0.3.2). Removed on migration."""
     return programdata_dir() / "nvr_password.dpapi"
 
 
@@ -88,7 +94,15 @@ def read_public_defaults(config_path: Path) -> dict:
 
 
 def migrate_legacy_credentials(config_path: Path) -> bool:
-    """Move an old plaintext nvr_password entry into machine-scoped DPAPI."""
+    """Move an old plaintext nvr_password from watchlog.ini into the
+    ACL-restricted env credential file.
+
+    Only the plaintext-INI shape is migrated. Older DPAPI-blob installs are
+    intentionally *not* decrypted here (the credential store no longer
+    decrypts anything); the installer falls back to re-running setup so the
+    password is re-entered once and stored in the env file. Returns True when
+    a credential was migrated.
+    """
     if not config_path.exists():
         return False
     ini = configparser.ConfigParser()
@@ -99,10 +113,15 @@ def migrate_legacy_credentials(config_path: Path) -> bool:
     password = section.get("nvr_password", "")
     if not password:
         return False
-    write_secret(secret_path(), password)
+    write_env_file(credential_path(), {NVR_PASSWORD_ENV_KEY: password})
     section.pop("nvr_password", None)
-    section["nvr_password_protected"] = "dpapi-local-machine"
+    section["nvr_password_protected"] = "env-file"
     _write_ini(config_path, ini)
+    # The legacy DPAPI blob, if any, is now superseded by the env file.
+    try:
+        legacy_secret_path().unlink()
+    except OSError:
+        pass
     return True
 
 
@@ -417,7 +436,7 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
     section["nvr_url"] = recorder["url"]
     section["nvr_username"] = username.strip()
     section["nvr_driver"] = "auto"
-    section["nvr_password_protected"] = "dpapi-local-machine"
+    section["nvr_password_protected"] = "env-file"
     section["site_type"] = site_type
     section["camera_profiles_json"] = json.dumps(profiles, separators=(",", ":"))
     _write_ini(config_path, ini)
@@ -445,11 +464,11 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     progress("Verifying the recorder one more time…")
     recorder = test_recorder(address, username, password, progress=progress, hint=hint)
 
-    progress("Protecting recorder credentials on this PC…")
+    progress("Saving recorder credentials on this PC…")
     try:
-        write_secret(secret_path(), password)
+        write_env_file(credential_path(), {NVR_PASSWORD_ENV_KEY: password})
     except SecretError as exc:
-        raise ValueError("Windows could not protect the recorder credential on this PC.") from exc
+        raise ValueError("Windows could not save the recorder credential on this PC.") from exc
     _write_proven_config(config_path, public, enrollment_code, recorder, username, site_type, profiles)
 
     progress("Connecting this site to WatchLog…")

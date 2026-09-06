@@ -1,93 +1,43 @@
-"""Windows-local secret handling for the WatchLog installer.
+"""Windows-local recorder credential storage for WatchLog.
 
-The recorder password never needs to leave the site PC. Customer releases store
-it as a machine-scoped DPAPI blob in ProgramData so both the elevated setup UI
-and the SYSTEM background task can use it. The blob cannot be decrypted on a
-different Windows machine. Because LOCAL_MACHINE DPAPI can be unwrapped by
-other accounts on the same PC, the file ACL is restricted to SYSTEM and local
-Administrators.
+The recorder password never needs to leave the site PC. It is stored as a
+plaintext value in an ACL-restricted env file under ProgramData
+(``watchlog.env``) so that every launch context — the SYSTEM background task,
+a hands-on support terminal, or ``--probe`` — reads it the same way, with no
+decrypt step.
+
+At-rest protection is the file ACL only: inherited ProgramData permissions
+(which grant ordinary Users read) are stripped and access is restricted to
+SYSTEM and the local Administrators group. There is intentionally no
+encryption layer — this is a deliberate credential-storage decision that
+trades encrypted-at-rest for a single, launch-context-independent read path.
+Because the value is plaintext on disk, the file ACL is the only barrier;
+keep it.
 """
 from __future__ import annotations
 
-import ctypes
 import os
 import subprocess
-from ctypes import wintypes
 from pathlib import Path
 
-CRYPTPROTECT_LOCAL_MACHINE = 0x4
 SYSTEM_SID = "*S-1-5-18"
 ADMINISTRATORS_SID = "*S-1-5-32-544"
+
+# The single key both the setup UI writes and the agent reads.
+NVR_PASSWORD_ENV_KEY = "WATCHLOG_NVR_PASSWORD"
 
 
 class SecretError(RuntimeError):
     pass
 
 
-class DATA_BLOB(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD),
-                ("pbData", ctypes.POINTER(ctypes.c_byte))]
-
-
-def _make_blob(payload: bytes):
-    buffer = ctypes.create_string_buffer(payload)
-    blob = DATA_BLOB(len(payload), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)))
-    return blob, buffer
-
-
-def protect_bytes(payload: bytes) -> bytes:
-    if os.name != "nt":
-        raise SecretError("DPAPI is available only on Windows")
-    if not payload:
-        raise SecretError("refusing to protect an empty credential")
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    source, source_buffer = _make_blob(payload)
-    result = DATA_BLOB()
-    ok = crypt32.CryptProtectData(
-        ctypes.byref(source), "WatchLog recorder credential", None, None, None,
-        CRYPTPROTECT_LOCAL_MACHINE, ctypes.byref(result))
-    _ = source_buffer
-    if not ok:
-        raise SecretError(f"CryptProtectData failed ({kernel32.GetLastError()})")
-    try:
-        return ctypes.string_at(result.pbData, result.cbData)
-    finally:
-        if result.pbData:
-            kernel32.LocalFree(result.pbData)
-
-
-def unprotect_bytes(payload: bytes) -> bytes:
-    if os.name != "nt":
-        raise SecretError("DPAPI is available only on Windows")
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    source, source_buffer = _make_blob(payload)
-    result = DATA_BLOB()
-    ok = crypt32.CryptUnprotectData(
-        ctypes.byref(source), None, None, None, None, 0, ctypes.byref(result))
-    _ = source_buffer
-    if not ok:
-        raise SecretError(f"CryptUnprotectData failed ({kernel32.GetLastError()})")
-    try:
-        return ctypes.string_at(result.pbData, result.cbData)
-    finally:
-        if result.pbData:
-            kernel32.LocalFree(result.pbData)
-
-
-def protect_text(secret: str) -> bytes:
-    return protect_bytes(secret.encode("utf-8"))
-
-
-def unprotect_text(payload: bytes) -> str:
-    try:
-        return unprotect_bytes(payload).decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise SecretError("protected recorder credential is unreadable") from exc
-
-
 def _lock_acl(path: Path) -> None:
+    """Restrict a file to SYSTEM + local Administrators.
+
+    Removes inherited ProgramData permissions so a standard user cannot read
+    the stored recorder password. Raises on failure; callers decide whether
+    that is fatal.
+    """
     if os.name != "nt":
         return
     command = [
@@ -97,33 +47,61 @@ def _lock_acl(path: Path) -> None:
     result = subprocess.run(command, capture_output=True, text=True, timeout=15,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode != 0:
-        raise SecretError("Windows could not restrict access to the protected recorder credential")
+        raise SecretError("Windows could not restrict access to the recorder credential file")
 
 
-def write_secret(path: Path, secret: str) -> None:
-    """Protect and atomically publish a credential with a restrictive ACL.
+def write_env_file(path: Path, values: dict[str, str]) -> None:
+    """Publish ``KEY=VALUE`` lines to an ACL-restricted env file, atomically.
 
-    Lock the temporary file before the rename so there is no interval in which
-    the final path exists with inherited ProgramData permissions. Re-apply the
-    ACL after replacement as a defensive verification of the published file.
+    The ACL is applied to the temp file *before* the rename so the final path
+    is never briefly readable with inherited ProgramData permissions. ACL
+    hardening is best-effort: if ``icacls`` fails the file is still written
+    (reliability over a hard failure) so the site keeps working, but a
+    standard user may then be able to read it. The file write itself must
+    succeed or this raises ``SecretError``.
+
+    Values are written verbatim after the first ``=`` and must not contain a
+    newline (recorder passwords do not).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"{key}={value}\n" for key, value in values.items())
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_bytes(protect_text(secret))
-        _lock_acl(tmp)
+        tmp.write_text(body, encoding="utf-8")
         tmp.replace(path)
-        _lock_acl(path)
-    except Exception:
+    except OSError as exc:
         try:
             if tmp.exists():
                 tmp.unlink()
         except OSError:
             pass
-        raise
+        raise SecretError(f"could not write credential file {path}: {exc}") from exc
+    # Harden the published file. Applied after the rename so the writer never
+    # locks itself out of its own temp file mid-write (icacls /inheritance:r
+    # strips the creating user), which would fail a non-elevated run. This is
+    # best-effort: if it fails the credential is still written, so the site
+    # keeps working — but a standard user may then be able to read it.
+    try:
+        _lock_acl(path)
+    except (SecretError, OSError, subprocess.SubprocessError):
+        pass
 
 
-def read_secret(path: Path) -> str:
+def read_env_file(path: Path) -> dict[str, str]:
+    """Parse a ``KEY=VALUE`` env file. Values are preserved verbatim.
+
+    Everything after the first ``=`` is the value, unstripped, so passwords
+    with spaces, ``=`` or ``#`` survive intact. Blank lines and lines whose
+    first non-space character is ``#`` are ignored.
+    """
+    out: dict[str, str] = {}
     if not path.exists():
-        raise SecretError(f"protected recorder credential is missing at {path}")
-    return unprotect_text(path.read_bytes())
+        return out
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw or raw.lstrip().startswith("#") or "=" not in raw:
+            continue
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if key:
+            out[key] = value
+    return out

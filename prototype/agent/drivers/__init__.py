@@ -81,6 +81,21 @@ def autodetect(base_url: str, username: str = "", password: str = "",
             failures.append(f"{cls.name}: {str(e).splitlines()[0][:120]}")
             driver.close()
 
+    joined = "\n  ".join(failures)
+    # A recorder that answers its vendor CGI with 401/403 is reachable and the
+    # right vendor — the username/password (or an empty password from a
+    # mis-launched agent) is wrong. Say so, instead of the useless and
+    # misleading "no driver recognised the device".
+    if any(_looks_like_auth(f) for f in failures):
+        raise DriverError(
+            "the recorder rejected the username or password at " + base_url
+            + " (HTTP 401). Check nvr_username / nvr_password.\n  " + joined)
     raise DriverError(
-        "no driver recognised the device at " + base_url + "\n  "
-        + "\n  ".join(failures))
+        "no driver recognised the device at " + base_url + "\n  " + joined)
+
+
+def _looks_like_auth(failure: str) -> bool:
+    f = failure.lower()
+    return ("http 401" in f or "http 403" in f or "unauthor" in f
+            or "invalid username or password" in f
+            or "sender not authorized" in f)

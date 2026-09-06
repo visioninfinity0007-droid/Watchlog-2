@@ -19,6 +19,7 @@ def main():
     gui = text("prototype/agent/setup_gui.py")
     backend = text("prototype/agent/setup_backend.py")
     secret = text("prototype/agent/windows_secret.py")
+    agent = text("prototype/agent/watchlog_agent.py")
     launcher = text("prototype/installer/run-agent.ps1")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
     readme = text("prototype/installer/READ ME FIRST.txt")
@@ -31,19 +32,19 @@ def main():
         "GUI build is windowed": '"--windowed"' in build_ui,
         "GUI covers recorder discovery": "discover_recorders" in gui and "test_recorder" in gui,
         "GUI performs real finalization": "finalize_install" in gui,
-        "DPAPI local-machine protection": "CRYPTPROTECT_LOCAL_MACHINE" in secret,
-        "DPAPI file ACL is restricted": "icacls" in secret and "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret,
-        "protected temp file is locked before publish": secret.index("_lock_acl(tmp)") < secret.index("tmp.replace(path)"),
+        "credential stored via ACL-restricted env file": "write_env_file" in secret and "watchlog.env" in backend,
+        "credential file ACL restricted to SYSTEM+Admins": "icacls" in secret and "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret,
+        "credential file is ACL-locked after publish": secret.index("tmp.replace(path)") < secret.index("_lock_acl(path)"),
         "backend never writes plaintext nvr_password key": 'section["nvr_password"]' not in backend,
-        "background launcher unwraps DPAPI": "ProtectedData]::Unprotect" in launcher,
-        "password exists only in child process environment": "WATCHLOG_NVR_PASSWORD" in launcher,
+        "background launcher performs no decryption": "ProtectedData" not in launcher and "Unprotect" not in launcher,
+        "agent reads credential env file in any launch": "watchlog.env" in agent and "_load_program_credentials" in agent,
         "NSIS packages setup UI": 'File "watchlog-setup-ui.exe"' in nsis,
         "NSIS launches branded setup": 'watchlog-setup-ui.exe' in nsis,
         "NSIS no longer launches agent --setup": 'watchlog-agent.exe\" --setup' not in nsis,
         "release packages setup UI": "watchlog-setup-ui.exe" in release,
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
         "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,
-        "uninstall removes protected credential": "nvr_password.dpapi" in nsis,
+        "uninstall removes recorder credential": "watchlog.env" in nsis,
         "setup sidebar uses customer language": "SITE CONNECTION SETUP" in gui and "SITE AGENT SETUP" not in gui,
         "setup does not expose DPAPI terminology": "Protected with Windows DPAPI" not in gui,
         "setup does not expose engineering validation labels": "field-validated driver" not in gui and "model still needs field acceptance" not in gui,

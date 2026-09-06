@@ -97,7 +97,8 @@ def _http_probe(host: str, port: int, tls: bool) -> tuple:
             raw += chunk
         sock.close()
     except Exception:                                    # noqa: BLE001
-        return None, None, None, raw
+        # raw is bytes; callers join the snippet as text, so never leak bytes
+        return None, None, None, raw.decode("utf-8", "replace")
 
     text = raw.decode("utf-8", "replace")
     status = None
@@ -123,8 +124,12 @@ def _http_probe(host: str, port: int, tls: bool) -> tuple:
     return status, server, (title or auth), text[:400]
 
 
-def _guess(*blobs: str | None) -> str | None:
-    joined = " ".join(b for b in blobs if b)
+def _guess(*blobs) -> str | None:
+    # Tolerate a bytes blob (e.g. a partial banner from a failed probe) so a
+    # scan never dies with "sequence item: expected str instance, bytes found".
+    parts = [(b.decode("utf-8", "replace") if isinstance(b, (bytes, bytearray))
+              else str(b)) for b in blobs if b]
+    joined = " ".join(parts)
     for rx, name in VENDOR_HINTS:
         if rx.search(joined):
             return name
