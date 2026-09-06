@@ -82,8 +82,11 @@ PASS requires:
 - the recorder password/URL never enters the cloud request schema or logs;
 - footage is at most 60 seconds by requested window;
 - WatchLog aborts uploads over 32 MiB;
-- cloud evidence expires after 24 hours;
-- download SHA-256 matches the server manifest;
+- customer access expires at 24 hours;
+- reconstructed download byte count exactly matches the server manifest;
+- download SHA-256 exactly matches the server manifest;
+- if the browser cannot calculate SHA-256, download fails closed rather than
+  silently bypassing integrity verification;
 - original CCTV recording remains on the recorder after cloud evidence expires.
 
 ### Dahua pilot path
@@ -135,6 +138,22 @@ only for the requested evidence transfer plus normal events/analytics/stills.
 The database stores temporary evidence chunks, not RTSP URLs, recorder
 credentials or continuous recordings.
 
+### Independent expiry proof
+
+Migration 0041 schedules `watchlog-prune-incident-clips` through Supabase Cron so
+physical deletion is not dependent on the originating site agent staying online.
+Before production acceptance, an authorized database operator must prove:
+
+- the named cron job exists and is active;
+- its latest run succeeds;
+- a safe test clip/request with `expires_at` already in the past becomes
+  `expired` and its `incident_clip_chunks` rows are physically removed;
+- repeat that proof while the originating site agent is stopped/offline;
+- the incident/event row remains after media deletion.
+
+Do not shorten a real customer's retention window simply to perform this test.
+Use an isolated test row/transaction or other approved non-customer evidence.
+
 ## 7. Acceptance result
 
 ### NVR AI
@@ -148,11 +167,12 @@ credentials or continuous recordings.
 ### Incident footage
 
 - **PASS**: explicit request retrieves the correct incident window and download
-  integrity/time/camera are verified.
+  integrity/time/camera are verified, with independent expiry cleanup proven.
 - **GO WITH LIMITATIONS**: evidence is retrievable but vendor-native format or
   coarse recorder segmenting needs an operator player/manual trim.
 - **NO-GO**: wrong camera/time, cross-tenant/authz failure, corrupt payload,
-  credential leakage, uncontrolled upload size, or continuous video transfer.
+  integrity bypass, credential leakage, uncontrolled upload size, retention
+  failure, or continuous video transfer.
 
 Record model/firmware-specific evidence in the Handoff D result. Only validated
 models may be described as supporting WatchLog incident-footage retrieval.
