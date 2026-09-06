@@ -82,8 +82,20 @@ def test_clip_migrations_are_fail_closed_short_lived_and_physically_pruned():
     assert "clip request not claimed by this agent" in hardened
     assert "delete from public.incident_clip_chunks" in hardened
     assert "r.expires_at<=now()" in hardened
+    assert "create extension if not exists pg_cron" in hardened
+    assert "watchlog-prune-incident-clips" in hardened
+    assert "cron.schedule" in hardened
+    assert "wl_prune_incident_clips(24)" in hardened
     # Claim ownership is resolved before failure-path media deletion.
     assert hardened.index("select * into v_request") < hardened.index("delete from public.incident_clip_chunks")
+
+
+def test_portal_footage_download_fails_closed_on_integrity():
+    src = (ROOT / "portal" / "app" / "incidents" / "page.js").read_text(encoding="utf-8")
+    assert "This browser cannot verify the footage checksum" in src
+    assert "blob.size!==Number(clip.bytes)" in src
+    assert 'if(!clip.sha256)throw new Error("Footage checksum is missing.' in src
+    assert "if(digest!==clip.sha256)" in src
 
 
 def test_release_entrypoint_activates_both_policies():
