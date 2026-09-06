@@ -46,8 +46,8 @@ def main():
 
         # --- NSIS ProgramData path (was invalid $PROGRAMDATA) ---
         "NSIS no longer uses invalid $PROGRAMDATA": "$PROGRAMDATA" not in nsis,
-        "NSIS uses $APPDATA for common app data": "$APPDATA\\WatchLog" in nsis,
-        "NSIS sets machine-wide shell context": "SetShellVarContext all" in nsis,
+        "NSIS uses $COMMONPROGRAMDATA data root": "$COMMONPROGRAMDATA" in nsis and "${DATAROOT}" in nsis,
+        "NSIS does not depend on SetShellVarContext for paths": "SetShellVarContext" not in nsis,
 
         # --- argument binding (named, not positional) ---
         "workflow uses named hashtable splat": "$releaseArgs = @{" in workflow,

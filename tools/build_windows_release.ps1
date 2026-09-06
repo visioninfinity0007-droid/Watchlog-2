@@ -16,6 +16,7 @@ param(
   [string]$SupabaseUrl = "",
   [string]$SupabasePublishableKey = "",
   [switch]$Lean,
+  [switch]$Production,
   [string]$SignPfx = "",
   [string]$SignPassword = ""
 )
@@ -187,6 +188,12 @@ nvr_driver = auto
 
   # 5) Sign final installer, then calculate checksum of the exact distributed bytes.
   Sign-WatchLogArtifact $setup
+  # Two explicit modes. Production MUST be signed (Sign-WatchLogArtifact already
+  # verifies the Authenticode status is Valid, or throws). RC/internal builds
+  # may be unsigned but are clearly labelled below.
+  if ($Production -and -not $SignPfx) {
+    throw "PRODUCTION release requires a code-signing certificate (-SignPfx). Refusing to produce an unsigned production installer."
+  }
   $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
   Set-Content -Path "$setup.sha256" -Value "$hash  WatchLog-Setup.exe" -Encoding ascii
   $mb = [math]::Round($setupBytes / 1MB, 1)
@@ -196,7 +203,7 @@ nvr_driver = auto
   Write-Host "  Setup UI $([math]::Round($setupUiBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  FINAL SHA256 $hash" -ForegroundColor Green
   if ($SignPfx) { Write-Host "  Agent + setup UI + installer signatures verified." -ForegroundColor Green }
-  else { Write-Host "  UNSIGNED: supply -SignPfx for a production release." -ForegroundColor Yellow }
+  else { Write-Host "  *** UNSIGNED TEST BUILD - not for production distribution (supply -SignPfx). ***" -ForegroundColor Yellow }
   if ($PublisherUrl) { Write-Host "  Publisher URL $PublisherUrl" -ForegroundColor Gray }
   else { Write-Host "  Publisher URL omitted (supply -PublisherUrl for production metadata)." -ForegroundColor Yellow }
 } finally {

@@ -7,6 +7,11 @@ on:
         description: Optional production WatchLog URL for installer metadata
         required: false
         type: string
+      production:
+        description: Production release (requires a valid signing cert; hard-fails if unsigned)
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -29,6 +34,7 @@ jobs:
       PUBLISHER_URL: ${{ inputs.publisher_url || vars.WATCHLOG_PUBLISHER_URL }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
+      PRODUCTION: ${{ inputs.production }}
 
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +88,7 @@ jobs:
               $releaseArgs['SignPassword'] = $env:SIGN_PASSWORD
             }
 
+            if ($env:PRODUCTION -eq 'true') { $releaseArgs['Production'] = $true }
             & .\tools\build_windows_release.ps1 @releaseArgs
             if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
           }
@@ -110,8 +117,14 @@ jobs:
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
 
           # Prove the packaged AI runtime/model, not just the Python source tree.
-          & $agent.FullName --selftest
+          $agentSelftest = & $agent.FullName --selftest 2>&1 | Out-String
+          Write-Host $agentSelftest
           if ($LASTEXITCODE -ne 0) { throw "packaged agent self-test failed with exit $LASTEXITCODE" }
+          # Single version source: the PACKAGED agent must report the build version
+          # (0.3.3 shipped reporting 0.3.0 from analytics_agent's stale constant).
+          if ($agentSelftest -notmatch 'watchlog-agent 0\.3\.4') {
+            throw "packaged agent reports the wrong version (expected 0.3.4):`n$agentSelftest"
+          }
 
           # Prove the windowed setup executable can start in a deterministic,
           # non-interactive mode. A blank config means migration is a safe no-op.
@@ -125,6 +138,11 @@ jobs:
           "@ | Set-Content $cfg -Encoding UTF8
           & $setupUi.FullName --migrate-only --config $cfg
           if ($LASTEXITCODE -ne 0) { throw "packaged setup UI migration mode failed with exit $LASTEXITCODE" }
+          # Best-effort direct version echo (a windowed exe's console-attach may
+          # not be pipe-captured on the runner; the agent self-test above and the
+          # shared wl_version.py are the authoritative proof the setup UI is 0.3.4).
+          $setupUiVersion = (& $setupUi.FullName --version 2>&1 | Out-String).Trim()
+          Write-Host "Setup UI --version: '$setupUiVersion'"
 
           $expected = ((Get-Content $checksumPath -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
           $actual = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()

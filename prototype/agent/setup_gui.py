@@ -47,6 +47,7 @@ BORDER = "#203047"
 
 STYLE = f"""
 QWidget {{ background:{NAVY}; color:{TEXT}; font-family:'Segoe UI'; font-size:14px; }}
+QLabel {{ background:transparent; }}
 QLabel#brand {{ font-size:22px; font-weight:700; }}
 QLabel#title {{ font-size:30px; font-weight:700; }}
 QLabel#eyebrow {{ color:{ICE}; font-size:12px; font-weight:700; }}
@@ -224,7 +225,13 @@ class SetupWindow(QMainWindow):
             "Find this one-time code in WatchLog under Settings → Sites & Setup. It identifies which site this PC belongs to.")
         c, cl = card_layout()
         cl.addWidget(label("SITE CODE", "eyebrow"))
-        self.code_edit = QLineEdit(self.public.get("enrollment_code", ""))
+        # Only pre-fill a real WatchLog code. A stale/garbage enrollment_code
+        # left in watchlog.ini (e.g. carried across an upgrade) must not
+        # pre-populate the field and confuse the operator.
+        prefill = self.public.get("enrollment_code", "").strip()
+        if not prefill.upper().startswith("WL-"):
+            prefill = ""
+        self.code_edit = QLineEdit(prefill)
         self.code_edit.setPlaceholderText("WL-XXXX-XXXX")
         self.code_edit.setMinimumHeight(44)
         cl.addWidget(self.code_edit)
@@ -518,11 +525,35 @@ class SetupWindow(QMainWindow):
         event.accept()
 
 
+def _emit_line(line: str) -> None:
+    """Write a line to the parent console even from this windowed (noconsole)
+    frozen build, so `--version` is readable by support and CI."""
+    import os
+    try:
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.kernel32.AttachConsole(-1)  # ATTACH_PARENT_PROCESS
+            with open("CONOUT$", "w", encoding="utf-8") as con:
+                con.write(line + "\n")
+                con.flush()
+            return
+    except Exception:
+        pass
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
     parser.add_argument("--migrate-only", action="store_true")
+    parser.add_argument("--version", action="store_true")
     args, _unknown = parser.parse_known_args()
+    if args.version:
+        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
+        return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
 
     if args.migrate_only:
