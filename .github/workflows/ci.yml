@@ -125,17 +125,29 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $env:PYTHONPATH = (Resolve-Path prototype\agent).Path
-          python -c "from pathlib import Path; import tempfile; from windows_secret import write_secret,read_secret; p=Path(tempfile.gettempdir())/'wl-dpapi-ci.bin'; write_secret(p,'recorder-test-secret'); assert read_secret(p)=='recorder-test-secret'; p.unlink()"
-          $cfg = Join-Path $env:RUNNER_TEMP "watchlog.ini"
-          @"
-          [watchlog]
-          supabase_url = https://example.supabase.co
-          supabase_publishable_key = ci-placeholder
-          enrollment_code =
-          nvr_driver = auto
-          "@ | Set-Content $cfg -Encoding UTF8
-          & prototype\dist\watchlog-setup-ui.exe --migrate-only --config $cfg
-          if ($LASTEXITCODE -ne 0) { throw "setup UI migration mode failed: $LASTEXITCODE" }
+          # DPAPI crypto round trip — the 0.3.4 store is a BYTES API (the old str
+          # signature raised TypeError). Pure protect/unprotect, no DACL/elevation.
+          python -c "from windows_secret import protect_bytes, unprotect_bytes; b=b'recorder-test-secret'; assert unprotect_bytes(protect_bytes(b)) == b; print('DPAPI round trip OK')"
+          if ($LASTEXITCODE -ne 0) { throw "DPAPI round trip failed: $LASTEXITCODE" }
+          # Real migration: seed a legacy watchlog.env in an isolated ProgramData and
+          # prove the frozen setup UI migrates it into the encrypted split store
+          # (a blank config would be a no-op that proves nothing about the store).
+          $pd = Join-Path $env:RUNNER_TEMP "wl-ci-migrate"
+          if (Test-Path $pd) { Remove-Item $pd -Recurse -Force }
+          $wl = Join-Path $pd "WatchLog"; New-Item -ItemType Directory -Force $wl | Out-Null
+          Set-Content -Path (Join-Path $wl "watchlog.env") -Encoding ASCII -Value "WATCHLOG_NVR_PASSWORD=ci-legacy-pw"
+          $cfg = Join-Path $wl "watchlog.ini"
+          Set-Content -Path $cfg -Encoding UTF8 -Value @('[watchlog]', 'nvr_username = ci_op', 'supabase_url = https://example.supabase.co', 'supabase_publishable_key = ci-placeholder', 'nvr_driver = auto')
+          $origPd = $env:PROGRAMDATA
+          try {
+            $env:PROGRAMDATA = $pd
+            & prototype\dist\watchlog-setup-ui.exe --migrate-only --config $cfg
+            if ($LASTEXITCODE -ne 0) { throw "setup UI migration mode failed: $LASTEXITCODE" }
+          } finally { $env:PROGRAMDATA = $origPd }
+          if (-not (Test-Path (Join-Path $wl "Secrets\nvr_credential.dpapi"))) { throw "migration did not create the encrypted credential" }
+          if (Test-Path (Join-Path $wl "watchlog.env")) { throw "legacy watchlog.env not removed after migration" }
+          Remove-Item $pd -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "DPAPI round trip + real legacy migration verified."
 
   installer-contract:
     runs-on: windows-latest

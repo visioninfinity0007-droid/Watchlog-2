@@ -87,6 +87,23 @@ jobs:
           $pw = 'Wl!Sec' + (Get-Random -Maximum 99999) + 'gX9'
           cmd /c "net user wlstd $pw /add" 2>&1 | Out-Host
 
+          # A freshly-created standard user has NO "Log on as a batch job" right, so a
+          # scheduled task as wlstd registers but never starts ("Batch logon privilege
+          # needs to be enabled for the task principal"). Grant SeBatchLogonRight via
+          # secedit, PRESERVING any existing holders (append to the exported line).
+          $wlstdSid = (New-Object System.Security.Principal.NTAccount('wlstd')).Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $inf = "$work\secpol.inf"; $sdb = "$work\secpol.sdb"
+          secedit /export /areas USER_RIGHTS /cfg $inf | Out-Null
+          $lines = Get-Content $inf
+          if ($lines -match '^SeBatchLogonRight') {
+            $lines = $lines | ForEach-Object { if ($_ -match '^SeBatchLogonRight\s*=') { "$_,*$wlstdSid" } else { $_ } }
+          } else {
+            $lines = $lines | ForEach-Object { $_; if ($_ -match '^\[Privilege Rights\]') { "SeBatchLogonRight = *$wlstdSid" } }
+          }
+          Set-Content -Path $inf -Value $lines -Encoding Unicode
+          secedit /configure /db $sdb /cfg $inf /areas USER_RIGHTS | Out-Null
+          Write-Host "Granted SeBatchLogonRight to wlstd ($wlstdSid)."
+
           function Invoke-AsIdentity($identity, $pass, $name, $sub) {
             $res = "$work\$name.result"
             $log = "$work\$name.log"
