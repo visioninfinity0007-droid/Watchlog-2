@@ -89,7 +89,10 @@ Section "Install"
   IfFileExists "$INSTDIR\watchlog.ini" +2 0
     File "/oname=watchlog.ini" "watchlog.defaults.ini"
 
-  File /nonfatal "yolov8n.onnx"
+  ; The AI model (yolov8n.onnx) is bundled inside watchlog-agent.exe (PyInstaller
+  ; --add-data), so no separate model file is shipped. (Removed the vestigial
+  ; File /nonfatal yolov8n.onnx that was never staged and only produced NSIS
+  ; warning 7010, which is now fatal.)
 
   ${If} $6 == "1"
     DetailPrint "Updating the existing WatchLog installation..."
@@ -180,7 +183,7 @@ Section "Uninstall"
   Delete "$INSTDIR\READ ME FIRST.txt"
   Delete "$INSTDIR\watchlog.ini"
   Delete "$INSTDIR\setup.ico"
-  Delete "$INSTDIR\yolov8n.onnx"
+  Delete "$INSTDIR\yolov8n.onnx"  ; legacy: remove any externally-shipped model from older installs
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
