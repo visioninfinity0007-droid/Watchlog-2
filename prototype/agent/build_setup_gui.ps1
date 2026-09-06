@@ -10,10 +10,33 @@ Write-Host "Installing WatchLog setup UI build dependencies..." -ForegroundColor
 python -m pip install --disable-pip-version-check --quiet pyinstaller requests pyside6
 
 $icon = Join-Path $root "installer\setup.ico"
+
+# PE version metadata from the single version source (wl_version.py) so Windows
+# and CI can read watchlog-setup-ui.exe ProductVersion directly (no console tricks
+# on a windowed exe).
+$uiVer = (Select-String -Path (Join-Path $root "agent\wl_version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+if (-not $uiVer) { throw "could not read VERSION from wl_version.py" }
+$uvt = ((($uiVer -split '[.+]') + @('0','0','0'))[0..2]) -join ','
+New-Item -ItemType Directory -Force -Path (Join-Path $root "build-setup-ui") | Out-Null
+$verFile = Join-Path $root "build-setup-ui\watchlog-setup-ui.version.txt"
+@"
+VSVersionInfo(ffi=FixedFileInfo(filevers=($uvt,0), prodvers=($uvt,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+  kids=[StringFileInfo([StringTable(u'040904B0', [
+    StringStruct(u'CompanyName', u'Vision Infinity'),
+    StringStruct(u'FileDescription', u'WatchLog Setup'),
+    StringStruct(u'FileVersion', u'$uiVer'),
+    StringStruct(u'InternalName', u'watchlog-setup-ui'),
+    StringStruct(u'OriginalFilename', u'watchlog-setup-ui.exe'),
+    StringStruct(u'ProductName', u'WatchLog'),
+    StringStruct(u'ProductVersion', u'$uiVer')])]),
+  VarFileInfo([VarStruct(u'Translation', [1033, 1200])])])
+"@ | Set-Content -Path $verFile -Encoding UTF8
+
 $args = @(
   "--onefile", "--windowed", "--name", "watchlog-setup-ui", "--clean", "--noconfirm",
   "--distpath", "dist", "--workpath", "build-setup-ui", "--specpath", "build-setup-ui",
   "--icon", $icon,
+  "--version-file", $verFile,
   "--add-data", "$icon;.",
   "--hidden-import", "requests",
   "--hidden-import", "PySide6.QtCore",

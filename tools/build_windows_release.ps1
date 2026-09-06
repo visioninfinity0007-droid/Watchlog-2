@@ -138,11 +138,27 @@ enrollment_code = $Code
 nvr_driver = auto
 "@ | Set-Content -Path $defaultsPath -Encoding UTF8
 
-  # Verify the STAGED config before packaging (defense in depth).
-  $staged = Get-Content $defaultsPath -Raw
-  if ($staged -notmatch '(?m)^supabase_url = https://') { throw "staged watchlog.defaults.ini has an invalid supabase_url:`n$staged" }
-  if ($staged -match '(?m)^enrollment_code = -')       { throw "staged watchlog.defaults.ini has a leaked enrollment_code:`n$staged" }
-  Write-Host "Staged public config verified (supabase_url https, no leaked args)." -ForegroundColor Green
+  # Parse the STAGED file back and assert EXACT equality with the intended
+  # inputs (not just prefix/syntax). This is the core anti-config-corruption
+  # gate: the whole point of Phase 1 is that no parameter-shift can bake a
+  # different value than we supplied.
+  $stagedMap = @{}
+  foreach ($line in (Get-Content $defaultsPath)) {
+    if ($line -match '^\s*([^=;#\[]+?)\s*=\s*(.*)$') { $stagedMap[$Matches[1].Trim()] = $Matches[2] }
+  }
+  if ($stagedMap['supabase_url'] -ne $supaUrl) {
+    throw "staged supabase_url '$($stagedMap['supabase_url'])' != intended '$supaUrl'"
+  }
+  if ($stagedMap['supabase_publishable_key'] -ne $pubKey) {
+    throw "staged supabase_publishable_key does not equal the intended publishable key"
+  }
+  if ($stagedMap['enrollment_code'] -ne $Code) {
+    throw "staged enrollment_code '$($stagedMap['enrollment_code'])' != intended '$Code'"
+  }
+  if ($stagedMap['supabase_url'] -notmatch '^https://') {
+    throw "staged supabase_url is not https: '$($stagedMap['supabase_url'])'"
+  }
+  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code." -ForegroundColor Green
 
   # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"
@@ -193,6 +209,9 @@ nvr_driver = auto
   # may be unsigned but are clearly labelled below.
   if ($Production -and -not $SignPfx) {
     throw "PRODUCTION release requires a code-signing certificate (-SignPfx). Refusing to produce an unsigned production installer."
+  }
+  if ($Production -and -not $PublisherUrl) {
+    throw "PRODUCTION release requires -PublisherUrl (verified publisher metadata)."
   }
   $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
   Set-Content -Path "$setup.sha256" -Value "$hash  WatchLog-Setup.exe" -Encoding ascii

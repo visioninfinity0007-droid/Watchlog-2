@@ -34,7 +34,9 @@ jobs:
       PUBLISHER_URL: ${{ inputs.publisher_url || vars.WATCHLOG_PUBLISHER_URL }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
-      PRODUCTION: ${{ inputs.production }}
+      # Tag pushes (v*) are always production: they must hard-fail without valid
+      # signing (and a PublisherUrl). Manual dispatch honours the input.
+      PRODUCTION: ${{ github.event_name == 'push' || inputs.production }}
 
     steps:
       - uses: actions/checkout@v4
@@ -142,7 +144,17 @@ jobs:
           # not be pipe-captured on the runner; the agent self-test above and the
           # shared wl_version.py are the authoritative proof the setup UI is 0.3.4).
           $setupUiVersion = (& $setupUi.FullName --version 2>&1 | Out-String).Trim()
-          Write-Host "Setup UI --version: '$setupUiVersion'"
+          Write-Host "Setup UI --version (best-effort console echo): '$setupUiVersion'"
+
+          # Authoritative version proof: PE VERSIONINFO ProductVersion on all three
+          # executables must equal wl_version.py — no windowed-console tricks.
+          $wlVer = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          foreach ($item in @($agent, $setupUi, $setup)) {
+            $pv = "$($item.VersionInfo.ProductVersion)".Trim()
+            Write-Host "  $($item.Name) ProductVersion = '$pv'"
+            if ($pv -ne $wlVer) { throw "$($item.Name) ProductVersion '$pv' != wl_version '$wlVer'" }
+          }
+          Write-Host "All three executables report ProductVersion $wlVer."
 
           $expected = ((Get-Content $checksumPath -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
           $actual = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()

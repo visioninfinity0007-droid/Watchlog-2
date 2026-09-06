@@ -28,6 +28,8 @@ def main():
     backend = text("prototype/agent/setup_backend.py")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
     build = text("tools/build_windows_release.ps1")
+    build_exe = text("prototype/agent/build_exe.ps1")
+    build_ui = text("prototype/agent/build_setup_gui.ps1")
     workflow = text(".github/workflows/windows-release.yml")
 
     version = re.search(r'^VERSION\s*=\s*"([^"]+)"', wl_version, re.M).group(1)
@@ -56,8 +58,16 @@ def main():
         # --- build fail-closed guards + verification ---
         "build rejects non-https SupabaseUrl": "SupabaseUrl is not an https URL" in build,
         "build rejects leaked enrollment code": "enrollment code is not a WL- code" in build,
-        "build verifies staged config": "staged watchlog.defaults.ini has an invalid supabase_url" in build,
+        "build verifies staged supabase_url is https": "staged supabase_url is not https" in build,
         "build treats NSIS warnings as fatal": "NSIS emitted warnings" in build,
+
+        # --- release governance corrections (review round 2) ---
+        "tag (v*) builds run in production mode": "github.event_name == 'push'" in workflow,
+        "production requires a PublisherUrl": "PRODUCTION release requires -PublisherUrl" in build,
+        "staged config verified by EXACT equality": "!= intended" in build and "exact match" in build,
+        "agent build embeds PE version metadata": "--version-file" in build_exe,
+        "setup UI build embeds PE version metadata": "--version-file" in build_ui,
+        "release asserts exe ProductVersion == wl_version": "ProductVersion" in workflow and "!= wl_version" in workflow,
     }
 
     failed = [k for k, ok in checks.items() if not ok]

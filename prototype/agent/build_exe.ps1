@@ -32,6 +32,27 @@ $common = @(
 
 $entry = "agent\release_agent.py"
 
+# PE version metadata from the single version source (wl_version.py) so Windows
+# and CI can read watchlog-agent.exe ProductVersion directly (no console tricks).
+$agentVer = (Select-String -Path (Join-Path $root "agent\wl_version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+if (-not $agentVer) { throw "could not read VERSION from wl_version.py" }
+$vt = ((($agentVer -split '[.+]') + @('0','0','0'))[0..2]) -join ','
+New-Item -ItemType Directory -Force -Path (Join-Path $root "build") | Out-Null
+$verFile = Join-Path $root "build\watchlog-agent.version.txt"
+@"
+VSVersionInfo(ffi=FixedFileInfo(filevers=($vt,0), prodvers=($vt,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+  kids=[StringFileInfo([StringTable(u'040904B0', [
+    StringStruct(u'CompanyName', u'Vision Infinity'),
+    StringStruct(u'FileDescription', u'WatchLog Site Agent'),
+    StringStruct(u'FileVersion', u'$agentVer'),
+    StringStruct(u'InternalName', u'watchlog-agent'),
+    StringStruct(u'OriginalFilename', u'watchlog-agent.exe'),
+    StringStruct(u'ProductName', u'WatchLog'),
+    StringStruct(u'ProductVersion', u'$agentVer')])]),
+  VarFileInfo([VarStruct(u'Translation', [1033, 1200])])])
+"@ | Set-Content -Path $verFile -Encoding UTF8
+$common += @("--version-file", $verFile)
+
 if ($WithAI) {
     $model = Join-Path $root "models\yolov8n.onnx"
     if (-not (Test-Path $model)) {
