@@ -147,8 +147,11 @@ jobs:
           Set-Content -Path $cfg -Encoding UTF8 -Value @('[watchlog]', "nvr_username = $tuser", "supabase_url = $env:SUPABASE_URL", "supabase_publishable_key = $env:SUPABASE_PUBLISHABLE_KEY", 'nvr_driver = auto')
           try {
             $env:PROGRAMDATA = $pd
-            & $setupUi.FullName --migrate-only --config $cfg
-            if ($LASTEXITCODE -ne 0) { throw "packaged setup UI --migrate-only failed with exit $LASTEXITCODE" }
+            # setup UI is a --windowed app; PowerShell's & does NOT wait for GUI-
+            # subsystem exes, so the blob assertions below would race the migration.
+            # Start-Process -Wait blocks until --migrate-only actually finishes.
+            $mp = Start-Process -FilePath $setupUi.FullName -ArgumentList @('--migrate-only','--config',$cfg) -Wait -PassThru
+            if ($mp.ExitCode -ne 0) { throw "packaged setup UI --migrate-only failed with exit $($mp.ExitCode)" }
           } finally {
             $env:PROGRAMDATA = $origPd
           }

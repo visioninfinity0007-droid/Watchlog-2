@@ -141,8 +141,11 @@ jobs:
           $origPd = $env:PROGRAMDATA
           try {
             $env:PROGRAMDATA = $pd
-            & prototype\dist\watchlog-setup-ui.exe --migrate-only --config $cfg
-            if ($LASTEXITCODE -ne 0) { throw "setup UI migration mode failed: $LASTEXITCODE" }
+            # setup UI is a --windowed app; PowerShell's & does NOT wait for GUI-
+            # subsystem exes, so the blob check would race the migration. Start-Process
+            # -Wait blocks until --migrate-only actually finishes.
+            $mp = Start-Process -FilePath (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path -ArgumentList @('--migrate-only','--config',$cfg) -Wait -PassThru
+            if ($mp.ExitCode -ne 0) { throw "setup UI migration mode failed: $($mp.ExitCode)" }
           } finally { $env:PROGRAMDATA = $origPd }
           if (-not (Test-Path (Join-Path $wl "Secrets\nvr_credential.dpapi"))) { throw "migration did not create the encrypted credential" }
           if (Test-Path (Join-Path $wl "watchlog.env")) { throw "legacy watchlog.env not removed after migration" }
