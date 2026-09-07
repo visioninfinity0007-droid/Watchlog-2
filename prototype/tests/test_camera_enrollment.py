@@ -88,16 +88,20 @@ class FakeCloud:
         raise self._err(404, "PGRST202", f"Could not find the function {fn}")
 
 
-def _mem_keystore(monkeypatch):
-    box = {"key": None}
-    monkeypatch.setattr(credential_store, "save_agent_key", lambda k: box.__setitem__("key", k))
-    monkeypatch.setattr(credential_store, "load_agent_key", lambda: box["key"])
-    return box
+def _mem_state(monkeypatch):
+    """Platform-independent identity round-trip. The real core.save_state/load_state split
+    the bearer key into the Windows DPAPI store (only on os.name=='nt'); that storage is
+    covered by the Windows Security Gate. These logic tests inject a simple in-memory store
+    so they run identically on Windows and the Linux CI runner."""
+    store = {}
+    monkeypatch.setattr(core, "save_state", lambda path, state: store.__setitem__(str(path), dict(state)))
+    monkeypatch.setattr(core, "load_state", lambda path: (dict(store[str(path)]) if str(path) in store else None))
+    return store
 
 
 # --- 1. fresh site + successful camera creation -----------------------------
 def test_fresh_enroll_and_create_cameras(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-FRESH01", "site-A")
     sp = tmp_path / "agent_state.json"
     ident = sb.establish_identity(cloud, sp, "WL-FRESH01", DEVICE)
@@ -108,7 +112,7 @@ def test_fresh_enroll_and_create_cameras(tmp_path, monkeypatch):
 
 # --- 2. site already linked + camera retry succeeds -------------------------
 def test_retry_after_enroll_reuses_identity(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-RETRY01", "site-B")
     sp = tmp_path / "agent_state.json"
     first = sb.establish_identity(cloud, sp, "WL-RETRY01", DEVICE)      # consumes code
@@ -121,7 +125,7 @@ def test_retry_after_enroll_reuses_identity(tmp_path, monkeypatch):
 
 # --- 3. one camera already exists + reconciliation does not duplicate -------
 def test_reconcile_does_not_duplicate(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-RECON01", "site-C")
     sp = tmp_path / "agent_state.json"
     ident = sb.establish_identity(cloud, sp, "WL-RECON01", DEVICE)
@@ -132,7 +136,7 @@ def test_reconcile_does_not_duplicate(tmp_path, monkeypatch):
 
 # --- 4. partial previous creation + Retry completes remaining ---------------
 def test_partial_then_retry_completes(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-PART01", "site-D")
     sp = tmp_path / "agent_state.json"
     ident = sb.establish_identity(cloud, sp, "WL-PART01", DEVICE)
@@ -143,7 +147,7 @@ def test_partial_then_retry_completes(tmp_path, monkeypatch):
 
 # --- 5. cloud sync fails -> classified error, never a false success ---------
 def test_sync_failure_is_not_false_success(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-FK01", "site-E")
     sp = tmp_path / "agent_state.json"
     ident = sb.establish_identity(cloud, sp, "WL-FK01", DEVICE)
@@ -157,7 +161,7 @@ def test_sync_failure_is_not_false_success(tmp_path, monkeypatch):
 
 # --- 6. recorder returned no channels -> CAMERA_ENUMERATION_FAILED ----------
 def test_no_channels_is_enumeration_failure(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-EMPTY01", "site-F")
     sp = tmp_path / "agent_state.json"
     ident = sb.establish_identity(cloud, sp, "WL-EMPTY01", DEVICE)
@@ -170,7 +174,7 @@ def test_no_channels_is_enumeration_failure(tmp_path, monkeypatch):
 
 # --- 7. camera auth failure -> classified (not a recorder-password error) ---
 def test_sync_auth_failure_classified(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud()
     ident = {"agent_id": "ghost", "agent_key": "nope", "site_id": "site-G", "tenant_id": "ten-1"}
     try:
@@ -187,25 +191,25 @@ def test_stale_state_reenrolls_with_supplied_code(tmp_path, monkeypatch):
     authenticates; the operator enters a fresh unused site code. Before the fix, setup skipped
     enroll and synced against the stale agent (28000). After the fix, the supplied code enrolls
     a new correctly-bound identity and cameras are created."""
-    box = _mem_keystore(monkeypatch)
+    store = _mem_state(monkeypatch)
     cloud = FakeCloud()
     cloud.add_code("WL-NEWSITE1", "site-REAL")                 # fresh, UNUSED
     # stale local identity for a defunct agent (not present in cloud) + a leftover key
     sp = tmp_path / "agent_state.json"
     core.save_state(sp, {"agent_id": "stale-old", "agent_key": "stale-key",
                          "tenant_id": "old-ten", "site_id": "site-OLD"})
-    assert box["key"] == "stale-key"                            # precondition: stale key present
+    assert store[str(sp)]["agent_id"] == "stale-old"             # precondition: stale identity present
     ident = sb.establish_identity(cloud, sp, "WL-NEWSITE1", DEVICE)
     assert ident["site_id"] == "site-REAL"                      # bound to the NEW code's site
     assert ident["agent_id"] != "stale-old"
     assert cloud.codes["WL-NEWSITE1"]["used_by"] == ident["agent_id"]   # code now consumed
-    assert box["key"] == ident["agent_key"]                    # agent key rotated to the new one
+    assert store[str(sp)]["agent_id"] == ident["agent_id"]     # new identity persisted (overwrote stale)
     assert len(sb.sync_cameras(cloud, ident, EIGHT)) == 8
 
 
 # --- 9. pressing Retry many times stays idempotent --------------------------
 def test_retry_idempotent_many_times(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-IDEMP01", "site-H")
     sp = tmp_path / "agent_state.json"
     ident = sb.establish_identity(cloud, sp, "WL-IDEMP01", DEVICE)
@@ -217,7 +221,7 @@ def test_retry_idempotent_many_times(tmp_path, monkeypatch):
 
 # --- 10. valid agent for site A must not hijack a site-B code (binding) -----
 def test_site_binding_rebinds_to_new_code(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud(); cloud.add_code("WL-SITEA01", "site-A"); cloud.add_code("WL-SITEB01", "site-B")
     sp = tmp_path / "agent_state.json"
     a = sb.establish_identity(cloud, sp, "WL-SITEA01", DEVICE)      # enrolled to site A (valid)
@@ -228,7 +232,7 @@ def test_site_binding_rebinds_to_new_code(tmp_path, monkeypatch):
 
 # --- 11. code invalid/expired AND no valid identity -> actionable, not reuse -
 def test_bad_code_and_no_identity_is_enroll_required(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud()                              # no codes, no agents
     sp = tmp_path / "agent_state.json"
     try:
@@ -240,7 +244,7 @@ def test_bad_code_and_no_identity_is_enroll_required(tmp_path, monkeypatch):
 
 # --- 12. spent code but stale defunct identity -> do NOT reuse defunct agent -
 def test_spent_code_and_defunct_identity_errors(tmp_path, monkeypatch):
-    _mem_keystore(monkeypatch)
+    _mem_state(monkeypatch)
     cloud = FakeCloud()
     cloud.codes["WL-SPENT001"] = {"site_id": "site-Z", "tenant_id": "ten-1", "used_by": "someone-else"}
     sp = tmp_path / "agent_state.json"
