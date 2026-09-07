@@ -65,6 +65,7 @@ import credential_store
 from wl_version import VERSION as AGENT_VERSION  # single source of truth
 
 HEARTBEAT_SECONDS = 60
+HEALTH_SECONDS = 300          # recorder reachability/auth + channel inventory, every 5 min
 UPLOAD_SECONDS = 15
 UPLOAD_BATCH = 200
 HTTP_TIMEOUT = 30
@@ -186,6 +187,7 @@ class Config:
                                or (self.state_path.parent / "spool.sqlite"))
 
         self.heartbeat_seconds = int(get("heartbeat_seconds") or HEARTBEAT_SECONDS)
+        self.health_seconds = int(get("health_seconds") or HEALTH_SECONDS)
         self.upload_seconds = int(get("upload_seconds") or UPLOAD_SECONDS)
 
     def load_recorder_credential(self) -> None:
@@ -556,6 +558,47 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
     log("heartbeat ok")
 
 
+def report_health(cloud: Cloud, state: dict, cfg: Config) -> None:
+    """Probe the recorder (reachability/auth + channel inventory) and report it.
+
+    Best-effort and fully self-contained: it opens its own short-lived driver connection,
+    classifies an unreachable/auth-failed recorder rather than throwing, and never lets a
+    failure disturb the event or heartbeat path. Uses only vendor-authenticated APIs
+    (probe + list_channels) — never event activity — and sends no secrets. See
+    prototype/agent/nvr_health.py.
+    """
+    import nvr_health
+    driver = None
+    try:
+        try:
+            if cfg.nvr_driver in ("auto", ""):
+                driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
+                                       cfg.nvr_password, log=lambda *a, **k: None)
+            else:
+                driver = build(cfg.nvr_driver, cfg.nvr_url,
+                               cfg.nvr_username, cfg.nvr_password)
+        except DriverError as e:
+            # Could not even reach/identify the recorder — still report the classified state.
+            report = nvr_health.assess_from_error(e)
+        else:
+            report = nvr_health.assess_nvr_health(driver)
+
+        res = cloud.call("wl_report_health", p_agent_id=state["agent_id"],
+                         p_agent_key=state["agent_key"], p_report=report)
+        log(f"health reported: nvr={report['nvr'].get('state')} "
+            f"present={res.get('present')} missing={res.get('missing')} "
+            f"disabled={res.get('disabled')} unknown={res.get('unknown')}")
+    except Exception as e:                              # noqa: BLE001 — must never break the loop
+        log(f"health report skipped: {type(e).__name__}: "
+            f"{str(e).splitlines()[0][:120] if str(e) else ''}")
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:                          # noqa: BLE001
+                pass
+
+
 # --- commands ----------------------------------------------------------
 
 def cmd_selftest() -> int:
@@ -729,6 +772,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         except RuntimeError as e:
             log(f"ERROR: upload failed: {e}")
         heartbeat(cloud, state, device)
+        report_health(cloud, state, cfg)
         spool.close()
         return
 
@@ -740,7 +784,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
         f"{cfg.heartbeat_seconds}s, outbound only. Ctrl-C to stop.")
 
-    next_up = next_beat = 0.0
+    next_up = next_beat = next_health = 0.0
     try:
         while True:
             clock = time.monotonic()
@@ -758,6 +802,9 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as e:
                     log(f"ERROR: heartbeat failed, will retry: "
                         f"{str(e).splitlines()[0][:200]}")
+            if clock >= next_health:
+                next_health = clock + cfg.health_seconds
+                report_health(cloud, state, cfg)   # self-guarded; never raises
             time.sleep(1)
     except KeyboardInterrupt:
         log("stopping...")

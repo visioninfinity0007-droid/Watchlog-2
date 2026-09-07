@@ -97,6 +97,18 @@ class DriverError(RuntimeError):
     """Device unreachable, refused credentials, or spoke an unexpected dialect."""
 
 
+class NvrUnreachable(DriverError):
+    """No usable response from the recorder at all — wrong address, offline, or a
+    firewall in between. The recorder LAYER is down; we can make no claim about the
+    cameras behind it (they become UNKNOWN, never OFFLINE)."""
+
+
+class NvrAuthFailed(DriverError):
+    """The recorder answered but rejected our credentials (HTTP 401/403). Distinct from
+    unreachable: the box is there, the username/password is wrong — so this must read as
+    a recorder-auth fault, never as a camera being offline or 'cameras could not be added'."""
+
+
 def explain(e: Exception) -> str:
     """
     Turn a requests/urllib3 exception into something a person can act on.

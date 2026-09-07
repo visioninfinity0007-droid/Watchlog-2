@@ -27,8 +27,8 @@ jobs:
         run: python -m compileall -q prototype tools
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
-      - name: Health model + coverage/watchdog math tests (Phase A)
-        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py -q
+      - name: Health model + coverage/watchdog + NVR/inventory tests (Phase A)
+        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py -q
       - name: WordPress PHP syntax
         run: |
           php -l deploy/wordpress/themes/watchlog/front-page.php
@@ -43,6 +43,8 @@ jobs:
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)
         run: python prototype/tests/test_agent_watchdog_contract.py
+      - name: Agent health report (NVR/inventory) contract (Phase A)
+        run: python prototype/tests/test_health_report_contract.py
       - name: SaaS operations security contract
         run: python prototype/tests/test_saas_operations_contract.py
       - name: Customer lifecycle contract

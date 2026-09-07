@@ -33,8 +33,8 @@ from typing import Iterator
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
-                   explain)
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
+                   NvrDriver, NvrUnreachable, explain)
 
 # Dahua event codes -> our vocabulary.
 EVENT_CODE_MAP = {
@@ -93,10 +93,19 @@ class DahuaDriver(NvrDriver):
         try:
             r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
         except requests.RequestException as e:
-            raise DriverError(f"{url}: {explain(e)}") from e
+            raise NvrUnreachable(f"{url}: {explain(e)}") from e
+        # Digest is the norm; some Dahua-derived units answer Basic. Retry ONCE
+        # with Basic before deciding the credentials are actually wrong.
         if r.status_code == 401:
             self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.get(url, timeout=self.timeout, **kw)
+            try:
+                r = self.s.get(url, timeout=self.timeout, **kw)
+            except requests.RequestException as e:
+                raise NvrUnreachable(f"{url}: {explain(e)}") from e
+        # Reachable but the recorder rejected the login: a credentials fault, not "offline".
+        if r.status_code in (401, 403):
+            raise NvrAuthFailed(
+                f"{url}: HTTP {r.status_code} — recorder rejected the username or password")
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r.text
