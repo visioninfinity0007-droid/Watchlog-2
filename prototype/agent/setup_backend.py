@@ -555,13 +555,19 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
         _setup_log(f"camera sync {cat} site={identity.get('site_id')} channels={len(channels)} ({type(exc).__name__})")
         raise AgentSyncError(cat,
             "WatchLog could not reach the cloud to add the cameras. Check the internet connection and try again.") from exc
-    created = len(mapping or {})
-    wanted = len({str(c.get("channel", "")).strip() for c in channels if str(c.get("channel", "")).strip()})
-    if created < wanted:
-        _setup_log(f"camera sync CAMERA_SYNC_PARTIAL site={identity.get('site_id')} created={created} of {wanted}")
-    else:
-        _setup_log(f"camera sync ok site={identity.get('site_id')} cameras={created}")
-    return mapping or {}
+    mapping = mapping or {}
+    wanted = {str(c.get("channel", "")).strip() for c in channels if str(c.get("channel", "")).strip()}
+    present = {str(k) for k in mapping.keys()}
+    missing = wanted - present
+    if missing:
+        # Never report success when the cloud did not confirm every discovered channel.
+        _setup_log(f"camera sync CAMERA_SYNC_PARTIAL site={identity.get('site_id')} "
+                   f"created={len(wanted & present)} of {len(wanted)} missing={sorted(missing)}")
+        raise AgentSyncError("CAMERA_SYNC_PARTIAL",
+            "WatchLog added some but not all of the recorder's cameras. Please try again; "
+            "if it persists, contact WatchLog support.")
+    _setup_log(f"camera sync ok site={identity.get('site_id')} cameras={len(wanted)} (site total {len(mapping)})")
+    return mapping
 
 
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,

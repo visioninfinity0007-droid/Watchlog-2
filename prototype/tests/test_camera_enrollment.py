@@ -39,6 +39,7 @@ class FakeCloud:
         self.agents = {}     # agent_id -> {"key","site_id","tenant_id"}
         self.cameras = {}    # site_id -> {channel: cam_uuid}
         self.sites = set()   # existing site ids (for FK simulation)
+        self.drop = set()    # channels the server "fails" to create (partial-result simulation)
         self._n = 0
 
     def add_code(self, code, site_id, tenant_id="ten-1"):
@@ -78,7 +79,7 @@ class FakeCloud:
             book = self.cameras.setdefault(a["site_id"], {})
             for cam in (p.get("p_cameras") or []):
                 ch = str(cam.get("channel") or "").strip()
-                if ch:
+                if ch and ch not in self.drop:                        # self.drop simulates a partial create
                     book.setdefault(ch, f"cam-{a['site_id']}-{ch}")   # ON CONFLICT (site,channel) idempotent
             return dict(book)
         if fn in ("wl_agent_bootstrap_analytics", "wl_sync_capabilities"):
@@ -255,6 +256,23 @@ def test_spent_code_and_defunct_identity_errors(tmp_path, monkeypatch):
         assert False, "must not silently reuse a defunct agent when the code is already used"
     except sb.AgentSyncError as e:
         assert e.category == "ENROLL_REQUIRED"
+
+
+# --- 13. partial cloud result (created < discovered) -> raise, never false success -
+def test_partial_result_raises_not_silent(tmp_path, monkeypatch):
+    _mem_state(monkeypatch)
+    cloud = FakeCloud(); cloud.add_code("WL-PARTIAL1", "site-P")
+    cloud.drop = {"7", "8"}                          # cloud confirms only channels 1..6 of 8
+    sp = tmp_path / "agent_state.json"
+    ident = sb.establish_identity(cloud, sp, "WL-PARTIAL1", DEVICE)
+    try:
+        sb.sync_cameras(cloud, ident, EIGHT)
+        assert False, "a partial camera result must raise, not silently return success"
+    except sb.AgentSyncError as e:
+        assert e.category == "CAMERA_SYNC_PARTIAL"
+    # once the cloud confirms all channels, a retry reconciles to full success
+    cloud.drop = set()
+    assert len(sb.sync_cameras(cloud, ident, EIGHT)) == 8
 
 
 if __name__ == "__main__":
