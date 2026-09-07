@@ -3,6 +3,9 @@
 Static sanity checks on the SQL migrations (no database needed).
 
   * filenames are NNNN_name.sql, numbered with no gaps and no duplicates
+    (a number listed in tools/reserved_migrations.json may be absent — it is
+    owned by another in-flight branch, e.g. PR #36's 0040/0041 — but must not
+    duplicate; every OTHER gap still fails)
   * every migration is non-empty and valid UTF-8 without a BOM
   * a heads-up (not a failure) on unguarded destructive statements
 
@@ -10,13 +13,24 @@ Static sanity checks on the SQL migrations (no database needed).
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
-MIG = Path(__file__).resolve().parents[1] / "prototype" / "supabase" / "migrations"
+TOOLS = Path(__file__).resolve().parent
+MIG = TOOLS.parent / "prototype" / "supabase" / "migrations"
+RESERVED_FILE = TOOLS / "reserved_migrations.json"
 NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 DESTRUCTIVE = re.compile(r"\b(drop\s+table|truncate|delete\s+from)\b", re.I)
+
+
+def load_reserved() -> set[int]:
+    """Numbers permitted to be absent (owned by another branch). Optional file."""
+    if not RESERVED_FILE.exists():
+        return set()
+    data = json.loads(RESERVED_FILE.read_text(encoding="utf-8"))
+    return {int(k) for k in data.get("reserved", {})}
 
 
 def main() -> int:
@@ -40,9 +54,20 @@ def main() -> int:
             errs.append(f"{f.name}: not valid UTF-8"); continue
         for mm in DESTRUCTIVE.finditer(text):
             warns.append(f"{f.name}: destructive `{mm.group(0)}` — ensure it is intended/guarded")
-    for a, b in zip(sorted(nums), range(1, len(nums) + 1)):
-        if a != b:
-            errs.append(f"migration numbering gap/dup near {a:04d} (expected {b:04d})"); break
+    reserved = load_reserved()
+    present = set(nums)
+    if nums:
+        missing = [n for n in range(1, max(nums) + 1)
+                   if n not in present and n not in reserved]
+        if missing:
+            errs.append(f"migration numbering gap at {missing[0]:04d} "
+                        f"(reserved={sorted(reserved) or 'none'})")
+    dup = present & reserved
+    if dup:
+        # A reserved number present here means the other branch merged — fine,
+        # but then it must be removed from the reservation to keep intent clear.
+        warns.append(f"reserved migration(s) {sorted(dup)} are present — "
+                     f"drop them from reserved_migrations.json")
     if len(set(nums)) != len(nums):
         errs.append("duplicate migration numbers")
 
