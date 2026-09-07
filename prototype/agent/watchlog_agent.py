@@ -69,6 +69,7 @@ HEARTBEAT_SECONDS = 60
 HEALTH_SECONDS = 300          # recorder assessment + camera health cycle, every 5 min (jittered)
 HEALTH_BATCH = 4              # cameras probed per cycle (fair round-robin over cycles)
 HEALTH_CONCURRENCY = 2        # strict cap on simultaneous snapshot probes — never the whole wall
+RECONCILE_BATCH = 500         # max retained transitions/checkpoints per reconcile upload
 NATIVE_FAULT_TYPES = {"video_loss"}   # native events that are an immediate camera OFFLINE
 UPLOAD_SECONDS = 15
 UPLOAD_BATCH = 200
@@ -189,6 +190,9 @@ class Config:
         self.state_path = Path(get("state_file") or (state_dir / "agent_state.json"))
         self.spool_path = Path(get("spool_file")
                                or (self.state_path.parent / "spool.sqlite"))
+        # Durable LOCAL health store (increment 5) — separate from the event spool.
+        self.health_store_path = Path(get("health_store_file")
+                                      or (self.state_path.parent / "health.sqlite"))
 
         self.heartbeat_seconds = int(get("heartbeat_seconds") or HEARTBEAT_SECONDS)
         self.health_seconds = int(get("health_seconds") or HEALTH_SECONDS)
@@ -576,6 +580,70 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
     log("heartbeat ok")
 
 
+def _get_health_store(holder: dict, state: dict, cfg: Config):
+    """Lazily open the durable local health store; a failure here must never break the loop."""
+    store = holder.get("store")
+    if store is None:
+        try:
+            import health_store
+            store = health_store.HealthStore(cfg.health_store_path, agent_id=state["agent_id"])
+            holder["store"] = store
+        except Exception as e:                          # noqa: BLE001
+            log(f"health store unavailable: {type(e).__name__}")
+            return None
+    return store
+
+
+def persist_health(holder: dict, state: dict, cfg: Config, cam: dict, assessment: dict) -> None:
+    """Increment 5: record observed camera transitions (on change) + an observation checkpoint
+    into the LOCAL durable store BEFORE any cloud call, so a cloud/internet outage cannot lose
+    them. Fully guarded — a persistence failure is logged, never raised."""
+    store = _get_health_store(holder, state, cfg)
+    if store is None:
+        return
+    try:
+        device_ts = iso(datetime.now(timezone.utc))
+        for c in cam.get("cameras", []):
+            ch = c.get("channel")
+            if ch is None:
+                continue
+            store.observe("camera", str(ch), c.get("health", "unknown"),
+                          c.get("reason", "unknown"), c.get("source", "probe"), device_ts)
+        # checkpoint: proof local monitoring continued this cycle (no raw probe/image data)
+        store.checkpoint(device_ts,
+                         nvr_state=(assessment.get("nvr") or {}).get("state", "unknown"),
+                         cameras_observed=len(cam.get("cameras", [])), cycle_ok=True)
+        store.compact()
+    except Exception as e:                              # noqa: BLE001
+        log(f"health persist skipped: {type(e).__name__}")
+
+
+def reconcile_health(holder: dict, state: dict, cloud: Cloud) -> None:
+    """Increment 5: upload retained transitions/checkpoints and mark them uploaded. Idempotent
+    on the server (dedupe by stable id). On failure the rows stay pending and are retried next
+    cycle — bounded by the health cadence, never a retry storm. Never raises."""
+    store = holder.get("store")
+    if store is None:
+        return
+    try:
+        batch = store.export_batch(RECONCILE_BATCH)
+    except Exception:                                   # noqa: BLE001
+        return
+    if not batch.get("transitions") and not batch.get("checkpoints"):
+        return
+    try:
+        res = cloud.call("wl_reconcile_health", p_agent_id=state["agent_id"],
+                         p_agent_key=state["agent_key"],
+                         p_transitions=batch["transitions"], p_checkpoints=batch["checkpoints"])
+        store.mark_transitions_uploaded([t["id"] for t in batch["transitions"]])
+        store.mark_checkpoints_uploaded([c["seq"] for c in batch["checkpoints"]])
+        log(f"reconciled health: applied={res.get('transitions_applied')} "
+            f"dup={res.get('transitions_duplicate')} ckpt={res.get('checkpoints_applied')}")
+    except Exception as e:                              # noqa: BLE001 — stays pending, retried later
+        import nvr_health
+        log(f"reconcile deferred: {type(e).__name__}: {nvr_health.redact(str(e))}")
+
+
 def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     """One combined recorder assessment feeding BOTH reports:
       * NVR connectivity/auth + channel inventory (increment 3), and
@@ -625,13 +693,17 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
             else:
                 probe = lambda _c: camera_health.ProbeResult(ok=False, upper="nvr_unreachable")
             cam = mon.run_cycle(lambda: assessment, probe)   # one assessment, bounded probing
+            # increment 5: persist transitions + checkpoint LOCALLY first — survives an outage.
+            persist_health(holder, state, cfg, cam, assessment)
             try:
                 cr = cloud.call("wl_report_camera_health", p_agent_id=state["agent_id"],
                                 p_agent_key=state["agent_key"], p_report=cam)
                 log(f"camera health: op={cr.get('operational')} deg={cr.get('degraded')} "
-                    f"off={cr.get('offline')} unk={cr.get('unknown')} changed={cr.get('transitions')}")
+                    f"off={cr.get('offline')} unk={cr.get('unknown')}")
             except Exception as e:                      # noqa: BLE001
                 log(f"camera health report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
+            # reconcile retained transitions/checkpoints (idempotent; bounded to the cycle cadence)
+            reconcile_health(holder, state, cloud)
     except Exception as e:                              # noqa: BLE001 — must never break the loop
         log(f"health cycle skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
     finally:
@@ -878,6 +950,11 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         worker.join(timeout=5)
         health.join(timeout=5)
         spool.close()
+        if holder.get("store"):
+            try:
+                holder["store"].close()
+            except Exception:                          # noqa: BLE001
+                pass
         log("stopped")
 
 

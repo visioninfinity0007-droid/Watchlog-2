@@ -259,9 +259,10 @@ def test_report_carries_no_image_bytes_or_secrets():
     import json
     m = CameraHealthMonitor(EIGHT, batch_size=8, concurrency=2)
     rep = m.run_cycle(assess_ok, probe_ok)
-    # only channel/health/reason per camera — no bytes, no base64, nothing sensitive
+    # channel/health/reason + a benign provenance source — no bytes, no base64, nothing sensitive
     for cam in rep["cameras"]:
-        assert set(cam) == {"channel", "health", "reason"}
+        assert set(cam) == {"channel", "health", "reason", "source"}
+        assert cam["source"] in {"native", "probe", "inventory", "upper_layer"}
     blob = json.dumps(rep).lower()
     for bad in ("base64", "jpeg", "\\xff", "password", "http://", "authorization"):
         assert bad not in blob

@@ -38,6 +38,19 @@ _JPEG_MAGIC = b"\xff\xd8"
 _NVR_STATE = {"ok": Nvr.OK, "unreachable": Nvr.UNREACHABLE,
               "auth_failed": Nvr.AUTH_FAILED, "unknown": Nvr.UNKNOWN}
 
+# Provenance of a camera's CURRENT health, derived from its reason — so the local health
+# store (increment 5) can record where a transition came from (native/probe/inventory/upper).
+_SOURCE_BY_REASON = {
+    "video_loss": "native",
+    "nvr_unreachable": "upper_layer", "nvr_auth_failed": "upper_layer",
+    "agent_unreachable": "upper_layer",
+    "channel_missing": "inventory", "channel_disabled": "inventory",
+}
+
+
+def source_for_reason(reason: str) -> str:
+    return _SOURCE_BY_REASON.get(reason, "probe")
+
 
 @dataclass(frozen=True)
 class ProbeResult:
@@ -214,9 +227,10 @@ class CameraHealthMonitor:
     def _report_locked(self) -> dict:
         return {"cameras": [{"channel": c,
                              "health": self.machines[c].state.value,
-                             "reason": self.machines[c].reason.value}
+                             "reason": self.machines[c].reason.value,
+                             "source": source_for_reason(self.machines[c].reason.value)}
                             for c in self.channels]}
 
 
 __all__ = ["ProbeResult", "classify_snapshot_probe", "round_robin_batch",
-           "make_probe_fn", "CameraHealthMonitor"]
+           "make_probe_fn", "CameraHealthMonitor", "source_for_reason"]
