@@ -18,7 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+import math
+
 import coverage_model as cov   # reuse the interval algebra (merge/clip/subtract/total)
+
+# A device clock more than this far AHEAD of the server is not trusted for ordering — see
+# effective_ts(). Configurable at the reconcile boundary (SQL: p_max_future_skew_seconds).
+DEFAULT_MAX_FUTURE_SKEW = 300   # seconds
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,41 @@ class Transition:
     reason: str
     source: str                 # 'native' | 'probe' | 'inventory' | 'upper_layer'
     device_ts: float            # when the agent OBSERVED it (not when uploaded)
+
+
+def effective_ts(device_ts: float, now: float,
+                 max_future_skew: float = DEFAULT_MAX_FUTURE_SKEW):
+    """Server-safe ordering timestamp for CURRENT-STATE advancement.
+
+    The raw device-observed time is kept elsewhere for evidence, but it must NOT be used
+    directly as the forward-only watermark: a device clock set to next week would write a
+    watermark in the future and freeze current state until server time caught up. So a
+    device_ts more than `max_future_skew` AHEAD of the server is clamped to `now`. In-window
+    times (including small, legitimate skew) pass through unchanged, preserving observed order.
+
+    Returns (effective_ts, was_clamped).
+    """
+    if device_ts > now + max_future_skew:
+        return now, True
+    return device_ts, False
+
+
+def _is_finite_number(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def partition_valid(rows: Iterable[dict]):
+    """Split retained rows into (valid, rejected) so a single malformed row cannot fail the whole
+    batch. A row is valid only if it has a non-empty id, a non-empty target state, and a
+    parseable (finite-number) device_ts. Rejected rows are RETURNED (counted/observable), never
+    silently swallowed and never left to spin the batch forever."""
+    valid, rejected = [], []
+    for r in rows:
+        if r.get("id") and r.get("to") and _is_finite_number(r.get("device_ts")):
+            valid.append(r)
+        else:
+            rejected.append(r)
+    return valid, rejected
 
 
 def dedupe(existing_ids: Set[str], incoming: Iterable[Transition]) -> List[Transition]:
@@ -106,4 +147,5 @@ def reclassify(cloud_gaps: Iterable[Tuple[float, float]],
 
 
 __all__ = ["Transition", "dedupe", "order", "fold_current_state",
-           "checkpoints_to_intervals", "reclassify"]
+           "checkpoints_to_intervals", "reclassify",
+           "effective_ts", "partition_valid", "DEFAULT_MAX_FUTURE_SKEW"]

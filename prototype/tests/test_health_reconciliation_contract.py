@@ -61,19 +61,38 @@ def main():
     require("cm.site_id = v_agent.site_id", "transitions bind to the agent's site only", rec)
     if re.search(r"(p_transitions|p_checkpoints|t|c)\s*(#>>?|->>?)\s*'?\{?[^;']*(tenant|site_id)", rec, re.I):
         raise AssertionError("tenant/site must not come from the payload")
-    require("grant execute on function public.wl_reconcile_health(uuid, text, jsonb, jsonb) to anon, authenticated",
-            "reconcile RPC granted to anon+authenticated")
-    require("revoke all on function public.wl_reconcile_health(uuid, text, jsonb, jsonb) from public",
-            "reconcile RPC revoked from public")
+    require("grant execute on function public.wl_reconcile_health(uuid, text, jsonb, jsonb, int) to anon, authenticated",
+            "reconcile RPC (5-arg) granted to anon+authenticated")
+    require("revoke all on function public.wl_reconcile_health(uuid, text, jsonb, jsonb, int) from public",
+            "reconcile RPC (5-arg) revoked from public")
 
     # --- idempotent replay + observed vs received + forward-only --------------
     require("on conflict (dedupe_key) where dedupe_key is not null do nothing",
             "replay must be idempotent on dedupe_key", rec)
     require("on conflict (checkpoint_id) do nothing", "checkpoint replay must be idempotent (epoch-qualified)", rec)
-    # `at` is the observed device time; received_at is v_now — two distinct sources
-    assert "device_ts, v_now, source, dedupe_key" in rec, "ledger must store observed device_ts AND received v_now"
-    require("l.device_ts > coalesce(ch.observed_at, '-infinity'::timestamptz)",
-            "current state must advance forward-only by observed time", rec)
+    # `at` (raw device) + effective_at (server-safe) + received_at (v_now) are all distinct
+    assert "device_ts, effective_at, v_now, source, dedupe_key" in rec, \
+        "ledger must store RAW device_ts (at), effective_at, AND received v_now — all distinct"
+
+    # --- clock-skew: forward-only uses EFFECTIVE (clamped) time, never raw device clock ----
+    require("wl_try_timestamptz", "device_ts must be parsed with the safe cast, not a raw ::cast")
+    if re.search(r"\(t->>'device_ts'\)::timestamptz", rec) or re.search(r"\(c->>'device_ts'\)::timestamptz", rec):
+        raise AssertionError("raw ::timestamptz cast on device_ts can fail the whole batch (poison)")
+    require("case when device_ts > v_now + v_skew then v_now else device_ts end",
+            "future-skew must be clamped to now for the effective ordering time", rec)
+    require("l.effective_at > coalesce(ch.observed_at, '-infinity'::timestamptz)",
+            "forward-only watermark must use effective_at (clamped), not raw device_ts", rec)
+    require("observed_at       = l.effective_at", "current-state watermark must be the effective time", rec)
+    require("p_max_future_skew_seconds int default 300", "future-skew tolerance must be configurable")
+
+    # --- poison-row safety: one bad row does not fail the batch; rejects are observable -------
+    require("where device_ts is not null", "unparseable rows must be quarantined, not fatal", rec)
+    for k in ("transitions_rejected", "transitions_clamped", "checkpoints_rejected"):
+        require(k, f"reconcile must report {k} (observable)", rec)
+
+    # safe-cast helper is a real fail-soft cast
+    require("create or replace function public.wl_try_timestamptz", "safe timestamptz cast helper missing")
+    require("exception when others then", "wl_try_timestamptz must return NULL on bad input, not raise")
 
     # --- ledger owned solely by reconciliation: live path writes NO transitions ----
     if re.search(r"insert into camera_health_transitions", rep, re.I):

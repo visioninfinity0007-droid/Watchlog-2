@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 import reconcile_model as rc  # noqa: E402
 from reconcile_model import Transition, dedupe, order, fold_current_state, \
-    checkpoints_to_intervals, reclassify  # noqa: E402
+    checkpoints_to_intervals, reclassify, effective_ts, partition_valid, \
+    DEFAULT_MAX_FUTURE_SKEW  # noqa: E402
 
 
 def T(id, seq, to, device_ts, *, layer="camera", entity="1", frm=None,
@@ -139,6 +140,57 @@ def test_partial_local_coverage_splits_the_gap():
     monitored = [(0, 100)]                          # agent alive first 100s, then PC died
     local, unverified = reclassify(cloud_gaps, monitored)
     assert local == [(0, 100)] and unverified == [(100, 300)]
+
+
+# --- clock-skew: a wild future device clock must not freeze current state ------
+
+SKEW = DEFAULT_MAX_FUTURE_SKEW   # seconds
+
+
+def test_future_skew_24h_is_clamped_not_a_future_watermark():
+    now = 1000.0
+    eff, clamped = effective_ts(now + 86400, now, SKEW)   # +24h
+    assert clamped is True and eff == now                 # watermark = now, NOT tomorrow
+
+
+def test_small_allowed_skew_preserves_observed_ordering():
+    now = 1000.0
+    a, ca = effective_ts(now + 30, now, SKEW)             # within tolerance
+    b, cb = effective_ts(now + 60, now, SKEW)
+    assert ca is False and cb is False and a < b          # relative order preserved
+
+
+def test_future_skewed_transition_keeps_raw_but_effective_is_distinct():
+    now = 1000.0
+    raw = now + 86400
+    eff, clamped = effective_ts(raw, now, SKEW)
+    assert clamped and eff != raw and eff == now          # raw preserved for evidence; effective distinct
+
+
+def test_valid_state_can_advance_after_a_clamp():
+    now = 1000.0
+    clamped_eff, _ = effective_ts(now + 86400, now, SKEW)          # frozen? no -> clamped to 1000
+    later_eff, _ = effective_ts(now + 300, now + 400, SKEW)        # a later genuine observation
+    assert clamped_eff == 1000.0 and later_eff > clamped_eff       # so it advances normally
+
+
+# --- poison rows: one malformed row must not fail the whole batch --------------
+
+def test_malformed_row_does_not_reject_valid_rows_in_the_batch():
+    rows = [{"id": "a:e:1", "to": "offline", "device_ts": 100.0},
+            {"id": "a:e:2", "to": "offline", "device_ts": "not-a-timestamp"},  # poison
+            {"id": "a:e:3", "to": "operational", "device_ts": 200.0}]
+    valid, rejected = partition_valid(rows)
+    assert [r["id"] for r in valid] == ["a:e:1", "a:e:3"]
+    assert [r["id"] for r in rejected] == ["a:e:2"]        # isolated, not fatal
+
+
+def test_rejected_records_are_observable():
+    rows = [{"id": "", "to": "offline", "device_ts": 1.0},     # no id
+            {"id": "a:e:1", "to": "", "device_ts": 1.0},       # no state
+            {"id": "a:e:2", "to": "offline", "device_ts": None}]  # bad ts
+    valid, rejected = partition_valid(rows)
+    assert valid == [] and len(rejected) == 3                  # all counted (observable)
 
 
 if __name__ == "__main__":

@@ -28,11 +28,27 @@
 alter table public.camera_health_transitions add column if not exists dedupe_key  text;
 alter table public.camera_health_transitions add column if not exists source      text;
 alter table public.camera_health_transitions add column if not exists received_at timestamptz;
+-- `at` keeps the RAW device-observed time (evidence/forensics). `effective_at` is the
+-- server-safe ordering time used for the forward-only watermark — a wild future device clock
+-- is clamped so it can never freeze current state. The two are deliberately distinct.
+alter table public.camera_health_transitions add column if not exists effective_at timestamptz;
 create unique index if not exists camera_health_tx_dedupe_uidx
   on public.camera_health_transitions (dedupe_key) where dedupe_key is not null;
 
--- observed-time watermark on current camera health, for forward-only advancement
+-- observed-time watermark on current camera health, for forward-only advancement (holds the
+-- server-safe EFFECTIVE time, never a raw future device clock).
 alter table public.camera_health add column if not exists observed_at timestamptz;
+
+-- Safe timestamptz cast: returns NULL instead of raising on a malformed value, so ONE poison
+-- row in a retained batch can be isolated/quarantined rather than failing the whole batch
+-- forever (which would spin the agent's reconcile invisibly).
+create or replace function public.wl_try_timestamptz(p text)
+returns timestamptz language plpgsql stable as $$   -- STABLE: text::timestamptz can depend on TimeZone
+begin
+  return p::timestamptz;
+exception when others then
+  return null;
+end $$;
 
 -- ---- local monitoring checkpoints (proof of local observation continuity) ----
 -- Distinct from agent_unreachable_intervals (which is CLOUD connectivity): a checkpoint says
@@ -66,29 +82,38 @@ create or replace function public.wl_reconcile_health(
   p_agent_id     uuid,
   p_agent_key    text,
   p_transitions  jsonb,
-  p_checkpoints  jsonb
+  p_checkpoints  jsonb,
+  p_max_future_skew_seconds int default 300
 ) returns jsonb
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  v_agent   agents;
-  v_now     timestamptz := now();
-  v_total   int := 0;
-  v_applied int := 0;
-  v_ckpt    int := 0;
+  v_agent    agents;
+  v_now      timestamptz := now();
+  v_skew     interval := make_interval(secs => greatest(coalesce(p_max_future_skew_seconds,300), 0));
+  v_seen     int := 0;   -- transitions received (all rows in payload)
+  v_total    int := 0;   -- VALID camera transitions (bound + parseable)
+  v_applied  int := 0;   -- newly inserted (deduped)
+  v_rejected int := 0;   -- quarantined: unparseable ts / unmapped channel / missing id-state
+  v_clamped  int := 0;   -- valid but future-skewed -> effective_at clamped to now
+  v_ckpt     int := 0;
+  v_ckpt_rej int := 0;
 begin
   v_agent := wl_auth_agent(p_agent_id, p_agent_key);
   if v_agent.id is null then
     raise exception 'agent not recognised' using errcode = '28000';
   end if;
 
-  -- LEDGER: append each transition once. `at` = observed device time; received_at = now().
-  -- ON CONFLICT on the stable dedupe_key makes a replay a no-op (idempotent). Each row is
-  -- bound to THIS site's camera by channel; state/reason/source are clamped to their domains
-  -- so a buggy or hostile agent cannot poison a column.
-  with tx as (
+  select count(*) into v_seen from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb));
+
+  -- LEDGER: append each transition once. `at` = RAW observed device time (evidence);
+  -- `effective_at` = server-safe ordering time (clamps a wild future clock); received_at = now().
+  -- Poison-safe: device_ts is parsed with wl_try_timestamptz (NULL on garbage) and such rows are
+  -- QUARANTINED (counted), so one bad row never fails the batch. ON CONFLICT on the stable
+  -- dedupe_key makes a replay a no-op. State/reason/source are clamped to their domains.
+  with parsed as (
     select (t->>'id') as dedupe_key, cm.id as camera_id,
            case when lower(coalesce(t->>'from','')) in ('operational','degraded','offline','unknown')
                 then lower(t->>'from') else 'unknown' end as from_state,
@@ -100,27 +125,39 @@ begin
                      'disk_error','disk_full') then lower(t->>'reason') else 'unknown' end as reason,
            case when lower(coalesce(t->>'source','probe')) in ('native','probe','inventory','upper_layer')
                 then lower(t->>'source') else 'probe' end as source,
-           (t->>'device_ts')::timestamptz as device_ts
+           wl_try_timestamptz(t->>'device_ts') as device_ts       -- NULL on garbage (poison-safe)
       from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
       join cameras cm on cm.site_id = v_agent.site_id and cm.channel = (t->>'entity')
      where lower(coalesce(t->>'layer','camera')) = 'camera'
        and coalesce(t->>'to','') <> '' and coalesce(t->>'id','') <> ''
-       and (t->>'device_ts') is not null
+  ),
+  tx as (
+    -- only VALID rows (parseable ts); effective_at clamps a future-skewed clock to now.
+    select dedupe_key, camera_id, from_state, to_state, reason, source, device_ts,
+           case when device_ts > v_now + v_skew then v_now else device_ts end as effective_at,
+           (device_ts > v_now + v_skew) as clamped
+      from parsed where device_ts is not null
   ),
   ins as (
     insert into camera_health_transitions
-      (tenant_id, site_id, camera_id, from_state, to_state, reason_code, at, received_at,
-       source, dedupe_key)
+      (tenant_id, site_id, camera_id, from_state, to_state, reason_code, at, effective_at,
+       received_at, source, dedupe_key)
     select v_agent.tenant_id, v_agent.site_id, camera_id, from_state, to_state,
-           reason, device_ts, v_now, source, dedupe_key
+           reason, device_ts, effective_at, v_now, source, dedupe_key
       from tx
     on conflict (dedupe_key) where dedupe_key is not null do nothing
     returning 1
   )
-  select (select count(*) from tx), (select count(*) from ins) into v_total, v_applied;
+  select (select count(*) from tx),
+         (select count(*) from ins),
+         (select count(*) from parsed where device_ts is null),
+         (select count(*) from tx where clamped)
+    into v_total, v_applied, v_rejected, v_clamped;
 
-  -- CURRENT STATE: advance each camera to its LATEST observed transition, forward-only.
-  with tx as (
+  -- CURRENT STATE: advance each camera to its latest transition by EFFECTIVE (server-safe)
+  -- time, forward-only. Using effective_at (not raw device_ts) means a future device clock can
+  -- never write a future watermark that freezes state; seq breaks ties deterministically.
+  with parsed as (
     select cm.id as camera_id, (t->>'id') as dedupe_key,
            case when lower(t->>'to') in ('operational','degraded','offline','unknown')
                 then lower(t->>'to') else 'unknown' end as to_state,
@@ -128,60 +165,76 @@ begin
                      'stale_frame','video_loss','channel_missing','channel_disabled','nvr_unreachable',
                      'nvr_auth_failed','agent_unreachable','storage_fault','not_recording','tamper',
                      'disk_error','disk_full') then lower(t->>'reason') else 'unknown' end as reason,
-           (t->>'device_ts')::timestamptz as device_ts
+           wl_try_timestamptz(t->>'device_ts') as device_ts
       from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
       join cameras cm on cm.site_id = v_agent.site_id and cm.channel = (t->>'entity')
-     where lower(coalesce(t->>'layer','camera')) = 'camera'
-       and coalesce(t->>'to','') <> '' and (t->>'device_ts') is not null
+     where lower(coalesce(t->>'layer','camera')) = 'camera' and coalesce(t->>'to','') <> ''
+  ),
+  tx as (
+    select camera_id, dedupe_key, to_state, reason,
+           case when device_ts > v_now + v_skew then v_now else device_ts end as effective_at
+      from parsed where device_ts is not null       -- quarantined rows never touch current state
   ),
   latest as (
-    select distinct on (camera_id) camera_id, to_state, reason, device_ts
-      from tx order by camera_id, device_ts desc, dedupe_key desc
+    select distinct on (camera_id) camera_id, to_state, reason, effective_at
+      from tx order by camera_id, effective_at desc, dedupe_key desc
   )
   update camera_health ch
      set health_state     = l.to_state,
          reason_code       = l.reason,
-         observed_at       = l.device_ts,
+         observed_at       = l.effective_at,
          last_change_at    = v_now,
          updated_at        = v_now,
-         last_offline_at   = case when l.to_state = 'offline' then l.device_ts
+         last_offline_at   = case when l.to_state = 'offline' then l.effective_at
                                   else ch.last_offline_at end,
          last_recovery_at  = case when l.to_state = 'operational' and ch.health_state = 'offline'
-                                  then l.device_ts else ch.last_recovery_at end
+                                  then l.effective_at else ch.last_recovery_at end
     from latest l
    where ch.camera_id = l.camera_id
-     and l.device_ts > coalesce(ch.observed_at, '-infinity'::timestamptz);   -- forward-only
+     and l.effective_at > coalesce(ch.observed_at, '-infinity'::timestamptz);   -- forward-only
 
-  -- CHECKPOINTS: local observation continuity, deduped per (agent, agent_seq).
-  with insc as (
+  -- CHECKPOINTS: local observation continuity, deduped on the epoch-qualified checkpoint_id.
+  -- Poison-safe: a checkpoint with an unparseable device_ts is quarantined (counted), not fatal.
+  with parsed as (
+    select (c->>'id') as checkpoint_id, (c->>'store_epoch') as store_epoch,
+           coalesce((c->>'seq')::bigint, 0) as agent_seq,
+           wl_try_timestamptz(c->>'device_ts') as device_ts,
+           lower(coalesce(c->>'nvr_state','unknown')) as nvr_state,
+           coalesce((c->>'cameras_observed')::int, 0) as cameras_observed,
+           coalesce((c->>'cycle_ok')::boolean, true) as cycle_ok
+      from jsonb_array_elements(coalesce(p_checkpoints, '[]'::jsonb)) c
+     where coalesce(c->>'id','') <> ''
+  ),
+  insc as (
     insert into local_monitoring_checkpoints
       (tenant_id, site_id, agent_id, checkpoint_id, store_epoch, agent_seq, device_ts,
        nvr_state, cameras_observed, cycle_ok)
-    select v_agent.tenant_id, v_agent.site_id, v_agent.id, (c->>'id'), (c->>'store_epoch'),
-           coalesce((c->>'seq')::bigint, 0), (c->>'device_ts')::timestamptz,
-           lower(coalesce(c->>'nvr_state','unknown')),
-           coalesce((c->>'cameras_observed')::int, 0),
-           coalesce((c->>'cycle_ok')::boolean, true)
-      from jsonb_array_elements(coalesce(p_checkpoints, '[]'::jsonb)) c
-     where coalesce(c->>'id','') <> '' and (c->>'device_ts') is not null
+    select v_agent.tenant_id, v_agent.site_id, v_agent.id, checkpoint_id, store_epoch,
+           agent_seq, device_ts, nvr_state, cameras_observed, cycle_ok
+      from parsed where device_ts is not null
     on conflict (checkpoint_id) do nothing            -- epoch-qualified: rebuild-proof idempotency
     returning 1
   )
-  select count(*) into v_ckpt from insc;
+  select (select count(*) from insc), (select count(*) from parsed where device_ts is null)
+    into v_ckpt, v_ckpt_rej;
 
   update agents set last_seen_at = v_now where id = v_agent.id;
 
   return jsonb_build_object(
     'ok', true,
-    'transitions_received', v_total,
+    'transitions_received', v_seen,
+    'transitions_valid', v_total,
     'transitions_applied', v_applied,
     'transitions_duplicate', v_total - v_applied,   -- ignored as already-present (idempotent)
+    'transitions_rejected', v_rejected,             -- quarantined (bad ts / unmapped) — observable
+    'transitions_clamped', v_clamped,               -- future-skew clamped for ordering — observable
     'checkpoints_applied', v_ckpt,
+    'checkpoints_rejected', v_ckpt_rej,             -- quarantined — observable
     'server_time', v_now);
 end $$;
 
-revoke all on function public.wl_reconcile_health(uuid, text, jsonb, jsonb) from public;
-grant execute on function public.wl_reconcile_health(uuid, text, jsonb, jsonb) to anon, authenticated;
+revoke all on function public.wl_reconcile_health(uuid, text, jsonb, jsonb, int) from public;
+grant execute on function public.wl_reconcile_health(uuid, text, jsonb, jsonb, int) to anon, authenticated;
 
 -- =====================================================================
 -- wl_report_camera_health — REPLACED: current-state only (no ledger write). The transition
