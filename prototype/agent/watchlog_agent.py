@@ -47,6 +47,7 @@ import configparser
 import json
 import os
 import platform
+import random
 import sys
 import threading
 import time
@@ -65,7 +66,10 @@ import credential_store
 from wl_version import VERSION as AGENT_VERSION  # single source of truth
 
 HEARTBEAT_SECONDS = 60
-HEALTH_SECONDS = 300          # recorder reachability/auth + channel inventory, every 5 min
+HEALTH_SECONDS = 300          # recorder assessment + camera health cycle, every 5 min (jittered)
+HEALTH_BATCH = 4              # cameras probed per cycle (fair round-robin over cycles)
+HEALTH_CONCURRENCY = 2        # strict cap on simultaneous snapshot probes — never the whole wall
+NATIVE_FAULT_TYPES = {"video_loss"}   # native events that are an immediate camera OFFLINE
 UPLOAD_SECONDS = 15
 UPLOAD_BATCH = 200
 HTTP_TIMEOUT = 30
@@ -188,6 +192,8 @@ class Config:
 
         self.heartbeat_seconds = int(get("heartbeat_seconds") or HEARTBEAT_SECONDS)
         self.health_seconds = int(get("health_seconds") or HEALTH_SECONDS)
+        self.health_batch = int(get("health_batch") or HEALTH_BATCH)
+        self.health_concurrency = int(get("health_concurrency") or HEALTH_CONCURRENCY)
         self.upload_seconds = int(get("upload_seconds") or UPLOAD_SECONDS)
 
     def load_recorder_credential(self) -> None:
@@ -423,7 +429,7 @@ def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
     return "timeout", last_gen
 
 
-def collector(cfg: Config, spool, stop: threading.Event) -> None:
+def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) -> None:
     """Driver thread. Never dies: on error it backs off and re-opens."""
     # Built once, outside the reconnect loop: loading the weights costs
     # seconds, and a flapping NVR must not re-pay that on every retry.
@@ -487,6 +493,18 @@ def collector(cfg: Config, spool, stop: threading.Event) -> None:
                             f"{', '.join(sorted({d.label for d in found}))}")
 
                 spool.add(ev.to_json(now_utc()))
+
+                # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to
+                # the health monitor straight from the event stream (best-effort; never let a
+                # health-side error disturb ingestion).
+                if holder is not None and ev.event_type in NATIVE_FAULT_TYPES:
+                    mon = holder.get("monitor")
+                    if mon is not None:
+                        try:
+                            mon.record_native_fault(ev.channel)
+                        except Exception:               # noqa: BLE001
+                            pass
+
                 dropped = spool.trim()
                 if dropped:
                     log(f"WARNING: spool over capacity, dropped {dropped} "
@@ -558,15 +576,17 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
     log("heartbeat ok")
 
 
-def report_health(cloud: Cloud, state: dict, cfg: Config) -> None:
-    """Probe the recorder (reachability/auth + channel inventory) and report it.
+def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
+    """One combined recorder assessment feeding BOTH reports:
+      * NVR connectivity/auth + channel inventory (increment 3), and
+      * the camera hybrid-health cycle (increment 4),
+    sharing a single driver connection and a single authenticated recorder assessment.
 
-    Best-effort and fully self-contained: it opens its own short-lived driver connection,
-    classifies an unreachable/auth-failed recorder rather than throwing, and never lets a
-    failure disturb the event or heartbeat path. Uses only vendor-authenticated APIs
-    (probe + list_channels) — never event activity — and sends no secrets. See
-    prototype/agent/nvr_health.py.
+    Best-effort: it classifies an unreachable/auth-failed recorder rather than throwing, uses
+    only vendor-authenticated APIs (never event activity), sends no secrets, and never raises —
+    a stall or crash here can never disturb event ingestion or the heartbeat.
     """
+    import camera_health
     import nvr_health
     driver = None
     try:
@@ -575,28 +595,62 @@ def report_health(cloud: Cloud, state: dict, cfg: Config) -> None:
                 driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
                                        cfg.nvr_password, log=lambda *a, **k: None)
             else:
-                driver = build(cfg.nvr_driver, cfg.nvr_url,
-                               cfg.nvr_username, cfg.nvr_password)
+                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+            assessment = nvr_health.assess_nvr_health(driver)
         except DriverError as e:
-            # Could not even reach/identify the recorder — still report the classified state.
-            report = nvr_health.assess_from_error(e)
-        else:
-            report = nvr_health.assess_nvr_health(driver)
+            assessment = nvr_health.assess_from_error(e)   # still report the classified state
+            driver = None
 
-        res = cloud.call("wl_report_health", p_agent_id=state["agent_id"],
-                         p_agent_key=state["agent_key"], p_report=report)
-        log(f"health reported: nvr={report['nvr'].get('state')} "
-            f"present={res.get('present')} missing={res.get('missing')} "
-            f"disabled={res.get('disabled')} unknown={res.get('unknown')}")
+        # --- NVR connectivity/auth + inventory (increment 3) ---
+        try:
+            res = cloud.call("wl_report_health", p_agent_id=state["agent_id"],
+                             p_agent_key=state["agent_key"], p_report=assessment)
+            log(f"health reported: nvr={assessment['nvr'].get('state')} "
+                f"present={res.get('present')} missing={res.get('missing')} "
+                f"disabled={res.get('disabled')} unknown={res.get('unknown')}")
+        except Exception as e:                          # noqa: BLE001
+            log(f"health report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
+
+        # --- camera hybrid health (increment 4), reusing THIS assessment + driver ---
+        chans = [str(c["channel"]) for c in assessment.get("channels", {}).get("reported", [])
+                 if c.get("channel")]
+        mon = holder.get("monitor")
+        if mon is None and chans:
+            mon = camera_health.CameraHealthMonitor(
+                chans, batch_size=cfg.health_batch, concurrency=cfg.health_concurrency)
+            holder["monitor"] = mon
+        if mon is not None:
+            if driver is not None:
+                probe = camera_health.make_probe_fn(driver)
+            else:
+                probe = lambda _c: camera_health.ProbeResult(ok=False, upper="nvr_unreachable")
+            cam = mon.run_cycle(lambda: assessment, probe)   # one assessment, bounded probing
+            try:
+                cr = cloud.call("wl_report_camera_health", p_agent_id=state["agent_id"],
+                                p_agent_key=state["agent_key"], p_report=cam)
+                log(f"camera health: op={cr.get('operational')} deg={cr.get('degraded')} "
+                    f"off={cr.get('offline')} unk={cr.get('unknown')} changed={cr.get('transitions')}")
+            except Exception as e:                      # noqa: BLE001
+                log(f"camera health report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
     except Exception as e:                              # noqa: BLE001 — must never break the loop
-        log(f"health report skipped: {type(e).__name__}: "
-            f"{str(e).splitlines()[0][:120] if str(e) else ''}")
+        log(f"health cycle skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
     finally:
         if driver is not None:
             try:
                 driver.close()
             except Exception:                          # noqa: BLE001
                 pass
+
+
+def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
+                  stop: threading.Event) -> None:
+    """Run the health cycle on its OWN thread so a probe stall can never delay heartbeat or
+    event upload. Jittered interval so a fleet does not probe in lockstep."""
+    stop.wait(min(10, cfg.health_seconds))              # let enrollment/sync settle first
+    while not stop.is_set():
+        health_cycle(cloud, state, cfg, holder)
+        jitter = random.uniform(0, max(1.0, cfg.health_seconds * 0.2))
+        stop.wait(cfg.health_seconds + jitter)
 
 
 # --- commands ----------------------------------------------------------
@@ -750,17 +804,27 @@ def cmd_probe(cfg: Config) -> None:
 
 
 def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
-            device=None) -> None:
+            device=None, channels=None) -> None:
     from spool import Spool
+    import camera_health
 
     spool = Spool(cfg.spool_path)
     log(f"spool: {cfg.spool_path} ({spool.count()} queued)")
+
+    # Shared holder so the collector (native faults) and the health worker (probes) drive the
+    # SAME per-camera machines. Seeded from the channels found at startup; (re)built lazily by
+    # the health cycle once enumeration succeeds if we started with none.
+    mon_channels = [str(c.get("channel")) for c in (channels or []) if c.get("channel")]
+    monitor = (camera_health.CameraHealthMonitor(
+        mon_channels, batch_size=cfg.health_batch, concurrency=cfg.health_concurrency)
+        if mon_channels else None)
+    holder = {"monitor": monitor}
 
     if once:
         # Collect for a short window first, otherwise --once on a fresh
         # install drains an empty spool and looks like nothing works.
         stop = threading.Event()
-        worker = threading.Thread(target=collector, args=(cfg, spool, stop),
+        worker = threading.Thread(target=collector, args=(cfg, spool, stop, holder),
                                   daemon=True, name="collector")
         worker.start()
         log(f"collecting for {ONCE_COLLECT_SECONDS}s...")
@@ -772,19 +836,24 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         except RuntimeError as e:
             log(f"ERROR: upload failed: {e}")
         heartbeat(cloud, state, device)
-        report_health(cloud, state, cfg)
+        health_cycle(cloud, state, cfg, holder)
         spool.close()
         return
 
     stop = threading.Event()
-    worker = threading.Thread(target=collector, args=(cfg, spool, stop),
+    worker = threading.Thread(target=collector, args=(cfg, spool, stop, holder),
                               daemon=True, name="collector")
     worker.start()
+    # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
+    health = threading.Thread(target=health_worker, args=(cfg, state, cloud, holder, stop),
+                              daemon=True, name="health")
+    health.start()
 
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
-        f"{cfg.heartbeat_seconds}s, outbound only. Ctrl-C to stop.")
+        f"{cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, outbound only. "
+        f"Ctrl-C to stop.")
 
-    next_up = next_beat = next_health = 0.0
+    next_up = next_beat = 0.0
     try:
         while True:
             clock = time.monotonic()
@@ -802,14 +871,12 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as e:
                     log(f"ERROR: heartbeat failed, will retry: "
                         f"{str(e).splitlines()[0][:200]}")
-            if clock >= next_health:
-                next_health = clock + cfg.health_seconds
-                report_health(cloud, state, cfg)   # self-guarded; never raises
             time.sleep(1)
     except KeyboardInterrupt:
         log("stopping...")
         stop.set()
         worker.join(timeout=5)
+        health.join(timeout=5)
         spool.close()
         log("stopped")
 
@@ -985,7 +1052,7 @@ def main() -> None:
         except RuntimeError as e:
             log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
 
-    cmd_run(cfg, state, cloud, once=args.once, device=device)
+    cmd_run(cfg, state, cloud, once=args.once, device=device, channels=channels)
 
 
 if __name__ == "__main__":

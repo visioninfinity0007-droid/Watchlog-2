@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "prototype" / "agent"))
 
 import nvr_health  # noqa: E402
-from nvr_health import assess_nvr_health  # noqa: E402
+from nvr_health import assess_nvr_health, redact  # noqa: E402
 from drivers.base import (Channel, DeviceInfo, DriverError,  # noqa: E402
                           NvrAuthFailed, NvrUnreachable)
 
@@ -120,6 +120,19 @@ def test_no_secrets_anywhere_in_payload():
 def test_repeated_report_is_identical():   # idempotency at the source
     d = FakeDriver(info=GOOD_INFO, channels=EIGHT)
     assert assess_nvr_health(d) == assess_nvr_health(d)
+
+
+def test_redact_strips_urls_and_credentials_from_log_text():
+    # the increment-3 hardening: a broad `except` must never log a URL or inline credential
+    cases = [
+        f"HTTPConnectionPool(host='192.168.1.108'): {BASE_URL}/cgi-bin/x failed",
+        f"auth error at http://admin:{SECRET_PW}@192.168.1.108:80/cgi-bin/snapshot.cgi",
+        "digest rejected for user admin:" + SECRET_PW + "@10.0.0.5",
+    ]
+    for c in cases:
+        out = redact(c).lower()
+        for secret in (SECRET_PW.lower(), "192.168.1.108", "http://", "admin:"):
+            assert secret not in out, f"redact leaked {secret!r}: {out!r}"
 
 
 if __name__ == "__main__":

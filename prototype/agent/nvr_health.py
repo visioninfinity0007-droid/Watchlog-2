@@ -19,7 +19,31 @@ PRESENT/MISSING/DISABLED/UNKNOWN against its own cameras — see prototype/serve
 """
 from __future__ import annotations
 
+import re
+
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable
+
+_URL_RE = re.compile(r"\w+://\S+")
+_CRED_RE = re.compile(r"[\w.-]+:[^/\s@]+@\S+")
+_IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+
+
+def redact(text) -> str:
+    """Strip URLs, user:pass@host credentials, and bare IPv4 recorder addresses from arbitrary
+    text before it is logged.
+
+    A driver/requests/cloud error can embed the recorder address (and, in a bad config, an
+    inline credential); log output must never carry either. Order matters: URLs first (a
+    credentialed URL is removed whole), then bare credentials, then any remaining bare IP.
+    Returns the sanitized first line, capped. Used by the agent's health logging so a broad
+    `except` can't leak a secret."""
+    if not text:
+        return ""
+    text = _URL_RE.sub("[url]", str(text))
+    text = _CRED_RE.sub("[redacted]", text)
+    text = _IP_RE.sub("[ip]", text)
+    lines = text.splitlines()
+    return (lines[0] if lines else "")[:160]
 
 
 def _classify_probe_error(e: Exception):
@@ -88,4 +112,4 @@ def assess_nvr_health(driver) -> dict:
     return report
 
 
-__all__ = ["assess_nvr_health", "assess_from_error"]
+__all__ = ["assess_nvr_health", "assess_from_error", "redact"]
