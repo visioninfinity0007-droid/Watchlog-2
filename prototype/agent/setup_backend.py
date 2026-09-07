@@ -423,6 +423,147 @@ def _clear_consumed_code(config_path: Path) -> None:
         _write_ini(config_path, ini)
 
 
+class AgentSyncError(ValueError):
+    """A classified, customer-safe setup failure. `category` is a stable internal
+    code (CAMERA_SYNC_AUTH_FAILED, CAMERA_SYNC_CONSTRAINT_FAILED, ENROLL_REQUIRED, …);
+    the message is safe to show the operator. Subclasses ValueError so existing
+    `except ValueError` handling and the setup worker still surface it."""
+    def __init__(self, category: str, message: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
+def _load_existing_identity(state_path: Path) -> dict | None:
+    """Load a local agent identity if present AND usable, else None. Unlike the agent
+    runtime, setup must never hard-FATAL on a corrupt/absent key: an unusable local
+    identity just means 'not enrolled here yet', and setup recovers by (re)enrolling
+    with the operator's site code."""
+    try:
+        return core.load_state(state_path)
+    except SystemExit:
+        _setup_log("agent_state present but its key is unreadable; treating as not enrolled")
+        return None
+    except Exception as exc:                       # noqa: BLE001 — stale state must never break setup
+        _setup_log(f"agent_state unreadable ({type(exc).__name__}); treating as not enrolled")
+        return None
+
+
+def _enroll(cloud, enrollment_code: str, device) -> dict | None:
+    """Claim the one-time code -> a fresh, correctly-bound identity, or None if the code
+    is unknown / already-used / expired (22023). wl_enroll returns the code's OWN site,
+    so honouring the code also transparently rebinds a PC set up for a different site
+    than any stale local identity. Network/other errors raise ENROLL_NETWORK."""
+    try:
+        r = cloud.call(
+            "wl_enroll", p_code=enrollment_code.strip(), p_hostname=platform.node(),
+            p_platform=f"{platform.system()} {platform.release()}", p_agent_version=SETUP_AGENT_VERSION,
+            p_device_vendor=device.vendor, p_device_model=device.model, p_device_driver=device.driver)
+    except core.CloudError as exc:
+        if exc.code == "22023" or (exc.status == 400 and "code" in str(exc.message).lower()):
+            return None
+        raise AgentSyncError("ENROLL_NETWORK",
+            "WatchLog could not verify this site code. Check the internet connection and try again.") from exc
+    except Exception as exc:                       # noqa: BLE001 — transport/timeout
+        raise AgentSyncError("ENROLL_NETWORK",
+            "WatchLog could not reach the cloud to verify this site code. Check the internet connection and try again.") from exc
+    return {"agent_id": r["agent_id"], "agent_key": r["agent_key"], "tenant_id": r["tenant_id"],
+            "site_id": r["site_id"], "enrolled_at": core.iso(core.now_utc()),
+            "agent_version": SETUP_AGENT_VERSION}
+
+
+def establish_identity(cloud, state_path: Path, enrollment_code: str, device,
+                       progress: Callable[[str], None] | None = None) -> dict:
+    """Return a cloud-VALID agent identity for this PC.
+
+    Fixes the field failure where a stale local identity made setup skip enrollment
+    and then sync cameras against a defunct agent:
+      1. Honour the supplied site code first. An UNUSED code enrolls -> a new identity
+         bound to THAT code's site (also correct when the PC is moved to a different
+         site than a stale local identity). Adopting it overwrites agent_state.json +
+         Secrets/agent_key.dpapi (via save_state); Secrets/nvr_credential.dpapi is kept.
+      2. If the code is spent/invalid, reuse the existing local identity ONLY if it still
+         authenticates in the cloud (heartbeat) — never reuse a defunct agent. Preserves
+         the legitimate retry (enroll already consumed the code; camera sync failed).
+      3. Otherwise raise an actionable ENROLL_REQUIRED error.
+    """
+    progress = progress or (lambda _m: None)
+    existing = _load_existing_identity(state_path)
+
+    fresh = _enroll(cloud, enrollment_code, device)
+    if fresh is not None:
+        core.save_state(state_path, fresh)         # overwrite stale identity+key; nvr credential preserved
+        _setup_log(f"enrolled new agent for site={fresh['site_id']} (code consumed)"
+                   + ("; retired stale local identity" if existing and existing.get("agent_id") != fresh["agent_id"] else ""))
+        return fresh
+
+    if existing:
+        try:
+            core.heartbeat(cloud, existing, device)     # wl_heartbeat: 28000 if the agent is gone
+            _setup_log(f"reusing existing agent for site={existing.get('site_id')} (code already used; retry)")
+            return existing
+        except core.CloudError as exc:
+            if exc.code == "28000" or exc.status in (401, 403):
+                _setup_log("local identity is defunct AND the site code is already used/expired")
+            else:
+                raise AgentSyncError("ENROLL_NETWORK",
+                    "WatchLog could not confirm this PC's identity. Check the internet connection and try again.") from exc
+        except Exception as exc:                   # noqa: BLE001
+            raise AgentSyncError("ENROLL_NETWORK",
+                "WatchLog could not reach the cloud to confirm this PC's identity. Check the internet connection and try again.") from exc
+
+    raise AgentSyncError("ENROLL_REQUIRED",
+        "This site code could not be used (unknown, already used, or expired) and there is no active WatchLog "
+        "identity on this PC. Get a current site code from the WatchLog portal, then run setup again.")
+
+
+def _classify_camera_sync(exc) -> AgentSyncError:
+    code, status = getattr(exc, "code", None), getattr(exc, "status", 0)
+    if code == "28000" or status in (401, 403):
+        return AgentSyncError("CAMERA_SYNC_AUTH_FAILED",   # the PC's WatchLog identity, NOT the recorder password
+            "WatchLog did not accept this PC's identity while adding cameras. Run WatchLog Setup again to re-link this site.")
+    if code == "23503":
+        return AgentSyncError("CAMERA_SYNC_CONSTRAINT_FAILED",
+            "This WatchLog site is no longer available. Run WatchLog Setup again with a current site code.")
+    if code == "23505":
+        return AgentSyncError("CAMERA_SYNC_CONSTRAINT_FAILED",
+            "WatchLog hit a conflict while adding cameras. Run WatchLog Setup again.")
+    if code == "PGRST202" or status == 404:
+        return AgentSyncError("CAMERA_SYNC_SCHEMA_MISMATCH",
+            "This WatchLog account needs an update before cameras can be added. Contact WatchLog support.")
+    return AgentSyncError("CAMERA_SYNC_FAILED",
+        "WatchLog linked this site but could not add the cameras. Please try again; if it persists, contact WatchLog support.")
+
+
+def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str], None] | None = None) -> dict:
+    """Idempotently reconcile the discovered channels into WatchLog (server-side
+    ON CONFLICT (site_id, channel) DO UPDATE). Never reports success on failure; every
+    failure is classified. Camera creation NEVER blames the recorder credential."""
+    progress = progress or (lambda _m: None)
+    if not channels:
+        raise AgentSyncError("CAMERA_ENUMERATION_FAILED",
+            "WatchLog could not read any camera channels from the recorder. Check the recorder is online and try again.")
+    try:
+        mapping = cloud.call("wl_sync_cameras", p_agent_id=identity["agent_id"],
+                             p_agent_key=identity["agent_key"], p_cameras=channels)
+    except core.CloudError as exc:
+        err = _classify_camera_sync(exc)
+        _setup_log(f"camera sync {err.category} site={identity.get('site_id')} channels={len(channels)} "
+                   f"http={getattr(exc, 'status', 0)} code={getattr(exc, 'code', None)}")
+        raise err from exc
+    except Exception as exc:                       # noqa: BLE001 — transport/timeout
+        cat = "CAMERA_SYNC_TIMEOUT" if "timeout" in type(exc).__name__.lower() else "CAMERA_SYNC_FAILED"
+        _setup_log(f"camera sync {cat} site={identity.get('site_id')} channels={len(channels)} ({type(exc).__name__})")
+        raise AgentSyncError(cat,
+            "WatchLog could not reach the cloud to add the cameras. Check the internet connection and try again.") from exc
+    created = len(mapping or {})
+    wanted = len({str(c.get("channel", "")).strip() for c in channels if str(c.get("channel", "")).strip()})
+    if created < wanted:
+        _setup_log(f"camera sync CAMERA_SYNC_PARTIAL site={identity.get('site_id')} created={created} of {wanted}")
+    else:
+        _setup_log(f"camera sync ok site={identity.get('site_id')} cameras={created}")
+    return mapping or {}
+
+
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
                      profiles: list[dict], progress: Callable[[str], None] | None = None,
@@ -447,39 +588,14 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     progress("Connecting this site to WatchLog…")
     cloud = core.Cloud(public["supabase_url"].rstrip("/"), public["supabase_publishable_key"])
     state_path = programdata_dir() / "agent_state.json"
-    state = core.load_state(state_path)
     device = SimpleNamespace(vendor=recorder["vendor"], model=recorder["model"],
                              driver=recorder["driver"])
-    if not state:
-        try:
-            response = cloud.call(
-                "wl_enroll",
-                p_code=enrollment_code.strip(),
-                p_hostname=platform.node(),
-                p_platform=f"{platform.system()} {platform.release()}",
-                p_agent_version=SETUP_AGENT_VERSION,
-                p_device_vendor=device.vendor,
-                p_device_model=device.model,
-                p_device_driver=device.driver,
-            )
-        except Exception as exc:
-            raise ValueError(
-                "WatchLog could not verify this site code. Check the internet connection and make sure "
-                "the code is current, then try again.") from exc
-        state = {
-            "agent_id": response["agent_id"], "agent_key": response["agent_key"],
-            "tenant_id": response["tenant_id"], "site_id": response["site_id"],
-            "enrolled_at": core.iso(core.now_utc()), "agent_version": SETUP_AGENT_VERSION,
-        }
-        core.save_state(state_path, state)
+    # Honour the supplied site code first; only reuse a local identity that still
+    # authenticates. Never skip enrollment just because a stale agent_state.json exists.
+    state = establish_identity(cloud, state_path, enrollment_code, device, progress)
 
     progress("Adding cameras to this WatchLog site…")
-    try:
-        mapping = cloud.call(
-            "wl_sync_cameras", p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-            p_cameras=recorder["channels"])
-    except Exception as exc:
-        raise ValueError("The site linked to WatchLog, but its cameras could not be added. Try again.") from exc
+    mapping = sync_cameras(cloud, state, recorder["channels"], progress)
 
     capabilities = recorder.get("capabilities")
     if capabilities and capabilities.get("channels"):

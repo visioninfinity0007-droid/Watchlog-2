@@ -22,9 +22,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest
       - name: Compile all Python
         run: python -m compileall -q prototype tools
+      - name: Agent identity + camera enrollment tests
+        run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
       - name: WordPress PHP syntax
         run: |
           php -l deploy/wordpress/themes/watchlog/front-page.php

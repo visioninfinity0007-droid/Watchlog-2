@@ -240,6 +240,19 @@ class Config:
 
 # --- Supabase RPC ------------------------------------------------------
 
+class CloudError(RuntimeError):
+    """A 4xx/5xx from a cloud RPC, carrying the HTTP status and the server's error
+    code (a PostgreSQL SQLSTATE like 28000/23503/23505, or a PostgREST code) so
+    callers can classify the failure instead of string-matching. str() stays
+    human-readable and still contains the message (existing log/heuristic code)."""
+    def __init__(self, fn: str, status: int, code, message) -> None:
+        self.fn = fn
+        self.status = status
+        self.code = code
+        self.message = message
+        super().__init__(f"{fn}: HTTP {status} {code or ''} {str(message)[:300]}".strip())
+
+
 class Cloud:
     """
     The entire cloud surface: four SECURITY DEFINER functions.
@@ -261,11 +274,15 @@ class Cloud:
     def call(self, fn: str, **params):
         r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=HTTP_TIMEOUT)
         if r.status_code >= 400:
+            code = None
+            msg = r.text
             try:
-                msg = r.json().get("message", r.text)
+                body = r.json()
+                msg = body.get("message", r.text)
+                code = body.get("code")          # PG SQLSTATE or PostgREST code
             except ValueError:
-                msg = r.text
-            raise RuntimeError(f"{fn}: HTTP {r.status_code} {str(msg)[:300]}")
+                pass
+            raise CloudError(fn, r.status_code, code, msg)
         return r.json() if r.text.strip() else None
 
 

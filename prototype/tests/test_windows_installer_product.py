@@ -59,6 +59,11 @@ def main():
         "Windows product name is WatchLog": 'MUI_WELCOMEPAGE_TITLE "Install WatchLog"' in nsis and '"DisplayName" "WatchLog"' in nsis,
         "customer guide avoids Site Agent product name": "WatchLog Site Agent" not in readme and "install the Site Agent" not in readme,
         "customer guide avoids DPAPI implementation detail": "machine-scoped DPAPI" not in readme,
+        "enrollment honours the site code (no skip-enroll on stale state)":
+            "def establish_identity" in backend and "def _enroll" in backend and "core.heartbeat" in backend,
+        "camera-sync failures are classified, not the misleading swallow":
+            "AgentSyncError" in backend and "CAMERA_SYNC_AUTH_FAILED" in backend
+            and "The site linked to WatchLog, but its cameras could not be added" not in backend,
     }
 
     failed = [name for name, ok in checks.items() if not ok]
