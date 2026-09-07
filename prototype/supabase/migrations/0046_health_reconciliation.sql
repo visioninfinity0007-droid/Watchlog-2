@@ -42,13 +42,17 @@ create table if not exists public.local_monitoring_checkpoints (
   tenant_id        uuid not null references public.tenants(id) on delete cascade,
   site_id          uuid not null references public.sites(id) on delete cascade,
   agent_id         uuid not null references public.agents(id) on delete cascade,
-  agent_seq        bigint not null,               -- per-agent monotonic id (for idempotent replay)
+  checkpoint_id    text not null,                 -- "<agent>:<store_epoch>:cp:<seq>" — rebuild-proof
+  store_epoch      text,                          -- new epoch after a local-store rebuild
+  agent_seq        bigint not null,               -- per-DB monotonic id (forensics; NOT the dedupe key)
   device_ts        timestamptz not null,          -- observed time
   nvr_state        text not null default 'unknown',
   cameras_observed int  not null default 0,
   cycle_ok         boolean not null default true,
   received_at      timestamptz not null default now(),
-  unique (agent_id, agent_seq)                     -- replay-safe
+  -- Dedupe on the epoch-qualified id, NOT (agent, seq): a corrupt-store rebuild restarts seq at
+  -- 1, so bare seq would collide with already-reconciled rows and silently drop new evidence.
+  unique (checkpoint_id)
 );
 create index if not exists local_mon_ckpt_site_idx on public.local_monitoring_checkpoints (site_id, device_ts);
 
@@ -151,14 +155,16 @@ begin
   -- CHECKPOINTS: local observation continuity, deduped per (agent, agent_seq).
   with insc as (
     insert into local_monitoring_checkpoints
-      (tenant_id, site_id, agent_id, agent_seq, device_ts, nvr_state, cameras_observed, cycle_ok)
-    select v_agent.tenant_id, v_agent.site_id, v_agent.id, (c->>'seq')::bigint,
-           (c->>'device_ts')::timestamptz, lower(coalesce(c->>'nvr_state','unknown')),
+      (tenant_id, site_id, agent_id, checkpoint_id, store_epoch, agent_seq, device_ts,
+       nvr_state, cameras_observed, cycle_ok)
+    select v_agent.tenant_id, v_agent.site_id, v_agent.id, (c->>'id'), (c->>'store_epoch'),
+           coalesce((c->>'seq')::bigint, 0), (c->>'device_ts')::timestamptz,
+           lower(coalesce(c->>'nvr_state','unknown')),
            coalesce((c->>'cameras_observed')::int, 0),
            coalesce((c->>'cycle_ok')::boolean, true)
       from jsonb_array_elements(coalesce(p_checkpoints, '[]'::jsonb)) c
-     where coalesce(c->>'seq','') <> '' and (c->>'device_ts') is not null
-    on conflict (agent_id, agent_seq) do nothing
+     where coalesce(c->>'id','') <> '' and (c->>'device_ts') is not null
+    on conflict (checkpoint_id) do nothing            -- epoch-qualified: rebuild-proof idempotency
     returning 1
   )
   select count(*) into v_ckpt from insc;

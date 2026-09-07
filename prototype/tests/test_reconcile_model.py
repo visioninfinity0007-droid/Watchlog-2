@@ -41,6 +41,20 @@ def test_resending_same_batch_twice_yields_nothing_new():
     assert first and second == []
 
 
+def test_replay_within_one_epoch_is_idempotent():
+    batch = [T("A:e1:1", 1, "offline", 100), T("A:e1:2", 2, "operational", 200)]
+    seen = {t.id for t in dedupe(set(), batch)}
+    assert dedupe(seen, batch) == []
+
+
+def test_same_seq_from_a_later_epoch_is_new_evidence():
+    # after a local-store corruption rebuild the seq restarts at 1, but the epoch differs, so
+    # the reconstituted id is NOT a replay — it must be accepted, not silently discarded.
+    existing = {"A:e1:1"}
+    later = [T("A:e2:1", 1, "offline", 500)]      # seq 1 again, new epoch
+    assert [t.id for t in dedupe(existing, later)] == ["A:e2:1"]
+
+
 # --- ordering by OBSERVED time, never upload arrival --------------------------
 
 def test_order_is_by_device_ts_then_seq():

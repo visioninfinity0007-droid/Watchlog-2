@@ -79,8 +79,65 @@ def test_dedupe_key_is_stable_and_monotonic_across_restart(tmp_path):
     s.close()
     s2 = HealthStore(tmp_path / "health.sqlite", agent_id=AID)
     k2 = s2.observe("camera", "1", "operational", "ok", "probe", "t2")["dedupe_key"]
-    n1, n2 = int(k1.split(":")[1]), int(k2.split(":")[1])
-    assert n2 > n1                            # seq keeps climbing after a restart
+    # id is "<agent>:<epoch>:<seq>" — intact restart keeps the epoch and keeps climbing the seq
+    assert k1.split(":")[1] == k2.split(":")[1]                     # same epoch
+    assert int(k2.split(":")[-1]) > int(k1.split(":")[-1])          # seq monotonic
+
+
+# --- store epoch: makes dedupe ids rebuild-proof (the corruption-collision fix) ----
+
+def test_intact_restart_preserves_epoch(tmp_path):
+    s = new(tmp_path); e1 = s.epoch; s.close()
+    s2 = HealthStore(tmp_path / "health.sqlite", agent_id=AID)
+    assert s2.epoch == e1 and e1
+
+
+def test_corruption_rebuild_mints_a_new_epoch(tmp_path):
+    p = tmp_path / "health.sqlite"
+    s = HealthStore(p, agent_id=AID); e1 = s.epoch; s.close()
+    p.write_bytes(b"corrupt \x00\x01\x02 not a sqlite database")
+    s2 = HealthStore(p, agent_id=AID)
+    assert s2.epoch and s2.epoch != e1
+
+
+def test_transition_seq_resets_after_rebuild_but_id_globally_distinct(tmp_path):
+    p = tmp_path / "health.sqlite"
+    s = HealthStore(p, agent_id=AID)
+    s.observe("camera", "1", "offline", "video_loss", "native", "t1")
+    s.observe("camera", "1", "operational", "ok", "probe", "t2")
+    old = {t["dedupe_key"] for t in s.pending_transitions(100)}
+    old_epoch = s.epoch
+    s.close()
+    p.write_bytes(b"corrupt \x00 not a db")
+    s2 = HealthStore(p, agent_id=AID)
+    k = s2.observe("camera", "1", "offline", "video_loss", "native", "t3")["dedupe_key"]
+    assert k.split(":")[-1] == "1"          # local AUTOINCREMENT restarted at 1
+    assert s2.epoch != old_epoch            # but a new epoch was minted
+    assert k not in old                      # so the global id can NEVER collide with old rows
+
+
+def test_checkpoint_id_globally_distinct_after_rebuild(tmp_path):
+    p = tmp_path / "health.sqlite"
+    s = HealthStore(p, agent_id=AID)
+    s.checkpoint("t1", "ok", 8)
+    old_id = s.export_batch(10)["checkpoints"][0]["id"]
+    s.close()
+    p.write_bytes(b"corrupt \x00 not a db")
+    s2 = HealthStore(p, agent_id=AID)
+    s2.checkpoint("t2", "ok", 8)
+    new_c = s2.export_batch(10)["checkpoints"][0]
+    assert new_c["seq"] == 1                        # local seq restarted
+    assert new_c["id"] != old_id                    # server identity still distinct (new epoch)
+    assert new_c["store_epoch"] == s2.epoch
+
+
+def test_pending_overflow_is_observable_not_silent(tmp_path):
+    s = HealthStore(tmp_path / "health.sqlite", agent_id=AID, max_pending_transitions=3)
+    for i in range(6):                              # 6 distinct-entity changes -> 6 pending
+        s.observe("camera", str(i), "offline", "video_loss", "native", f"t{i}")
+    s.compact()
+    assert len(s.pending_transitions(100)) == 3     # bounded to the ceiling
+    assert s.overflow_count() == 3                   # and the drop is COUNTED (observable), not silent
 
 
 def test_no_image_or_blob_columns(tmp_path):

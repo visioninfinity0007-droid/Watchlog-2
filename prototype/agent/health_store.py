@@ -20,14 +20,18 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import time
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
 # Bound unsent history so a long outage cannot fill the disk. Checkpoints are continuity
-# evidence and MAY be coarsened; an unresolved transition is never dropped for age alone.
+# evidence and MAY be coarsened; an unresolved transition is never dropped for AGE alone.
 DEFAULT_MAX_CHECKPOINTS = 20_000
 DEFAULT_MAX_TRANSITION_AGE_DAYS = 90
+# Hard disk-pressure ceiling for UNSENT transitions. Below this, pending transitions are never
+# dropped. If a pathological long/flapping outage pushes past it, the OLDEST unsent are dropped
+# but LOUDLY and with a persisted, observable counter — never silently. See compact().
+DEFAULT_MAX_PENDING_TRANSITIONS = 100_000
 
 _SCHEMA = """
 create table if not exists meta (k text primary key, v text);
@@ -75,13 +79,21 @@ def _log(msg: str) -> None:
 class HealthStore:
     def __init__(self, path, agent_id: str,
                  max_checkpoints: int = DEFAULT_MAX_CHECKPOINTS,
-                 max_transition_age_days: int = DEFAULT_MAX_TRANSITION_AGE_DAYS) -> None:
+                 max_transition_age_days: int = DEFAULT_MAX_TRANSITION_AGE_DAYS,
+                 max_pending_transitions: int = DEFAULT_MAX_PENDING_TRANSITIONS) -> None:
         self.path = Path(path)
         self.agent_id = agent_id
         self.max_checkpoints = int(max_checkpoints)
         self.max_transition_age_days = int(max_transition_age_days)
+        self.max_pending_transitions = int(max_pending_transitions)
         self._lock = threading.RLock()
         self.db = self._open()
+        # A durable per-DATABASE-LIFETIME epoch. Fresh/rebuilt DB -> new epoch; intact restart
+        # -> same epoch. This is what makes dedupe ids globally unique: after a corruption
+        # rebuild the SQLite AUTOINCREMENT restarts at 1, so "<agent>:<seq>" alone would collide
+        # with already-reconciled server rows and the server's ON CONFLICT DO NOTHING would
+        # silently discard genuinely new evidence. "<agent>:<epoch>:<seq>" cannot collide.
+        self.epoch = self._ensure_epoch()
 
     # -- open / resilience ---------------------------------------------------------
 
@@ -111,6 +123,23 @@ class HealthStore:
             db = self._connect()
             db.executescript(_SCHEMA)
         return db
+
+    def _ensure_epoch(self) -> str:
+        """Read the store epoch from meta, or mint a new one. A rebuilt DB has no meta -> new
+        epoch; an intact DB keeps its epoch across restarts."""
+        with self._lock:
+            try:
+                row = self.db.execute("select v from meta where k='store_epoch'").fetchone()
+                if row and row["v"]:
+                    return row["v"]
+                ep = uuid.uuid4().hex
+                self.db.execute("insert into meta(k,v) values('store_epoch',?) "
+                                "on conflict(k) do update set v=excluded.v", (ep,))
+                return ep
+            except sqlite3.Error as e:
+                # Never fail construction; fall back to a volatile epoch (still unique per boot).
+                _log(f"epoch init failed ({e}); using volatile epoch")
+                return "vol-" + uuid.uuid4().hex
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None,
@@ -143,7 +172,7 @@ class HealthStore:
                     " reason, source, device_ts) values (?,?,?,?,?,?,?,?)",
                     (None, layer, entity, prev, new_state, reason, source, str(device_ts)))
                 seq = self.db.execute("select last_insert_rowid()").fetchone()[0]
-                dedupe_key = f"{self.agent_id}:{seq}"
+                dedupe_key = f"{self.agent_id}:{self.epoch}:{seq}"   # epoch-qualified: rebuild-proof
                 self.db.execute("update transitions set dedupe_key=? where seq=?", (dedupe_key, seq))
                 self.db.execute(
                     "insert into last_state(key,state) values(?,?) "
@@ -206,7 +235,8 @@ class HealthStore:
                 "from": r["from_state"], "to": r["to_state"], "reason": r["reason"],
                 "source": r["source"], "device_ts": r["device_ts"]}
                for r in self.pending_transitions(limit)]
-        cps = [{"seq": r["seq"], "device_ts": r["device_ts"], "nvr_state": r["nvr_state"],
+        cps = [{"id": f"{self.agent_id}:{self.epoch}:cp:{r['seq']}", "store_epoch": self.epoch,
+                "seq": r["seq"], "device_ts": r["device_ts"], "nvr_state": r["nvr_state"],
                 "cameras_observed": r["cameras_observed"], "cycle_ok": bool(r["cycle_ok"])}
                for r in self.pending_checkpoints(limit)]
         return {"transitions": txs, "checkpoints": cps}
@@ -232,24 +262,57 @@ class HealthStore:
     # -- retention -----------------------------------------------------------------
 
     def compact(self) -> None:
-        """Bound the store. Drops UPLOADED transitions older than the age limit and collapses
-        checkpoints to the cap (uploaded first, then oldest). NEVER drops a pending transition."""
+        """Bound the store. Storage classification (honest):
+          * checkpoints           — HARD-bounded by count (uploaded dropped first).
+          * uploaded transitions  — age-pruned past max_transition_age_days.
+          * unsent transitions    — retained; NOT dropped for age. Bounded only by a hard
+            disk-pressure ceiling (max_pending_transitions); crossing it drops the OLDEST
+            unsent, but LOUDLY and with a persisted, observable counter — never silently.
+        """
         with self._lock:
             try:
                 max_age = self.max_transition_age_days * 86400
                 self.db.execute(
                     "delete from transitions where status='uploaded' "
                     "and (strftime('%s','now') - created_at) >= ?", (max_age,))
+
                 n = self.db.execute("select count(*) from checkpoints").fetchone()[0]
                 if n > self.max_checkpoints:
                     excess = n - self.max_checkpoints
-                    # prefer to drop already-uploaded, oldest first; only then oldest pending
                     self.db.execute(
                         "delete from checkpoints where seq in ("
                         "  select seq from checkpoints order by (status='pending') asc, seq asc"
                         "  limit ?)", (excess,))
+
+                # Disk-pressure last resort for UNSENT transitions — explicit + observable.
+                npend = self.db.execute(
+                    "select count(*) from transitions where status='pending'").fetchone()[0]
+                if npend > self.max_pending_transitions:
+                    excess = npend - self.max_pending_transitions
+                    _log(f"WARNING disk-pressure: {npend} unsent transitions exceed ceiling "
+                         f"{self.max_pending_transitions}; dropping {excess} OLDEST unsent "
+                         f"(explicit + counted, NOT silent)")
+                    self._bump_meta("pending_overflow_dropped", excess)
+                    self.db.execute(
+                        "delete from transitions where seq in ("
+                        "  select seq from transitions where status='pending' order by seq limit ?)",
+                        (excess,))
             except sqlite3.Error as e:
                 _log(f"compact failed ({e})")
+
+    def _bump_meta(self, key: str, amount: int) -> None:
+        try:
+            self.db.execute(
+                "insert into meta(k,v) values(?, ?) on conflict(k) do update "
+                "set v = cast((cast(meta.v as integer) + ?) as text)",
+                (key, str(int(amount)), int(amount)))
+        except sqlite3.Error:
+            pass
+
+    def overflow_count(self) -> int:
+        """How many unsent transitions the disk-pressure policy has dropped (observable)."""
+        r = self._rows("select v from meta where k='pending_overflow_dropped'", ())
+        return int(r[0]["v"]) if r else 0
 
     def _safe_rollback(self) -> None:
         try:

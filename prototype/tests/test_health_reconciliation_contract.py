@@ -42,7 +42,13 @@ def main():
     require("create unique index if not exists camera_health_tx_dedupe_uidx",
             "dedupe_key must be unique (no duplicate ledger row on replay)")
     require("create table if not exists public.local_monitoring_checkpoints", "checkpoint table missing")
-    require("unique (agent_id, agent_seq)", "checkpoints must be replay-safe (unique per agent seq)")
+    # checkpoints dedupe on the EPOCH-QUALIFIED id, not bare (agent, seq) — a corrupt-store
+    # rebuild restarts seq, so bare seq would silently discard genuinely new evidence.
+    require("checkpoint_id    text not null", "checkpoints need an epoch-qualified checkpoint_id")
+    require("store_epoch      text", "checkpoints must carry the store epoch")
+    require("unique (checkpoint_id)", "checkpoints must dedupe on the rebuild-proof checkpoint_id")
+    if re.search(r"unique \(agent_id, agent_seq\)", MIG):
+        raise AssertionError("bare (agent_id, agent_seq) dedupe collides after a store rebuild")
     require("alter table public.local_monitoring_checkpoints enable row level security", "checkpoint RLS")
     require("revoke all on table public.local_monitoring_checkpoints from public, anon, authenticated",
             "checkpoint table must be fail-closed")
@@ -63,7 +69,7 @@ def main():
     # --- idempotent replay + observed vs received + forward-only --------------
     require("on conflict (dedupe_key) where dedupe_key is not null do nothing",
             "replay must be idempotent on dedupe_key", rec)
-    require("on conflict (agent_id, agent_seq) do nothing", "checkpoint replay must be idempotent", rec)
+    require("on conflict (checkpoint_id) do nothing", "checkpoint replay must be idempotent (epoch-qualified)", rec)
     # `at` is the observed device time; received_at is v_now — two distinct sources
     assert "device_ts, v_now, source, dedupe_key" in rec, "ledger must store observed device_ts AND received v_now"
     require("l.device_ts > coalesce(ch.observed_at, '-infinity'::timestamptz)",
