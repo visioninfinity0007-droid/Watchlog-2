@@ -29,15 +29,26 @@ alter table public.camera_health_transitions add column if not exists dedupe_key
 alter table public.camera_health_transitions add column if not exists source      text;
 alter table public.camera_health_transitions add column if not exists received_at timestamptz;
 -- `at` keeps the RAW device-observed time (evidence/forensics). `effective_at` is the
--- server-safe ordering time used for the forward-only watermark — a wild future device clock
--- is clamped so it can never freeze current state. The two are deliberately distinct.
+-- server-safe ordering time — a wild future clock is clamped so it can never freeze state. It is
+-- set ONCE, when the dedupe id is first inserted, and is IMMUTABLE thereafter (a replay's ON
+-- CONFLICT DO NOTHING preserves it), so a resend can never re-clamp it against a later now().
 alter table public.camera_health_transitions add column if not exists effective_at timestamptz;
+-- The transition's ORDERING identity, stored explicitly so current-state can advance durably and
+-- deterministically ACROSS batches: store_epoch + numeric seq. The ledger's own `id` (identity,
+-- from 0042) is the server-assigned first-seen order used only to break an equal-time cross-epoch
+-- tie (random-UUID epochs never imply chronology).
+alter table public.camera_health_transitions add column if not exists store_epoch text;
+alter table public.camera_health_transitions add column if not exists seq         bigint;
 create unique index if not exists camera_health_tx_dedupe_uidx
   on public.camera_health_transitions (dedupe_key) where dedupe_key is not null;
 
--- observed-time watermark on current camera health, for forward-only advancement (holds the
--- server-safe EFFECTIVE time, never a raw future device clock).
-alter table public.camera_health add column if not exists observed_at timestamptz;
+-- DURABLE ordering watermark on current camera health (not just a timestamp): the winning
+-- transition's effective time + epoch + numeric seq + server first-seen id. This is what makes
+-- cross-batch ordering correct and replay a no-op.
+alter table public.camera_health add column if not exists observed_at     timestamptz;
+alter table public.camera_health add column if not exists observed_epoch  text;
+alter table public.camera_health add column if not exists observed_seq    bigint;
+alter table public.camera_health add column if not exists observed_ingest bigint;
 
 -- Safe timestamptz cast: returns NULL instead of raising on a malformed value, so ONE poison
 -- row in a retained batch can be isolated/quarantined rather than failing the whole batch
@@ -155,6 +166,7 @@ begin
   ),
   valid as (
     select dedupe_key, camera_id, seq, device_ts,
+           coalesce(nullif(t->>'store_epoch',''), split_part(t->>'id', ':', 2)) as store_epoch,
            case when device_ts > v_now + v_skew then v_now else device_ts end as effective_at,
            (device_ts > v_now + v_skew) as clamped,
            case when lower(coalesce(t->>'from','')) in ('operational','degraded','offline','unknown')
@@ -170,11 +182,13 @@ begin
       from classified where verdict = 'valid'
   ),
   ins as (
+    -- effective_at + store_epoch + seq are written ONCE here; ON CONFLICT DO NOTHING keeps them
+    -- immutable on any later replay. The row's identity `id` is the server first-seen order.
     insert into camera_health_transitions
       (tenant_id, site_id, camera_id, from_state, to_state, reason_code, at, effective_at,
-       received_at, source, dedupe_key)
+       received_at, source, dedupe_key, store_epoch, seq)
     select v_agent.tenant_id, v_agent.site_id, camera_id, from_state, to_state, reason,
-           device_ts, effective_at, v_now, source, dedupe_key
+           device_ts, effective_at, v_now, source, dedupe_key, store_epoch, seq
       from valid
     on conflict (dedupe_key) where dedupe_key is not null do nothing
     returning 1
@@ -188,37 +202,38 @@ begin
             from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z)
     into v_seen, v_valid, v_applied, v_rejected, v_clamped, v_rej_by;
 
-  -- CURRENT STATE: advance each camera to its latest transition by (EFFECTIVE time, NUMERIC seq),
-  -- forward-only. effective_at (not raw device_ts) means a future clock can never freeze state; the
-  -- tie-break is the numeric per-epoch sequence (NOT the lexical dedupe_key, under which ':9' would
-  -- wrongly sort after ':10'). Quarantined rows (bad ts/seq) never touch current state.
-  with raw as (
-    select t, (t->>'entity') as channel, lower(coalesce(t->>'layer','camera')) as layer,
-           lower(t->>'to') as to_raw, wl_try_timestamptz(t->>'device_ts') as device_ts,
-           wl_try_bigint(t->>'seq') as seq
+  -- CURRENT STATE: advance to the latest transition per camera, reading the AUTHORITATIVE,
+  -- IMMUTABLE ordering from the ledger (effective_at/store_epoch/seq/id) — NOT recomputed from the
+  -- payload. A prior command's inserts are visible here, so this covers rows just inserted above AND
+  -- replayed rows (which reuse their originally-accepted effective_at, so a replay can never
+  -- re-clamp against a later now()). Advancement is DURABLE and deterministic across batches: the
+  -- watermark is the full tuple (effective_at, store_epoch, numeric seq, server first-seen id).
+  with batch_ids as (
+    select distinct (t->>'id') as dedupe_key
       from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
+     where coalesce(t->>'id','') <> ''
   ),
-  valid as (
-    select cm.id as camera_id, r.seq,
-           case when r.device_ts > v_now + v_skew then v_now else r.device_ts end as effective_at,
-           case when r.to_raw in ('operational','degraded','offline','unknown') then r.to_raw else 'unknown' end as to_state,
-           case when lower(coalesce(r.t->>'reason','unknown')) in ('ok','unknown','probe_timeout',
-                     'stale_frame','video_loss','channel_missing','channel_disabled','nvr_unreachable',
-                     'nvr_auth_failed','agent_unreachable','storage_fault','not_recording','tamper',
-                     'disk_error','disk_full') then lower(r.t->>'reason') else 'unknown' end as reason
-      from raw r
-      join cameras cm on cm.site_id = v_agent.site_id and cm.channel = r.channel
-     where r.layer = 'camera' and coalesce(r.to_raw,'') <> ''
-       and r.device_ts is not null and r.seq is not null
+  authoritative as (
+    select cht.camera_id, cht.effective_at, cht.store_epoch, cht.seq, cht.id as ingest,
+           cht.to_state, cht.reason_code
+      from camera_health_transitions cht
+      join batch_ids b on b.dedupe_key = cht.dedupe_key
+     where cht.site_id = v_agent.site_id
   ),
   latest as (
-    select distinct on (camera_id) camera_id, to_state, reason, effective_at
-      from valid order by camera_id, effective_at desc, seq desc     -- NUMERIC seq tie-break
+    -- newest per camera within this batch by (effective_at, numeric seq); id is a final tiebreak
+    select distinct on (camera_id) camera_id, to_state, reason_code, effective_at,
+           store_epoch, seq, ingest
+      from authoritative
+      order by camera_id, effective_at desc, seq desc nulls last, ingest desc
   )
   update camera_health ch
      set health_state     = l.to_state,
-         reason_code       = l.reason,
+         reason_code       = l.reason_code,
          observed_at       = l.effective_at,
+         observed_epoch    = l.store_epoch,
+         observed_seq      = l.seq,
+         observed_ingest   = l.ingest,
          last_change_at    = v_now,
          updated_at        = v_now,
          last_offline_at   = case when l.to_state = 'offline' then l.effective_at
@@ -227,7 +242,14 @@ begin
                                   then l.effective_at else ch.last_recovery_at end
     from latest l
    where ch.camera_id = l.camera_id
-     and l.effective_at > coalesce(ch.observed_at, '-infinity'::timestamptz);   -- forward-only
+     -- DURABLE, deterministic ordering across batches/epochs:
+     and ( l.effective_at > coalesce(ch.observed_at, '-infinity'::timestamptz)          -- strictly newer time
+        or (l.effective_at = ch.observed_at                                              -- same time, same epoch:
+            and l.store_epoch is not distinct from ch.observed_epoch
+            and l.seq > coalesce(ch.observed_seq, -1))                                   --   numeric sequence wins
+        or (l.effective_at = ch.observed_at                                              -- same time, other epoch:
+            and l.store_epoch is distinct from ch.observed_epoch
+            and l.ingest > coalesce(ch.observed_ingest, -1)) );                          --   server first-seen wins
 
   -- CHECKPOINTS: classify (received = valid + rejected). id + a parseable device_ts are essential;
   -- seq/cameras_observed/cycle_ok are metadata parsed fail-soft (wl_try_*) and safe-DEFAULTED — a

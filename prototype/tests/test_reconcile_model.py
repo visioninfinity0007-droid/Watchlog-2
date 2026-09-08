@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 import reconcile_model as rc  # noqa: E402
 from reconcile_model import Transition, dedupe, order, fold_current_state, \
     checkpoints_to_intervals, reclassify, effective_ts, partition_valid, \
-    latest_by_effective, classify_transition, classify_checkpoint, \
+    latest_by_effective, classify_transition, classify_checkpoint, Reconciler, \
     DEFAULT_MAX_FUTURE_SKEW  # noqa: E402
 
 
@@ -280,6 +280,60 @@ def test_one_bad_seq_or_metadata_does_not_poison_valid_checkpoints():
     for bad in ({"seq": "x"}, {"cameras_observed": "NaN"}, {"cycle_ok": "maybe"}):
         row = {"id": "a:e:cp:1", "device_ts": 100.0, **bad}
         assert classify_checkpoint(row) == "valid"               # kept, not rejected, never fatal
+
+
+# --- DURABLE cross-batch ordering + replay idempotency (separate reconcile CALLS) ----
+
+def tx(id, entity, to, device_ts, seq, epoch):
+    return {"id": id, "entity": entity, "to": to, "device_ts": device_ts, "seq": seq, "epoch": epoch}
+
+
+def test_cross_batch_same_time_later_seq_wins():
+    r = Reconciler()
+    r.reconcile([tx("a:E:9", "1", "offline", 1000.0, 9, "E")], now=1000.0)     # call A
+    r.reconcile([tx("a:E:10", "1", "operational", 1000.0, 10, "E")], now=1000.0)  # call B, same time
+    assert r.state["1"]["to_state"] == "operational"      # seq 10 beats seq 9 across batches
+
+
+def test_replay_of_future_clamped_after_recovery_is_a_total_noop():
+    r = Reconciler()
+    r.reconcile([tx("a:E:5", "1", "offline", 1000.0 + 86400, 5, "E")], now=1000.0)   # clamps to 1000
+    r.reconcile([tx("a:E:6", "1", "operational", 1300.0, 6, "E")], now=1300.0)        # recovers
+    before = dict(r.state["1"])
+    r.reconcile([tx("a:E:5", "1", "offline", 1000.0 + 86400, 5, "E")], now=1600.0)    # REPLAY, later now
+    assert r.state["1"] == before and r.state["1"]["to_state"] == "operational"       # no-op
+
+
+def test_repeated_replay_never_changes_accepted_effective_at():
+    r = Reconciler()
+    r.reconcile([tx("a:E:5", "1", "offline", 1000.0 + 86400, 5, "E")], now=1000.0)
+    eff = r.ledger["a:E:5"]["effective_at"]
+    r.reconcile([tx("a:E:5", "1", "offline", 1000.0 + 86400, 5, "E")], now=9999.0)
+    r.reconcile([tx("a:E:5", "1", "offline", 1000.0 + 86400, 5, "E")], now=99999.0)
+    assert r.ledger["a:E:5"]["effective_at"] == eff == 1000.0       # immutable after first accept
+
+
+def test_duplicate_ledger_row_cannot_regress_newer_state():
+    r = Reconciler()
+    r.reconcile([tx("a:E:1", "1", "offline", 500.0, 1, "E")], now=500.0)
+    r.reconcile([tx("a:E:2", "1", "operational", 900.0, 2, "E")], now=900.0)
+    r.reconcile([tx("a:E:1", "1", "offline", 500.0, 1, "E")], now=1500.0)   # replay old offline
+    assert r.state["1"]["to_state"] == "operational"       # cannot reassert the old OFFLINE
+
+
+def test_same_timestamp_three_separate_batches_obey_seq():
+    r = Reconciler()
+    for s, st in [(7, "offline"), (9, "operational"), (8, "degraded")]:     # arrive out of seq order
+        r.reconcile([tx(f"a:E:{s}", "1", st, 2000.0, s, "E")], now=2000.0)
+    assert r.state["1"]["seq"] == 9 and r.state["1"]["to_state"] == "operational"
+
+
+def test_cross_epoch_tie_resolved_by_server_first_seen_not_uuid():
+    r = Reconciler()
+    r.reconcile([tx("a:E1:5", "1", "offline", 3000.0, 5, "E1")], now=3000.0)   # epoch E1
+    # local store rebuilt -> new epoch E2, seq resets to 1, SAME effective time
+    r.reconcile([tx("a:E2:1", "1", "operational", 3000.0, 1, "E2")], now=3000.0)
+    assert r.state["1"]["to_state"] == "operational"       # later first-seen (new lifetime) wins
 
 
 if __name__ == "__main__":

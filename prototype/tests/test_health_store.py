@@ -140,6 +140,13 @@ def test_pending_overflow_is_observable_not_silent(tmp_path):
     assert s.overflow_count() == 3                   # and the drop is COUNTED (observable), not silent
 
 
+def test_export_transitions_carry_store_epoch_for_durable_ordering(tmp_path):
+    s = new(tmp_path)
+    s.observe("camera", "1", "offline", "video_loss", "native", "t1")
+    t = s.export_batch(100)["transitions"][0]
+    assert t["store_epoch"] == s.epoch and t["seq"] == int(t["id"].split(":")[-1])
+
+
 def test_no_image_or_blob_columns(tmp_path):
     s = new(tmp_path)
     cols = s._all_columns()                   # {table: [colnames]}

@@ -122,6 +122,55 @@ def classify_checkpoint(row: dict) -> str:
     return "valid"
 
 
+class Reconciler:
+    """Stateful server model for CURRENT-STATE across SEPARATE reconcile calls — the exact
+    cross-batch/replay semantics of wl_reconcile_health that a single-batch check cannot prove.
+
+    Two durability rules make it replay-safe and correctly ordered across batches:
+      * the LEDGER is immutable: a transition's server-safe effective_at and its server-assigned
+        first-seen order (`ingest`) are fixed the FIRST time its dedupe id is inserted. A replay
+        reuses the stored values — it never re-clamps against a later now().
+      * the watermark is a full ORDERING TUPLE, not just a timestamp: current state advances only
+        if the incoming transition is strictly newer by (effective_at, then numeric seq WITHIN the
+        same store epoch, then server first-seen order ACROSS epochs). Random-UUID epochs never
+        imply chronology — only the server first-seen order breaks an equal-time cross-epoch tie.
+    """
+
+    def __init__(self, max_future_skew: float = DEFAULT_MAX_FUTURE_SKEW):
+        self.max_future_skew = max_future_skew
+        self.ledger: Dict[str, dict] = {}    # dedupe_key -> immutable ordering row
+        self.state: Dict[str, dict] = {}     # entity -> current watermark row
+        self._ingest = 0                     # server-assigned monotonic first-seen counter
+
+    @staticmethod
+    def _newer(n: dict, c: dict) -> bool:
+        if n["effective_at"] != c["effective_at"]:
+            return n["effective_at"] > c["effective_at"]
+        if n["epoch"] == c["epoch"]:
+            return n["seq"] > c["seq"]          # same epoch: numeric sequence is authoritative
+        return n["ingest"] > c["ingest"]        # cross-epoch tie: server first-seen order only
+
+    def reconcile(self, transitions, now: float) -> Dict[str, dict]:
+        touched: Dict[str, dict] = {}
+        for t in transitions:
+            key = t["id"]
+            row = self.ledger.get(key)
+            if row is None:                     # FIRST time: fix effective_at + first-seen forever
+                eff, _ = effective_ts(t["device_ts"], now, self.max_future_skew)
+                self._ingest += 1
+                row = {"effective_at": eff, "epoch": t["epoch"], "seq": t["seq"],
+                       "ingest": self._ingest, "to_state": t["to"], "entity": t["entity"]}
+                self.ledger[key] = row          # immutable from here on (idempotent replay)
+            cur = touched.get(t["entity"])
+            if cur is None or self._newer(row, cur):
+                touched[t["entity"]] = row
+        for entity, row in touched.items():
+            w = self.state.get(entity)
+            if w is None or self._newer(row, w):
+                self.state[entity] = row
+        return self.state
+
+
 def partition_valid(rows: Iterable[dict]):
     """Split retained rows into (valid, rejected) so a single malformed row cannot fail the whole
     batch. A row is valid only if it has a non-empty id, a non-empty target state, and a
@@ -210,4 +259,5 @@ def reclassify(cloud_gaps: Iterable[Tuple[float, float]],
 __all__ = ["Transition", "dedupe", "order", "fold_current_state",
            "checkpoints_to_intervals", "reclassify",
            "effective_ts", "partition_valid", "latest_by_effective",
-           "classify_transition", "classify_checkpoint", "DEFAULT_MAX_FUTURE_SKEW"]
+           "classify_transition", "classify_checkpoint", "Reconciler",
+           "DEFAULT_MAX_FUTURE_SKEW"]

@@ -231,7 +231,8 @@ class HealthStore:
     def export_batch(self, limit: int) -> dict:
         """The reconciliation payload: pending transitions + checkpoints, defined fields only
         (no secrets, no bytes)."""
-        txs = [{"id": r["dedupe_key"], "seq": r["seq"], "layer": r["layer"], "entity": r["entity"],
+        txs = [{"id": r["dedupe_key"], "seq": r["seq"], "store_epoch": self.epoch,
+                "layer": r["layer"], "entity": r["entity"],
                 "from": r["from_state"], "to": r["to_state"], "reason": r["reason"],
                 "source": r["source"], "device_ts": r["device_ts"]}
                for r in self.pending_transitions(limit)]

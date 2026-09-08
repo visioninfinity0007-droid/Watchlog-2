@@ -91,6 +91,26 @@ def main():
     if re.search(r"order by camera_id, effective_at desc, dedupe_key", rec):
         raise AssertionError("lexical dedupe_key ordering: ':9' would sort after ':10' — must use numeric seq")
 
+    # --- DURABLE cross-batch ordering + replay idempotency (the deep fix) --------
+    # ledger stores the ordering identity explicitly; effective_at is written once and immutable.
+    require("add column if not exists store_epoch text", "ledger must store store_epoch for durable ordering")
+    require("add column if not exists seq         bigint", "ledger must store numeric seq for durable ordering")
+    # camera_health carries the FULL durable watermark, not just a timestamp.
+    for col in ("observed_epoch", "observed_seq", "observed_ingest"):
+        require(f"add column if not exists {col}", f"camera_health must persist {col} watermark")
+    # current-state reads the AUTHORITATIVE, immutable ledger — it must NOT recompute effective_at.
+    require("join batch_ids b on b.dedupe_key = cht.dedupe_key",
+            "current state must read authoritative ordering from the ledger (join on dedupe_key)", rec)
+    current_state = rec[rec.index("CURRENT STATE"):rec.index("CHECKPOINTS")]
+    if "v_skew" in current_state:
+        raise AssertionError("current-state must NOT re-clamp effective_at (a replay would re-clamp) — "
+                             "read effective_at from the ledger instead")
+    # advancement is the full composite rule (time, then same-epoch seq, then cross-epoch first-seen)
+    require("l.seq > coalesce(ch.observed_seq, -1)", "same-epoch ties must advance by numeric seq (cross-batch)", rec)
+    require("l.ingest > coalesce(ch.observed_ingest, -1)", "cross-epoch ties must use server first-seen order", rec)
+    require("l.store_epoch is not distinct from ch.observed_epoch", "same-epoch branch of the durable rule", rec)
+    require("l.store_epoch is distinct from ch.observed_epoch", "cross-epoch branch of the durable rule", rec)
+
     # --- ALL untrusted typed fields fail-soft, not just device_ts --------------
     for helper in ("wl_try_bigint", "wl_try_int", "wl_try_bool"):
         require(f"create or replace function public.{helper}", f"missing fail-soft cast {helper}")
