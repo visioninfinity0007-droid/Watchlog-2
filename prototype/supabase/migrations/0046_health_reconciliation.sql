@@ -130,11 +130,29 @@ declare
   v_ck_rej     int := 0;
   v_ck_deflt   int := 0;    -- valid checkpoints whose malformed metadata was safe-defaulted
   v_ck_rej_by  jsonb := '{}'::jsonb;
+  v_n_epochs   int := 0;
+  v_mixed      boolean := false;
 begin
   v_agent := wl_auth_agent(p_agent_id, p_agent_key);
   if v_agent.id is null then
     raise exception 'agent not recognised' using errcode = '28000';
   end if;
+
+  -- PROTOCOL INVARIANT: one store epoch per reconcile call. The agent's health store holds exactly
+  -- one epoch per lifetime, so a legitimate batch is single-epoch. A batch spanning >1 epoch is a
+  -- violation whose WITHIN-batch cross-epoch order is inherently ambiguous (there is no in-batch
+  -- chronology signal between two random-UUID epochs), so we reject it wholesale (observable) rather
+  -- than mis-resolve it. Cross-epoch chronology is only ever resolved ACROSS calls by the durable
+  -- watermark. This is what keeps the single-epoch `latest` ordering (effective_at, seq) correct.
+  select count(distinct coalesce(nullif(t->>'store_epoch',''), split_part(t->>'id', ':', 2)))
+    into v_n_epochs
+    from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
+    join cameras cm on cm.site_id = v_agent.site_id and cm.channel = (t->>'entity')
+   where lower(coalesce(t->>'layer','camera')) = 'camera'
+     and coalesce(t->>'to','') <> '' and coalesce(t->>'id','') <> ''
+     and wl_try_timestamptz(t->>'device_ts') is not null
+     and wl_try_bigint(t->>'seq') is not null;
+  v_mixed := v_n_epochs > 1;
 
   -- TRANSITIONS: classify EVERY payload row (received = valid + rejected), then apply the valid.
   -- Every typed field is parsed fail-soft (wl_try_*), so no single malformed value can abort the
@@ -159,6 +177,7 @@ begin
              when r.device_ts is null            then 'invalid_timestamp'
              when r.seq is null                  then 'invalid_sequence'
              when cm.id is null                  then 'unmapped_channel'
+             when v_mixed                        then 'mixed_epoch_batch'   -- protocol violation
              else 'valid'
            end as verdict
       from raw r
@@ -208,6 +227,9 @@ begin
   -- replayed rows (which reuse their originally-accepted effective_at, so a replay can never
   -- re-clamp against a later now()). Advancement is DURABLE and deterministic across batches: the
   -- watermark is the full tuple (effective_at, store_epoch, numeric seq, server first-seen id).
+  -- Skipped entirely for a rejected mixed-epoch batch, so a mixed replay can never reach `latest`
+  -- (whose single-epoch (effective_at, seq) ordering would otherwise mis-compare seq across epochs).
+  if not v_mixed then
   with batch_ids as (
     select distinct (t->>'id') as dedupe_key
       from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
@@ -250,6 +272,7 @@ begin
         or (l.effective_at = ch.observed_at                                              -- same time, other epoch:
             and l.store_epoch is distinct from ch.observed_epoch
             and l.ingest > coalesce(ch.observed_ingest, -1)) );                          --   server first-seen wins
+  end if;   -- not v_mixed
 
   -- CHECKPOINTS: classify (received = valid + rejected). id + a parseable device_ts are essential;
   -- seq/cameras_observed/cycle_ok are metadata parsed fail-soft (wl_try_*) and safe-DEFAULTED — a

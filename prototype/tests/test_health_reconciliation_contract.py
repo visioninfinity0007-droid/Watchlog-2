@@ -111,6 +111,16 @@ def main():
     require("l.store_epoch is not distinct from ch.observed_epoch", "same-epoch branch of the durable rule", rec)
     require("l.store_epoch is distinct from ch.observed_epoch", "cross-epoch branch of the durable rule", rec)
 
+    # --- single-epoch-per-batch enforcement (so `latest`'s (effective_at, seq) can't mis-compare
+    #     seq across epochs); cross-epoch chronology is resolved only ACROSS calls, at the watermark.
+    require("count(distinct coalesce(nullif(t->>'store_epoch',''), split_part(t->>'id', ':', 2)))",
+            "must count the batch's distinct store epochs", rec)
+    require("v_mixed", "must compute a mixed-epoch guard", rec)
+    require("when v_mixed                        then 'mixed_epoch_batch'",
+            "a mixed-epoch batch must be rejected as a category, not mis-resolved by cross-epoch seq", rec)
+    require("if not v_mixed then",
+            "current state must be skipped for a mixed-epoch batch (so a mixed replay can't reach latest)", rec)
+
     # --- ALL untrusted typed fields fail-soft, not just device_ts --------------
     for helper in ("wl_try_bigint", "wl_try_int", "wl_try_bool"):
         require(f"create or replace function public.{helper}", f"missing fail-soft cast {helper}")

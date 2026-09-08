@@ -141,9 +141,12 @@ class Reconciler:
         self.ledger: Dict[str, dict] = {}    # dedupe_key -> immutable ordering row
         self.state: Dict[str, dict] = {}     # entity -> current watermark row
         self._ingest = 0                     # server-assigned monotonic first-seen counter
+        self.rejected_mixed = 0              # transitions rejected because a batch spanned >1 epoch
 
     @staticmethod
     def _newer(n: dict, c: dict) -> bool:
+        """The DURABLE cross-batch comparator. effective_at first; then, at equal time, numeric
+        seq WITHIN the same store epoch and server first-seen (`ingest`) ACROSS epochs."""
         if n["effective_at"] != c["effective_at"]:
             return n["effective_at"] > c["effective_at"]
         if n["epoch"] == c["epoch"]:
@@ -151,20 +154,34 @@ class Reconciler:
         return n["ingest"] > c["ingest"]        # cross-epoch tie: server first-seen order only
 
     def reconcile(self, transitions, now: float) -> Dict[str, dict]:
-        touched: Dict[str, dict] = {}
-        for t in transitions:
+        # PROTOCOL INVARIANT: one store epoch per reconcile call (the agent's store holds exactly
+        # one epoch per lifetime). A batch spanning >1 epoch cannot arise legitimately and its
+        # within-batch cross-epoch ordering is inherently ambiguous, so reject it wholesale
+        # (observable) rather than mis-resolve it. Cross-epoch chronology is handled ACROSS calls
+        # by the watermark comparator, never within one batch.
+        if len({t["epoch"] for t in transitions}) > 1:
+            self.rejected_mixed += len(transitions)
+            return self.state
+
+        for t in sorted(transitions, key=lambda x: x["seq"]):   # deterministic first-seen order
             key = t["id"]
-            row = self.ledger.get(key)
-            if row is None:                     # FIRST time: fix effective_at + first-seen forever
+            if key not in self.ledger:          # FIRST time: fix effective_at + first-seen forever
                 eff, _ = effective_ts(t["device_ts"], now, self.max_future_skew)
                 self._ingest += 1
-                row = {"effective_at": eff, "epoch": t["epoch"], "seq": t["seq"],
-                       "ingest": self._ingest, "to_state": t["to"], "entity": t["entity"]}
-                self.ledger[key] = row          # immutable from here on (idempotent replay)
-            cur = touched.get(t["entity"])
-            if cur is None or self._newer(row, cur):
-                touched[t["entity"]] = row
-        for entity, row in touched.items():
+                self.ledger[key] = {"effective_at": eff, "epoch": t["epoch"], "seq": t["seq"],
+                                    "ingest": self._ingest, "to_state": t["to"], "entity": t["entity"]}
+
+        # within one (single-epoch) batch, the winner per entity is max by (effective_at, seq) —
+        # order-independent because seq is unique within an epoch.
+        touched: Dict[str, dict] = {}
+        for t in transitions:
+            row = self.ledger.get(t["id"])
+            if row is None:
+                continue
+            cur = touched.get(row["entity"])
+            if cur is None or (row["effective_at"], row["seq"]) > (cur["effective_at"], cur["seq"]):
+                touched[row["entity"]] = row
+        for entity, row in touched.items():     # advance current state by the durable comparator
             w = self.state.get(entity)
             if w is None or self._newer(row, w):
                 self.state[entity] = row

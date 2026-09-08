@@ -329,11 +329,38 @@ def test_same_timestamp_three_separate_batches_obey_seq():
 
 
 def test_cross_epoch_tie_resolved_by_server_first_seen_not_uuid():
+    # same time, DIFFERENT epochs, old-epoch seq 500 vs new-epoch seq 1, across separate calls:
+    # the later reconcile (new lifetime) wins by server first-seen, NOT by seq or UUID order.
     r = Reconciler()
-    r.reconcile([tx("a:E1:5", "1", "offline", 3000.0, 5, "E1")], now=3000.0)   # epoch E1
-    # local store rebuilt -> new epoch E2, seq resets to 1, SAME effective time
-    r.reconcile([tx("a:E2:1", "1", "operational", 3000.0, 1, "E2")], now=3000.0)
-    assert r.state["1"]["to_state"] == "operational"       # later first-seen (new lifetime) wins
+    r.reconcile([tx("a:E1:500", "1", "offline", 3000.0, 500, "E1")], now=3000.0)     # old epoch, high seq
+    r.reconcile([tx("a:E2:1", "1", "operational", 3000.0, 1, "E2")], now=3000.0)     # new epoch, seq 1
+    assert r.state["1"]["to_state"] == "operational"       # later first-seen wins (not seq 500)
+
+
+def test_cross_epoch_winner_independent_of_call_payload_order_within_batch():
+    # a single-epoch batch's winner is order-independent (by seq), whichever way the list is given
+    a = Reconciler(); b = Reconciler()
+    batch = [tx("a:E:9", "1", "offline", 100.0, 9, "E"), tx("a:E:10", "1", "operational", 100.0, 10, "E")]
+    a.reconcile(batch, now=100.0)
+    b.reconcile(list(reversed(batch)), now=100.0)
+    assert a.state["1"]["to_state"] == b.state["1"]["to_state"] == "operational"
+
+
+def test_mixed_epoch_batch_is_rejected_wholesale():
+    r = Reconciler()
+    mixed = [tx("a:E1:500", "1", "offline", 4000.0, 500, "E1"),
+             tx("a:E2:1", "1", "operational", 4000.0, 1, "E2")]     # two epochs in ONE call
+    r.reconcile(mixed, now=4000.0)
+    assert r.state == {} and r.rejected_mixed == 2         # rejected, no state, observable
+
+
+def test_mixed_epoch_replay_cannot_regress_current_state():
+    r = Reconciler()
+    r.reconcile([tx("a:E1:5", "1", "offline", 5000.0, 5, "E1")], now=5000.0)
+    r.reconcile([tx("a:E1:6", "1", "operational", 5100.0, 6, "E1")], now=5100.0)   # recover
+    r.reconcile([tx("a:E1:5", "1", "offline", 5000.0, 5, "E1"),
+                 tx("a:E2:1", "1", "offline", 5000.0, 1, "E2")], now=5600.0)        # mixed replay
+    assert r.state["1"]["to_state"] == "operational" and r.rejected_mixed == 2      # no regression
 
 
 if __name__ == "__main__":
