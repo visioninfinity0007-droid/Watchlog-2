@@ -85,14 +85,34 @@ def main():
     require("observed_at       = l.effective_at", "current-state watermark must be the effective time", rec)
     require("p_max_future_skew_seconds int default 300", "future-skew tolerance must be configurable")
 
-    # --- poison-row safety: one bad row does not fail the batch; rejects are observable -------
-    require("where device_ts is not null", "unparseable rows must be quarantined, not fatal", rec)
-    for k in ("transitions_rejected", "transitions_clamped", "checkpoints_rejected"):
-        require(k, f"reconcile must report {k} (observable)", rec)
+    # --- current-state tie ordering must be by NUMERIC seq, not lexical dedupe_key ----
+    require("order by camera_id, effective_at desc, seq desc",
+            "latest-per-camera must tie-break on NUMERIC seq (not lexical dedupe_key)", rec)
+    if re.search(r"order by camera_id, effective_at desc, dedupe_key", rec):
+        raise AssertionError("lexical dedupe_key ordering: ':9' would sort after ':10' — must use numeric seq")
 
-    # safe-cast helper is a real fail-soft cast
+    # --- ALL untrusted typed fields fail-soft, not just device_ts --------------
+    for helper in ("wl_try_bigint", "wl_try_int", "wl_try_bool"):
+        require(f"create or replace function public.{helper}", f"missing fail-soft cast {helper}")
+        require(helper + "(", f"{helper} must be used on the payload", rec)
+    for raw_cast in (r"\(c->>'seq'\)::bigint", r"\(c->>'cameras_observed'\)::int",
+                     r"\(c->>'cycle_ok'\)::boolean", r"\(t->>'seq'\)::bigint"):
+        if re.search(raw_cast, rec):
+            raise AssertionError(f"raw cast {raw_cast} can abort the whole batch — use the fail-soft cast")
+
+    # --- rejection accounting: received = valid + rejected, categorized (observable) ----
+    for k in ("transitions_received", "transitions_valid", "transitions_rejected",
+              "transitions_rejected_by", "transitions_clamped",
+              "checkpoints_received", "checkpoints_valid", "checkpoints_rejected",
+              "checkpoints_rejected_by", "checkpoints_field_defaulted"):
+        require(k, f"reconcile must report {k} (accounting/observable)", rec)
+    # the invariant is expressed structurally: valid = count(valid rows), rejected = count(non-valid)
+    require("then 'unmapped_channel'", "channel-mapping failures must be a counted rejection, not dropped", rec)
+    require("then 'invalid_sequence'", "a bad seq must be a counted rejection category", rec)
+
+    # safe-cast helpers are real fail-soft casts
     require("create or replace function public.wl_try_timestamptz", "safe timestamptz cast helper missing")
-    require("exception when others then", "wl_try_timestamptz must return NULL on bad input, not raise")
+    require("exception when others then", "safe casts must return NULL on bad input, not raise")
 
     # --- ledger owned solely by reconciliation: live path writes NO transitions ----
     if re.search(r"insert into camera_health_transitions", rep, re.I):

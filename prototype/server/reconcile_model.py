@@ -61,6 +61,67 @@ def _is_finite_number(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
+def _is_int(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def latest_by_effective(transitions, now: float, max_future_skew: float = DEFAULT_MAX_FUTURE_SKEW
+                        ) -> Dict[str, "Transition"]:
+    """Winning transition per entity by (effective_ts, seq) — the deterministic tie rule.
+
+    Ordering key is (effective_ts, seq): effective_ts first (clamped, server-safe), then the
+    NUMERIC per-epoch sequence. Within a batch (one store epoch) seq fully orders ties — including
+    when future-skew clamps many transitions to the same effective time. Upload/array order is
+    never the key. Cross-epoch ordering is resolved by effective_ts alone (a later reconcile's
+    clamp uses the server's monotonically-increasing now(), so it never sits behind an earlier one).
+    """
+    best: Dict[str, tuple] = {}
+    for t in transitions:
+        eff, _ = effective_ts(t.device_ts, now, max_future_skew)
+        key = (eff, t.seq)
+        cur = best.get(t.entity)
+        if cur is None or key > cur[0]:
+            best[t.entity] = (key, t)
+    return {e: v[1] for e, v in best.items()}
+
+
+# --- full row classification (mirrors 0046) so `received = valid + rejected` holds ----
+
+_TX_REASONS = frozenset({"ok", "unknown", "probe_timeout", "stale_frame", "video_loss",
+                         "channel_missing", "channel_disabled", "nvr_unreachable",
+                         "nvr_auth_failed", "agent_unreachable", "storage_fault",
+                         "not_recording", "tamper", "disk_error", "disk_full"})
+
+
+def classify_transition(row: dict, known_channels) -> str:
+    """Verdict for one retained transition, in the SAME precedence order as wl_reconcile_health.
+    Returns 'valid' or a rejection category (observable). One bad row is isolated, not fatal."""
+    known = {str(c) for c in known_channels}
+    if not row.get("id"):
+        return "missing_id"
+    if (row.get("layer") or "camera") != "camera":
+        return "wrong_layer"
+    if not row.get("to"):
+        return "missing_state"
+    if not _is_finite_number(row.get("device_ts")):
+        return "invalid_timestamp"
+    if not _is_int(row.get("seq")):
+        return "invalid_sequence"
+    if str(row.get("entity")) not in known:
+        return "unmapped_channel"
+    return "valid"
+
+
+def classify_checkpoint(row: dict) -> str:
+    """Verdict for one retained checkpoint. Only id + a parseable device_ts are essential;
+    malformed seq/cameras_observed/cycle_ok are safe-defaulted (row kept), never fatal."""
+    if not row.get("id"):
+        return "missing_id"
+    if not _is_finite_number(row.get("device_ts")):
+        return "invalid_timestamp"
+    return "valid"
+
+
 def partition_valid(rows: Iterable[dict]):
     """Split retained rows into (valid, rejected) so a single malformed row cannot fail the whole
     batch. A row is valid only if it has a non-empty id, a non-empty target state, and a
@@ -148,4 +209,5 @@ def reclassify(cloud_gaps: Iterable[Tuple[float, float]],
 
 __all__ = ["Transition", "dedupe", "order", "fold_current_state",
            "checkpoints_to_intervals", "reclassify",
-           "effective_ts", "partition_valid", "DEFAULT_MAX_FUTURE_SKEW"]
+           "effective_ts", "partition_valid", "latest_by_effective",
+           "classify_transition", "classify_checkpoint", "DEFAULT_MAX_FUTURE_SKEW"]

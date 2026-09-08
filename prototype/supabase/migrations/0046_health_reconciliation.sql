@@ -50,6 +50,20 @@ exception when others then
   return null;
 end $$;
 
+-- Fail-soft casts for the OTHER untrusted typed payload fields, so a malformed seq /
+-- cameras_observed / cycle_ok cannot abort the whole reconcile either. NULL on garbage.
+create or replace function public.wl_try_bigint(p text)
+returns bigint language plpgsql immutable as $$
+begin return p::bigint; exception when others then return null; end $$;
+
+create or replace function public.wl_try_int(p text)
+returns int language plpgsql immutable as $$
+begin return p::int; exception when others then return null; end $$;
+
+create or replace function public.wl_try_bool(p text)
+returns boolean language plpgsql immutable as $$
+begin return p::boolean; exception when others then return null; end $$;
+
 -- ---- local monitoring checkpoints (proof of local observation continuity) ----
 -- Distinct from agent_unreachable_intervals (which is CLOUD connectivity): a checkpoint says
 -- "the site was being watched locally at this instant", even while the cloud could not hear us.
@@ -90,94 +104,116 @@ security definer
 set search_path = public
 as $$
 declare
-  v_agent    agents;
-  v_now      timestamptz := now();
-  v_skew     interval := make_interval(secs => greatest(coalesce(p_max_future_skew_seconds,300), 0));
-  v_seen     int := 0;   -- transitions received (all rows in payload)
-  v_total    int := 0;   -- VALID camera transitions (bound + parseable)
-  v_applied  int := 0;   -- newly inserted (deduped)
-  v_rejected int := 0;   -- quarantined: unparseable ts / unmapped channel / missing id-state
-  v_clamped  int := 0;   -- valid but future-skewed -> effective_at clamped to now
-  v_ckpt     int := 0;
-  v_ckpt_rej int := 0;
+  v_agent      agents;
+  v_now        timestamptz := now();
+  v_skew       interval := make_interval(secs => greatest(coalesce(p_max_future_skew_seconds,300), 0));
+  v_seen       int := 0;    -- transitions received (EVERY row in payload)
+  v_valid      int := 0;    -- valid = applied + duplicate
+  v_applied    int := 0;    -- newly inserted (deduped)
+  v_rejected   int := 0;    -- received - valid (categorized below)
+  v_clamped    int := 0;    -- valid but future-skewed -> effective_at clamped to now
+  v_rej_by     jsonb := '{}'::jsonb;   -- {rejection_category: count} — observable
+  v_ck_seen    int := 0;
+  v_ck_valid   int := 0;
+  v_ck_applied int := 0;
+  v_ck_rej     int := 0;
+  v_ck_deflt   int := 0;    -- valid checkpoints whose malformed metadata was safe-defaulted
+  v_ck_rej_by  jsonb := '{}'::jsonb;
 begin
   v_agent := wl_auth_agent(p_agent_id, p_agent_key);
   if v_agent.id is null then
     raise exception 'agent not recognised' using errcode = '28000';
   end if;
 
-  select count(*) into v_seen from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb));
-
-  -- LEDGER: append each transition once. `at` = RAW observed device time (evidence);
-  -- `effective_at` = server-safe ordering time (clamps a wild future clock); received_at = now().
-  -- Poison-safe: device_ts is parsed with wl_try_timestamptz (NULL on garbage) and such rows are
-  -- QUARANTINED (counted), so one bad row never fails the batch. ON CONFLICT on the stable
-  -- dedupe_key makes a replay a no-op. State/reason/source are clamped to their domains.
-  with parsed as (
-    select (t->>'id') as dedupe_key, cm.id as camera_id,
+  -- TRANSITIONS: classify EVERY payload row (received = valid + rejected), then apply the valid.
+  -- Every typed field is parsed fail-soft (wl_try_*), so no single malformed value can abort the
+  -- batch. `at` = RAW device time (evidence); `effective_at` = server-safe ordering time (a wild
+  -- future clock is clamped to now); received_at = now(). Replay is idempotent on dedupe_key.
+  with raw as (
+    select t,
+           (t->>'id')                            as dedupe_key,
+           (t->>'entity')                        as channel,
+           lower(coalesce(t->>'layer','camera')) as layer,
+           lower(t->>'to')                       as to_raw,
+           wl_try_timestamptz(t->>'device_ts')   as device_ts,
+           wl_try_bigint(t->>'seq')              as seq
+      from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
+  ),
+  classified as (
+    select r.*, cm.id as camera_id,
+           case
+             when coalesce(r.dedupe_key,'') = '' then 'missing_id'
+             when r.layer <> 'camera'            then 'wrong_layer'
+             when coalesce(r.to_raw,'') = ''     then 'missing_state'
+             when r.device_ts is null            then 'invalid_timestamp'
+             when r.seq is null                  then 'invalid_sequence'
+             when cm.id is null                  then 'unmapped_channel'
+             else 'valid'
+           end as verdict
+      from raw r
+      left join cameras cm on cm.site_id = v_agent.site_id and cm.channel = r.channel
+  ),
+  valid as (
+    select dedupe_key, camera_id, seq, device_ts,
+           case when device_ts > v_now + v_skew then v_now else device_ts end as effective_at,
+           (device_ts > v_now + v_skew) as clamped,
            case when lower(coalesce(t->>'from','')) in ('operational','degraded','offline','unknown')
                 then lower(t->>'from') else 'unknown' end as from_state,
-           case when lower(t->>'to') in ('operational','degraded','offline','unknown')
-                then lower(t->>'to') else 'unknown' end as to_state,
+           case when to_raw in ('operational','degraded','offline','unknown')
+                then to_raw else 'unknown' end as to_state,
            case when lower(coalesce(t->>'reason','unknown')) in ('ok','unknown','probe_timeout',
                      'stale_frame','video_loss','channel_missing','channel_disabled','nvr_unreachable',
                      'nvr_auth_failed','agent_unreachable','storage_fault','not_recording','tamper',
                      'disk_error','disk_full') then lower(t->>'reason') else 'unknown' end as reason,
            case when lower(coalesce(t->>'source','probe')) in ('native','probe','inventory','upper_layer')
-                then lower(t->>'source') else 'probe' end as source,
-           wl_try_timestamptz(t->>'device_ts') as device_ts       -- NULL on garbage (poison-safe)
-      from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
-      join cameras cm on cm.site_id = v_agent.site_id and cm.channel = (t->>'entity')
-     where lower(coalesce(t->>'layer','camera')) = 'camera'
-       and coalesce(t->>'to','') <> '' and coalesce(t->>'id','') <> ''
-  ),
-  tx as (
-    -- only VALID rows (parseable ts); effective_at clamps a future-skewed clock to now.
-    select dedupe_key, camera_id, from_state, to_state, reason, source, device_ts,
-           case when device_ts > v_now + v_skew then v_now else device_ts end as effective_at,
-           (device_ts > v_now + v_skew) as clamped
-      from parsed where device_ts is not null
+                then lower(t->>'source') else 'probe' end as source
+      from classified where verdict = 'valid'
   ),
   ins as (
     insert into camera_health_transitions
       (tenant_id, site_id, camera_id, from_state, to_state, reason_code, at, effective_at,
        received_at, source, dedupe_key)
-    select v_agent.tenant_id, v_agent.site_id, camera_id, from_state, to_state,
-           reason, device_ts, effective_at, v_now, source, dedupe_key
-      from tx
+    select v_agent.tenant_id, v_agent.site_id, camera_id, from_state, to_state, reason,
+           device_ts, effective_at, v_now, source, dedupe_key
+      from valid
     on conflict (dedupe_key) where dedupe_key is not null do nothing
     returning 1
   )
-  select (select count(*) from tx),
+  select (select count(*) from raw),
+         (select count(*) from valid),
          (select count(*) from ins),
-         (select count(*) from parsed where device_ts is null),
-         (select count(*) from tx where clamped)
-    into v_total, v_applied, v_rejected, v_clamped;
+         (select count(*) from classified where verdict <> 'valid'),
+         (select count(*) from valid where clamped),
+         (select coalesce(jsonb_object_agg(verdict, c), '{}'::jsonb)
+            from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z)
+    into v_seen, v_valid, v_applied, v_rejected, v_clamped, v_rej_by;
 
-  -- CURRENT STATE: advance each camera to its latest transition by EFFECTIVE (server-safe)
-  -- time, forward-only. Using effective_at (not raw device_ts) means a future device clock can
-  -- never write a future watermark that freezes state; seq breaks ties deterministically.
-  with parsed as (
-    select cm.id as camera_id, (t->>'id') as dedupe_key,
-           case when lower(t->>'to') in ('operational','degraded','offline','unknown')
-                then lower(t->>'to') else 'unknown' end as to_state,
-           case when lower(coalesce(t->>'reason','unknown')) in ('ok','unknown','probe_timeout',
+  -- CURRENT STATE: advance each camera to its latest transition by (EFFECTIVE time, NUMERIC seq),
+  -- forward-only. effective_at (not raw device_ts) means a future clock can never freeze state; the
+  -- tie-break is the numeric per-epoch sequence (NOT the lexical dedupe_key, under which ':9' would
+  -- wrongly sort after ':10'). Quarantined rows (bad ts/seq) never touch current state.
+  with raw as (
+    select t, (t->>'entity') as channel, lower(coalesce(t->>'layer','camera')) as layer,
+           lower(t->>'to') as to_raw, wl_try_timestamptz(t->>'device_ts') as device_ts,
+           wl_try_bigint(t->>'seq') as seq
+      from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
+  ),
+  valid as (
+    select cm.id as camera_id, r.seq,
+           case when r.device_ts > v_now + v_skew then v_now else r.device_ts end as effective_at,
+           case when r.to_raw in ('operational','degraded','offline','unknown') then r.to_raw else 'unknown' end as to_state,
+           case when lower(coalesce(r.t->>'reason','unknown')) in ('ok','unknown','probe_timeout',
                      'stale_frame','video_loss','channel_missing','channel_disabled','nvr_unreachable',
                      'nvr_auth_failed','agent_unreachable','storage_fault','not_recording','tamper',
-                     'disk_error','disk_full') then lower(t->>'reason') else 'unknown' end as reason,
-           wl_try_timestamptz(t->>'device_ts') as device_ts
-      from jsonb_array_elements(coalesce(p_transitions, '[]'::jsonb)) t
-      join cameras cm on cm.site_id = v_agent.site_id and cm.channel = (t->>'entity')
-     where lower(coalesce(t->>'layer','camera')) = 'camera' and coalesce(t->>'to','') <> ''
-  ),
-  tx as (
-    select camera_id, dedupe_key, to_state, reason,
-           case when device_ts > v_now + v_skew then v_now else device_ts end as effective_at
-      from parsed where device_ts is not null       -- quarantined rows never touch current state
+                     'disk_error','disk_full') then lower(r.t->>'reason') else 'unknown' end as reason
+      from raw r
+      join cameras cm on cm.site_id = v_agent.site_id and cm.channel = r.channel
+     where r.layer = 'camera' and coalesce(r.to_raw,'') <> ''
+       and r.device_ts is not null and r.seq is not null
   ),
   latest as (
     select distinct on (camera_id) camera_id, to_state, reason, effective_at
-      from tx order by camera_id, effective_at desc, dedupe_key desc
+      from valid order by camera_id, effective_at desc, seq desc     -- NUMERIC seq tie-break
   )
   update camera_health ch
      set health_state     = l.to_state,
@@ -193,43 +229,69 @@ begin
    where ch.camera_id = l.camera_id
      and l.effective_at > coalesce(ch.observed_at, '-infinity'::timestamptz);   -- forward-only
 
-  -- CHECKPOINTS: local observation continuity, deduped on the epoch-qualified checkpoint_id.
-  -- Poison-safe: a checkpoint with an unparseable device_ts is quarantined (counted), not fatal.
-  with parsed as (
+  -- CHECKPOINTS: classify (received = valid + rejected). id + a parseable device_ts are essential;
+  -- seq/cameras_observed/cycle_ok are metadata parsed fail-soft (wl_try_*) and safe-DEFAULTED — a
+  -- malformed one keeps the row (counted as field_defaulted), never rejects or poisons it. Deduped
+  -- on the epoch-qualified checkpoint_id.
+  with raw as (
     select (c->>'id') as checkpoint_id, (c->>'store_epoch') as store_epoch,
-           coalesce((c->>'seq')::bigint, 0) as agent_seq,
-           wl_try_timestamptz(c->>'device_ts') as device_ts,
+           wl_try_bigint(c->>'seq')             as seq_val,
+           wl_try_timestamptz(c->>'device_ts')  as device_ts,
            lower(coalesce(c->>'nvr_state','unknown')) as nvr_state,
-           coalesce((c->>'cameras_observed')::int, 0) as cameras_observed,
-           coalesce((c->>'cycle_ok')::boolean, true) as cycle_ok
+           wl_try_int(c->>'cameras_observed')   as cams_val,
+           wl_try_bool(c->>'cycle_ok')          as cycle_val,
+           (c ? 'seq') as has_seq, (c ? 'cameras_observed') as has_cams, (c ? 'cycle_ok') as has_cycle
       from jsonb_array_elements(coalesce(p_checkpoints, '[]'::jsonb)) c
-     where coalesce(c->>'id','') <> ''
+  ),
+  classified as (
+    select r.*,
+           case when coalesce(r.checkpoint_id,'') = '' then 'missing_id'
+                when r.device_ts is null            then 'invalid_timestamp'
+                else 'valid' end as verdict,
+           ((r.has_seq and r.seq_val is null) or (r.has_cams and r.cams_val is null)
+             or (r.has_cycle and r.cycle_val is null)) as metadata_defaulted
+      from raw r
   ),
   insc as (
     insert into local_monitoring_checkpoints
       (tenant_id, site_id, agent_id, checkpoint_id, store_epoch, agent_seq, device_ts,
        nvr_state, cameras_observed, cycle_ok)
     select v_agent.tenant_id, v_agent.site_id, v_agent.id, checkpoint_id, store_epoch,
-           agent_seq, device_ts, nvr_state, cameras_observed, cycle_ok
-      from parsed where device_ts is not null
+           coalesce(seq_val, 0), device_ts, nvr_state,
+           coalesce(cams_val, 0), coalesce(cycle_val, true)
+      from classified where verdict = 'valid'
     on conflict (checkpoint_id) do nothing            -- epoch-qualified: rebuild-proof idempotency
     returning 1
   )
-  select (select count(*) from insc), (select count(*) from parsed where device_ts is null)
-    into v_ckpt, v_ckpt_rej;
+  select (select count(*) from raw),
+         (select count(*) from classified where verdict = 'valid'),
+         (select count(*) from insc),
+         (select count(*) from classified where verdict <> 'valid'),
+         (select count(*) from classified where verdict = 'valid' and metadata_defaulted),
+         (select coalesce(jsonb_object_agg(verdict, c), '{}'::jsonb)
+            from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z)
+    into v_ck_seen, v_ck_valid, v_ck_applied, v_ck_rej, v_ck_deflt, v_ck_rej_by;
 
   update agents set last_seen_at = v_now where id = v_agent.id;
 
   return jsonb_build_object(
     'ok', true,
-    'transitions_received', v_seen,
-    'transitions_valid', v_total,
-    'transitions_applied', v_applied,
-    'transitions_duplicate', v_total - v_applied,   -- ignored as already-present (idempotent)
-    'transitions_rejected', v_rejected,             -- quarantined (bad ts / unmapped) — observable
-    'transitions_clamped', v_clamped,               -- future-skew clamped for ordering — observable
-    'checkpoints_applied', v_ckpt,
-    'checkpoints_rejected', v_ckpt_rej,             -- quarantined — observable
+    -- invariant: transitions_received = transitions_valid + transitions_rejected;
+    --            transitions_valid    = transitions_applied + transitions_duplicate.
+    'transitions_received',    v_seen,
+    'transitions_valid',       v_valid,
+    'transitions_applied',     v_applied,
+    'transitions_duplicate',   v_valid - v_applied,   -- already-present (idempotent replay)
+    'transitions_rejected',    v_rejected,
+    'transitions_rejected_by', v_rej_by,               -- {category: count} — observable
+    'transitions_clamped',     v_clamped,              -- future-skew clamped for ordering — observable
+    -- invariant: checkpoints_received = checkpoints_valid + checkpoints_rejected.
+    'checkpoints_received',    v_ck_seen,
+    'checkpoints_valid',       v_ck_valid,
+    'checkpoints_applied',     v_ck_applied,
+    'checkpoints_rejected',    v_ck_rej,
+    'checkpoints_rejected_by', v_ck_rej_by,            -- {category: count} — observable
+    'checkpoints_field_defaulted', v_ck_deflt,         -- malformed metadata safe-defaulted — observable
     'server_time', v_now);
 end $$;
 

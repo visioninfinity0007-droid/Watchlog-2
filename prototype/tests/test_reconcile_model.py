@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 import reconcile_model as rc  # noqa: E402
 from reconcile_model import Transition, dedupe, order, fold_current_state, \
     checkpoints_to_intervals, reclassify, effective_ts, partition_valid, \
+    latest_by_effective, classify_transition, classify_checkpoint, \
     DEFAULT_MAX_FUTURE_SKEW  # noqa: E402
 
 
@@ -191,6 +192,94 @@ def test_rejected_records_are_observable():
             {"id": "a:e:2", "to": "offline", "device_ts": None}]  # bad ts
     valid, rejected = partition_valid(rows)
     assert valid == [] and len(rejected) == 3                  # all counted (observable)
+
+
+# --- current-state tie ordering must be by NUMERIC seq, not lexical id --------
+
+def E(entity, seq, to, device_ts):
+    return T(f"a:e:{seq}", seq, to, device_ts, entity=entity)
+
+
+def test_seq_9_vs_10_at_same_effective_time_10_wins():
+    now = 1000.0
+    win = latest_by_effective([E("1", 9, "offline", now), E("1", 10, "operational", now)], now)
+    assert win["1"].seq == 10 and win["1"].to == "operational"   # lexical "9">"10" would be wrong
+
+
+def test_twelve_clamped_to_same_effective_latest_seq_wins():
+    now = 1000.0
+    txs = [E("1", s, "offline", now + 86400) for s in range(1, 13)]   # all clamp to now
+    win = latest_by_effective(txs, now)
+    assert win["1"].seq == 12                                    # highest numeric seq
+
+
+def test_reversed_upload_order_still_latest_seq_wins():
+    now = 1000.0
+    txs = list(reversed([E("1", s, "offline", now) for s in range(1, 11)]))
+    win = latest_by_effective(txs, now)
+    assert win["1"].seq == 10                                    # array order is irrelevant
+
+
+def test_recovery_after_offline_same_time_recovery_wins():
+    now = 1000.0
+    txs = [E("1", 5, "offline", now), E("1", 6, "operational", now)]   # recovery has later seq
+    win = latest_by_effective(txs, now)
+    assert win["1"].to == "operational" and win["1"].seq == 6
+
+
+# --- classification: received = valid + rejected, categorized --------------------
+
+KNOWN = ["1", "2", "3"]
+
+
+def test_transition_received_equals_valid_plus_rejected():
+    batch = [
+        {"id": "a:e:1", "layer": "camera", "to": "offline", "device_ts": 100.0, "seq": 1, "entity": "1"},
+        {"id": "", "layer": "camera", "to": "offline", "device_ts": 100.0, "seq": 2, "entity": "1"},      # missing_id
+        {"id": "a:e:3", "layer": "nvr", "to": "offline", "device_ts": 100.0, "seq": 3, "entity": "1"},    # wrong_layer
+        {"id": "a:e:4", "layer": "camera", "to": "", "device_ts": 100.0, "seq": 4, "entity": "1"},        # missing_state
+        {"id": "a:e:5", "layer": "camera", "to": "offline", "device_ts": "bad", "seq": 5, "entity": "1"}, # invalid_timestamp
+        {"id": "a:e:6", "layer": "camera", "to": "offline", "device_ts": 100.0, "seq": "x", "entity": "1"},# invalid_sequence
+        {"id": "a:e:7", "layer": "camera", "to": "offline", "device_ts": 100.0, "seq": 7, "entity": "9"}, # unmapped_channel
+    ]
+    verdicts = [classify_transition(r, KNOWN) for r in batch]
+    valid = [v for v in verdicts if v == "valid"]
+    rejected = [v for v in verdicts if v != "valid"]
+    assert len(valid) + len(rejected) == len(batch)             # the invariant
+    assert valid == ["valid"]
+    assert set(rejected) == {"missing_id", "wrong_layer", "missing_state",
+                             "invalid_timestamp", "invalid_sequence", "unmapped_channel"}
+
+
+def test_one_bad_seq_does_not_reject_the_valid_transitions():
+    batch = [
+        {"id": "a:e:1", "layer": "camera", "to": "offline", "device_ts": 100.0, "seq": 1, "entity": "1"},
+        {"id": "a:e:2", "layer": "camera", "to": "offline", "device_ts": 100.0, "seq": None, "entity": "2"},
+        {"id": "a:e:3", "layer": "camera", "to": "operational", "device_ts": 200.0, "seq": 3, "entity": "3"},
+    ]
+    v = [classify_transition(r, KNOWN) for r in batch]
+    assert v == ["valid", "invalid_sequence", "valid"]          # bad seq isolated, others survive
+
+
+# --- checkpoints: malformed metadata is safe-defaulted, not poison --------------
+
+def test_checkpoint_received_equals_valid_plus_rejected():
+    batch = [
+        {"id": "a:e:cp:1", "device_ts": 100.0, "seq": 1, "cameras_observed": 8, "cycle_ok": True},
+        {"id": "", "device_ts": 100.0},                           # missing_id
+        {"id": "a:e:cp:3", "device_ts": "bad"},                   # invalid_timestamp
+    ]
+    v = [classify_checkpoint(r) for r in batch]
+    assert [x for x in v if x == "valid"] == ["valid"]
+    assert len([x for x in v if x != "valid"]) == 2
+    assert len(v) == len(batch)                                  # received = valid + rejected
+
+
+def test_one_bad_seq_or_metadata_does_not_poison_valid_checkpoints():
+    # a bad seq / cameras_observed / boolean is metadata: the checkpoint stays VALID (defaulted)
+    for bad in ({"seq": "x"}, {"cameras_observed": "NaN"}, {"cycle_ok": "maybe"}):
+        row = {"id": "a:e:cp:1", "device_ts": 100.0, **bad}
+        assert classify_checkpoint(row) == "valid"               # kept, not rejected, never fatal
 
 
 if __name__ == "__main__":
