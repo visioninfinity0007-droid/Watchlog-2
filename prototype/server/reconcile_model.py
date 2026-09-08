@@ -188,6 +188,29 @@ class Reconciler:
         return self.state
 
 
+# --- increment 6: current-state UPSERT semantics (create-if-absent, preserve-by-omission) ---------
+# The recording/storage current row is written by an INSERT ... ON CONFLICT DO UPDATE that sets ONLY
+# its own layer's columns. wl_reconcile_recording_storage (0047) mirrors this; the contract pins the
+# SQL set-list to exactly these column tuples.
+RECORDING_CURRENT_COLUMNS = ("recording_state", "recording_reason_code", "rec_observed_at",
+                             "rec_observed_epoch", "rec_observed_seq", "rec_observed_ingest")
+STORAGE_CURRENT_COLUMNS = ("storage_state", "storage_reason_code", "sto_observed_at",
+                           "sto_observed_epoch", "sto_observed_seq", "sto_observed_ingest")
+
+
+def apply_layer_current_state(prior: Optional[dict], winner: dict, managed_columns) -> dict:
+    """Model the increment-6 current-state UPSERT. `prior` is the existing current row, or None if it
+    does not exist yet; `winner` is the authoritative ledger winner carrying this layer's managed
+    columns. If the row is ABSENT it is CREATED from `winner` (so a ledger insert can never leave
+    current state silently a no-op); otherwise `winner` overwrites ONLY the managed columns and every
+    other (unrelated-layer) column of `prior` is PRESERVED untouched — exactly what
+    `insert into <table> ... on conflict (<id>) do update set <managed-only>` does in 0047."""
+    row = dict(prior) if prior else {}
+    for col in managed_columns:
+        row[col] = winner[col]
+    return row
+
+
 def partition_valid(rows: Iterable[dict]):
     """Split retained rows into (valid, rejected) so a single malformed row cannot fail the whole
     batch. A row is valid only if it has a non-empty id, a non-empty target state, and a
@@ -277,4 +300,5 @@ __all__ = ["Transition", "dedupe", "order", "fold_current_state",
            "checkpoints_to_intervals", "reclassify",
            "effective_ts", "partition_valid", "latest_by_effective",
            "classify_transition", "classify_checkpoint", "Reconciler",
+           "apply_layer_current_state", "RECORDING_CURRENT_COLUMNS", "STORAGE_CURRENT_COLUMNS",
            "DEFAULT_MAX_FUTURE_SKEW"]

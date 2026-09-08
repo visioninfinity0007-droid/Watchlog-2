@@ -618,10 +618,96 @@ def persist_health(holder: dict, state: dict, cfg: Config, cam: dict, assessment
         log(f"health persist skipped: {type(e).__name__}")
 
 
+def persist_recording_storage(holder: dict, state: dict, rs: dict) -> None:
+    """Increment 6: record recording/storage transitions into the LOCAL durable store (on change),
+    so an HDD/recording change during a cloud outage survives and reconciles after reconnect. Fully
+    guarded. The NVR recording ROLLUP is derived server-side (from per-channel + storage), so it is
+    NOT persisted here; the per-channel camera_recording and the nvr_storage reads are the primary,
+    durable signals."""
+    store = holder.get("store")
+    if store is None:
+        return
+    try:
+        device_ts = iso(datetime.now(timezone.utc))
+        for c in (rs.get("recording") or {}).get("channels", []):
+            ch = c.get("channel")
+            if ch is not None:
+                store.observe("camera_recording", str(ch), c.get("state", "unknown"),
+                              c.get("reason", "unknown"), "probe", device_ts)
+        st = rs.get("storage") or {}
+        store.observe("nvr_storage", str(state["agent_id"]), st.get("state", "unknown"),
+                      st.get("reason", "unknown"), "probe", device_ts)
+    except Exception as e:                              # noqa: BLE001
+        log(f"recording/storage persist skipped: {type(e).__name__}")
+
+
+# Server reconcile rejection categories (mirror wl_reconcile_recording_storage / reconcile_model).
+# STRUCTURAL poison can never become valid on a resend, so it is quarantined AT ONCE (observable);
+# anything else — notably unmapped_channel, where the camera may simply not be enrolled YET — is
+# retried under a bounded policy (health_store.defer_transitions), then quarantined if it never maps.
+_PERMANENT_REJECTIONS = frozenset({"missing_id", "wrong_layer", "missing_state",
+                                   "invalid_timestamp", "invalid_sequence"})
+
+
+_TX_DISPOSITION_KEYS = ("accepted_ids", "duplicate_ids", "rejected")
+_CK_DISPOSITION_KEYS = ("checkpoints_accepted_ids", "checkpoints_duplicate_ids", "checkpoints_rejected_ids")
+
+
+def _ack_transition_dispositions(store, sent: set, res: dict) -> list:
+    """Return the transition ids to mark uploaded (server-confirmed accepted + duplicate) and park the
+    rest by category — structural poison -> quarantine now (observable); transient (e.g.
+    unmapped_channel) -> bounded retry. Shared by BOTH reconcile RPCs so the two durability paths are
+    provably identical.
+
+    FAIL CLOSED: the disposition contract must be PRESENT (all keys), distinct from present-but-empty.
+    If any key is absent (an older/incomplete DB function, or an aggregate-only response like
+    {"ok": true, "transitions_applied": 3}), acknowledge NOTHING and park nothing — acceptance is
+    never inferred from ok/aggregate counts. Every server id is intersected with the ids ACTUALLY sent
+    this RPC, so unknown/bogus/other-batch ids are ignored; a sent id in no list stays PENDING."""
+    if not all(k in res for k in _TX_DISPOSITION_KEYS):
+        return []
+    done = (set(res["accepted_ids"] or []) | set(res["duplicate_ids"] or [])) & sent
+    poison, transient = [], []
+    for r in (res["rejected"] or []):
+        rid = r.get("id") if isinstance(r, dict) else None
+        if not rid or rid not in sent:
+            continue
+        (poison if r.get("reason") in _PERMANENT_REJECTIONS else transient).append((rid, r.get("reason")))
+    store.quarantine_transitions(poison)
+    store.defer_transitions(transient)
+    return list(done)
+
+
+def _ack_checkpoint_dispositions(store, cps: list, res: dict) -> None:
+    """Acknowledge ONLY checkpoints the server accepted or deduped; quarantine rejected ones so a
+    rejection under RPC success is neither silently marked uploaded nor retried forever.
+
+    Identity is the epoch-qualified checkpoint_id (<agent>:<epoch>:cp:<seq>): build a map from the
+    ids EXPORTED in this batch back to their local seq, and only ids that exactly match that map may
+    mark a checkpoint uploaded — an id from another epoch (or a bare seq) acknowledges nothing. FAIL
+    CLOSED the same way: absent/incomplete checkpoint disposition keys leave every checkpoint PENDING."""
+    if not cps:
+        return
+    if not all(k in res for k in _CK_DISPOSITION_KEYS):
+        return
+    by_id = {c["id"]: c["seq"] for c in cps}
+    acked = set(res["checkpoints_accepted_ids"] or []) | set(res["checkpoints_duplicate_ids"] or [])
+    store.mark_checkpoints_uploaded([by_id[i] for i in acked if i in by_id])
+    rej = [(by_id[r["id"]], r.get("reason")) for r in (res["checkpoints_rejected_ids"] or [])
+           if isinstance(r, dict) and r.get("id") in by_id]
+    store.quarantine_checkpoints(rej)
+
+
 def reconcile_health(holder: dict, state: dict, cloud: Cloud) -> None:
-    """Increment 5: upload retained transitions/checkpoints and mark them uploaded. Idempotent
-    on the server (dedupe by stable id). On failure the rows stay pending and are retried next
-    cycle — bounded by the health cadence, never a retry storm. Never raises."""
+    """Increment 5/6: upload retained transitions/checkpoints and acknowledge them PER SERVER
+    DISPOSITION. Splits by LAYER — camera video (+ checkpoints) go to wl_reconcile_health;
+    recording/storage go to the parallel wl_reconcile_recording_storage — so each RPC gets its own
+    single-epoch batch. RPC success does NOT mean every row was accepted: BOTH RPCs return per-id
+    accepted/duplicate/rejected (and wl_reconcile_health also per-checkpoint), so only ledger-durable
+    (accepted+duplicate) ids are marked uploaded; rejected ids are quarantined (structural) or
+    bounded-retried (transient). The two subsets are acknowledged INDEPENDENTLY — one RPC failing
+    leaves only its subset pending. Idempotent on the server; on RPC failure the whole subset stays
+    pending and retries next cycle. Never raises."""
     store = holder.get("store")
     if store is None:
         return
@@ -629,19 +715,46 @@ def reconcile_health(holder: dict, state: dict, cloud: Cloud) -> None:
         batch = store.export_batch(RECONCILE_BATCH)
     except Exception:                                   # noqa: BLE001
         return
-    if not batch.get("transitions") and not batch.get("checkpoints"):
+    txs, cps = batch.get("transitions", []), batch.get("checkpoints", [])
+    if not txs and not cps:
         return
-    try:
-        res = cloud.call("wl_reconcile_health", p_agent_id=state["agent_id"],
-                         p_agent_key=state["agent_key"],
-                         p_transitions=batch["transitions"], p_checkpoints=batch["checkpoints"])
-        store.mark_transitions_uploaded([t["id"] for t in batch["transitions"]])
-        store.mark_checkpoints_uploaded([c["seq"] for c in batch["checkpoints"]])
-        log(f"reconciled health: applied={res.get('transitions_applied')} "
-            f"dup={res.get('transitions_duplicate')} ckpt={res.get('checkpoints_applied')}")
-    except Exception as e:                              # noqa: BLE001 — stays pending, retried later
-        import nvr_health
-        log(f"reconcile deferred: {type(e).__name__}: {nvr_health.redact(str(e))}")
+    import nvr_health
+    cam_tx = [t for t in txs if t.get("layer") == "camera"]
+    # Only the two layers wl_reconcile_recording_storage actually accepts. NVR recording is a
+    # server-derived rollup (never a persisted primary transition), so it is NOT routed here — a
+    # row it can't map would be rejected wrong_layer, which is exactly what we must not manufacture.
+    rs_tx = [t for t in txs if t.get("layer") in ("camera_recording", "nvr_storage")]
+    uploaded = []
+
+    if cam_tx or cps:
+        try:
+            res = cloud.call("wl_reconcile_health", p_agent_id=state["agent_id"],
+                             p_agent_key=state["agent_key"], p_transitions=cam_tx, p_checkpoints=cps)
+        except Exception as e:                          # noqa: BLE001 — whole subset stays pending
+            log(f"reconcile(health) deferred: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        else:
+            # PARITY with rec/storage: RPC success != every row accepted. 0046 can reject individual
+            # transitions AND checkpoints, so acknowledge ONLY server-confirmed ids and park the rest.
+            uploaded += _ack_transition_dispositions(store, {t["id"] for t in cam_tx}, res)
+            _ack_checkpoint_dispositions(store, cps, res)
+            log(f"reconciled health: acc={len(res.get('accepted_ids') or [])} "
+                f"dup={len(res.get('duplicate_ids') or [])} "
+                f"ckpt_acc={len(res.get('checkpoints_accepted_ids') or [])} "
+                f"ckpt_rej={len(res.get('checkpoints_rejected_ids') or [])}")
+
+    if rs_tx:
+        try:
+            res = cloud.call("wl_reconcile_recording_storage", p_agent_id=state["agent_id"],
+                             p_agent_key=state["agent_key"], p_transitions=rs_tx)
+        except Exception as e:                          # noqa: BLE001 — whole subset stays pending
+            log(f"reconcile(rec/storage) deferred: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        else:
+            uploaded += _ack_transition_dispositions(store, {t["id"] for t in rs_tx}, res)
+            log(f"reconciled rec/storage: acc={len(res.get('accepted_ids') or [])} "
+                f"dup={len(res.get('duplicate_ids') or [])} rej={len(res.get('rejected') or [])}")
+
+    if uploaded:
+        store.mark_transitions_uploaded(uploaded)
 
 
 def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
@@ -702,20 +815,26 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
                     f"off={cr.get('offline')} unk={cr.get('unknown')}")
             except Exception as e:                      # noqa: BLE001
                 log(f"camera health report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
-            # reconcile retained transitions/checkpoints (idempotent; bounded to the cycle cadence)
-            reconcile_health(holder, state, cloud)
 
         # --- NVR recording + storage health (increment 6), reusing THIS driver + assessment ---
+        # No live current-state RPC: EVERY recording/storage change flows through the local store and
+        # is applied by wl_reconcile_recording_storage, which solely owns the ledger AND the durable
+        # ordering watermark. Nothing here can bypass that watermark and regress current state.
         try:
             import recording_health
             nvr_state = (assessment.get("nvr") or {}).get("state", "unknown")
-            rs = recording_health.assess_recording_storage(driver, chans, nvr_state)
-            rr = cloud.call("wl_report_recording_storage", p_agent_id=state["agent_id"],
-                            p_agent_key=state["agent_key"], p_report=rs)
-            log(f"recording/storage: storage={rr.get('storage_state')} "
-                f"recording={rr.get('recording_state')} channels={rr.get('channels_updated')}")
+            # inventory (present/disabled) from the reported channels — a disabled channel has no
+            # meaningful recording state (UNKNOWN, never NOT_RECORDING).
+            inv = {str(c.get("channel")): ("disabled" if not c.get("enabled", True) else "present")
+                   for c in assessment.get("channels", {}).get("reported", []) if c.get("channel")}
+            rs = recording_health.assess_recording_storage(driver, chans, nvr_state, inventory=inv)
+            persist_recording_storage(holder, state, rs)     # record transitions on change (durable)
         except Exception as e:                          # noqa: BLE001
-            log(f"recording/storage report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
+            log(f"recording/storage assess skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
+
+        # reconcile ALL retained transitions/checkpoints (camera video + recording/storage), split by
+        # layer to the right RPC, per-subset acknowledged. Idempotent; bounded to the cycle cadence.
+        reconcile_health(holder, state, cloud)
     except Exception as e:                              # noqa: BLE001 — must never break the loop
         log(f"health cycle skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
     finally:

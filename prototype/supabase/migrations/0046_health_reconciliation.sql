@@ -22,6 +22,15 @@
 --     double-write the same transition.
 --   * checkpoints can prove a cloud-gap window was locally monitored (recovering availability)
 --     while the window REMAINS a cloud connectivity gap. wl_site_local_monitoring reports both.
+--
+-- Increment-6 compatibility hardening (RESPONSE/ACK CONTRACT ONLY — the increment-5 reconciliation
+-- semantics below are byte-for-byte unchanged; f4d3e7a remains the accepted increment-5 checkpoint):
+-- wl_reconcile_health now also returns PER-ID dispositions — accepted_ids / duplicate_ids /
+-- rejected[{id,reason}] for transitions and checkpoints_accepted_ids / _duplicate_ids /
+-- _rejected_ids for checkpoints — derived from the SAME classified/ins/insc CTEs. This lets the
+-- agent acknowledge ONLY what the server actually accepted, so a partial rejection under RPC-level
+-- success can no longer drop a rejected transition or checkpoint from the retry path. Classification,
+-- insertion, ordering, the durable watermark, clamp, poison isolation and current state are untouched.
 -- =====================================================================
 
 -- ---- schema: dedupe / provenance / observed-time on the camera-health ledger ----
@@ -130,6 +139,15 @@ declare
   v_ck_rej     int := 0;
   v_ck_deflt   int := 0;    -- valid checkpoints whose malformed metadata was safe-defaulted
   v_ck_rej_by  jsonb := '{}'::jsonb;
+  -- increment-6 ACK CONTRACT (response-only): per-id dispositions so the agent acknowledges only what
+  -- the server actually accepted. Derived from the SAME classified/ins/insc CTEs — NO change to any
+  -- increment-5 reconciliation semantics (classification, insert, ordering, watermark, current state).
+  v_accepted     jsonb := '[]'::jsonb;   -- transition ids newly ledgered this call
+  v_duplicate    jsonb := '[]'::jsonb;   -- transition ids valid but already ledgered (replay)
+  v_rejected_ids jsonb := '[]'::jsonb;   -- [{id, reason}] transitions that never entered the ledger
+  v_ck_accepted  jsonb := '[]'::jsonb;   -- checkpoint ids newly inserted this call
+  v_ck_duplicate jsonb := '[]'::jsonb;   -- checkpoint ids valid but already present (replay)
+  v_ck_rej_ids   jsonb := '[]'::jsonb;   -- [{id, reason}] checkpoints rejected
   v_n_epochs   int := 0;
   v_mixed      boolean := false;
 begin
@@ -210,7 +228,7 @@ begin
            device_ts, effective_at, v_now, source, dedupe_key, store_epoch, seq
       from valid
     on conflict (dedupe_key) where dedupe_key is not null do nothing
-    returning 1
+    returning dedupe_key
   )
   select (select count(*) from raw),
          (select count(*) from valid),
@@ -218,8 +236,16 @@ begin
          (select count(*) from classified where verdict <> 'valid'),
          (select count(*) from valid where clamped),
          (select coalesce(jsonb_object_agg(verdict, c), '{}'::jsonb)
-            from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z)
-    into v_seen, v_valid, v_applied, v_rejected, v_clamped, v_rej_by;
+            from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z),
+         -- increment-6 ack contract (response only): accepted = newly ledgered (ON CONFLICT skips are
+         -- NOT returned); duplicate = valid but already ledgered; rejected = [{id, reason}].
+         (select coalesce(jsonb_agg(dedupe_key), '[]'::jsonb) from ins),
+         (select coalesce(jsonb_agg(v.dedupe_key), '[]'::jsonb) from valid v
+           where v.dedupe_key not in (select dedupe_key from ins)),
+         (select coalesce(jsonb_agg(jsonb_build_object('id', dedupe_key, 'reason', verdict)), '[]'::jsonb)
+            from classified where verdict <> 'valid')
+    into v_seen, v_valid, v_applied, v_rejected, v_clamped, v_rej_by,
+         v_accepted, v_duplicate, v_rejected_ids;
 
   -- CURRENT STATE: advance to the latest transition per camera, reading the AUTHORITATIVE,
   -- IMMUTABLE ordering from the ledger (effective_at/store_epoch/seq/id) — NOT recomputed from the
@@ -306,7 +332,7 @@ begin
            coalesce(cams_val, 0), coalesce(cycle_val, true)
       from classified where verdict = 'valid'
     on conflict (checkpoint_id) do nothing            -- epoch-qualified: rebuild-proof idempotency
-    returning 1
+    returning checkpoint_id
   )
   select (select count(*) from raw),
          (select count(*) from classified where verdict = 'valid'),
@@ -314,8 +340,15 @@ begin
          (select count(*) from classified where verdict <> 'valid'),
          (select count(*) from classified where verdict = 'valid' and metadata_defaulted),
          (select coalesce(jsonb_object_agg(verdict, c), '{}'::jsonb)
-            from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z)
-    into v_ck_seen, v_ck_valid, v_ck_applied, v_ck_rej, v_ck_deflt, v_ck_rej_by;
+            from (select verdict, count(*) c from classified where verdict <> 'valid' group by verdict) z),
+         -- checkpoint per-id dispositions on the EPOCH-QUALIFIED checkpoint_id (same derivation).
+         (select coalesce(jsonb_agg(checkpoint_id), '[]'::jsonb) from insc),
+         (select coalesce(jsonb_agg(r.checkpoint_id), '[]'::jsonb) from classified r
+           where r.verdict = 'valid' and r.checkpoint_id not in (select checkpoint_id from insc)),
+         (select coalesce(jsonb_agg(jsonb_build_object('id', checkpoint_id, 'reason', verdict)), '[]'::jsonb)
+            from classified where verdict <> 'valid')
+    into v_ck_seen, v_ck_valid, v_ck_applied, v_ck_rej, v_ck_deflt, v_ck_rej_by,
+         v_ck_accepted, v_ck_duplicate, v_ck_rej_ids;
 
   update agents set last_seen_at = v_now where id = v_agent.id;
 
@@ -330,6 +363,10 @@ begin
     'transitions_rejected',    v_rejected,
     'transitions_rejected_by', v_rej_by,               -- {category: count} — observable
     'transitions_clamped',     v_clamped,              -- future-skew clamped for ordering — observable
+    -- increment-6 ack contract: per-id dispositions (agent acknowledges accepted+duplicate only):
+    'accepted_ids',            v_accepted,
+    'duplicate_ids',           v_duplicate,
+    'rejected',                v_rejected_ids,          -- [{id, reason}] — quarantine/bounded-retry locally
     -- invariant: checkpoints_received = checkpoints_valid + checkpoints_rejected.
     'checkpoints_received',    v_ck_seen,
     'checkpoints_valid',       v_ck_valid,
@@ -337,6 +374,9 @@ begin
     'checkpoints_rejected',    v_ck_rej,
     'checkpoints_rejected_by', v_ck_rej_by,            -- {category: count} — observable
     'checkpoints_field_defaulted', v_ck_deflt,         -- malformed metadata safe-defaulted — observable
+    'checkpoints_accepted_ids',  v_ck_accepted,
+    'checkpoints_duplicate_ids', v_ck_duplicate,
+    'checkpoints_rejected_ids',  v_ck_rej_ids,          -- [{id, reason}] — must not be silently acked
     'server_time', v_now);
 end $$;
 

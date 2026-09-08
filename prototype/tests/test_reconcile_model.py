@@ -363,6 +363,75 @@ def test_mixed_epoch_replay_cannot_regress_current_state():
     assert r.state["1"]["to_state"] == "operational" and r.rejected_mixed == 2      # no regression
 
 
+def test_recording_and_storage_transitions_reconcile_idempotently():
+    # increment 6: recording/storage transitions reconcile with the SAME durable invariants — an HDD
+    # fault + a recording-off observed while offline survive and replay is a no-op.
+    r = Reconciler()
+    r.reconcile([tx("a:E:1", "cam:3", "not_recording", 100.0, 1, "E")], now=100.0)
+    r.reconcile([tx("a:E:2", "nvr", "fault", 110.0, 2, "E")], now=110.0)
+    before = {k: dict(v) for k, v in r.state.items()}
+    r.reconcile([tx("a:E:1", "cam:3", "not_recording", 100.0, 1, "E"),
+                 tx("a:E:2", "nvr", "fault", 110.0, 2, "E")], now=999.0)   # reconnect replay
+    assert r.state == before and len(r.ledger) == 2       # no duplicate, no regression
+    assert r.state["cam:3"]["to_state"] == "not_recording" and r.state["nvr"]["to_state"] == "fault"
+
+
+def test_recording_and_storage_orderings_are_independent():
+    # a storage transition and a camera-recording transition in the SAME epoch keep independent
+    # per-entity ordering; a later change to one never affects the other.
+    r = Reconciler()
+    r.reconcile([tx("a:E:1", "cam:1", "not_recording", 100.0, 1, "E"),
+                 tx("a:E:2", "nvr", "fault", 100.0, 2, "E")], now=100.0)
+    r.reconcile([tx("a:E:3", "cam:1", "recording", 200.0, 3, "E")], now=200.0)   # camera recovers
+    assert r.state["cam:1"]["to_state"] == "recording"
+    assert r.state["nvr"]["to_state"] == "fault"          # storage untouched by the camera change
+
+
+# --- increment 6: current-state UPSERT (create-if-absent + preserve other layers) ------------------
+
+def test_recording_current_row_created_when_absent():
+    # no camera_health row yet -> the recording current state is CREATED from the ledger winner,
+    # never a silent no-op (the blocker: a bare UPDATE would have touched zero rows).
+    winner = {"recording_state": "not_recording", "recording_reason_code": "not_recording",
+              "rec_observed_at": 100.0, "rec_observed_epoch": "e", "rec_observed_seq": 1,
+              "rec_observed_ingest": 1}
+    row = rc.apply_layer_current_state(None, winner, rc.RECORDING_CURRENT_COLUMNS)
+    assert row["recording_state"] == "not_recording" and row["rec_observed_seq"] == 1
+
+
+def test_storage_current_row_created_when_absent():
+    winner = {"storage_state": "fault", "storage_reason_code": "storage_fault",
+              "sto_observed_at": 100.0, "sto_observed_epoch": "e", "sto_observed_seq": 1,
+              "sto_observed_ingest": 1}
+    row = rc.apply_layer_current_state(None, winner, rc.STORAGE_CURRENT_COLUMNS)
+    assert row["storage_state"] == "fault" and row["sto_observed_seq"] == 1
+
+
+def test_recording_upsert_preserves_unrelated_video_and_inventory_fields():
+    # an existing camera_health row carries video-health/inventory owned by other layers; advancing
+    # recording must leave every one of them untouched.
+    prior = {"health_state": "offline", "reason_code": "video_loss", "consecutive_fail": 3,
+             "observed_at": 50.0, "observed_seq": 9, "recording_state": "unknown"}
+    winner = {"recording_state": "recording", "recording_reason_code": "ok", "rec_observed_at": 100.0,
+              "rec_observed_epoch": "e", "rec_observed_seq": 2, "rec_observed_ingest": 2}
+    row = rc.apply_layer_current_state(prior, winner, rc.RECORDING_CURRENT_COLUMNS)
+    assert row["recording_state"] == "recording"                      # advanced
+    assert row["health_state"] == "offline" and row["reason_code"] == "video_loss"
+    assert row["consecutive_fail"] == 3                               # probe counters untouched
+    assert row["observed_at"] == 50.0 and row["observed_seq"] == 9    # video watermark untouched
+
+
+def test_storage_upsert_preserves_connectivity_and_rollup_fields():
+    prior = {"nvr_reachable": True, "nvr_auth_ok": True, "reason_code": "ok",
+             "recording_state": "recording", "storage_state": "ok"}
+    winner = {"storage_state": "degraded", "storage_reason_code": "disk_full", "sto_observed_at": 100.0,
+              "sto_observed_epoch": "e", "sto_observed_seq": 5, "sto_observed_ingest": 5}
+    row = rc.apply_layer_current_state(prior, winner, rc.STORAGE_CURRENT_COLUMNS)
+    assert row["storage_state"] == "degraded"                         # advanced
+    assert row["nvr_reachable"] is True and row["nvr_auth_ok"] is True  # connectivity/auth untouched
+    assert row["recording_state"] == "recording" and row["reason_code"] == "ok"  # rollup untouched
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

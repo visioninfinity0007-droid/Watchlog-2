@@ -2,16 +2,21 @@
 """Phase A — increment 6: recording + storage health classifier.
 
 Pure logic. The agent reads the recorder's vendor storage/record API and this decides the
-state; the cloud (0047) persists it. Kept in prototype/server/ as the shared spec so the agent
-assessor (prototype/agent/recording_health.py) and the SQL clamp speak one vocabulary.
+state; the cloud persists it. Shared spec for the agent assessor and the SQL clamp.
 
-Hard rules (design §5/§6, acceptance §26.3-4):
-  * READ, don't infer. Recording/storage come from the vendor API; where the API is missing or
-    unreadable the state is explicitly UNKNOWN. A JPEG proves an image, NOT that the NVR records it.
-  * upper layer down (NVR unreachable/auth-failed/unknown) -> recording+storage UNKNOWN.
-  * a storage FAULT dominates: a channel over faulted storage is recording STORAGE_FAULT even if
-    its video is fine.
-  * recording is INDEPENDENT of camera health: OPERATIONAL video + NOT_RECORDING is valid.
+Hard rules (design §5/§6, §26.3-4, and the increment-6 review):
+  * READ, don't infer. Recording/storage come from the vendor API; where the API is missing,
+    unvalidated, or only proves CONFIGURATION (a schedule/mode, not that frames are being written)
+    the state is explicitly UNKNOWN. A JPEG never proves recording.
+  * upper layer down (NVR unreachable/auth-failed/unknown) -> recording+storage UNKNOWN (with cause).
+  * a channel that is MISSING/DISABLED in inventory has no meaningful recording state -> UNKNOWN,
+    never NOT_RECORDING.
+  * storage: all usable storage healthy -> OK; a partial/low-space/redundancy issue while usable
+    storage remains -> DEGRADED; no usable recording storage / recording blocked -> FAULT;
+    unsupported/ambiguous -> UNKNOWN. Low space is DEGRADED, NOT a blanket FAULT.
+  * a storage FAULT (no usable storage) dominates -> the channel is recording STORAGE_FAULT. A
+    storage DEGRADED does NOT turn every camera into STORAGE_FAULT.
+  * recording is INDEPENDENT of camera video health.
 """
 from __future__ import annotations
 
@@ -29,41 +34,52 @@ REC_UNKNOWN = "unknown"
 
 
 def _nvr_reason(nvr_state: str) -> str:
-    """Map a non-ok NVR layer state to its reason code (we never guess a lower layer through it)."""
     return {"unreachable": "nvr_unreachable",
             "auth_failed": "nvr_auth_failed"}.get(nvr_state, "agent_unreachable")
 
 
 def classify_storage(*, nvr_state: str, supported: bool, raw_state,
-                     native_fault: bool = False):
-    """(storage_state, reason). raw_state is the driver's read: 'ok'|'degraded'|'fault'|None."""
+                     native_fatal: bool = False, native_lowspace: bool = False):
+    """(storage_state, reason). raw_state is the driver's read: 'ok'|'degraded'|'fault'|None.
+
+    native_fatal  = a StorageFailure/StorageNotExist event (no usable storage) -> FAULT.
+    native_lowspace = a StorageLowSpace event (usable, but low) -> DEGRADED, never FAULT.
+    """
     if nvr_state != "ok":
-        return STORAGE_UNKNOWN, _nvr_reason(nvr_state)          # cannot see storage through a down NVR
-    if native_fault:
-        return STORAGE_FAULT, "disk_error"                     # a native StorageFailure event is authoritative
-    if not supported or raw_state is None:
-        return STORAGE_UNKNOWN, "unknown"                      # unreadable/unsupported -> UNKNOWN, never 'ok'
+        return STORAGE_UNKNOWN, _nvr_reason(nvr_state)
+    if native_fatal:
+        return STORAGE_FAULT, "disk_error"                    # no usable recording storage
     if raw_state == "fault":
         return STORAGE_FAULT, "storage_fault"
-    if raw_state == "degraded":
-        return STORAGE_DEGRADED, "disk_full"                   # low space
+    if raw_state == "degraded" or native_lowspace:
+        return STORAGE_DEGRADED, "disk_full"                  # low space / partial — still usable
+    if not supported or raw_state is None:
+        return STORAGE_UNKNOWN, "unknown"                     # unreadable/unsupported -> UNKNOWN, never 'ok'
     if raw_state == "ok":
         return STORAGE_OK, "ok"
     return STORAGE_UNKNOWN, "unknown"
 
 
-def classify_recording(*, nvr_state: str, storage_state: str, supported: bool,
-                       raw_channel_state):
-    """(recording_state, reason). raw_channel_state: 'recording'|'not_recording'|None (unreadable).
+def classify_recording(*, nvr_state: str, storage_state: str, inventory_state: str,
+                       supported: bool, raw_channel_state):
+    """(recording_state, reason). raw_channel_state: 'recording'|'not_recording'|None (unreadable /
+    config-only). Camera VIDEO health is deliberately NOT an input — recording is a distinct layer.
 
-    Note: camera VIDEO health is deliberately NOT an input — recording is a distinct layer.
+    A driver returns 'recording' ONLY when it has evidence recording is actually active; a mere
+    schedule/mode ('should record') is None -> UNKNOWN. 'not_recording' means the recorder explicitly
+    says the channel is off.
     """
     if nvr_state != "ok":
         return REC_UNKNOWN, _nvr_reason(nvr_state)
+    if inventory_state == "missing":
+        return REC_UNKNOWN, "channel_missing"                 # no camera -> no meaningful recording state
+    if inventory_state == "disabled":
+        return REC_UNKNOWN, "channel_disabled"
     if storage_state == STORAGE_FAULT:
-        return REC_STORAGE_FAULT, "storage_fault"              # no working storage -> cannot be recording
+        return REC_STORAGE_FAULT, "storage_fault"             # no usable storage -> cannot be recording
+    # storage DEGRADED (low space) does NOT force a fault — recording can continue; fall through.
     if not supported or raw_channel_state is None:
-        return REC_UNKNOWN, "unknown"                          # never assume "recording" we cannot read
+        return REC_UNKNOWN, "unknown"                         # config-only/unreadable -> never assume recording
     if raw_channel_state == "not_recording":
         return REC_NOT, "not_recording"
     if raw_channel_state == "recording":

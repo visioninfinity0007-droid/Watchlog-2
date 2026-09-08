@@ -227,29 +227,37 @@ class DahuaDriver(NvrDriver):
         return {"channels": out}
 
     def storage_status(self) -> dict:
-        """Dahua HDD/storage health via storageDevice.cgi. Conservative: only report ok/fault/
-        degraded on a RECOGNISED signal, otherwise state=None (UNKNOWN) — never fabricate 'ok'.
+        """Dahua HDD/storage health via storageDevice.cgi. Conservative and honest:
+          * a disk failure/missing/unformatted signal -> 'fault' (no usable recording storage);
+          * a low-space / no-free-space signal -> 'degraded' (usually still recording by overwrite —
+            NOT a blanket fault);
+          * a clearly-normal signal -> 'ok';
+          * anything else / unreadable -> None (UNKNOWN).
         NOT hardware-verified, so it fails safe to UNKNOWN rather than a false healthy."""
         try:
             kv = _parse_kv(self._get("/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo"))
         except DriverError:
-            return {"supported": False, "state": None, "native_fault": False}
+            return {"supported": False, "state": None}
         if not kv:
-            return {"supported": True, "state": None, "native_fault": False}
+            return {"supported": True, "state": None}
         vals = " ".join(str(v).lower() for v in kv.values())
         if any(k in vals for k in ("error", "failed", "failure", "abnormal", "notexist",
                                    "no disk", "unformat")):
-            return {"supported": True, "state": "fault", "native_fault": False}
+            return {"supported": True, "state": "fault"}       # no usable storage
         if any(k in vals for k in ("lowspace", "low space", "nospace", "full")):
-            return {"supported": True, "state": "degraded", "native_fault": False}
+            return {"supported": True, "state": "degraded"}    # low space — still usable, not a fault
         if any(k in vals for k in ("normal", "running", "sleeping", "good", "ok")):
-            return {"supported": True, "state": "ok", "native_fault": False}
-        return {"supported": True, "state": None, "native_fault": False}
+            return {"supported": True, "state": "ok"}
+        return {"supported": True, "state": None}
 
     def recording_status(self, channels=None) -> dict:
-        """Per-channel recording state from Dahua RecordMode (0=auto/schedule, 1=manual/always,
-        2=off). 0/1 -> recording, 2 -> not_recording, unreadable -> None (UNKNOWN). Read-only; we
-        never infer 'recording' from a snapshot."""
+        """Per-channel recording state from Dahua RecordMode. Vendor-truth conservative:
+          * Mode 2 (off) -> 'not_recording' (recorder explicitly says the channel is not recording);
+          * Mode 0 (auto/schedule) or 1 (manual/always) -> None (UNKNOWN): this is CONFIGURATION, not
+            proof that frames are being written to disk right now. We never claim 'recording' from a
+            mode/schedule alone. Proof-of-active-recording (e.g. a recent-file check) is a future,
+            hardware-validated refinement.
+        Read-only; recording is never inferred from a snapshot."""
         try:
             kv = _parse_kv(self._get(
                 "/cgi-bin/configManager.cgi?action=getConfig&name=RecordMode"))
@@ -260,9 +268,8 @@ class DahuaDriver(NvrDriver):
             m = re.match(r"table\.RecordMode\[(\d+)\]\.Mode", key)
             if m:
                 ch = str(int(m.group(1)) + 1)          # config is 0-based; channels are 1-based
-                mode = str(val).strip()
-                out[ch] = "not_recording" if mode == "2" else \
-                          ("recording" if mode in ("0", "1") else None)
+                # only an explicit OFF is a truthful state; a schedule/mode is not proof -> UNKNOWN
+                out[ch] = "not_recording" if str(val).strip() == "2" else None
         if not out:
             return {"supported": False, "channels": {}}
         return {"supported": True, "channels": out}

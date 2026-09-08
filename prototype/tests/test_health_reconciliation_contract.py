@@ -140,6 +140,21 @@ def main():
     require("then 'unmapped_channel'", "channel-mapping failures must be a counted rejection, not dropped", rec)
     require("then 'invalid_sequence'", "a bad seq must be a counted rejection category", rec)
 
+    # --- increment-6 ACK CONTRACT (response-only): per-id dispositions so the agent acknowledges
+    #     exactly what the server accepted. Derived from the SAME classified/ins/insc CTEs; every
+    #     reconciliation semantic checked above is unchanged (f4d3e7a stays the increment-5 checkpoint).
+    require("returning dedupe_key", "transition insert must return ids so accepted can be reported", rec)
+    require("returning checkpoint_id", "checkpoint insert must return the epoch-qualified accepted id", rec)
+    for k in ("'accepted_ids'", "'duplicate_ids'", "'rejected'",
+              "'checkpoints_accepted_ids'", "'checkpoints_duplicate_ids'", "'checkpoints_rejected_ids'"):
+        require(k, f"reconcile must return {k} (increment-6 ack parity with 0047)", rec)
+    require("jsonb_build_object('id', dedupe_key, 'reason', verdict)", "transition rejected carries id + reason", rec)
+    require("jsonb_build_object('id', checkpoint_id, 'reason', verdict)", "checkpoint rejected carries id + reason", rec)
+    require("where v.dedupe_key not in (select dedupe_key from ins)",
+            "transition duplicate = valid ids not newly inserted (idempotent replay)", rec)
+    require("r.checkpoint_id not in (select checkpoint_id from insc)",
+            "checkpoint duplicate = valid ids not newly inserted (idempotent replay)", rec)
+
     # safe-cast helpers are real fail-soft casts
     require("create or replace function public.wl_try_timestamptz", "safe timestamptz cast helper missing")
     require("exception when others then", "safe casts must return NULL on bad input, not raise")

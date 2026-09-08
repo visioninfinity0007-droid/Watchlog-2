@@ -28,10 +28,23 @@ from typing import Dict, List, Optional
 # evidence and MAY be coarsened; an unresolved transition is never dropped for AGE alone.
 DEFAULT_MAX_CHECKPOINTS = 20_000
 DEFAULT_MAX_TRANSITION_AGE_DAYS = 90
+# A TRANSIENT reconcile rejection (e.g. unmapped_channel: the camera may enrol later) is retried,
+# but not forever — after this many rejections the row is quarantined so a permanently-unmappable
+# transition cannot spin the reconcile loop indefinitely. Structural poison is quarantined at once.
+DEFAULT_MAX_TRANSIENT_ATTEMPTS = 10
 # Hard disk-pressure ceiling for UNSENT transitions. Below this, pending transitions are never
 # dropped. If a pathological long/flapping outage pushes past it, the OLDEST unsent are dropped
 # but LOUDLY and with a persisted, observable counter — never silently. See compact().
 DEFAULT_MAX_PENDING_TRANSITIONS = 100_000
+# QUARANTINED records (transitions AND checkpoints) are terminal — the server explicitly rejected
+# them — but must NOT escape retention: a malformed producer could otherwise grow them without bound.
+# Each quarantine table is kept as forensic evidence for a window, then the OLDEST are pruned by AGE
+# (from QUARANTINE time, never observation time) OR COUNT (whichever binds first), always with a
+# persisted, observable per-table counter. This is DISTINCT from unresolved (pending) evidence, which
+# is never age/count pruned, and from the generic checkpoint continuity bound.
+DEFAULT_MAX_QUARANTINE_AGE_DAYS = 90
+DEFAULT_MAX_QUARANTINED_TRANSITIONS = 10_000
+DEFAULT_MAX_QUARANTINED_CHECKPOINTS = 10_000
 
 _SCHEMA = """
 create table if not exists meta (k text primary key, v text);
@@ -51,7 +64,10 @@ create table if not exists transitions (
   reason     text not null,
   source     text not null,                        -- native|probe|inventory|upper_layer
   device_ts  text not null,                        -- observed time (ISO8601), NOT upload time
-  status     text not null default 'pending',      -- pending|uploaded
+  status         text not null default 'pending',  -- pending|uploaded|quarantined
+  attempts       integer not null default 0,        -- reconcile rejections seen (bounded-retry)
+  last_reason    text,                              -- last server rejection reason (observable)
+  quarantined_at integer,                           -- forensic clock: when parked (NULL until then)
   created_at integer not null default (strftime('%s','now'))
 );
 create index if not exists transitions_status_idx on transitions(status, seq);
@@ -62,7 +78,10 @@ create table if not exists checkpoints (
   nvr_state       text not null,
   cameras_observed integer not null,
   cycle_ok        integer not null default 1,
-  status          text not null default 'pending',
+  status          text not null default 'pending',      -- pending|uploaded|quarantined
+  attempts        integer not null default 0,
+  last_reason     text,
+  quarantined_at  integer,                                -- forensic clock: when parked (NULL until then)
   created_at      integer not null default (strftime('%s','now'))
 );
 create index if not exists checkpoints_status_idx on checkpoints(status, seq);
@@ -80,14 +99,23 @@ class HealthStore:
     def __init__(self, path, agent_id: str,
                  max_checkpoints: int = DEFAULT_MAX_CHECKPOINTS,
                  max_transition_age_days: int = DEFAULT_MAX_TRANSITION_AGE_DAYS,
-                 max_pending_transitions: int = DEFAULT_MAX_PENDING_TRANSITIONS) -> None:
+                 max_pending_transitions: int = DEFAULT_MAX_PENDING_TRANSITIONS,
+                 max_transient_attempts: int = DEFAULT_MAX_TRANSIENT_ATTEMPTS,
+                 max_quarantine_age_days: int = DEFAULT_MAX_QUARANTINE_AGE_DAYS,
+                 max_quarantined_transitions: int = DEFAULT_MAX_QUARANTINED_TRANSITIONS,
+                 max_quarantined_checkpoints: int = DEFAULT_MAX_QUARANTINED_CHECKPOINTS) -> None:
         self.path = Path(path)
         self.agent_id = agent_id
         self.max_checkpoints = int(max_checkpoints)
         self.max_transition_age_days = int(max_transition_age_days)
         self.max_pending_transitions = int(max_pending_transitions)
+        self.max_transient_attempts = int(max_transient_attempts)
+        self.max_quarantine_age_days = int(max_quarantine_age_days)
+        self.max_quarantined_transitions = int(max_quarantined_transitions)
+        self.max_quarantined_checkpoints = int(max_quarantined_checkpoints)
         self._lock = threading.RLock()
         self.db = self._open()
+        self._migrate()          # add columns an older store file predates (attempts/last_reason)
         # A durable per-DATABASE-LIFETIME epoch. Fresh/rebuilt DB -> new epoch; intact restart
         # -> same epoch. This is what makes dedupe ids globally unique: after a corruption
         # rebuild the SQLite AUTOINCREMENT restarts at 1, so "<agent>:<seq>" alone would collide
@@ -153,6 +181,28 @@ class HealthStore:
             pass
         return db
 
+    def _migrate(self) -> None:
+        """Add columns a store file created by an older agent predates. SQLite has no
+        `add column if not exists`, so we check pragma table_info first. Fail-safe."""
+        with self._lock:
+            try:
+                for tbl in ("transitions", "checkpoints"):
+                    cols = {r["name"] for r in
+                            self.db.execute(f"pragma table_info({tbl})").fetchall()}
+                    if "attempts" not in cols:
+                        self.db.execute(f"alter table {tbl} add column attempts integer not null default 0")
+                    if "last_reason" not in cols:
+                        self.db.execute(f"alter table {tbl} add column last_reason text")
+                    if "quarantined_at" not in cols:
+                        self.db.execute(f"alter table {tbl} add column quarantined_at integer")
+                    # Conservative backfill: a row already quarantined by an older agent gets a FRESH
+                    # forensic window (now), NEVER the old observation time — so migration can never
+                    # immediately prune it just because the original event is old.
+                    self.db.execute(f"update {tbl} set quarantined_at = strftime('%s','now') "
+                                    f"where status='quarantined' and quarantined_at is null")
+            except sqlite3.Error as e:
+                _log(f"migrate skipped ({e})")
+
     # -- writes (all fail-safe) ----------------------------------------------------
 
     def observe(self, layer: str, entity: str, new_state: str, reason: str,
@@ -207,6 +257,68 @@ class HealthStore:
     def mark_checkpoints_uploaded(self, seqs: List[int]) -> None:
         self._mark("checkpoints", "seq", seqs)
 
+    def quarantine_transitions(self, items) -> None:
+        """Terminally park rows the server STRUCTURALLY rejected (poison: missing id, wrong layer,
+        malformed state/time/seq). They never entered the ledger and never will, so retrying them
+        forever would spin the reconcile loop. Recorded with the reason so it stays observable, and
+        removed from the pending set. items = iterable of (dedupe_key, reason)."""
+        items = [(dk, reason) for dk, reason in items if dk]
+        if not items:
+            return
+        with self._lock:
+            try:
+                for dk, reason in items:
+                    self.db.execute(
+                        "update transitions set status='quarantined', last_reason=?, "
+                        "quarantined_at=strftime('%s','now') where dedupe_key=? and status='pending'",
+                        (str(reason), dk))
+            except sqlite3.Error as e:
+                _log(f"quarantine failed ({e})")
+
+    def quarantine_checkpoints(self, items) -> None:
+        """Terminally park checkpoints the server rejected (missing id / malformed observed time) so a
+        rejection under RPC success is never silently acknowledged and never retried forever. Keyed by
+        the LOCAL seq (the agent maps the server's epoch-qualified checkpoint_id back to seq).
+        items = iterable of (seq, reason)."""
+        items = [(s, reason) for s, reason in items if s is not None]
+        if not items:
+            return
+        with self._lock:
+            try:
+                for s, reason in items:
+                    self.db.execute(
+                        "update checkpoints set status='quarantined', last_reason=?, "
+                        "quarantined_at=strftime('%s','now') where seq=? and status='pending'",
+                        (str(reason), s))
+            except sqlite3.Error as e:
+                _log(f"quarantine checkpoints failed ({e})")
+
+    def quarantined_checkpoints(self, limit: int) -> List[dict]:
+        return self._rows("select * from checkpoints where status='quarantined' order by seq limit ?",
+                          (limit,))
+
+    def defer_transitions(self, items, max_attempts: Optional[int] = None) -> None:
+        """Bounded retry for TRANSIENT rejections (e.g. unmapped_channel — the camera may be enrolled
+        later, at which point the very same row reconciles cleanly). Bump the attempt counter and
+        record the reason; a row that exhausts max_attempts is quarantined so a permanently
+        unmappable transition cannot retry indefinitely. items = iterable of (dedupe_key, reason)."""
+        items = [(dk, reason) for dk, reason in items if dk]
+        if not items:
+            return
+        cap = int(self.max_transient_attempts if max_attempts is None else max_attempts)
+        with self._lock:
+            try:
+                for dk, reason in items:
+                    self.db.execute(
+                        "update transitions set attempts = attempts + 1, last_reason=? "
+                        "where dedupe_key=? and status='pending'", (str(reason), dk))
+                    self.db.execute(
+                        "update transitions set status='quarantined', "
+                        "quarantined_at=strftime('%s','now') "
+                        "where dedupe_key=? and status='pending' and attempts >= ?", (dk, cap))
+            except sqlite3.Error as e:
+                _log(f"defer failed ({e})")
+
     def _mark(self, table: str, col: str, ids: list) -> None:
         if not ids:
             return
@@ -227,6 +339,28 @@ class HealthStore:
     def pending_checkpoints(self, limit: int) -> List[dict]:
         return self._rows("select * from checkpoints where status='pending' order by seq limit ?",
                           (limit,))
+
+    def quarantined_transitions(self, limit: int) -> List[dict]:
+        """Rows terminally parked after structural or exhausted-transient rejection — observable,
+        carrying last_reason, so a stuck condition is diagnosable rather than silently dropped."""
+        return self._rows("select * from transitions where status='quarantined' order by seq limit ?",
+                          (limit,))
+
+    def quarantined_count(self) -> int:
+        r = self._rows("select count(*) as n from transitions where status='quarantined'", ())
+        return r[0]["n"] if r else 0
+
+    def quarantined_transitions_pruned_count(self) -> int:
+        """How many quarantined TRANSITIONS the bounded forensic-retention policy has pruned
+        (observable — a quarantine drop is never silent). See compact()."""
+        r = self._rows("select v from meta where k='quarantined_transitions_pruned'", ())
+        return int(r[0]["v"]) if r else 0
+
+    def quarantined_checkpoints_pruned_count(self) -> int:
+        """How many quarantined CHECKPOINTS the bounded forensic-retention policy has pruned —
+        tracked SEPARATELY so a quarantine drop in either table stays independently observable."""
+        r = self._rows("select v from meta where k='quarantined_checkpoints_pruned'", ())
+        return int(r[0]["v"]) if r else 0
 
     def export_batch(self, limit: int) -> dict:
         """The reconciliation payload: pending transitions + checkpoints, defined fields only
@@ -262,28 +396,67 @@ class HealthStore:
 
     # -- retention -----------------------------------------------------------------
 
+    def _prune_quarantine(self, table: str, max_count: int, counter_key: str) -> None:
+        """Bounded, observable forensic retention for ONE quarantine table. Prune by AGE (from
+        quarantined_at — the quarantine clock, never the observation time) then by COUNT (keep the
+        newest max_count, prune the oldest). Every drop is counted into `counter_key`; a null
+        quarantined_at is never age-pruned (conservative). Only status='quarantined' rows are ever
+        touched, so pending/unresolved and uploaded evidence are structurally unreachable here."""
+        pruned = self.db.execute(
+            f"delete from {table} where status='quarantined' and quarantined_at is not null "
+            f"and (strftime('%s','now') - quarantined_at) >= ?",
+            (self.max_quarantine_age_days * 86400,)).rowcount or 0
+        nq = self.db.execute(
+            f"select count(*) from {table} where status='quarantined'").fetchone()[0]
+        if nq > max_count:
+            pruned += self.db.execute(
+                f"delete from {table} where status='quarantined' and seq not in ("
+                f"  select seq from {table} where status='quarantined' "
+                f"  order by quarantined_at desc, seq desc limit ?)", (max_count,)).rowcount or 0
+        if pruned > 0:
+            _log(f"quarantine retention ({table}): pruned {pruned} oldest "
+                 f"(age>{self.max_quarantine_age_days}d or count>{max_count}); counted")
+            self._bump_meta(counter_key, pruned)
+
     def compact(self) -> None:
         """Bound the store. Storage classification (honest):
-          * checkpoints           — HARD-bounded by count (uploaded dropped first).
-          * uploaded transitions  — age-pruned past max_transition_age_days.
-          * unsent transitions    — retained; NOT dropped for age. Bounded only by a hard
-            disk-pressure ceiling (max_pending_transitions); crossing it drops the OLDEST
-            unsent, but LOUDLY and with a persisted, observable counter — never silently.
+          * uploaded transitions    — age-pruned past max_transition_age_days.
+          * quarantined transitions — terminal forensic evidence; bounded by AGE (from quarantine
+            time) OR COUNT, oldest pruned, observable (quarantined_transitions_pruned); never touches
+            pending. Independent of the checkpoint continuity bound.
+          * quarantined checkpoints — SAME independent forensic policy (quarantined_checkpoints_pruned).
+          * checkpoints (pending|uploaded) — HARD-bounded by count (uploaded dropped first); this
+            generic bound EXCLUDES quarantined rows entirely so it can never silently eat quarantine.
+          * unsent transitions      — retained; NOT dropped for age. Bounded only by a hard
+            disk-pressure ceiling (max_pending_transitions); crossing it drops the OLDEST unsent,
+            but LOUDLY and with a persisted, observable counter — never silently.
         """
         with self._lock:
             try:
                 max_age = self.max_transition_age_days * 86400
+                # DELIVERED rows age out by observation time; PENDING never does; QUARANTINED has its
+                # own forensic policy below (its clock is quarantine time, tracked per table).
                 self.db.execute(
                     "delete from transitions where status='uploaded' "
                     "and (strftime('%s','now') - created_at) >= ?", (max_age,))
 
-                n = self.db.execute("select count(*) from checkpoints").fetchone()[0]
+                # Independent, bounded, observable forensic retention for BOTH quarantine tables.
+                self._prune_quarantine("transitions", self.max_quarantined_transitions,
+                                       "quarantined_transitions_pruned")
+                self._prune_quarantine("checkpoints", self.max_quarantined_checkpoints,
+                                       "quarantined_checkpoints_pruned")
+
+                # Generic checkpoint continuity bound — EXPLICITLY over non-quarantined rows only, so it
+                # can never delete a quarantined checkpoint without the quarantine counter (uploaded
+                # dropped before pending; quarantine has its own policy above).
+                n = self.db.execute(
+                    "select count(*) from checkpoints where status <> 'quarantined'").fetchone()[0]
                 if n > self.max_checkpoints:
                     excess = n - self.max_checkpoints
                     self.db.execute(
                         "delete from checkpoints where seq in ("
-                        "  select seq from checkpoints order by (status='pending') asc, seq asc"
-                        "  limit ?)", (excess,))
+                        "  select seq from checkpoints where status <> 'quarantined' "
+                        "  order by (status='pending') asc, seq asc limit ?)", (excess,))
 
                 # Disk-pressure last resort for UNSENT transitions — explicit + observable.
                 npend = self.db.execute(
