@@ -7,7 +7,7 @@ recorder we cannot reach/authenticate) and produces the cloud report:
   * storage: {state: ok|degraded|fault|unknown, reason}
   * recording.channels: [{channel, state: recording|not_recording|storage_fault|unknown, reason}]
 
-Honesty rules live in prototype/server/recording_model.py: unreadable/unsupported -> UNKNOWN
+Honesty rules live in recording_model.py (agent-side classifier): unreadable/unsupported -> UNKNOWN
 (never a fabricated 'recording'/'ok'); a storage FAULT dominates recording; recording is
 independent of camera video health. Telemetry carries only states/reasons/channel numbers — no
 image bytes, no URLs, no credentials.

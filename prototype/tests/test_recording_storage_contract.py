@@ -17,8 +17,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "prototype" / "server"))
-import recording_model as rm  # noqa: E402  (proves the classifier module is valid)
+sys.path.insert(0, str(ROOT / "prototype" / "agent"))
+import recording_model as rm  # noqa: E402  (agent-side classifier; proves the module is valid)
 
 MIG = (ROOT / "prototype/supabase/migrations/0047_recording_storage_report.sql").read_text(encoding="utf-8")
 
