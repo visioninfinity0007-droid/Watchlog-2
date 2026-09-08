@@ -123,9 +123,12 @@ jobs:
           Write-Host $agentSelftest
           if ($LASTEXITCODE -ne 0) { throw "packaged agent self-test failed with exit $LASTEXITCODE" }
           # Single version source: the PACKAGED agent must report the build version
-          # (0.3.3 shipped reporting 0.3.0 from analytics_agent's stale constant).
-          if ($agentSelftest -notmatch 'watchlog-agent 0\.3\.4') {
-            throw "packaged agent reports the wrong version (expected 0.3.4):`n$agentSelftest"
+          # (0.3.3 shipped reporting 0.3.0 from analytics_agent's stale constant). Derive the
+          # expected version from wl_version.py — never hardcode it here (that would itself become a
+          # second, drift-prone source, the very bug this check exists to catch).
+          $wlVer = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($agentSelftest -notmatch [regex]::Escape("watchlog-agent $wlVer")) {
+            throw "packaged agent reports the wrong version (expected $wlVer):`n$agentSelftest"
           }
 
           # PACKAGED-EXE DPAPI PROOF: prove the FROZEN setup UI actually drives
