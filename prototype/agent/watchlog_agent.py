@@ -704,6 +704,18 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
                 log(f"camera health report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
             # reconcile retained transitions/checkpoints (idempotent; bounded to the cycle cadence)
             reconcile_health(holder, state, cloud)
+
+        # --- NVR recording + storage health (increment 6), reusing THIS driver + assessment ---
+        try:
+            import recording_health
+            nvr_state = (assessment.get("nvr") or {}).get("state", "unknown")
+            rs = recording_health.assess_recording_storage(driver, chans, nvr_state)
+            rr = cloud.call("wl_report_recording_storage", p_agent_id=state["agent_id"],
+                            p_agent_key=state["agent_key"], p_report=rs)
+            log(f"recording/storage: storage={rr.get('storage_state')} "
+                f"recording={rr.get('recording_state')} channels={rr.get('channels_updated')}")
+        except Exception as e:                          # noqa: BLE001
+            log(f"recording/storage report skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
     except Exception as e:                              # noqa: BLE001 — must never break the loop
         log(f"health cycle skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
     finally:

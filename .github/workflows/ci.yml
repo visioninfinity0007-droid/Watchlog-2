@@ -28,7 +28,7 @@ jobs:
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store)
-        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py -q
+        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py -q
       - name: WordPress PHP syntax
         run: |
           php -l deploy/wordpress/themes/watchlog/front-page.php
@@ -49,6 +49,8 @@ jobs:
         run: python prototype/tests/test_camera_health_report_contract.py
       - name: Health reconciliation contract (Phase A)
         run: python prototype/tests/test_health_reconciliation_contract.py
+      - name: Recording/storage report contract (Phase A)
+        run: python prototype/tests/test_recording_storage_contract.py
       - name: SaaS operations security contract
         run: python prototype/tests/test_saas_operations_contract.py
       - name: Customer lifecycle contract

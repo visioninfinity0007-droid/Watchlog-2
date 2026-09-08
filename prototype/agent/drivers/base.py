@@ -225,6 +225,25 @@ class NvrDriver:
         """
         return None
 
+    def storage_status(self) -> dict:
+        """Recorder HDD/storage health, read-only, from the vendor storage API.
+
+        Returns {'supported': bool, 'state': 'ok'|'degraded'|'fault'|None, 'native_fault': bool}.
+        A driver that cannot read storage MUST report supported=False / state=None — it must never
+        fabricate 'ok'. "We don't know" is the honest answer and becomes UNKNOWN upstream (a JPEG
+        proves an image, not that the NVR is recording it).
+        """
+        return {"supported": False, "state": None, "native_fault": False}
+
+    def recording_status(self, channels) -> dict:
+        """Per-channel recording state from the vendor RECORD config, read-only.
+
+        Returns {'supported': bool, 'channels': {channel: 'recording'|'not_recording'|None}}.
+        Unread/unsupported channels are None -> UNKNOWN upstream. Recording is NEVER inferred from
+        a snapshot or from the camera being reachable.
+        """
+        return {"supported": False, "channels": {}}
+
     def close(self) -> None:
         pass
 
