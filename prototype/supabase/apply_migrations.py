@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -26,16 +27,23 @@ MIGRATIONS = Path(__file__).resolve().parent / "migrations"
 
 
 def load_env() -> dict:
-    env_path = ROOT / ".env"
-    if not env_path.exists():
-        sys.exit(f"FATAL: no .env at {env_path}")
     env = {}
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        env[k.strip()] = v.strip()
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            env[k.strip()] = v.strip()
+    # OS environment supplies/overrides — lets a DISPOSABLE target (CI integration Postgres) be set
+    # without any .env on disk. Production still uses the .env; there is no .env in CI.
+    for k in ("SUPABASE_DB_HOST", "SUPABASE_DB_PORT", "SUPABASE_DB_USER",
+              "SUPABASE_DB_PASSWORD", "SUPABASE_DB_NAME", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    if not env:
+        sys.exit(f"FATAL: no .env at {env_path} and no SUPABASE_DB_* environment variables")
     return env
 
 

@@ -63,23 +63,23 @@ begin
   ),
   desired as (
     -- (A) AGENT unreachable — the only assertable fault for a down agent (suppresses everything below)
-    select 'agent:' || agent_id || ':unreachable' as dedupe_key, 'agent' as fault_domain,
+    select 'agent:' || agent_id::text ||':unreachable' as dedupe_key, 'agent' as fault_domain,
            'agent_unreachable' as fault_type, 'critical' as severity,
            'agent_unreachable' as reason_code, null::uuid as camera_id, agent_id
       from rec where agent_down
     union all
     -- (B) NVR unreachable (agent up, recorder down) — suppresses cameras/storage
-    select 'nvr:' || agent_id || ':unreachable', 'nvr_connectivity', 'nvr_unreachable', 'critical',
+    select 'nvr:' || agent_id::text ||':unreachable', 'nvr_connectivity', 'nvr_unreachable', 'critical',
            'nvr_unreachable', null::uuid, agent_id
       from rec where not agent_down and nvr_reachable is false
     union all
     -- (C) NVR auth failed (agent up, reachable, auth explicitly false)
-    select 'nvr:' || agent_id || ':auth', 'nvr_auth', 'nvr_auth_failed', 'critical',
+    select 'nvr:' || agent_id::text ||':auth', 'nvr_auth', 'nvr_auth_failed', 'critical',
            'nvr_auth_failed', null::uuid, agent_id
       from rec where not agent_down and nvr_reachable is true and nvr_auth_ok is false
     union all
     -- (D) STORAGE fault (critical) / degraded (warning) — only when the recorder is readable
-    select 'nvr:' || agent_id || ':storage', 'storage',
+    select 'nvr:' || agent_id::text ||':storage', 'storage',
            case when storage_state = 'fault' then 'storage_fault' else 'storage_degraded' end,
            case when storage_state = 'fault' then 'critical' else 'warning' end,
            case when storage_state = 'fault' then 'storage_fault' else 'disk_full' end,
@@ -88,7 +88,7 @@ begin
        and storage_state in ('fault', 'degraded')
     union all
     -- (E) CAMERA offline — only if the site is OBSERVABLE; MISSING/DISABLED is inventory, not a fault
-    select 'camera:' || ch.camera_id || ':offline', 'camera', 'camera_offline', 'critical',
+    select 'camera:' || ch.camera_id::text ||':offline', 'camera', 'camera_offline', 'critical',
            'video_loss', ch.camera_id, null::uuid
       from camera_health ch
       left join camera_inventory ci on ci.camera_id = ch.camera_id
@@ -97,7 +97,7 @@ begin
        and (select ok from observable)
     union all
     -- (E) RECORDING stopped / channel storage fault — same observability + inventory gating
-    select 'camera:' || ch.camera_id || ':recording', 'recording',
+    select 'camera:' || ch.camera_id::text ||':recording', 'recording',
            case when ch.recording_state = 'storage_fault' then 'recording_storage_fault' else 'not_recording' end,
            'warning',
            case when ch.recording_state = 'storage_fault' then 'storage_fault' else 'not_recording' end,
