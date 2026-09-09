@@ -11,6 +11,11 @@ const STATE_CLS = { candidate: "s-unk", open: "s-warn", acknowledged: "s-warn", 
 function human(v) { if (!v) return "—"; return String(v).replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()); }
 function ago(ts) { if (!ts) return "—"; const s = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 1000)); if (s < 60) return `${s}s ago`; if (s < 3600) return `${Math.round(s / 60)}m ago`; if (s < 86400) return `${Math.round(s / 3600)}h ago`; return `${Math.round(s / 86400)}d ago`; }
 function pill(cls, label) { return <span className={"pill " + cls}>{label}</span>; }
+// evidence status -> pill class (each carries its word; colour is never the only signal)
+const EV_CLS = { pending: "s-warn", processing: "s-warn", ready: "s-ok", unsupported: "s-unk", failed: "s-bad", expired: "s-unk" };
+function kb(n) { return n ? `${Math.round(Number(n) / 1024)} KB` : ""; }
+function decodeB64(b64) { const bin = atob(String(b64 || "").replace(/\s+/g, "")); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+async function digestHex(blob) { const d = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()); return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, "0")).join(""); }
 
 export default function Operations() {
   const [email, setEmail] = useState("");
@@ -22,6 +27,10 @@ export default function Operations() {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [f, setF] = useState({ site: "", type: "", severity: "", state: "", review: "", q: "" });
+  const [evidence, setEvidence] = useState({});   // incident_id -> {stills, clips}
+  const [stillImg, setStillImg] = useState({});    // still_id -> {image_b64, content_type}
+  const [evBusy, setEvBusy] = useState("");
+  const [evNote, setEvNote] = useState("");
 
   const load = useCallback(async () => {
     const guard = await requireTenant();
@@ -54,6 +63,39 @@ export default function Operations() {
     setBusy(false);
     if (e) { setError(/owner|admin|role/i.test(e.message || "") ? "Only owners or admins can update incidents." : say(e)); return; }
     setError(""); load();
+  }
+
+  const loadEvidence = useCallback(async (id) => {
+    const { data, error } = await supabase().rpc("wl_operations_incident_evidence", { p_incident_id: id });
+    if (error) { if (!/function|schema cache/i.test(error.message || "")) setEvNote(say(error)); setEvidence((m) => ({ ...m, [id]: { stills: [], clips: [] } })); return; }
+    setEvidence((m) => ({ ...m, [id]: data || { stills: [], clips: [] } }));
+  }, []);
+  async function viewStill(stillId) {
+    setEvBusy("still:" + stillId); setEvNote("");
+    const { data, error } = await supabase().rpc("wl_operations_incident_still_image", { p_still_id: stillId });
+    setEvBusy("");
+    if (error) { setEvNote(say(error)); return; }
+    if (data?.image_b64) setStillImg((m) => ({ ...m, [stillId]: data })); else setEvNote("This still is no longer available.");
+  }
+  async function downloadClip(clip, incidentId) {
+    if (!clip?.request_id || clip.status !== "ready") return;
+    setEvBusy("clip:" + clip.request_id); setEvNote("Preparing the bounded footage download…");
+    try {
+      const parts = [];
+      for (let seq = 0; seq < Number(clip.chunks || 0); seq += 1) {
+        const { data, error } = await supabase().rpc("wl_incident_clip_chunk", { p_request_id: clip.request_id, p_sequence_no: seq });
+        if (error || !data?.data_b64) throw error || new Error(`Missing footage chunk ${seq}`);
+        parts.push(decodeB64(data.data_b64));
+      }
+      if (!parts.length) throw new Error("No footage data is available.");
+      const blob = new Blob(parts, { type: clip.content_type || "application/octet-stream" });
+      if (Number(clip.bytes || 0) > 0 && blob.size !== Number(clip.bytes)) throw new Error("Footage size check failed. Request it again.");
+      if (!clip.sha256 || (await digestHex(blob)) !== clip.sha256) throw new Error("Footage integrity check failed. Request it again.");
+      const url = URL.createObjectURL(blob); const a = document.createElement("a");
+      a.href = url; a.download = `WatchLog-incident-${incidentId}.${clip.file_extension || "dav"}`;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setEvNote(`Downloaded ${kb(blob.size)} after size + SHA-256 verification. The temporary cloud copy expires automatically.`);
+    } catch (e) { setEvNote(say(e)); } finally { setEvBusy(""); }
   }
 
   const types = useMemo(() => [...new Set(rows.map((r) => r.incident_type))].sort(), [rows]);
@@ -95,7 +137,7 @@ export default function Operations() {
           const rule = ruleMap[r.rule_id]; const cam = camMap[r.camera_id]; const open = expanded === r.id;
           const canAct = r.status === "candidate" || r.status === "open" || r.status === "acknowledged";
           return <Fragment key={r.id}>
-            <tr className={styles.row} onClick={() => setExpanded(open ? null : r.id)}>
+            <tr className={styles.row} onClick={() => { const willOpen = !open; setExpanded(willOpen ? r.id : null); if (willOpen && !evidence[r.id]) loadEvidence(r.id); }}>
               <td title={r.occurred_at ? new Date(r.occurred_at).toLocaleString() : ""}>{ago(r.occurred_at)}</td>
               <td>{r.siteName}</td>
               <td>{human(r.incident_type)}</td>
@@ -113,7 +155,28 @@ export default function Operations() {
                 <div><span className="muted">Object</span><div>{human(r.object_class)}</div></div>
                 <div><span className="muted">Review</span><div>{r.review_required ? "Human review required" : "Not required"}{r.sensitive ? " · sensitive classification (assistive only)" : ""}</div></div>
               </div>
-              <div className={styles.detailBlock}><span className="muted">Evidence</span>{r.evidence && Object.keys(r.evidence).length ? <pre className={styles.json}>{JSON.stringify(r.evidence, null, 2)}</pre> : <div className="muted">No still evidence attached yet. Footage capture is on-demand and bounded (requires a future agent release on this recorder).</div>}</div>
+              <div className={styles.detailBlock}><span className="muted">Evidence</span>{(() => {
+                const ev = evidence[r.id];
+                if (!ev) return <div className="muted">Loading evidence…</div>;
+                const stills = ev.stills || [], clips = ev.clips || [];
+                if (!stills.length && !clips.length) return <div className="muted">No evidence action was configured for this rule. (Evidence is bounded, on-demand and captured only for rules that request it.)</div>;
+                return <div className={styles.evidence}>
+                  {stills.map((s) => <div key={s.id} className={styles.evItem}>
+                    <div>{pill(EV_CLS[s.status] || "s-unk", "still · " + s.status)}<span className="muted"> {s.purpose ? human(s.purpose) + " · " : ""}{camMap[s.camera_id] ? (camMap[s.camera_id].name || "ch " + camMap[s.camera_id].channel) : ""}{s.captured_at ? " · captured " + new Date(s.captured_at).toLocaleString() : ""}{s.byte_size ? " · " + kb(s.byte_size) : ""}</span>
+                      {s.status === "ready" && s.has_image && <button className="ghost small" disabled={!!evBusy} onClick={() => viewStill(s.id)}>{stillImg[s.id] ? "Refresh still" : "View still"}</button>}
+                      {s.status !== "ready" && s.error && <span className="muted"> · {s.error}</span>}</div>
+                    {s.status === "ready" && s.sha256 && <div className="mono muted" style={{ fontSize: 11 }}>sha256 {s.sha256.slice(0, 20)}… · {s.provenance}</div>}
+                    {stillImg[s.id]?.image_b64 && <img className={styles.stillImg} alt="Incident still" src={`data:${stillImg[s.id].content_type || "image/jpeg"};base64,${stillImg[s.id].image_b64}`} />}
+                  </div>)}
+                  {clips.map((c) => <div key={c.request_id} className={styles.evItem}>
+                    <div>{pill(EV_CLS[c.status] || "s-unk", "footage · " + c.status)}<span className="muted"> {c.start_at ? new Date(c.start_at).toLocaleTimeString() : ""}–{c.end_at ? new Date(c.end_at).toLocaleTimeString() : ""}{c.bytes ? " · " + kb(c.bytes) : ""}</span>
+                      {c.status === "ready" && <button className="ghost small" disabled={!!evBusy} onClick={() => downloadClip(c, r.id)}>{evBusy === "clip:" + c.request_id ? "Preparing…" : "Download footage"}</button>}
+                      {c.status !== "ready" && c.error && <span className="muted"> · {c.error}</span>}</div>
+                    {c.status === "ready" && c.sha256 && <div className="mono muted" style={{ fontSize: 11 }}>sha256 {c.sha256.slice(0, 20)}… · bounded on-demand clip</div>}
+                  </div>)}
+                  {evNote && <div className="muted" style={{ fontSize: 12 }}>{evNote}</div>}
+                </div>;
+              })()}</div>
               <div className={styles.detailBlock}><span className="muted">Actions taken</span>{(r.actions || []).length ? <ul className={styles.actions}>{r.actions.map((a, i) => <li key={i}>{human(a.type)} · <span className="muted">{a.actor}</span> · {ago(a.at)}</li>)}</ul> : <div className="muted">No actions recorded.</div>}</div>
               {canAct && <div className={styles.actBtns}>
                 {(r.status === "candidate" || r.status === "open") && <button className="small" disabled={busy} onClick={() => act(r.id, "wl_acknowledge_operations_incident")}>Acknowledge</button>}

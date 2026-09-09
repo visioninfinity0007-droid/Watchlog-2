@@ -135,6 +135,36 @@ class OpsPrimitives(unittest.TestCase):
         self.assertEqual(1, len(ev))
         self.assertEqual(0.87, ev[0]["metadata"]["confidence"])
 
+    # ---- occupancy min/max thresholds (edge-triggered incident, not a count stream) ----
+    def test_occupancy_max_fires_on_edge_and_clears(self):
+        eng = configured(rule(id="om", rule_type="occupancy", occupancy_max=2))
+        t = datetime.now(timezone.utc)
+        # inside the zone: put 3 people well apart so they are 3 distinct tracks
+        three = [D("person", 300, 300), D("person", 500, 500), D("person", 700, 700)]
+        first = self.frame(eng, three, t)                                  # baseline sample -> 3 > 2
+        again = self.frame(eng, three, t + timedelta(seconds=1))           # unchanged -> no re-fire (edge)
+        self.assertEqual(["occupancy_above"], [e["event_type"] for e in first])
+        self.assertEqual(3, first[0]["metadata"]["count"])
+        self.assertEqual([], again)
+        # drop to 1 (in range): two confirming samples clear the violation, no event
+        one = [D("person", 300, 300)]
+        cleared = self.frame(eng, one, t + timedelta(seconds=2)) + self.frame(eng, one, t + timedelta(seconds=3))
+        self.assertEqual([], cleared)
+
+    def test_occupancy_min_fires_when_too_few(self):
+        eng = configured(rule(id="on", rule_type="occupancy", occupancy_min=2))
+        t = datetime.now(timezone.utc)
+        one = [D("person", 400, 400)]
+        ev = self.frame(eng, one, t)                                       # baseline: 1 < min 2
+        self.assertEqual(["occupancy_below"], [e["event_type"] for e in ev])
+
+    def test_occupancy_measurement_mode_without_thresholds(self):
+        # no min/max -> occupancy stays a measurement stream (event_type 'occupancy'), unchanged
+        eng = configured(rule(id="oc", rule_type="occupancy"))
+        t = datetime.now(timezone.utc)
+        ev = self.frame(eng, [D("person", 400, 400)], t)
+        self.assertEqual(["occupancy"], [e["event_type"] for e in ev])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

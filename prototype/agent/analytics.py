@@ -241,6 +241,7 @@ class AnalyticsEngine:
         self.state = {}      # (rule_id, track_id) -> rule-specific state
         self.occupancy = {}  # rule_id -> last emitted stable count
         self.occupancy_pending = {}  # rule_id -> {count, samples}
+        self.occupancy_violation = {}  # rule_id -> 'below'|'above'|None (edge-triggered threshold)
 
     def configure(self, config: dict | None):
         self.config = config or None
@@ -250,6 +251,7 @@ class AnalyticsEngine:
         self.state.clear()
         self.occupancy.clear()
         self.occupancy_pending.clear()
+        self.occupancy_violation.clear()
 
     def sample_plan(self):
         """List (channel, minimum sampling seconds) for enabled cameras."""
@@ -487,12 +489,31 @@ class AnalyticsEngine:
                     should_emit = pending["samples"] >= OCCUPANCY_CHANGE_CONFIRM_SAMPLES
 
                 if should_emit and self._schedule_allows(rule, when):
-                    synthetic = Track(
-                        f"{channel}:occupancy", "person", (0, 0), when, when)
-                    emitted.append(self._event(
-                        rule, channel, synthetic, "occupancy", when,
-                        metadata={"count": count}))
                     self.occupancy[rule_id] = count
                     self.occupancy_pending.pop(rule_id, None)
+                    occ_min = rule.get("occupancy_min")
+                    occ_max = rule.get("occupancy_max")
+                    synthetic = Track(
+                        f"{channel}:occupancy", "person", (0, 0), when, when)
+                    if occ_min is not None or occ_max is not None:
+                        # THRESHOLD mode: an occupancy min/max rule is an EXCEPTION primitive.
+                        # Fire only on the EDGE into a violation (too few / too many), not on
+                        # every confirmed count, so one sustained breach is one incident, and a
+                        # return to range clears it. Measurement-only occupancy (no min/max)
+                        # keeps its count-stream behaviour below.
+                        below = occ_min is not None and count < int(occ_min)
+                        above = occ_max is not None and count > int(occ_max)
+                        current = "below" if below else ("above" if above else None)
+                        previous = self.occupancy_violation.get(rule_id)
+                        self.occupancy_violation[rule_id] = current
+                        if current and current != previous:
+                            emitted.append(self._event(
+                                rule, channel, synthetic,
+                                "occupancy_below" if current == "below" else "occupancy_above",
+                                when, metadata={"count": count, "min": occ_min, "max": occ_max}))
+                    else:
+                        emitted.append(self._event(
+                            rule, channel, synthetic, "occupancy", when,
+                            metadata={"count": count}))
 
         return emitted

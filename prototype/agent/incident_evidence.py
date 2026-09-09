@@ -20,6 +20,8 @@ POLL_SECONDS = 15
 BACKEND_MISSING_RETRY_SECONDS = 300
 CHUNK_BYTES = 512 * 1024
 MAX_CLIP_BYTES = 32 * 1024 * 1024
+STILL_POLL_SECONDS = 15
+STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
 
 
 def _parse_time(value: str) -> datetime:
@@ -161,22 +163,114 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                         pass
 
 
+def _still_backend_missing(error: Exception) -> bool:
+    text = str(error).lower()
+    return "wl_agent_claim_incident_stills" in text and (
+        "schema cache" in text or "function" in text or "404" in text
+    )
+
+
+def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
+    """Fulfil SERVER-AUTHORIZED incident still-evidence tasks (migration 0058).
+
+    The server decides which incident/camera/timestamp needs a still and creates the task; this
+    worker only CLAIMS authorized work for its own site, captures ONE bounded JPEG from the local
+    recorder and uploads it with a sha256 for integrity. It never chooses the tenant/site/camera —
+    those come from the claimed task. Idle when 0058 is not deployed; truthful unsupported/failure.
+    """
+    cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
+    missing_backend_logged = False
+    while not stop.is_set():
+        try:
+            requests_list = cloud.call(
+                "wl_agent_claim_incident_stills",
+                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"], p_limit=2,
+            ) or []
+            missing_backend_logged = False
+        except (RuntimeError, requests.RequestException) as error:
+            if _still_backend_missing(error):
+                if not missing_backend_logged:
+                    core.log("incident stills: backend 0058 not deployed; worker idle")
+                    missing_backend_logged = True
+                stop.wait(BACKEND_MISSING_RETRY_SECONDS)
+            else:
+                core.log("incident stills: claim failed; will retry: "
+                         + str(error).splitlines()[0][:160])
+                stop.wait(STILL_POLL_SECONDS)
+            continue
+
+        if not requests_list:
+            stop.wait(STILL_POLL_SECONDS)
+            continue
+
+        for row in requests_list:
+            request_id = str(row.get("request_id") or "")
+            channel = str(row.get("channel") or "")
+            if not request_id or not channel:
+                continue
+            driver = None
+            try:
+                driver, info = core.open_driver(cfg)
+                raw = driver.get_snapshot(channel)
+                if not raw:
+                    cloud.call("wl_agent_fail_incident_still",
+                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                               p_request_id=request_id,
+                               p_reason="This recorder returned no still for the incident window.",
+                               p_unsupported=True)
+                    core.log(f"incident stills: {info.vendor} ch{channel} returned no image")
+                    continue
+                if len(raw) > STILL_MAX_BYTES:
+                    cloud.call("wl_agent_fail_incident_still",
+                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                               p_request_id=request_id,
+                               p_reason="Still exceeded the 3 MiB evidence limit.", p_unsupported=False)
+                    continue
+                digest = hashlib.sha256(raw).hexdigest()
+                cloud.call("wl_agent_upload_incident_still",
+                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                           p_request_id=request_id,
+                           p_image_b64=base64.b64encode(raw).decode("ascii"),
+                           p_content_type="image/jpeg", p_sha256=digest,
+                           p_captured_at=core.iso(core.now_utc()))
+                core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
+            except Exception as error:  # noqa: BLE001
+                reason = _safe_reason(error)
+                try:
+                    cloud.call("wl_agent_fail_incident_still",
+                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                               p_request_id=request_id, p_reason=reason,
+                               p_unsupported=isinstance(error, NotImplementedError))
+                except Exception:  # noqa: BLE001
+                    pass
+                core.log(f"incident stills: request {request_id[:8]} failed: "
+                         f"{type(error).__name__}: {str(error)[:140]}")
+            finally:
+                if driver is not None:
+                    try:
+                        driver.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+
 def wrap_cmd_run(original):
-    """Start footage retrieval beside the normal collector/analytics runtime."""
+    """Start the incident evidence workers (footage + stills) beside the normal runtime."""
     def wrapped(cfg, state, cloud, once, device=None):
         if once:
             return original(cfg, state, cloud, once, device)
         stop = threading.Event()
-        worker = threading.Thread(
-            target=footage_worker,
-            args=(cfg, state, stop),
-            daemon=True,
-            name="incident-footage",
-        )
-        worker.start()
+        workers = [
+            threading.Thread(target=footage_worker, args=(cfg, state, stop),
+                             daemon=True, name="incident-footage"),
+            threading.Thread(target=stills_worker, args=(cfg, state, stop),
+                             daemon=True, name="incident-stills"),
+        ]
+        for worker in workers:
+            worker.start()
         try:
             return original(cfg, state, cloud, once, device)
         finally:
             stop.set()
-            worker.join(timeout=5)
+            for worker in workers:
+                worker.join(timeout=5)
     return wrapped

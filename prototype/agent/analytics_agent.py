@@ -270,13 +270,13 @@ def analytics_worker(cfg: Config, state: dict, detector,
     # runtime, which dispatches configured evidence actions (idempotent + restart-safe) and
     # fences authoritative uploads behind the single-authority lease. Multi-agent stays OFF
     # unless the site opts in (the flag rides in the config payload, 0056), so by default the
-    # lease is trivially authoritative and behaviour is unchanged. Evidence transports for
-    # agent-initiated capture do not exist yet, so capture_still/request_footage report a
-    # truthful "unsupported" — the recorded-intent actions still apply.
+    # lease is trivially authoritative and behaviour is unchanged. Evidence (capture_still/
+    # request_footage) is SERVER-authorized when the incident is emitted and fulfilled by the
+    # evidence workers (incident_evidence.py); the frame-time runtime only acknowledges it.
     lease = LeaseClient(cloud, state["agent_id"], state["agent_key"],
                         feature_enabled=bool((cached.get("config") or {}).get("multi_agent_enabled")),
                         log=core.log)
-    actions = ActionRuntime(snapshot=None, upload_still=None, request_footage=None, log=core.log)
+    actions = ActionRuntime(log=core.log)
     runtime = AgentRuntime(cloud=cloud, state=state, engine=engine, lease=lease, actions=actions,
                            dedup_path=cfg.analytics_config_path.parent / "analytics_action_dedup.json",
                            log=core.log)

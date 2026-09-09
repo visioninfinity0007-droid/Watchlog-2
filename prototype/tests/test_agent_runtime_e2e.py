@@ -126,11 +126,13 @@ EXC_RULE = {"id": "r1", "camera_id": "cam-1", "channel": "1", "rule_type": "zone
 
 class RuntimeE2E(unittest.TestCase):
     def _actions(self):
-        self.stills = []
-        self.footage = []
-        return ActionRuntime(snapshot=lambda ch: b"jpeg-bytes",
-                             upload_still=lambda cam, b64: self.stills.append(cam) or "still-ref",
-                             request_footage=lambda inc: self.footage.append(inc) or {"status": "pending", "request_id": "f1"})
+        # Evidence is server-authorized; the runtime only ACKNOWLEDGES it at frame time. We spy on
+        # dispatch CALLS (guarded by the runtime's idempotency + cooldown) rather than any capture.
+        self.dispatched = []
+        rt = ActionRuntime(log=lambda _m: None)
+        original = rt.run
+        rt.run = lambda actions, **kw: (self.dispatched.append(kw.get("incident")), original(actions, **kw))[1]
+        return rt
 
     def test_pipeline_frame_to_event_to_action_and_idempotent(self):
         clockbox = {"t": 1000.0}
@@ -147,13 +149,11 @@ class RuntimeE2E(unittest.TestCase):
             self.assertEqual(1, len(evs))
             self.assertEqual("zone_entry", evs[0]["event_type"])
             self.assertEqual(0.9, evs[0]["metadata"]["confidence"])          # confidence carried
-            self.assertEqual(["cam-1"], self.stills)                          # still captured
-            self.assertEqual(1, len(self.footage))                           # bounded footage requested once
+            self.assertEqual(1, len(self.dispatched))                        # actions dispatched once
             # a SECOND entry of the same condition within cooldown must NOT re-dispatch actions
             rt.on_frame("1", [D("person", 150, 500)], (1000, 1000), t0 + timedelta(seconds=2))   # exits
             rt.on_frame("1", [D("person", 300, 500)], (1000, 1000), t0 + timedelta(seconds=3))   # re-enters (fires event)
-            self.assertEqual(["cam-1"], self.stills)                          # still just one still
-            self.assertEqual(1, len(self.footage))                           # still just one footage request
+            self.assertEqual(1, len(self.dispatched))                        # idempotent within cooldown
 
     def test_action_dispatch_restart_safe(self):
         clockbox = {"t": 2000.0}
@@ -165,13 +165,13 @@ class RuntimeE2E(unittest.TestCase):
             t = datetime.now(timezone.utc)
             rt.on_frame("1", [D("person", 150, 500)], (1000, 1000), t)
             rt.on_frame("1", [D("person", 300, 500)], (1000, 1000), t + timedelta(seconds=1))
-            self.assertEqual(1, len(self.footage))
-            # RESTART: fresh runtime + engine, SAME dedup file, within cooldown -> no re-request
+            self.assertEqual(1, len(self.dispatched))
+            # RESTART: fresh runtime + engine, SAME dedup file, within cooldown -> no re-dispatch
             rt2 = AgentRuntime(cloud=FakeCloud(), state=STATE, engine=engine_with(EXC_RULE),
                                actions=self._actions(), dedup_path=dedup, clock=lambda: clockbox["t"] + 10)
             rt2.on_frame("1", [D("person", 150, 500)], (1000, 1000), t + timedelta(seconds=5))
             rt2.on_frame("1", [D("person", 300, 500)], (1000, 1000), t + timedelta(seconds=6))
-            self.assertEqual(0, len(self.footage))     # rt2's footage list — not re-requested after restart
+            self.assertEqual(0, len(self.dispatched))  # rt2's spy — not re-dispatched after restart
 
     def test_lease_fencing_suppresses_authoritative_writes(self):
         srv = FakeLeaseServer()
@@ -247,12 +247,12 @@ class RuntimeE2E(unittest.TestCase):
             # recorder outage: empty frames -> no events, no actions, no exception, no fabrication
             self.assertEqual([], rt.on_frame("1", [], (1000, 1000), t))
             self.assertEqual([], rt.on_frame("1", [], (1000, 1000), t + timedelta(seconds=1)))
-            self.assertEqual([], self.footage)
+            self.assertEqual([], self.dispatched)
             # recorder recovers: a real entry fires and dispatches evidence exactly once
             rt.on_frame("1", [D("person", 150, 500)], (1000, 1000), t + timedelta(seconds=2))   # outside
             evs = rt.on_frame("1", [D("person", 300, 500)], (1000, 1000), t + timedelta(seconds=3))  # enters
             self.assertEqual(1, len(evs))
-            self.assertEqual(1, len(self.footage))
+            self.assertEqual(1, len(self.dispatched))
 
     def test_cloud_loss_keeps_events_spooled(self):
         rt = AgentRuntime(cloud=FakeCloud(fail_ingest=True), state=STATE, engine=engine_with())
