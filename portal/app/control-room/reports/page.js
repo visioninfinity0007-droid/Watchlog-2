@@ -38,7 +38,7 @@ function human(value) {
 
 function activityPill(state) {
   const cls = state === "active" ? "s-ok" : state === "silent" ? "s-warn" : "s-unk";
-  const label = state === "active" ? "recent activity" : state === "silent" ? "quiet 24h+" : state === "never" ? "not seen" : "unknown";
+  const label = state === "active" ? "recent activity" : state === "silent" ? "quiet 24h+" : state === "never" ? "not seen" : "not verified";
   return <span className={`pill ${cls}`}>{label}</span>;
 }
 
@@ -140,11 +140,11 @@ export default function ControlRoomReports() {
   const scopeCopy = selectedCamera
     ? "Camera-wise analytics signals and current camera health. Directional or occupancy totals are shown only when they can be supported by the scoped aggregate."
     : selectedSite
-      ? "Site-level operational health and configured analytics for one branch."
+      ? "Site-level operational health and configured analytics for one site."
       : "A multi-site view of operational health and configured analytics across the account.";
 
   return <div className="shell">
-    <Nav active="Control Room" email={email} right={<span className="pill s-warn hide-sm">Pilot report</span>} />
+    <Nav active="Control Room" email={email} />
     <main className="main">
       <header className={ui.pageHead}>
         <div>
@@ -167,7 +167,7 @@ export default function ControlRoomReports() {
           <label><span className="muted" style={{ display: "block", fontSize: 11, marginBottom: 6 }}>CAMERA</span><select value={cameraId} onChange={(event) => setCameraId(event.target.value)}><option value="">All cameras in scope</option>{availableCameras.map((camera) => <option key={camera.id} value={camera.id}>{camera.siteName ? `${camera.siteName} · ` : ""}{camera.name || `Camera ${camera.channel}`}</option>)}</select></label>
           <button className="secondary" onClick={load}>Refresh</button>
         </div>
-        <div className="muted" style={{ fontSize: 11, marginTop: 10 }}>Generated from WatchLog tenant data · refreshed {stamp || "when data loads"}. This is an operational pilot report, not a certified safety or transaction record.</div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 10 }}>Generated from your WatchLog data · refreshed {stamp || "when data loads"}. This is an operational report, not a certified safety or transaction record.</div>
       </section>
 
       {!overview || !analytics ? <div className="panel"><div className="empty">Loading report...</div></div> : <>
@@ -179,14 +179,14 @@ export default function ControlRoomReports() {
         </section>
 
         {!selectedCamera && <>
-          <div className={ui.sectionHead}><div><h2>QSR analytics summary</h2><p>Semantic totals from configured analytics for this scope and time window.</p></div></div>
-          <section className={ui.metricGrid} aria-label="QSR analytics summary">
+          <div className={ui.sectionHead}><div><h2>Activity summary</h2><p>Totals from your configured analytics for this scope and time window.</p></div></div>
+          <section className={ui.metricGrid} aria-label="Activity summary">
             <div className={ui.metric}><div className={ui.metricValue}>{number(summary.visitor_in)}</div><div className={ui.metricLabel}>Visitor entries</div></div>
             <div className={ui.metric}><div className={ui.metricValue}>{number(summary.visitor_out)}</div><div className={ui.metricLabel}>Visitor exits</div></div>
-            <div className={ui.metric}><div className={ui.metricValue}>{number(summary.checkout_peak)}</div><div className={ui.metricLabel}>Checkout-zone peak</div></div>
+            <div className={ui.metric}><div className={ui.metricValue}>{number(summary.checkout_peak)}</div><div className={ui.metricLabel}>Area occupancy peak</div></div>
             <div className={ui.metric}><div className={ui.metricValue}>{number(summary.after_hours)}</div><div className={ui.metricLabel}>After-hours signals</div></div>
           </section>
-          <div className={ui.callout}><span className={ui.statusDot}/><div><strong>Checkout-zone values are people presence, not sales.</strong><p>WatchLog does not infer completed transactions, till totals or POS reconciliation from CCTV alone.</p></div></div>
+          <div className={ui.callout}><span className={ui.statusDot}/><div><strong>Occupancy values are people presence, not sales.</strong><p>WatchLog does not infer completed transactions or point-of-sale totals from CCTV alone.</p></div></div>
         </>}
 
         <div className={ui.sectionHead}><div><h2>{selectedSite ? "Site operations" : "Site comparison"}</h2><p>Current site connection/camera health alongside analytics activity in the selected report window.</p></div></div>

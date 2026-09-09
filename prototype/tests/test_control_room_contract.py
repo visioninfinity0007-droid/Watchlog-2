@@ -13,14 +13,20 @@ def require(text, needle, message):
 
 
 def main():
-    # Product boundary: Control Room remains operational intelligence, not an
-    # unvalidated cloud video product.
-    require(PAGE, "Control Room Pilot", "pilot label missing")
-    require(PAGE, "does not provide a live video wall", "live-video boundary missing")
-    require(PAGE, "Exact transactions and till reconciliation are not inferred from CCTV alone.", "checkout truth boundary missing")
+    # Product boundary: Control Room reads as a finished product (no pilot / QSR /
+    # developer framing) but the SECURITY boundary is unchanged — operational
+    # awareness over tenant-safe data, never an unvalidated cloud-video product.
+    require(PAGE, "See what needs attention across every site.", "Control Room product heading missing")
+    require(PAGE, "not a live video wall", "live-video boundary missing")
+    require(PAGE, "continuous cloud video", "continuous-video boundary missing")
+    require(PAGE, "people presence, not sales", "analytics-not-sales truth missing")
     require(PAGE, "Tiles are not live video.", "layout still/video distinction missing")
     require(PAGE, "Still image is shown only after an explicit request.", "explicit still-request semantics missing")
-    require(PAGE, "must not be interpreted as continuous or live video", "continuous-video disclaimer missing")
+    require(PAGE, "requested still images, not live video", "camera-tile still-only disclaimer missing")
+    # Engineering / pilot / vertical framing must not return to customer copy.
+    for banned in ("Control Room Pilot", "Pilot boundary", "pilot scope", "QSR", "surveillance wall"):
+        if banned in PAGE:
+            raise AssertionError(f"engineering/pilot framing returned to Control Room: {banned}")
     for unsafe in ("rtsp://", "<video", "autoplay"):
         if unsafe.lower() in PAGE.lower():
             raise AssertionError(f"unvalidated live-video mechanism present: {unsafe}")

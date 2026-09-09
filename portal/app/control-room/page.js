@@ -15,11 +15,11 @@ const GOAL_LABEL = {
   checkout_activity: "Checkout Activity",
   after_hours: "After-Hours Activity",
 };
-const QSR_CAMERA_ROLES = [
+const COMMON_CAMERA_ROLES = [
   "Entrance / exit",
-  "Queue / order area",
-  "Checkout / collection area",
-  "Kitchen / service boundary",
+  "Queue / service area",
+  "Collection / handoff area",
+  "Restricted / service boundary",
   "Loading / service entrance",
   "Parking / perimeter",
 ];
@@ -441,19 +441,18 @@ export default function ControlRoom() {
   const totalCameras = data?.totals?.cameras || 0;
   const eventCount = selectedSite === "all" ? (data?.totals?.events || 0) : model.recent.length;
   const currentSites = selectedSite === "all" ? (data?.totals?.sites || model.sites.length) : 1;
-  const qsr = analyticsModel.summary;
+  const activity = analyticsModel.summary;
 
   return <div className="shell">
-    <Nav active="Control Room" email={email} right={<>
-      <span className="pill s-warn hide-sm">Pilot</span>
+    <Nav active="Control Room" email={email} right={
       <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{stamp ? `updated ${stamp}` : ""}</span>
-    </>} />
+    } />
     <main className="main">
       <header className={ui.pageHead}>
         <div>
-          <div className={ui.eyebrow}>Control Room Pilot</div>
-          <h1>Run the day across every branch from one operational view.</h1>
-          <p>Prioritize site connectivity, camera health, recent events and configured analytics. This pilot does not provide a live video wall or continuous cloud video.</p>
+          <div className={ui.eyebrow}>Control Room</div>
+          <h1>See what needs attention across every site.</h1>
+          <p>Bring site connectivity, camera health, recent activity and analytics into one working view. Recorded video stays on your recorder, while WatchLog surfaces the signals and evidence your team needs to act.</p>
         </div>
         <div className={ui.headActions}>
           <select value={selectedSite} onChange={(event) => setSelectedSite(event.target.value)} aria-label="Filter Control Room by site">
@@ -467,7 +466,7 @@ export default function ControlRoom() {
       {error && <div className="err">{error}</div>}
       {analyticsError && <div className="banner"><b>Analytics could not refresh.</b><div className="muted" style={{ fontSize: "var(--font-size-sm)", marginTop: 4 }}>{analyticsError}</div></div>}
 
-      <div className={ui.callout}><span className={ui.statusDot} /><div><strong>QSR operating lens</strong><p>Use the same branch cameras for people flow, configured queue and checkout-zone activity, after-hours movement, site health and scheduled reporting. Exact transactions and till reconciliation are not inferred from CCTV alone.</p></div></div>
+      <div className={ui.callout}><span className={ui.statusDot} /><div><div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 4 }}>One operational view</div><strong>Health, activity and follow-up in one place.</strong><p>Control Room brings together site health, camera events and analytics. Recorded video stays on your recorder. Requested still images and available incident evidence appear alongside the operational status of each site.</p></div></div>
 
       <section className={ui.metricGrid} aria-label="Control Room summary">
         <div className={ui.metric}><div className={ui.metricValue}>{currentSites}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Sites in view" : "Selected site"}</div></div>
@@ -477,7 +476,7 @@ export default function ControlRoom() {
       </section>
 
       <div className={ui.sectionHead}><div><h2>Saved camera layouts</h2><p>Arrange requested camera stills into 2×2, 3×3 or 4×4 operating views. Tiles are not live video.</p></div><div className={ui.inlineActions}><button className="secondary" onClick={newLayout}>New layout</button><button className="secondary" onClick={toggleFullscreen}>{isFullscreen ? "Exit fullscreen" : "Fullscreen operations"}</button></div></div>
-      {!layoutsAvailable ? <div className={ui.callout}><span className={ui.statusDot}/><div><strong>Saved layouts are finishing deployment.</strong><p>The Control Room operational view is available, but saved camera layouts need the matching backend update before they can be used.</p></div></div> : <>
+      {!layoutsAvailable ? <div className={ui.callout}><span className={ui.statusDot}/><div><strong>Saved layouts are temporarily unavailable.</strong><p>You can continue using the rest of Control Room.</p></div></div> : <>
         {layoutError && <div className="err">{layoutError}</div>}
         {layoutNote && <div className="ok-note">{layoutNote}</div>}
         <section className={ui.card} style={{ marginBottom: 18 }}>
@@ -512,34 +511,34 @@ export default function ControlRoom() {
             })}
           </div>
         </section>
-        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Camera tiles use previously requested or explicitly refreshed still images. They must not be interpreted as continuous or live video.</div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Camera tiles show requested still images, not live video. The capture time on each tile shows how recent the image is.</div>
       </>}
 
-      <div className={ui.sectionHead}><div><h2>QSR camera roles</h2><p>Use these roles when planning a branch layout, then set each real camera purpose in Analytics Setup.</p></div><a className={ui.secondaryLink} href="/analytics/studio/">Open Analytics Setup</a></div>
-      <section className={ui.card}><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{QSR_CAMERA_ROLES.map((role) => <span key={role} className="pill s-unk">{role}</span>)}</div></section>
+      <div className={ui.sectionHead}><div><h2>Common camera purposes</h2><p>Use these as a guide when planning a site layout, then set each camera&apos;s purpose in Analytics Setup.</p></div><a className={ui.secondaryLink} href="/analytics/studio/">Open Analytics Setup</a></div>
+      <section className={ui.card}><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{COMMON_CAMERA_ROLES.map((role) => <span key={role} className="pill s-unk">{role}</span>)}</div></section>
 
-      <div className={ui.sectionHead}><div><h2>QSR activity</h2><p>Configured analytics only, measured over the last 24 hours. Checkout-zone values describe people presence, not sales.</p></div><a className={ui.secondaryLink} href="/analytics/">Open Analytics</a></div>
-      {analyticsModel.configuredRules === 0 ? <div className={ui.emptyCard}>No analytics setup is configured in this view yet. Add entrance, queue, checkout-zone or after-hours rules in Analytics Setup before using these numbers operationally.</div> : <>
-        <section className={ui.metricGrid} aria-label="QSR analytics summary">
-          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.visitor_in)}</div><div className={ui.metricLabel}>Visitor entries</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.checkout_peak)}</div><div className={ui.metricLabel}>Checkout-zone peak</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.zone_entries)}</div><div className={ui.metricLabel}>Zone entries</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{number(qsr.after_hours)}</div><div className={ui.metricLabel}>After-hours signals</div></div>
+      <div className={ui.sectionHead}><div><h2>Activity analytics</h2><p>From your configured analytics, measured over the last 24 hours. Occupancy values describe people presence, not sales.</p></div><a className={ui.secondaryLink} href="/analytics/">Open Analytics</a></div>
+      {analyticsModel.configuredRules === 0 ? <div className={ui.emptyCard}>No analytics are set up in this view yet. Add entrance, queue, occupancy or after-hours rules in Analytics Setup before using these numbers operationally.</div> : <>
+        <section className={ui.metricGrid} aria-label="Activity analytics summary">
+          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.visitor_in)}</div><div className={ui.metricLabel}>Visitor entries</div></div>
+          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.checkout_peak)}</div><div className={ui.metricLabel}>Area occupancy peak</div></div>
+          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.zone_entries)}</div><div className={ui.metricLabel}>Zone entries</div></div>
+          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.after_hours)}</div><div className={ui.metricLabel}>After-hours signals</div></div>
         </section>
-        <div className={ui.sectionHead}><div><h2>Most active analytics</h2><p>Which configured branch measurements produced the most activity in this view.</p></div></div>
+        <div className={ui.sectionHead}><div><h2>Most active analytics</h2><p>Which configured measurements produced the most activity in this view.</p></div></div>
         <section className={ui.card}>{analyticsModel.active.length === 0 ? <div className={ui.emptyCard}>Analytics is configured, but no measurement activity has been received in the last 24 hours.</div> : <div className={ui.splitList}>{analyticsModel.active.slice(0, 6).map((item) => <div className={ui.listRow} key={item.rule_id}><span className="pill s-ok">{number(item.count)}</span><div><strong>{item.name || GOAL_LABEL[item.analytic_key] || humanType(item.rule_type)}</strong><small>{[item.site, item.camera, GOAL_LABEL[item.analytic_key]].filter(Boolean).join(" · ")}</small></div></div>)}</div>}</section>
       </>}
 
       <div className={ui.sectionHead}><div><h2>Operational queue</h2><p>Connection and camera-system issues that should be checked first.</p></div><a className={ui.secondaryLink} href="/site-health/">Open Site Health</a></div>
       <section className={ui.twoCol}>
         <div className={ui.card}>{model.queue.length === 0 ? <div className={ui.emptyCard}>No current connection, quiet-camera or camera-system items need attention in this view.</div> : <div className={ui.splitList}>{model.queue.map((item) => <a key={item.key} className={ui.listRow} href={item.href} style={{ color: "inherit", textDecoration: "none" }}><span className={`pill ${item.severity === "critical" ? "s-bad" : "s-warn"}`}>{item.severity === "critical" ? "Act now" : "Check"}</span><div><strong>{item.title}</strong><small>{item.detail}{item.when ? ` · ${ago(item.when)}` : ""}</small></div></a>)}</div>}</div>
-        <div className={ui.featureCard}><div className={ui.eyebrow}>Pilot boundary</div><h3>Operational awareness, not a surveillance wall.</h3><p>The current Control Room combines tenant-safe health, event and analytics data already used elsewhere in WatchLog. Recorded video remains on the recorder. Multi-camera live viewing and recorder clip retrieval require separate field validation before they can move out of pilot scope.</p><div className={ui.inlineActions}><a className={ui.secondaryLink} href="/analytics/">Analytics</a><a className={ui.primaryLink} href="/incidents/">Review incidents</a></div></div>
+        <div className={ui.featureCard}><div className={ui.eyebrow}>What Control Room shows</div><h3>Operational awareness across every site.</h3><p>Control Room brings together the site health, event and analytics information WatchLog already tracks. Recorded video stays on your recorder — Control Room shows requested still images and available incident evidence, not a live video wall or continuous cloud video.</p><div className={ui.inlineActions}><a className={ui.secondaryLink} href="/analytics/">Analytics</a><a className={ui.primaryLink} href="/incidents/">Review incidents</a></div></div>
       </section>
 
-      <div className={ui.sectionHead}><div><h2>Branch status</h2><p>Compare site connectivity and recent attention signals without leaving the Control Room.</p></div></div>
+      <div className={ui.sectionHead}><div><h2>Site status</h2><p>Compare site connectivity and recent attention signals without leaving the Control Room.</p></div></div>
       <section className={ui.card}><div className={ui.tableWrap}>{model.siteRows.length === 0 ? <div className={ui.emptyCard}>No connected sites yet.</div> : <table><thead><tr><th>Site</th><th>Connections</th><th>Online</th><th>Quiet cameras</th><th>Faults 24h</th><th>Recent events</th></tr></thead><tbody>{model.siteRows.map((row) => { const healthy = row.connections > 0 && row.online === row.connections && row.silent === 0 && row.faults === 0; return <tr key={row.site}><td><button className="ghost small" style={{ width: "auto", margin: 0, padding: 0, color: "inherit" }} onClick={() => setSelectedSite(row.site)}><b>{row.site}</b></button></td><td className="mono">{row.connections}</td><td><span className={`pill ${healthy ? "s-ok" : row.online ? "s-warn" : "s-bad"}`}>{row.online} / {row.connections}</span></td><td className="mono">{row.silent}</td><td className="mono">{row.faults}</td><td className="mono">{row.recentCount}</td></tr>; })}</tbody></table>}</div></section>
 
-      <div className={ui.sectionHead}><div><h2>Recent activity</h2><p>Latest tenant events in the current site view, with approved incident stills where available.</p></div><a className={ui.secondaryLink} href="/incidents/">View all incidents</a></div>
+      <div className={ui.sectionHead}><div><h2>Recent activity</h2><p>Latest events in the current site view, with incident stills where available.</p></div><a className={ui.secondaryLink} href="/incidents/">View all incidents</a></div>
       <section className={ui.card}>{model.recent.length === 0 ? <div className={ui.emptyCard}>No recent events are available for this site filter yet.</div> : <div className={ui.splitList}>{model.recent.slice(0, 12).map((event, index) => { const shot = event.event_id ? shots[event.event_id] : undefined; return <a className={ui.listRow} href="/incidents/" key={event.event_id || `${event.device_ts}-${index}`} style={{ color: "inherit", textDecoration: "none" }}>{event.has_snapshot ? shot ? <img src={shot} alt={`still from ${event.camera || "camera"}`} style={{ width: 82, height: 52, objectFit: "cover", borderRadius: 8, border: "1px solid var(--color-line-dark)", flex: "none" }} /> : <span style={{ width: 82, height: 52, borderRadius: 8, border: "1px solid var(--color-line-dark)", display: "grid", placeItems: "center", flex: "none" }} className="muted">{shot === false ? "no image" : "loading"}</span> : <span className="pill s-ok">Event</span>}<div><strong>{humanType(event.event_type)}</strong><small>{[eventSite(event), event.camera].filter(Boolean).join(" · ") || "Camera event"}{event.device_ts ? ` · ${ago(event.device_ts)}` : ""}</small></div></a>; })}</div>}</section>
     </main>
   </div>;

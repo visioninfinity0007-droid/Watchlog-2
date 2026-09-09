@@ -79,7 +79,7 @@ export default function Operations() {
   }
   async function downloadClip(clip, incidentId) {
     if (!clip?.request_id || clip.status !== "ready") return;
-    setEvBusy("clip:" + clip.request_id); setEvNote("Preparing the bounded footage download…");
+    setEvBusy("clip:" + clip.request_id); setEvNote("Preparing footage…");
     try {
       const parts = [];
       for (let seq = 0; seq < Number(clip.chunks || 0); seq += 1) {
@@ -94,7 +94,7 @@ export default function Operations() {
       const url = URL.createObjectURL(blob); const a = document.createElement("a");
       a.href = url; a.download = `WatchLog-incident-${incidentId}.${clip.file_extension || "dav"}`;
       document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setEvNote(`Downloaded ${kb(blob.size)} after size + SHA-256 verification. The temporary cloud copy expires automatically.`);
+      setEvNote("Download verified. The temporary copy expires automatically.");
     } catch (e) { setEvNote(say(e)); } finally { setEvBusy(""); }
   }
 
@@ -113,7 +113,7 @@ export default function Operations() {
   const reviewCount = rows.filter((r) => r.review_required && r.status !== "resolved" && r.status !== "dismissed").length;
 
   return <div className="shell"><Nav active="Operations" email={email} /><main className="main">
-    <header className="target-page-head"><div><div className="target-eyebrow">Operations Intelligence</div><h1>Exceptions that need a human decision.</h1><p>Your configured operating rules turn camera activity into reviewable incidents — each traceable to the exact rule version, with evidence and provenance. Sensitive classifications are always candidates for human review, never automatic conclusions.</p></div></header>
+    <header className="target-page-head"><div><div className="target-eyebrow">Operations</div><h1>Review operational exceptions that need attention.</h1><p>WatchLog turns your configured operating rules into reviewable incidents, showing the camera, time and available evidence. Sensitive or uncertain results always require a person to review them.</p></div></header>
     {error && <div className="err">{error}</div>}
 
     <section className={styles.metrics} aria-label="Operations summary">
@@ -132,7 +132,7 @@ export default function Operations() {
     </div>
 
     <div className="panel"><div className={styles.tableWrap}>
-      {filtered.length ? <table><thead><tr><th>When</th><th>Site</th><th>Type</th><th>Camera</th><th>Rule (version)</th><th>Severity</th><th>State</th><th>Review</th><th /></tr></thead>
+      {filtered.length ? <table><thead><tr><th>When</th><th>Site</th><th>Type</th><th>Camera</th><th>Rule</th><th>Severity</th><th>State</th><th>Review</th><th /></tr></thead>
         <tbody>{filtered.map((r) => {
           const rule = ruleMap[r.rule_id]; const cam = camMap[r.camera_id]; const open = expanded === r.id;
           const canAct = r.status === "candidate" || r.status === "open" || r.status === "acknowledged";
@@ -142,7 +142,7 @@ export default function Operations() {
               <td>{r.siteName}</td>
               <td>{human(r.incident_type)}</td>
               <td>{cam ? (cam.name || "ch " + cam.channel) : "—"}</td>
-              <td>{rule ? rule.name : <span className="mono">{String(r.rule_id || "").slice(0, 8)}</span>} {pill("s-unk", "v" + r.rule_version)}</td>
+              <td>{rule ? rule.name : <span className="mono">{String(r.rule_id || "").slice(0, 8)}</span>}</td>
               <td>{pill(SEV_CLS[r.severity] || "s-unk", r.severity)}</td>
               <td>{pill(STATE_CLS[r.status] || "s-unk", r.status)}</td>
               <td>{r.review_required ? pill("s-warn", "review") : ""} {r.sensitive ? pill("s-unk", "sensitive") : ""}</td>
@@ -150,7 +150,7 @@ export default function Operations() {
             </tr>
             {open && <tr className={styles.detailRow}><td colSpan={9}><div className={styles.detail}>
               <div className={styles.detailGrid}>
-                <div><span className="muted">Provenance</span><div>Rule <strong>{rule ? rule.name : (r.rule_id || "—")}</strong> · version {r.rule_version}</div></div>
+                <div><span className="muted">Source</span><div>Rule <strong>{rule ? rule.name : (r.rule_id || "—")}</strong></div></div>
                 <div><span className="muted">Occurred</span><div>{r.occurred_at ? new Date(r.occurred_at).toLocaleString() : "—"}</div></div>
                 <div><span className="muted">Object</span><div>{human(r.object_class)}</div></div>
                 <div><span className="muted">Review</span><div>{r.review_required ? "Human review required" : "Not required"}{r.sensitive ? " · sensitive classification (assistive only)" : ""}</div></div>
@@ -159,20 +159,18 @@ export default function Operations() {
                 const ev = evidence[r.id];
                 if (!ev) return <div className="muted">Loading evidence…</div>;
                 const stills = ev.stills || [], clips = ev.clips || [];
-                if (!stills.length && !clips.length) return <div className="muted">No evidence action was configured for this rule. (Evidence is bounded, on-demand and captured only for rules that request it.)</div>;
+                if (!stills.length && !clips.length) return <div className="muted">No image or footage was requested for this incident.</div>;
                 return <div className={styles.evidence}>
                   {stills.map((s) => <div key={s.id} className={styles.evItem}>
                     <div>{pill(EV_CLS[s.status] || "s-unk", "still · " + s.status)}<span className="muted"> {s.purpose ? human(s.purpose) + " · " : ""}{camMap[s.camera_id] ? (camMap[s.camera_id].name || "ch " + camMap[s.camera_id].channel) : ""}{s.captured_at ? " · captured " + new Date(s.captured_at).toLocaleString() : ""}{s.byte_size ? " · " + kb(s.byte_size) : ""}</span>
                       {s.status === "ready" && s.has_image && <button className="ghost small" disabled={!!evBusy} onClick={() => viewStill(s.id)}>{stillImg[s.id] ? "Refresh still" : "View still"}</button>}
                       {s.status !== "ready" && s.error && <span className="muted"> · {s.error}</span>}</div>
-                    {s.status === "ready" && s.sha256 && <div className="mono muted" style={{ fontSize: 11 }}>sha256 {s.sha256.slice(0, 20)}… · {s.provenance}</div>}
                     {stillImg[s.id]?.image_b64 && <img className={styles.stillImg} alt="Incident still" src={`data:${stillImg[s.id].content_type || "image/jpeg"};base64,${stillImg[s.id].image_b64}`} />}
                   </div>)}
                   {clips.map((c) => <div key={c.request_id} className={styles.evItem}>
                     <div>{pill(EV_CLS[c.status] || "s-unk", "footage · " + c.status)}<span className="muted"> {c.start_at ? new Date(c.start_at).toLocaleTimeString() : ""}–{c.end_at ? new Date(c.end_at).toLocaleTimeString() : ""}{c.bytes ? " · " + kb(c.bytes) : ""}</span>
                       {c.status === "ready" && <button className="ghost small" disabled={!!evBusy} onClick={() => downloadClip(c, r.id)}>{evBusy === "clip:" + c.request_id ? "Preparing…" : "Download footage"}</button>}
                       {c.status !== "ready" && c.error && <span className="muted"> · {c.error}</span>}</div>
-                    {c.status === "ready" && c.sha256 && <div className="mono muted" style={{ fontSize: 11 }}>sha256 {c.sha256.slice(0, 20)}… · bounded on-demand clip</div>}
                   </div>)}
                   {evNote && <div className="muted" style={{ fontSize: 12 }}>{evNote}</div>}
                 </div>;
@@ -186,7 +184,7 @@ export default function Operations() {
             </div></td></tr>}
           </Fragment>;
         })}</tbody></table>
-        : <div className="empty">{rows.length ? "No incidents match these filters." : "No operations incidents yet. This view fills as your configured rules fire — the live rule engine that produces them requires a future WatchLog agent release."}</div>}
+        : <div className="empty">{rows.length ? "No incidents match these filters." : "No operational incidents yet. When an active rule detects something that needs attention, it will appear here."}</div>}
     </div></div>
   </main></div>;
 }

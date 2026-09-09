@@ -60,7 +60,7 @@ export default function Executive() {
       {/* Completeness — first-class, honest */}
       <section className={styles.coverage + " " + styles["cov_" + covClass.replace("s-", "")]}>
         <div><div className={styles.covLabel}>Monitoring coverage</div>
-          <div className={styles.covValue}>{c.coverage_pct === null || c.coverage_pct === undefined ? "UNKNOWN" : c.coverage_pct + "%"}</div>
+          <div className={styles.covValue}>{c.coverage_pct === null || c.coverage_pct === undefined ? "Not verified" : c.coverage_pct + "%"}</div>
           <div className="muted" style={{ fontSize: "var(--font-size-sm)" }}>{c.note}</div></div>
         <div className={styles.covSplit}>
           <div><span className="muted">Monitored</span><b>{hrs(c.monitored_seconds)}</b></div>
@@ -72,28 +72,28 @@ export default function Executive() {
       {/* Reliability */}
       <div className={styles.sectionHead}><h2>Reliability</h2><p>Availability measured over monitored time.</p></div>
       <section className={styles.tiles}>
-        <div className={styles.tile}><div className={styles.tLabel}>Cameras</div><div className={styles.tVal}>{rel.cameras.total - rel.cameras.offline_now - rel.cameras.unknown_now}/{rel.cameras.total}</div><div className={styles.tHint}>{rel.cameras.offline_now} offline · {rel.cameras.unknown_now} unknown</div></div>
+        <div className={styles.tile}><div className={styles.tLabel}>Cameras</div><div className={styles.tVal}>{rel.cameras.total - rel.cameras.offline_now - rel.cameras.unknown_now}/{rel.cameras.total}</div><div className={styles.tHint}>{rel.cameras.offline_now} offline · {rel.cameras.unknown_now} not verified</div></div>
         <div className={styles.tile}><div className={styles.tLabel}>Camera faults opened</div><div className={styles.tVal}>{rel.cameras.offline_faults_opened}</div><div className={styles.tHint}>in this period</div></div>
-        <div className={styles.tile}><div className={styles.tLabel}>Agent unreachable</div><div className={styles.tVal}>{hrs(rel.agent_unreachable.seconds)}</div><div className={styles.tHint}>{rel.agent_unreachable.intervals} interval(s)</div></div>
+        <div className={styles.tile}><div className={styles.tLabel}>Site connection unavailable</div><div className={styles.tVal}>{hrs(rel.agent_unreachable.seconds)}</div><div className={styles.tHint}>{rel.agent_unreachable.intervals} interval(s)</div></div>
         <div className={styles.tile}><div className={styles.tLabel}>Unverified</div><div className={styles.tVal}>{hrs(rel.unverified.seconds)}</div><div className={styles.tHint}>{rel.unverified.intervals} interval(s) — excluded from availability</div></div>
       </section>
       <div className="panel"><div className={styles.tableWrap}>
         {rel.recorders.length ? <table><thead><tr><th>Recorder</th><th>Reachable</th><th>Credentials</th><th>Recording</th><th>Storage</th></tr></thead>
-          <tbody>{rel.recorders.map((r) => <tr key={r.agent_id}><td className="mono">{String(r.agent_id || "").slice(0, 8)}</td><td>{reachPill(r.reachable, "reachable", "unreachable")}</td><td>{reachPill(r.auth_ok, "authenticated", "auth failed")}</td><td>{statePill(RECORD_MAP, r.recording_state)}</td><td>{statePill(STORAGE_MAP, r.storage_state)}</td></tr>)}</tbody></table>
+          <tbody>{rel.recorders.map((r) => <tr key={r.agent_id}><td>Camera system</td><td>{reachPill(r.reachable, "reachable", "unreachable")}</td><td>{reachPill(r.auth_ok, "authenticated", "auth failed")}</td><td>{statePill(RECORD_MAP, r.recording_state)}</td><td>{statePill(STORAGE_MAP, r.storage_state)}</td></tr>)}</tbody></table>
           : <div className="empty">No recorder health recorded for this site yet.</div>}
       </div></div>
 
       {/* Security */}
-      <div className={styles.sectionHead}><h2>Security</h2><p>Incidents, native recorder events and evidence availability.</p></div>
+      <div className={styles.sectionHead}><h2>Security</h2><p>Incidents, recorder events and evidence availability.</p></div>
       <section className={styles.twoCol}>
         <div className="panel"><div className={styles.pTitle}>Operations incidents</div>
           <div className={styles.big}>{sec.incidents.total}<small>{sec.incidents.review_required} awaiting review</small></div>
           <div className={styles.kv}><span className="muted">By severity</span><Chips obj={sec.incidents.by_severity} /></div>
           <div className={styles.kv}><span className="muted">By state</span><Chips obj={sec.incidents.by_status} /></div>
-          {sec.incidents.total ? <a className={styles.drill} href="/operations/">Open in Operations Intelligence →</a> : null}
+          {sec.incidents.total ? <a className={styles.drill} href="/operations/">Open in Operations →</a> : null}
         </div>
-        <div className="panel"><div className={styles.pTitle}>Native events &amp; evidence</div>
-          <div className={styles.kv}><span className="muted">Native recorder events</span><b>{sec.native_events.total}</b></div>
+        <div className="panel"><div className={styles.pTitle}>Recorder events &amp; evidence</div>
+          <div className={styles.kv}><span className="muted">Recorder events</span><b>{sec.native_events.total}</b></div>
           <div className={styles.kv}><span className="muted">By type</span><Chips obj={sec.native_events.by_type} /></div>
           <div className={styles.kv}><span className="muted">Footage requests</span><b>{sec.evidence.clip_requests}</b></div>
           <div className={styles.kv}><span className="muted">Evidence by state</span><Chips obj={sec.evidence.by_status} /></div>
@@ -103,12 +103,12 @@ export default function Executive() {
       {/* Operations / SOP */}
       <div className={styles.sectionHead}><h2>Operations</h2><p>Configured operating-rule (SOP) exceptions.</p></div>
       <section className={styles.tiles}>
-        <div className={styles.tile}><div className={styles.tLabel}>SOP violations</div><div className={styles.tVal}>{ops.sop_violations.total}</div><div className={styles.tHint}>total</div></div>
+        <div className={styles.tile}><div className={styles.tLabel}>SOP exceptions</div><div className={styles.tVal}>{ops.sop_violations.total}</div><div className={styles.tHint}>total</div></div>
         <div className={styles.tile}><div className={styles.tLabel}>Dwell / wait</div><div className={styles.tVal}>{ops.dwell_wait}</div><div className={styles.tHint}>dwell + queue breaches</div></div>
         <div className={styles.tile}><div className={styles.tLabel}>Presence / absence</div><div className={styles.tVal}>{ops.presence_absence}</div><div className={styles.tHint}>expected-activity exceptions</div></div>
         <div className={styles.tile}><div className={styles.tLabel}>Occupancy / schedule</div><div className={styles.tVal}>{ops.occupancy + ops.schedule}</div><div className={styles.tHint}>{ops.occupancy} occupancy · {ops.schedule} schedule</div></div>
       </section>
-      <div className="panel"><div className={styles.pTitle}>SOP exceptions by type</div><Chips obj={ops.sop_violations.by_type} />{ops.sop_violations.total ? <a className={styles.drill} href="/operations/"> — review in Operations Intelligence →</a> : null}</div>
+      <div className="panel"><div className={styles.pTitle}>SOP exceptions by type</div><Chips obj={ops.sop_violations.by_type} />{ops.sop_violations.total ? <a className={styles.drill} href="/operations/"> — review in Operations →</a> : null}</div>
     </>}
   </main></div>;
 }
