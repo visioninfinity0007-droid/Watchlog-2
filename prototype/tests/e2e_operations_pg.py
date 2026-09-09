@@ -185,18 +185,18 @@ def main() -> None:
     if q("select exists(select 1 from pg_proc where proname='wl_analytic_event_to_ops_incident')")[0]:
         pr = make_rule(tenant, site, cam, name="Promotable", rule_type="zone_entry", severity="attention")
         pv = q("select rule_version from monitoring_rules where id=%s", pr)[0]
-        q("insert into analytic_events (tenant_id, site_id, camera_id, monitoring_rule_id, event_type, "
-          "object_class, occurred_at, dedupe_key, metadata_json) "
-          "values (%s,%s,%s,%s,'zone_entry','person', now(), %s, %s::jsonb)",
+        q("insert into analytic_events (tenant_id, site_id, camera_id, monitoring_rule_id, analytic_key, "
+          "event_type, object_class, occurred_at, dedupe_key, metadata_json) "
+          "values (%s,%s,%s,%s,'custom','zone_entry','person', now(), %s, %s::jsonb)",
           tenant, site, cam, pr, "ae-bridge-1", json.dumps({"confidence": 0.95}))
         binc = q("select rule_version, incident_type, detail->>'source' from operations_incidents "
                  "where rule_id=%s order by opened_at desc limit 1", pr)
         assert binc is not None and binc[0] == pv and binc[1] == "zone_entry" and binc[2] == "live", \
             f"live bridge incident (provenance): {binc}"
         mr = make_rule(tenant, site, cam, name="Measure", rule_type="occupancy", severity="measurement")
-        q("insert into analytic_events (tenant_id, site_id, camera_id, monitoring_rule_id, event_type, "
-          "object_class, occurred_at, dedupe_key, metadata_json) "
-          "values (%s,%s,%s,%s,'occupancy','person', now(), %s, '{}'::jsonb)",
+        q("insert into analytic_events (tenant_id, site_id, camera_id, monitoring_rule_id, analytic_key, "
+          "event_type, object_class, occurred_at, dedupe_key, metadata_json) "
+          "values (%s,%s,%s,%s,'custom','occupancy','person', now(), %s, '{}'::jsonb)",
           tenant, site, cam, mr, "ae-bridge-2")
         assert q("select count(*) from operations_incidents where rule_id=%s", mr)[0] == 0, \
             "a measurement-only rule must NOT raise an operations incident"
