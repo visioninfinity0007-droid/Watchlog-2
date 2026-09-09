@@ -67,6 +67,7 @@ as $$
 declare
   v_agent public.agents;
   v_limit int := least(greatest(coalesce(p_limit,1),1),2);
+  v_result jsonb;
 begin
   v_agent := wl_auth_agent(p_agent_id,p_agent_key);
   if v_agent.id is null then
@@ -88,31 +89,34 @@ begin
      and expires_at<=now()
      and status in ('pending','processing','ready');
 
-  return coalesce((
-    with picked as (
-      select r.id
-        from public.incident_clip_requests r
-       where r.site_id=v_agent.site_id
-         and r.tenant_id=v_agent.tenant_id
-         and r.status='pending'
-         and r.expires_at>now()
-       order by r.requested_at
-       for update skip locked
-       limit v_limit
-    ), claimed as (
-      update public.incident_clip_requests r
-         set status='processing',claimed_by_agent_id=v_agent.id,started_at=now(),error_message=null
-        from picked p
-       where r.id=p.id
-      returning r.*
-    )
-    select jsonb_agg(jsonb_build_object(
-      'request_id',r.id,'event_id',r.event_id,'camera_id',r.camera_id,
-      'channel',c.channel,'start_at',r.start_at,'end_at',r.end_at
-    ) order by r.requested_at)
-      from claimed r
-      join public.cameras c on c.id=r.camera_id and c.site_id=v_agent.site_id
-  ),'[]'::jsonb);
+  -- A data-modifying CTE (claimed) must be at the TOP LEVEL of the statement;
+  -- Postgres rejects a modifying WITH nested inside coalesce((WITH ... SELECT ...)).
+  -- Run it as a top-level SELECT ... INTO and coalesce the aggregate instead.
+  with picked as (
+    select r.id
+      from public.incident_clip_requests r
+     where r.site_id=v_agent.site_id
+       and r.tenant_id=v_agent.tenant_id
+       and r.status='pending'
+       and r.expires_at>now()
+     order by r.requested_at
+     for update skip locked
+     limit v_limit
+  ), claimed as (
+    update public.incident_clip_requests r
+       set status='processing',claimed_by_agent_id=v_agent.id,started_at=now(),error_message=null
+      from picked p
+     where r.id=p.id
+    returning r.*
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'request_id',r.id,'event_id',r.event_id,'camera_id',r.camera_id,
+    'channel',c.channel,'start_at',r.start_at,'end_at',r.end_at
+  ) order by r.requested_at), '[]'::jsonb)
+    into v_result
+    from claimed r
+    join public.cameras c on c.id=r.camera_id and c.site_id=v_agent.site_id;
+  return v_result;
 end
 $$;
 
