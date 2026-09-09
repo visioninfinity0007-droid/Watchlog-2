@@ -68,10 +68,13 @@ def main() -> None:
 
     def emit(object_class):
         n[0] += 1
-        q("insert into analytic_events (tenant_id, site_id, camera_id, agent_id, monitoring_rule_id, "
-          "analytic_key, event_type, object_class, occurred_at, dedupe_key, metadata_json) "
-          "values (%s,%s,%s,%s,%s,'zone_entry','zone_entry',%s, now(), %s, %s::jsonb)",
-          tenant, site, cam, agent, rule, object_class, f"dedupe-{n[0]}", json.dumps({"confidence": 0.9}))
+        # INSERT without RETURNING -> use conn.execute directly (q()/fetchone() would raise). The
+        # 0054 bridge fires synchronously on this insert.
+        conn.execute(
+            "insert into analytic_events (tenant_id, site_id, camera_id, agent_id, monitoring_rule_id, "
+            "analytic_key, event_type, object_class, occurred_at, dedupe_key, metadata_json) "
+            "values (%s,%s,%s,%s,%s,'zone_entry','zone_entry',%s, now(), %s, %s::jsonb)",
+            (tenant, site, cam, agent, rule, object_class, f"dedupe-{n[0]}", json.dumps({"confidence": 0.9})))
 
     def incidents(oc=None):
         if oc:
