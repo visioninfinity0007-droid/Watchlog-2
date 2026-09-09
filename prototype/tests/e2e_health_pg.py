@@ -50,8 +50,11 @@ def main() -> None:
         if not q("select exists(select 1 from pg_proc where proname=%s)", fn)[0]:
             raise AssertionError(f"function {fn} missing — 0048 did not apply")
 
-    # 1. authed seed: a signed-in user bootstraps a tenant + site (reuses the real RPC path)
-    user = q("insert into auth.users (email) values ('integ@watchlog.test') returning id")[0]
+    # 1. authed seed: a signed-in user bootstraps a tenant + site (reuses the real RPC path).
+    #    Email is unique per run so this harness is safely RE-RUNNABLE (the production-order
+    #    simulation runs it twice — once as the baseline health proof, once as the post-0040/0041 smoke).
+    user = q("insert into auth.users (email) values "
+             "('integ-'||gen_random_uuid()::text||'@watchlog.test') returning id")[0]
     conn.execute("select set_config('request.jwt.claims', %s, false)",
                  (json.dumps({"sub": str(user), "role": "authenticated"}),))
     conn.execute("set role authenticated")
@@ -113,7 +116,8 @@ def main() -> None:
     assert snap["faults_open"] >= 1, "faults_open must reflect the live fault"
 
     # 8. tenant isolation: a DIFFERENT authenticated user cannot read this site's snapshot
-    other = q("insert into auth.users (email) values ('other@watchlog.test') returning id")[0]
+    other = q("insert into auth.users (email) values "
+              "('other-'||gen_random_uuid()::text||'@watchlog.test') returning id")[0]
     conn.execute("select set_config('request.jwt.claims', %s, false)",
                  (json.dumps({"sub": str(other), "role": "authenticated"}),))
     conn.execute("set role authenticated")
