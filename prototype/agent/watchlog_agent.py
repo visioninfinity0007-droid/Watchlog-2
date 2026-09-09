@@ -57,6 +57,7 @@ from pathlib import Path
 import requests
 
 import discover
+import recorder_probe
 import setup_wizard
 import vision
 import wsdiscovery
@@ -76,6 +77,7 @@ UPLOAD_BATCH = 200
 HTTP_TIMEOUT = 30
 DRIVER_RETRY_SECONDS = 20
 ONCE_COLLECT_SECONDS = 25
+RECORDER_PROBE_MAX_ATTEMPTS = 3   # bounded alternate-port attempts on a non-auth connect failure
 
 # Incident stills. One per camera at most every SNAPSHOT_MIN_INTERVAL
 # seconds: a busy gate can fire every few seconds, and an image per event
@@ -346,14 +348,78 @@ def save_state(path: Path, state: dict) -> None:
 
 # --- driver ------------------------------------------------------------
 
+def _parse_host_port_scheme(url):
+    """Split a recorder URL into (host, port|None, scheme). Read-only, no I/O."""
+    from urllib.parse import urlparse
+    raw = str(url or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        raw = "http://" + raw
+    parsed = urlparse(raw)
+    return parsed.hostname or "", parsed.port, ("https" if parsed.scheme == "https" else "http")
+
+
+def _effective_scheme_port(scheme, port):
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return (scheme, int(port))
+
+
+def _connect_recorder(cfg: Config, base_url: str):
+    if cfg.nvr_driver in ("auto", ""):
+        return autodetect(base_url, cfg.nvr_username, cfg.nvr_password, log=log)
+    driver = build(cfg.nvr_driver, base_url, cfg.nvr_username, cfg.nvr_password)
+    return driver, driver.probe()
+
+
 def open_driver(cfg: Config):
     cfg.require_nvr()
-    if cfg.nvr_driver in ("auto", ""):
-        return autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
-                          log=log)
-    driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username,
-                   cfg.nvr_password)
-    return driver, driver.probe()
+    # Primary attempt: exactly the configured driver/URL — unchanged behaviour. When it
+    # works (the normal case) nothing below runs.
+    try:
+        return _connect_recorder(cfg, cfg.nvr_url)
+    except DriverError as primary:
+        # An AUTH failure means the host/port is RIGHT and only the credential is wrong.
+        # Never reprobe other ports then: it is pointless and risks a recorder lockout — let
+        # the caller's auth backoff handle it.
+        if _is_auth_failure(primary):
+            raise
+        # Bounded recorder-hardening fallback (workstream 5): try a small, vendor-ordered set
+        # of KNOWN HTTP(S) ports on the SAME host with the SAME credential. No subnet scan, no
+        # credential spraying, no binary SDK ports — only a handful of standard web ports, only
+        # after the configured URL failed to connect/identify.
+        try:
+            host, port, scheme = _parse_host_port_scheme(cfg.nvr_url)
+            if not host:
+                raise primary
+            if port and recorder_probe.classify_port(port):
+                log(f"recorder: configured port {port} is the "
+                    f"{recorder_probe.classify_port(port)} binary control port, not HTTP/ISAPI; "
+                    "trying the standard web port(s)")
+            vendor = "auto" if cfg.nvr_driver in ("auto", "") else cfg.nvr_driver
+            primary_eff = _effective_scheme_port(scheme, port)
+            attempts = 0
+            for cand in recorder_probe.candidates(vendor, host, port):
+                if cand.get("non_http"):                       # never HTTP-probe a binary SDK port
+                    continue
+                if (cand["scheme"], int(cand["port"])) == primary_eff:
+                    continue                                   # already tried as the primary
+                if attempts >= RECORDER_PROBE_MAX_ATTEMPTS:
+                    break
+                attempts += 1
+                log(f"recorder: configured URL failed; trying {cand['base_url']}")
+                try:
+                    return _connect_recorder(cfg, cand["base_url"])
+                except DriverError as alt:
+                    if _is_auth_failure(alt):
+                        # Found the recorder on this port; the credential is wrong. Stop —
+                        # do NOT keep trying ports (that would be credential spraying).
+                        raise alt
+                    continue
+        except DriverError:
+            raise
+        except Exception:                                       # noqa: BLE001 — never mask the real error
+            raise primary
+        raise primary
 
 
 # --- enrollment --------------------------------------------------------

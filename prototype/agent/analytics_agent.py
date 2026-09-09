@@ -25,13 +25,19 @@ from PIL import Image
 import analytics
 import analytics_setup
 import watchlog_agent as core
+from action_runtime import ActionRuntime
+from archive_runtime import ArchiveRuntime
 from drivers import DriverError
+from lease_client import LeaseClient
+from runtime import AgentRuntime
 from spool import Spool
 
 from wl_version import VERSION as AGENT_VERSION  # single source of truth (was a stale 0.3.0 that overrode core)
 ANALYTICS_UPLOAD_BATCH = 500
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
+ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
+ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, retry rarely
 
 
 class Config(core.Config):
@@ -243,8 +249,13 @@ def _status_payload(version, sampler, plan, spool, counters, detector):
 
 
 def analytics_worker(cfg: Config, state: dict, detector,
-                     stop: threading.Event) -> None:
-    """Long-running local analytics sampler. Never opens an inbound socket."""
+                     stop: threading.Event, authority: dict = None) -> None:
+    """Long-running local analytics sampler. Never opens an inbound socket.
+
+    Owns the single-authority lease (refreshes it on the config cadence) and publishes the
+    resulting authority into the shared `authority` holder, so the event-upload loop and the
+    archive worker can fence their authoritative writes on the SAME lease without any
+    cross-thread lease mutation (this thread is the only one that calls refresh/validate)."""
     if not cfg.analytics_enabled:
         core.log("analytics: disabled by configuration")
         return
@@ -255,6 +266,20 @@ def analytics_worker(cfg: Config, state: dict, detector,
     version = int(cached.get("version") or 0)
     engine = analytics.AnalyticsEngine(log=core.log)
     engine.configure(cached.get("config"))
+    # The top-level orchestration seam: the engine's per-frame output flows through the
+    # runtime, which dispatches configured evidence actions (idempotent + restart-safe) and
+    # fences authoritative uploads behind the single-authority lease. Multi-agent stays OFF
+    # unless the site opts in (the flag rides in the config payload, 0056), so by default the
+    # lease is trivially authoritative and behaviour is unchanged. Evidence transports for
+    # agent-initiated capture do not exist yet, so capture_still/request_footage report a
+    # truthful "unsupported" — the recorded-intent actions still apply.
+    lease = LeaseClient(cloud, state["agent_id"], state["agent_key"],
+                        feature_enabled=bool((cached.get("config") or {}).get("multi_agent_enabled")),
+                        log=core.log)
+    actions = ActionRuntime(snapshot=None, upload_still=None, request_footage=None, log=core.log)
+    runtime = AgentRuntime(cloud=cloud, state=state, engine=engine, lease=lease, actions=actions,
+                           dedup_path=cfg.analytics_config_path.parent / "analytics_action_dedup.json",
+                           log=core.log)
     sampler = FairSampler(cfg.analytics_max_fps)
     counters = {"samples_ok": 0, "sample_errors": 0,
                 "last_sample_at": None, "last_config_at": None}
@@ -282,6 +307,14 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                          p_agent_key=state["agent_key"],
                                          p_known_version=version)
                     counters["last_config_at"] = core.iso(core.now_utc())
+                    # The single-authority lease flag rides on every poll (0056), even when the
+                    # config version is unchanged, so a fencing toggle takes effect within one
+                    # cycle. Feature OFF -> refresh() is a no-op and stays authoritative.
+                    lease.set_feature_enabled(bool(payload.get("multi_agent_enabled")))
+                    runtime.refresh_lease()
+                    # publish the single-authority verdict for the event/archive fences
+                    if authority is not None:
+                        authority["ok"] = lease.is_authoritative()
                     if payload.get("changed") and payload.get("config"):
                         version = int(payload.get("version") or version)
                         analytics.save_config(cfg.analytics_config_path, version,
@@ -335,7 +368,9 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                 image = Image.open(io.BytesIO(raw))
                                 image.load()
                                 when = core.now_utc()
-                                events = engine.process(
+                                # on_frame runs the engine AND dispatches configured evidence
+                                # actions for exception firings (idempotent + cooldown-guarded).
+                                events = runtime.on_frame(
                                     channel, found, image.size, when)
                                 for event in events:
                                     spool.add(event)
@@ -362,11 +397,23 @@ def analytics_worker(cfg: Config, state: dict, detector,
 
             if clock >= next_upload:
                 next_upload = clock + cfg.analytics_upload_seconds
-                try:
-                    analytics_upload_once(cloud, state, spool)
-                except (RuntimeError, requests.RequestException) as error:
-                    core.log("analytics: upload failed, will retry: "
-                             + str(error).splitlines()[0][:180])
+                # Fence the authoritative analytic-event write. With multi-agent OFF this is
+                # always authoritative; ON, only the lease holder uploads — a superseded/standby
+                # agent holds its spool (no loss, no duplicate incidents) until it regains authority.
+                # authoritative() re-validates the fencing generation, so republish it here (15s
+                # cadence) to keep the event/archive fences current between config polls.
+                auth_ok = runtime.authoritative()
+                if authority is not None:
+                    authority["ok"] = auth_ok
+                if not auth_ok:
+                    core.log("analytics: standby (not lease authority); "
+                             f"holding {spool.count()} measurement(s), upload deferred")
+                else:
+                    try:
+                        analytics_upload_once(cloud, state, spool)
+                    except (RuntimeError, requests.RequestException) as error:
+                        core.log("analytics: upload failed, will retry: "
+                                 + str(error).splitlines()[0][:180])
 
             if clock >= next_status:
                 next_status = clock + STATUS_WRITE_SECONDS
@@ -395,6 +442,60 @@ def analytics_worker(cfg: Config, state: dict, detector,
         spool.close()
 
 
+def _archive_backend_missing(error: Exception) -> bool:
+    text = str(error).lower()
+    return "wl_agent_claim_archive_scans" in text and (
+        "schema cache" in text or "function" in text or "404" in text)
+
+
+def archive_worker(cfg: Config, state: dict, stop: threading.Event,
+                   authority: dict = None) -> None:
+    """Background historical-scan workload (migrations 0051/0055).
+
+    Runs in its own daemon thread on a slow cadence so it is LOWER priority than live
+    monitoring: bounded to one scan per cycle, interruptible via the shared stop event, and
+    it never blocks the collector or the analytics sampler. Idle (long back-off) when 0055 is
+    not deployed. Recorder-archive retrieval is not hardware-validated, so the runtime reports
+    a claimed scan with an honest status ('failed: retrieval unavailable') rather than ever
+    fabricating a recovered result. Recovered candidates carry the fixed 0051 provenance label.
+    """
+    if not cfg.analytics_enabled:
+        return
+    cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
+    # Retrieval + offline analysis are injected as unavailable until a future agent release
+    # proves recorder playback on real hardware; the runtime then fails scans honestly.
+    archive = ArchiveRuntime(cloud=cloud, state=state,
+                             retrieve_frames=None, analyze=None, log=core.log)
+    runtime = AgentRuntime(cloud=cloud, state=state,
+                           engine=analytics.AnalyticsEngine(log=core.log),
+                           archive=archive, log=core.log)
+    missing_logged = False
+    while not stop.is_set():
+        # Archive reprocessing is an authoritative write; only the lease holder runs it. A
+        # standby stays idle here (no duplicate recovered results) until it becomes authority.
+        if authority is not None and not authority.get("ok", True):
+            stop.wait(ARCHIVE_POLL_SECONDS)
+            continue
+        try:
+            processed = runtime.poll_archive(limit=1)   # bounded: at most one scan per cycle
+            missing_logged = False
+            for row in processed:
+                core.log(f"analytics: archive scan {str(row.get('scan_id', '?'))[:8]} "
+                         f"-> {row.get('status')} ({row.get('candidates', 0)} candidate(s))")
+        except (RuntimeError, requests.RequestException) as error:
+            if _archive_backend_missing(error):
+                if not missing_logged:
+                    core.log("analytics: archive execution backend (0055) not deployed; worker idle")
+                    missing_logged = True
+                stop.wait(ARCHIVE_BACKEND_MISSING_RETRY_SECONDS)
+                continue
+            core.log("analytics: archive poll failed; will retry: "
+                     + str(error).splitlines()[0][:160])
+        except Exception as error:                      # noqa: BLE001 — never kill the thread
+            core.log(f"analytics: archive error {type(error).__name__}: {str(error)[:140]}")
+        stop.wait(ARCHIVE_POLL_SECONDS)
+
+
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None) -> None:
     """Core event loop plus analytics worker, sharing one detector instance."""
@@ -405,13 +506,21 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     spool = Spool(cfg.spool_path)
     core.log(f"spool: {cfg.spool_path} ({spool.count()} queued)")
 
+    # Shared single-authority signal: the analytics worker owns the lease and publishes its
+    # verdict here; the event-upload loop and the archive worker fence their authoritative
+    # writes on it. Defaults to authoritative (multi-agent OFF -> unchanged single-agent).
+    authority = {"ok": True}
+
     stop = threading.Event()
     collector = threading.Thread(target=core.collector,
                                  args=(cfg, spool, stop),
                                  daemon=True, name="collector")
     analytic = threading.Thread(target=analytics_worker,
-                                args=(cfg, state, detector, stop),
+                                args=(cfg, state, detector, stop, authority),
                                 daemon=True, name="analytics")
+    archive = threading.Thread(target=archive_worker,
+                               args=(cfg, state, stop, authority),
+                               daemon=True, name="archive")
     collector.start()
     analytic.start()
 
@@ -430,6 +539,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         core.vision.build = original_build
         return
 
+    archive.start()   # background historical scan; lower priority, run mode only
     core.log(f"running: events every {cfg.upload_seconds}s, analytics enabled, "
              f"heartbeat every {cfg.heartbeat_seconds}s, outbound only. Ctrl-C to stop.")
     next_upload = next_heartbeat = 0.0
@@ -438,11 +548,19 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             clock = time.monotonic()
             if clock >= next_upload:
                 next_upload = clock + cfg.upload_seconds
-                try:
-                    core.upload_once(cloud, state, spool)
-                except (RuntimeError, requests.RequestException) as error:
-                    core.log("ERROR: upload failed, will retry: "
-                             + str(error).splitlines()[0][:200])
+                # Fence the authoritative event write (native recorder events + incidents) on the
+                # single-authority lease. A standby holds its spool — no duplicate events — until
+                # it becomes authority. Heartbeat below is deliberately NOT fenced: a standby must
+                # keep signalling liveness to stay eligible to take the lease over.
+                if not authority.get("ok", True):
+                    core.log(f"events: standby (not lease authority); holding "
+                             f"{spool.count()} event(s), upload deferred")
+                else:
+                    try:
+                        core.upload_once(cloud, state, spool)
+                    except (RuntimeError, requests.RequestException) as error:
+                        core.log("ERROR: upload failed, will retry: "
+                                 + str(error).splitlines()[0][:200])
             if clock >= next_heartbeat:
                 next_heartbeat = clock + cfg.heartbeat_seconds
                 try:
@@ -457,6 +575,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         stop.set()
         collector.join(timeout=5)
         analytic.join(timeout=5)
+        archive.join(timeout=5)
         spool.close()
         core.vision.build = original_build
         core.log("stopped")

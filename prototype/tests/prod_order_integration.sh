@@ -43,4 +43,27 @@ python prototype/tests/e2e_incident_pg.py
 echo "===== step 7: re-run Phase-A health smoke — prove 0040/0041 did NOT disturb health ====="
 python prototype/tests/e2e_health_pg.py
 
-echo "PRODUCTION-ORDER SIMULATION: PASS (health baseline -> 0040/0041 -> incident lifecycle -> health undisturbed)"
+# ---------------------------------------------------------------------------------------------
+# Operations-Intelligence + governance layer. Production is already at 0049-0053 (Operations
+# Intelligence, report, archive, lease, rule governance); the pending upgrade is 0054 (live
+# incident bridge), 0055 (agent archive execution) and 0056 (governance reaches the agent).
+# They apply in numeric order AFTER the 0040/0041 baseline above — exactly as production will.
+# ---------------------------------------------------------------------------------------------
+echo "===== stage 3: operations intelligence + governance — 0049-0056 (0049-0053 live, 0054-0056 pending) ====="
+cp $MIG/0049_*.sql $MIG/005[0-6]_*.sql "$STAGE"/
+n3=$(ls "$STAGE"/*.sql | wc -l)
+echo "  staged $n3 migrations total (baseline 46 + 0040/0041 + 0049-0056 = 56)"
+[ "$n3" -eq 56 ] || { echo "FATAL: stage 3 expected 56 migrations, got $n3"; exit 1; }
+WATCHLOG_MIGRATIONS_DIR="$STAGE" python "$APPLY"
+
+echo "===== step 8: prove the pending upgrade EXECUTES on the production-order DB ====="
+python prototype/tests/e2e_operations_pg.py        # 0049 lifecycle + versioning + authz + 0054 bridge
+python prototype/tests/e2e_archive_pg.py           # 0051 bounded scan + 0055 agent execution + provenance
+python prototype/tests/e2e_multiagent_pg.py        # 0052 single-authority lease + fencing failover
+python prototype/tests/e2e_config_governance_pg.py # 0056 governance/primitives travel to the runtime
+
+echo "===== step 9: re-run Phase-A health smoke — prove 0049-0056 did NOT disturb health ====="
+python prototype/tests/e2e_health_pg.py
+
+echo "PRODUCTION-ORDER SIMULATION: PASS (health baseline -> 0040/0041 -> incident lifecycle -> "\
+"operations/governance 0049-0056 -> governance travels -> health undisturbed)"

@@ -87,6 +87,8 @@ jobs:
         run: python prototype/tests/test_action_runtime.py
       - name: Archive runtime — reprocess + honest retrieval
         run: python prototype/tests/test_archive_runtime.py
+      - name: Agent runtime orchestration end-to-end — engine+lease+actions+archive composed
+        run: python prototype/tests/test_agent_runtime_e2e.py
       - name: Analytics sampler capacity tests
         run: python prototype/tests/test_analytics_sampler.py
       - name: Analytics Studio report rendering tests
@@ -273,6 +275,8 @@ jobs:
         run: python prototype/tests/e2e_archive_pg.py
       - name: Multi-agent lease/fencing integration — single authority + failover (0052)
         run: python prototype/tests/e2e_multiagent_pg.py
+      - name: Agent config governance integration — governance travels to the runtime (0056)
+        run: python prototype/tests/e2e_config_governance_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
