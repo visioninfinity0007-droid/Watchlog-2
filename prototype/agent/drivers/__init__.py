@@ -1,50 +1,31 @@
 """
 WatchLog driver registry and auto-detection.
 
-Which drivers, and why these three (plus the test mock):
+Vendor APIs are preferred over ONVIF because they expose richer recorder-side
+events and capabilities. The registered Dahua/Hikvision wrappers preserve the
+existing transport logic while adding explicit recorder-native AI provenance;
+Dahua also exposes a bounded, on-demand incident-footage pilot path.
 
-    hikvision-isapi   Hikvision and HiLook. HiLook is Hikvision's own
-                      budget line and shares the ISAPI stack, so one
-                      driver covers both.
-
-    dahua-cgi         Dahua, Imou (Dahua's consumer brand), and the
-                      Dahua-OEM units sold under other badges. CP Plus
-                      matters most here: it has a real dealer network in
-                      Pakistan and its recorders answer Dahua CGI.
-
-    onvif             Everything else that is ONVIF-conformant — Uniview,
-                      Tiandy, and the long tail of rebadged recorders.
-                      This is what turns "supports two brands" into
-                      "supports most of the market".
-
-Known gap, stated plainly: the cheapest no-name recorders on Pakistani
-dealer shelves are often Xiongmai/Hisilicon boards that speak a
-proprietary binary protocol on port 34567 and implement ONVIF badly or
-not at all. They are not covered. Adding them is a separate driver and a
-separate decision — do not assume the ONVIF fallback catches them.
-
-Auto-detection probes in order of specificity: the vendor APIs first,
-because they give richer events than ONVIF on the same hardware, then
-ONVIF, then the mock. First driver whose probe() succeeds wins.
+Known gap: Xiongmai/Hisilicon devices on proprietary port 34567 are not
+supported and must not be treated as ONVIF-compatible by assumption.
 """
 
 from __future__ import annotations
 
 from .base import Channel, DeviceInfo, DriverError, Event, NvrDriver
-from .dahua import DahuaDriver
-from .hikvision import HikvisionDriver
 from .mock import MockDriver
+from .native_recorder import NativeDahuaDriver, NativeHikvisionDriver
 from .onvif_driver import OnvifDriver
 
 DRIVERS: dict[str, type[NvrDriver]] = {
-    HikvisionDriver.name: HikvisionDriver,
-    DahuaDriver.name:     DahuaDriver,
-    OnvifDriver.name:     OnvifDriver,
-    MockDriver.name:      MockDriver,
+    NativeHikvisionDriver.name: NativeHikvisionDriver,
+    NativeDahuaDriver.name:     NativeDahuaDriver,
+    OnvifDriver.name:           OnvifDriver,
+    MockDriver.name:            MockDriver,
 }
 
-# Probed in this order by autodetect().
-DETECT_ORDER = [HikvisionDriver, DahuaDriver, OnvifDriver, MockDriver]
+# Probed in order of specificity. Vendor-native APIs first, then ONVIF.
+DETECT_ORDER = [NativeHikvisionDriver, NativeDahuaDriver, OnvifDriver, MockDriver]
 
 __all__ = ["Channel", "DeviceInfo", "DriverError", "Event", "NvrDriver",
            "DRIVERS", "DETECT_ORDER", "build", "autodetect"]
@@ -63,13 +44,7 @@ def build(name: str, base_url: str, username: str = "", password: str = "",
 def autodetect(base_url: str, username: str = "", password: str = "",
                timeout: int = 8,
                log=lambda m: None) -> tuple[NvrDriver, DeviceInfo]:
-    """
-    Try each driver until one identifies the device.
-
-    Returns (driver, device_info). Raises DriverError with every failure
-    listed if nothing matched — a device that answers none of these is a
-    real finding, not a bug to paper over.
-    """
+    """Try each driver until one identifies the device."""
     failures: list[str] = []
     for cls in DETECT_ORDER:
         driver = cls(base_url, username, password, timeout)

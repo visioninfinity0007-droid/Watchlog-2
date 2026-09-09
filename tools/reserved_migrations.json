@@ -1,7 +1,4 @@
 {
   "_comment": "Migration numbers intentionally absent on some branches because another in-flight branch owns them. The linter treats a RESERVED number as a permitted gap (not present here, but not a numbering error). Any UNlisted gap, and any duplicate, still fails. Remove an entry once its branch merges and the number is present on main.",
-  "reserved": {
-    "40": "PR #36 (Alkalid-security/Watchlog) — incident-footage: incident_clip_requests + RPCs. Do not merge/re-author here.",
-    "41": "PR #36 (Alkalid-security/Watchlog) — incident-footage: incident_clip_chunks + prune. Do not merge/re-author here."
-  }
+  "reserved": {}
 }
