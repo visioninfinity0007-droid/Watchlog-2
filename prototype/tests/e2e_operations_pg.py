@@ -187,7 +187,7 @@ def main() -> None:
         pv = q("select rule_version from monitoring_rules where id=%s", pr)[0]
         q("insert into analytic_events (tenant_id, site_id, camera_id, monitoring_rule_id, analytic_key, "
           "event_type, object_class, occurred_at, dedupe_key, metadata_json) "
-          "values (%s,%s,%s,%s,'custom','zone_entry','person', now(), %s, %s::jsonb)",
+          "values (%s,%s,%s,%s,'custom','zone_entry','person', now(), %s, %s::jsonb) returning id",
           tenant, site, cam, pr, "ae-bridge-1", json.dumps({"confidence": 0.95}))
         binc = q("select rule_version, incident_type, detail->>'source' from operations_incidents "
                  "where rule_id=%s order by opened_at desc limit 1", pr)
@@ -196,7 +196,7 @@ def main() -> None:
         mr = make_rule(tenant, site, cam, name="Measure", rule_type="occupancy", severity="measurement")
         q("insert into analytic_events (tenant_id, site_id, camera_id, monitoring_rule_id, analytic_key, "
           "event_type, object_class, occurred_at, dedupe_key, metadata_json) "
-          "values (%s,%s,%s,%s,'custom','occupancy','person', now(), %s, '{}'::jsonb)",
+          "values (%s,%s,%s,%s,'custom','occupancy','person', now(), %s, '{}'::jsonb) returning id",
           tenant, site, cam, mr, "ae-bridge-2")
         assert q("select count(*) from operations_incidents where rule_id=%s", mr)[0] == 0, \
             "a measurement-only rule must NOT raise an operations incident"
