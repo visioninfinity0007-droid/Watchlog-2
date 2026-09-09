@@ -26,8 +26,6 @@ import uuid
 
 import psycopg
 
-KEY = "integration-agent-key"
-
 
 def connect():
     miss = [k for k in ("SUPABASE_DB_HOST", "SUPABASE_DB_USER", "SUPABASE_DB_PASSWORD")
@@ -63,9 +61,12 @@ def main() -> None:
     tenant = uuid.UUID(boot["tenant_id"])          # jsonb string -> uuid (compared against uuid columns)
     site = q("select id from sites where tenant_id=%s order by created_at limit 1", tenant)[0]
 
-    # 2. a recorder/agent + one camera, and their CONFIRMED current health (camera OFFLINE, recorder up)
+    # 2. a recorder/agent + one camera, and their CONFIRMED current health (camera OFFLINE, recorder up).
+    #    agent_key_hash is UNIQUE and derived from a fresh uuid so this harness is safely re-runnable
+    #    (the production-order simulation runs it twice); the health path never authenticates as the agent.
     agent = q("insert into agents (tenant_id, site_id, agent_key_hash) "
-              "values (%s,%s, encode(sha256(%s::bytea),'hex')) returning id", tenant, site, KEY)[0]
+              "values (%s,%s, encode(sha256(gen_random_uuid()::text::bytea),'hex')) returning id",
+              tenant, site)[0]
     cam = q("insert into cameras (tenant_id, site_id, channel, name) values (%s,%s,'1','Front door') "
             "returning id", tenant, site)[0]
     conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, recording_state) "
