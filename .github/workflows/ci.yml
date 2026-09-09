@@ -208,6 +208,7 @@ jobs:
           Copy-Item prototype\installer\nsis\watchlog.nsi (Join-Path $stage "watchlog.nsi")
           Copy-Item prototype\installer\run-agent.ps1 (Join-Path $stage "run-agent.ps1")
           Copy-Item prototype\installer\register-service.ps1 (Join-Path $stage "register-service.ps1")
+          Copy-Item prototype\installer\nsis\wl-upgrade.ps1 (Join-Path $stage "wl-upgrade.ps1")
           Copy-Item "prototype\installer\READ ME FIRST.txt" (Join-Path $stage "READ ME FIRST.txt")
           Copy-Item prototype\installer\setup.ico (Join-Path $stage "setup.ico")
           # Syntax contract only: the real release workflow separately builds
@@ -229,6 +230,12 @@ jobs:
           Pop-Location
           if ($rc -ne 0) { throw "makensis failed with exit $rc" }
           if (-not (Test-Path (Join-Path $stage "WatchLog-Setup.exe"))) { throw "NSIS output missing" }
+      - name: Transactional upgrade helper tests (locked-EXE gate, version truth, rollback, targeted kill)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype\tests\test_wl_upgrade.ps1
+          if ($LASTEXITCODE -ne 0) { throw "wl-upgrade transactional tests failed ($LASTEXITCODE)" }
 
   # Real Postgres execution of the health migrations (0042-0048): the static contract tests regex the
   # SQL, but this applies every migration to a DISPOSABLE Postgres and drives the RPCs with real rows —

@@ -106,6 +106,8 @@ try {
   foreach ($f in @("run-agent.ps1","register-service.ps1","READ ME FIRST.txt","setup.ico")) {
     Copy-Item (Join-Path $inst $f) (Join-Path $stage $f)
   }
+  # transactional upgrade orchestrator (lives beside the .nsi, staged for File "wl-upgrade.ps1")
+  Copy-Item (Join-Path $inst "nsis\wl-upgrade.ps1") (Join-Path $stage "wl-upgrade.ps1")
   Copy-Item (Join-Path $inst "nsis\watchlog.nsi") (Join-Path $stage "watchlog.nsi")
 
   # Public defaults only. Recorder credentials are collected/protected locally

@@ -131,6 +131,24 @@ jobs:
             throw "packaged agent reports the wrong version (expected $wlVer):`n$agentSelftest"
           }
 
+          # TRANSACTIONAL-UPGRADE VERSION TRUTH (real exe): the installer refuses a false success by
+          # verifying BOTH the file ProductVersion AND the runtime --version equal the release. Prove
+          # both against the REAL packaged exe, and prove the upgrade helper's verify-version PASSES
+          # at the correct version and REJECTS a wrong one.
+          $fileVer = $agent.VersionInfo.ProductVersion
+          if ($fileVer -ne $wlVer) { throw "agent file ProductVersion '$fileVer' != wl_version '$wlVer'" }
+          $runVer = (& $agent.FullName --version 2>$null | Select-Object -First 1).ToString().Trim()
+          if ($runVer -ne $wlVer) { throw "agent --version '$runVer' != wl_version '$wlVer'" }
+          Write-Host "agent version truth OK: file=$fileVer runtime=$runVer"
+          $ud = Join-Path $env:RUNNER_TEMP 'wl-upg-accept'
+          New-Item -ItemType Directory -Force $ud | Out-Null
+          Copy-Item $agent.FullName (Join-Path $ud 'watchlog-agent.exe') -Force
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\prototype\installer\nsis\wl-upgrade.ps1 -Stage verify-version -InstallDir $ud -ExpectedVersion $wlVer
+          if ($LASTEXITCODE -ne 0) { throw "wl-upgrade verify-version FAILED on the real exe at the correct version $wlVer" }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\prototype\installer\nsis\wl-upgrade.ps1 -Stage verify-version -InstallDir $ud -ExpectedVersion '9.9.9'
+          if ($LASTEXITCODE -eq 0) { throw "wl-upgrade verify-version wrongly PASSED for a mismatched version" }
+          Write-Host "wl-upgrade verify-version acceptance OK (real exe: passes at $wlVer, rejects 9.9.9)"
+
           # PACKAGED-EXE DPAPI PROOF: prove the FROZEN setup UI actually drives
           # credential_store -> DPAPI, not merely that it launches. Seed a legacy
           # watchlog.env in an isolated ProgramData, run --migrate-only, then prove a

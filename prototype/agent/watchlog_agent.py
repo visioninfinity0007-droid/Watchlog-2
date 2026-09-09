@@ -1180,7 +1180,17 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true",
                     help="prove the on-site AI false-alarm filter is packaged "
                          "and working in this build; needs no config")
+    ap.add_argument("--version", action="store_true",
+                    help="print the runtime version and exit (no config, no cloud) — used by "
+                         "the installer to verify the actually-installed/running agent")
     args = ap.parse_args()
+
+    if args.version:
+        # bare, machine-parseable single line so the installer can compare it to the expected
+        # release version. Runs before ANY config/enrollment so a not-yet-configured or upgraded
+        # binary still answers truthfully.
+        print(AGENT_VERSION)
+        return
 
     if args.selftest:
         raise SystemExit(cmd_selftest())
