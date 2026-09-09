@@ -95,6 +95,8 @@ jobs:
         run: python prototype/tests/test_push_bridge.py
       - name: Capability-probe tests
         run: python prototype/tests/test_capabilities.py
+      - name: Vendor capability matrix contract (honest — no fabricated capability)
+        run: python prototype/tests/test_vendor_capability_matrix.py
       - name: Email template tests
         run: python prototype/tests/test_email_template.py
       - name: ONNX inference test (skips if model absent)
