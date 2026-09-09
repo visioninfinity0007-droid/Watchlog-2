@@ -237,6 +237,30 @@ jobs:
           Write-Host "Verified installer: $([math]::Round($setup.Length / 1MB, 1)) MB"
           Write-Host "Verified SHA-256: $actual"
 
+          # RECORDED RELEASE IDENTITY (RC hashes): emit a CI-attested manifest of the
+          # INNER agent exe, the setup UI exe and the installer. The installer .sha256
+          # already pins WatchLog-Setup.exe, but the inner watchlog-agent.exe hash is
+          # otherwise unrecoverable from the artifact — capture all three here so the RC's
+          # exact identity is attested by the gated build, never transcribed by hand.
+          $agentHash = (Get-FileHash $agent.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          $setupUiHash = (Get-FileHash $setupUi.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          $manifestLines = @(
+            "WatchLog Windows release manifest",
+            "version=$wlVer",
+            "source_sha=$env:GITHUB_SHA",
+            "run_id=$env:GITHUB_RUN_ID",
+            "run_number=$env:GITHUB_RUN_NUMBER",
+            "workflow_ref=$env:GITHUB_REF",
+            "watchlog-agent.exe.sha256=$agentHash",
+            "watchlog-setup-ui.exe.sha256=$setupUiHash",
+            "WatchLog-Setup.exe.sha256=$actual"
+          )
+          $manifestPath = '.\dist-installer\WatchLog-Release.hashes.txt'
+          Set-Content -Path $manifestPath -Encoding ASCII -Value $manifestLines
+          Write-Host '---- RECORDED RELEASE HASHES (RC identity) ----'
+          $manifestLines | ForEach-Object { Write-Host $_ }
+          Write-Host '-----------------------------------------------'
+
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
         with:
@@ -244,5 +268,6 @@ jobs:
           path: |
             dist-installer/WatchLog-Setup.exe
             dist-installer/WatchLog-Setup.exe.sha256
+            dist-installer/WatchLog-Release.hashes.txt
           if-no-files-found: error
           retention-days: 30
