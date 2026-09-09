@@ -79,8 +79,9 @@ def main() -> None:
         json.dumps({"retain_minutes": 30}))[0]
 
     # bump the config version (so a p_known_version=0 poll returns the full config) and turn the
-    # multi-agent lease feature ON at the site to prove the flag travels.
-    q("update sites set analytics_config_version = 7, multi_agent_enabled = true where id=%s", site)
+    # multi-agent lease feature ON at the site to prove the flag travels. (UPDATE returns no
+    # rows -> use conn.execute directly; the q() helper fetchone()s and would raise.)
+    conn.execute("update sites set analytics_config_version = 7, multi_agent_enabled = true where id=%s", (site,))
 
     # 2. an authenticated agent pulls its config
     KEY = "gov-agent-key"
