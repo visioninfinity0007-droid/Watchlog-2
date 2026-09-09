@@ -28,7 +28,7 @@ jobs:
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
-        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py prototype/tests/test_reconcile_split.py prototype/tests/test_fault_model.py -q
+        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py prototype/tests/test_reconcile_split.py prototype/tests/test_fault_model.py prototype/tests/test_apply_migrations.py -q
       - name: WordPress PHP syntax
         run: |
           php -l deploy/wordpress/themes/watchlog/front-page.php
@@ -245,3 +245,5 @@ jobs:
         run: python prototype/supabase/apply_migrations.py
       - name: Health foundation integration — real RPC execution (0042-0048)
         run: python prototype/tests/e2e_health_pg.py
+      - name: Migration runner integrity — CRLF idempotence + fail-closed drift (disposable Postgres)
+        run: python prototype/tests/test_apply_migrations_pg.py
