@@ -77,6 +77,16 @@ jobs:
         run: python prototype/tests/test_vision_filter.py
       - name: Analytics Studio local rule-engine tests
         run: python prototype/tests/test_analytics_engine.py
+      - name: Operations Intelligence runtime — generic primitives (engine)
+        run: python prototype/tests/test_ops_runtime.py
+      - name: Multi-agent lease client — fencing + fail-safe
+        run: python prototype/tests/test_lease_client.py
+      - name: Recorder connection hardening — ports/HTTPS/discovery/trust
+        run: python prototype/tests/test_recorder_probe.py
+      - name: Evidence action runtime — truthful unsupported
+        run: python prototype/tests/test_action_runtime.py
+      - name: Archive runtime — reprocess + honest retrieval
+        run: python prototype/tests/test_archive_runtime.py
       - name: Analytics sampler capacity tests
         run: python prototype/tests/test_analytics_sampler.py
       - name: Analytics Studio report rendering tests

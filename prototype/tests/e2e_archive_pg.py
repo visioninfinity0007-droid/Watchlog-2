@@ -126,7 +126,34 @@ def main() -> None:
         denied_cross = True
     assert denied_cross, "a foreign tenant must NOT read another tenant's archive scan"
 
-    print("Archive scan Postgres integration (0051): PASS")
+    # 7. agent-facing execution (0055): claim / record / status, scoped to the agent's own site
+    if q("select exists(select 1 from pg_proc where proname='wl_agent_claim_archive_scans')")[0]:
+        KEY = "arch-agent-key"
+        agent = q("insert into agents (tenant_id, site_id, agent_key_hash) "
+                  "values (%s,%s, encode(sha256(%s::bytea),'hex')) returning id", tenant, site, KEY)[0]
+        scan2 = as_user(owner, "select wl_request_archive_scan(%s, %s::uuid[], now()-interval '1 hour', now(), null::uuid[])",
+                        site, [cam])[0]
+        sid2 = uuid.UUID(scan2["id"])
+        claimed = q("select wl_agent_claim_archive_scans(%s,%s,%s)", agent, KEY, 5)[0]
+        assert any(str(c["scan_id"]) == str(sid2) for c in claimed), f"agent must claim its site's scan: {claimed}"
+        ar = q("select wl_agent_record_archive_result(%s,%s,%s,%s,'zone_entry', now()-interval '30 min', 0.7)",
+               agent, KEY, sid2, cam)[0]
+        assert ar["provenance_label"] == "Recovered from recorder archive", f"agent result label: {ar}"
+        st = q("select wl_agent_set_archive_scan_status(%s,%s,%s,'complete')", agent, KEY, sid2)[0]
+        assert st["status"] == "complete", f"agent status: {st}"
+        # cross-site: a foreign-site agent cannot record to this scan
+        KEY2 = "arch-agent-key-b"
+        agent_b = q("insert into agents (tenant_id, site_id, agent_key_hash) "
+                    "values (%s,%s, encode(sha256(%s::bytea),'hex')) returning id", tenant_b, site_b, KEY2)[0]
+        denied_agent = False
+        try:
+            q("select wl_agent_record_archive_result(%s,%s,%s,%s,'zone_entry', now(), 0.5)", agent_b, KEY2, sid2, cam_b)
+        except psycopg.Error:
+            denied_agent = True
+        assert denied_agent, "a foreign-site agent must NOT record to another site's scan"
+
+    print("Archive scan Postgres integration (0051" +
+          (" + agent execution 0055" if q("select exists(select 1 from pg_proc where proname='wl_agent_claim_archive_scans')")[0] else "") + "): PASS")
 
 
 if __name__ == "__main__":

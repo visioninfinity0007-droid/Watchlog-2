@@ -283,9 +283,15 @@ class AnalyticsEngine:
 
     @staticmethod
     def _event(rule, channel, track, event_type, when, direction=None,
-               duration=None, metadata=None):
+               duration=None, metadata=None, confidence=None):
         raw = f"{rule['id']}|{track.id}|{event_type}|{iso(when)}|{direction or ''}"
         dedupe = hashlib.sha256(raw.encode()).hexdigest()
+        meta = dict(metadata or {})
+        # Confidence rides in metadata so the existing analytic-events ingestion stores it
+        # unchanged; the server-side operations-incident bridge reads metadata->>'confidence'
+        # to apply the rule's confidence gate. Detection quality is never overstated.
+        if confidence is not None:
+            meta.setdefault("confidence", round(float(confidence), 3))
         return {
             "rule_id": str(rule["id"]),
             "channel": str(channel),
@@ -296,7 +302,7 @@ class AnalyticsEngine:
             "occurred_at": iso(when),
             "duration_seconds": round(float(duration), 2) if duration is not None else None,
             "dedupe_key": dedupe,
-            "metadata": metadata or {},
+            "metadata": meta,
         }
 
     def _prune_rule_state(self, when):
@@ -325,16 +331,17 @@ class AnalyticsEngine:
             rule_type = rule.get("rule_type")
             if rule_type == "health":
                 continue
+            geometry = rule.get("geometry") or {}
 
-            for track, _detection in matched:
+            for track, detection in matched:
                 if allowed_classes and track.label not in allowed_classes:
                     continue
+                conf = getattr(detection, "confidence", None)
                 key = (str(rule["id"]), track.id)
                 state = self.state.setdefault(key, {})
                 previous_point = state.get("point")
                 state["point"] = track.point
                 state["last_seen"] = when
-                geometry = rule.get("geometry") or {}
 
                 if rule_type == "line_crossing":
                     points = geometry.get("points") or []
@@ -359,9 +366,9 @@ class AnalyticsEngine:
                                  if previous_side < 0 < side else
                                  mapping.get("positive_to_negative", "out"))
                     emitted.append(self._event(
-                        rule, channel, track, "line_crossing", when, direction))
+                        rule, channel, track, "line_crossing", when, direction, confidence=conf))
 
-                elif rule_type in ("zone_entry", "zone_dwell"):
+                elif rule_type in ("zone_entry", "zone_exit", "zone_dwell", "vehicle_activity"):
                     polygon = geometry.get("points") or []
                     inside = point_in_polygon(track.point, polygon)
                     was_inside = state.get("inside")
@@ -369,9 +376,14 @@ class AnalyticsEngine:
                     if inside and not was_inside:
                         state["entered_at"] = when
                         state["dwell_emitted"] = False
-                        if rule_type == "zone_entry" and self._schedule_allows(rule, when):
+                        if rule_type in ("zone_entry", "vehicle_activity") and self._schedule_allows(rule, when):
                             emitted.append(self._event(
-                                rule, channel, track, "zone_entry", when))
+                                rule, channel, track,
+                                "vehicle_activity" if rule_type == "vehicle_activity" else "zone_entry",
+                                when, confidence=conf))
+                    if was_inside and not inside and rule_type == "zone_exit" and self._schedule_allows(rule, when):
+                        emitted.append(self._event(
+                            rule, channel, track, "zone_exit", when, confidence=conf))
                     if not inside:
                         state.pop("entered_at", None)
                         state["dwell_emitted"] = False
@@ -382,19 +394,74 @@ class AnalyticsEngine:
                         if elapsed >= threshold and self._schedule_allows(rule, when):
                             emitted.append(self._event(
                                 rule, channel, track, "dwell_completed", when,
-                                duration=elapsed))
+                                duration=elapsed, confidence=conf))
                             state["dwell_emitted"] = True
 
                 elif rule_type == "schedule_activity":
                     active = self._schedule_allows(rule, when)
                     if active and not state.get("schedule_emitted"):
                         emitted.append(self._event(
-                            rule, channel, track, "schedule_activity", when))
+                            rule, channel, track, "schedule_activity", when, confidence=conf))
                         state["schedule_emitted"] = True
                     elif not active:
                         state["schedule_emitted"] = False
 
-            if rule_type == "occupancy":
+            # ---- per-rule temporal primitives: presence/absence, queue/wait ----
+            # These evaluate the whole zone each sample (even with zero tracks), so an
+            # EMPTY zone can raise an "expected present / unattended" or "empty too long"
+            # exception. Absence is a STATE over monitored time, never a fabricated event.
+            if rule_type in ("zone_presence", "zone_absence"):
+                polygon = geometry.get("points") or []
+                present = any((not allowed_classes or t.label in allowed_classes)
+                              and point_in_polygon(t.point, polygon) for t, _ in matched)
+                rkey = (str(rule["id"]), "__zone__")
+                rstate = self.state.setdefault(rkey, {})
+                rstate["last_seen"] = when
+                threshold = int(rule.get("dwell_seconds") or 60)
+                if present:
+                    rstate["clear_since"] = None
+                    rstate["absence_emitted"] = False
+                else:
+                    if rstate.get("clear_since") is None:
+                        rstate["clear_since"] = when          # start the empty clock now
+                    empty_for = (when - rstate["clear_since"]).total_seconds()
+                    # zone_presence = expected present -> fire only inside the schedule window;
+                    # zone_absence = empty too long regardless of schedule.
+                    window_ok = self._schedule_allows(rule, when) if rule_type == "zone_presence" else True
+                    if window_ok and empty_for >= threshold and not rstate.get("absence_emitted"):
+                        klass = next(iter(allowed_classes)) if allowed_classes else "person"
+                        synthetic = Track(f"{channel}:{rule['id']}:absence", klass, (0, 0), when, when)
+                        et = "expected_absent" if rule_type == "zone_presence" else "zone_empty"
+                        emitted.append(self._event(
+                            rule, channel, synthetic, et, when,
+                            duration=empty_for, metadata={"empty_seconds": round(empty_for, 1)}))
+                        rstate["absence_emitted"] = True
+
+            elif rule_type == "queue_wait":
+                polygon = geometry.get("points") or []
+                count = sum(1 for t, _ in matched
+                            if (not allowed_classes or t.label in allowed_classes)
+                            and point_in_polygon(t.point, polygon))
+                rkey = (str(rule["id"]), "__queue__")
+                rstate = self.state.setdefault(rkey, {})
+                rstate["last_seen"] = when
+                min_len = int(rule.get("occupancy_min") or 1)
+                wait_seconds = int(rule.get("dwell_seconds") or 60)
+                if count >= min_len:
+                    if rstate.get("over_since") is None:
+                        rstate["over_since"] = when
+                    over_for = (when - rstate["over_since"]).total_seconds()
+                    if over_for >= wait_seconds and not rstate.get("queue_emitted") and self._schedule_allows(rule, when):
+                        synthetic = Track(f"{channel}:{rule['id']}:queue", "person", (0, 0), when, when)
+                        emitted.append(self._event(
+                            rule, channel, synthetic, "queue_wait", when,
+                            duration=over_for, metadata={"count": count, "min_length": min_len}))
+                        rstate["queue_emitted"] = True
+                else:
+                    rstate["over_since"] = None
+                    rstate["queue_emitted"] = False
+
+            elif rule_type == "occupancy":
                 polygon = (rule.get("geometry") or {}).get("points") or []
                 count = sum(
                     1 for track, _ in matched

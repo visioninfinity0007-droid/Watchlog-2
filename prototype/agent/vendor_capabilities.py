@@ -49,19 +49,21 @@ FIELD_PROVEN = {
 }
 
 # Transport / discovery hardening — honest current state. These are NOT per-driver methods.
+# Implemented in recorder_probe.py, but implementation != field-proven: each is "unverified"
+# (works in logic tests; not yet validated against real recorder hardware).
 TRANSPORT = {
     "custom_ports":         {"status": "unverified",
-                             "note": "the agent connects to whatever host:port is configured; not hardware-validated across vendors"},
+                             "note": "recorder_probe builds http/https base URLs for any configured port; not hardware-validated"},
     "https":               {"status": "unverified",
-                             "note": "https base_url works when configured; 443/8443 auto-probe not implemented"},
-    "https_self_signed":    {"status": "unsupported",
-                             "note": "requires future agent release — explicit self-signed trust handling"},
-    "port_classification":  {"status": "unsupported",
-                             "note": "requires future agent release — Hikvision SDK(8000) vs HTTP(80) port confusion detection"},
+                             "note": "recorder_probe tries https on 443 and 8443 as candidates; not hardware-validated"},
+    "https_self_signed":    {"status": "unverified",
+                             "note": "recorder_probe.tls_context/requests_verify trust self-signed ONLY when explicitly configured; not hardware-validated"},
+    "port_classification":  {"status": "unverified",
+                             "note": "recorder_probe.classify_port distinguishes Hikvision SDK(8000)/Dahua(37777)/Xiongmai(34567) from HTTP; not hardware-validated"},
     "onvif_ws_discovery":   {"status": "unverified",
-                             "note": "WS-Discovery probe exists (wsdiscovery.py); not hardware-validated"},
-    "multi_nic_subnet":     {"status": "unsupported",
-                             "note": "requires future agent release — discovery across multiple NICs/subnets"},
+                             "note": "WS-Discovery probe (wsdiscovery.py) + recorder_probe onvif candidates; not hardware-validated"},
+    "multi_nic_subnet":     {"status": "unverified",
+                             "note": "recorder_probe.local_subnets enumerates private /24s across NICs for discovery; not hardware-validated"},
 }
 
 _STATUS_ORDER = {"proven": 0, "unverified": 1, "unsupported": 2, "unknown": 3}
