@@ -19,6 +19,7 @@ SITE_HEALTH=(ROOT/"portal/app/site-health/page.js").read_text()
 LAYOUT=(ROOT/"portal/app/layout.js").read_text()
 VISUAL=(ROOT/"portal/app/visual-target.css").read_text()
 MODULE_VISUAL=(ROOT/"portal/app/module-target.css").read_text()
+DOCKERFILE=(ROOT/"portal/Dockerfile").read_text()
 RECIP=(ROOT/"prototype/supabase/migrations/0031_report_recipient_destinations.sql").read_text()
 AUTHZ=(ROOT/"prototype/supabase/migrations/0032_portal_operational_authz.sql").read_text()
 HEALTH=(ROOT/"prototype/supabase/migrations/0033_site_health_details.sql").read_text()
@@ -195,6 +196,20 @@ def check():
     assert 'Get-AuthenticodeSignature -FilePath $Path' in BUILD
     assert 'signature verification failed' in BUILD
     assert "FINAL SHA256" in BUILD
+
+    # Every NEXT_PUBLIC_* the portal reads must be wired ARG->ENV in the Docker
+    # build: Next inlines these at build time, so any that is not an ARG bakes
+    # EMPTY into the static export regardless of runtime env. This gap silently
+    # broke the marketing/installer/billing URLs on a domain switch until 2026-09.
+    portal_src = " ".join(
+        p.read_text(encoding="utf-8") for p in (ROOT / "portal").glob("**/*.js")
+        if "node_modules" not in p.parts and ".next" not in p.parts)
+    public_env = set(re.findall(r'NEXT_PUBLIC_[A-Z0-9_]+', portal_src))
+    assert public_env, "expected the portal to read some NEXT_PUBLIC_* config"
+    for name in sorted(public_env):
+        assert re.search(rf'^ARG {name}$', DOCKERFILE, re.M), (
+            f"{name} is read by the portal but not wired as ARG in portal/Dockerfile "
+            f"- it would bake empty on a domain/config switch")
 
 
 def main():
