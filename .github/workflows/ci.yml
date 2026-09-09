@@ -91,6 +91,8 @@ jobs:
         run: python prototype/tests/test_agent_runtime_e2e.py
       - name: Recorder hardware-probe harness — honest capability report + read-only + auth gate
         run: python prototype/tests/test_hardware_probe.py
+      - name: Old-agent forward-compatibility — frozen production engine vs the 0054-0059 server
+        run: python prototype/tests/test_old_agent_compat.py
       - name: Analytics sampler capacity tests
         run: python prototype/tests/test_analytics_sampler.py
       - name: Analytics Studio report rendering tests
@@ -283,6 +285,8 @@ jobs:
         run: python prototype/tests/e2e_operations_authoring_pg.py
       - name: Incident evidence integration — bounded stills + rule-authorized footage, authz + idempotency (0058)
         run: python prototype/tests/e2e_incident_evidence_pg.py
+      - name: Runtime capability + Operations gate integration — default-OFF safety + capability advertisement (0059)
+        run: python prototype/tests/e2e_runtime_capability_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies

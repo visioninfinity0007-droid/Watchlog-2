@@ -38,6 +38,11 @@ STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
 ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, retry rarely
+# What THIS runtime can execute. Advertised to the server (0059) so it never treats a feature as
+# usable before a compatible agent reports it. This is runtime capability, NOT field-proven hardware.
+RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
+                        "operations_evidence_still", "operations_evidence_clip",
+                        "archive_processing", "multi_agent_fencing", "recorder_probe_v2"]
 
 
 class Config(core.Config):
@@ -315,6 +320,14 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     # publish the single-authority verdict for the event/archive fences
                     if authority is not None:
                         authority["ok"] = lease.is_authoritative()
+                    # advertise what this runtime can execute; an older server (no 0059) or a
+                    # transient error just leaves the capability unadvertised -> server treats it
+                    # as unsupported, which is the safe default.
+                    try:
+                        cloud.call("wl_agent_report_capabilities", p_agent_id=state["agent_id"],
+                                   p_agent_key=state["agent_key"], p_capabilities=RUNTIME_CAPABILITIES)
+                    except (RuntimeError, requests.RequestException):
+                        pass
                     if payload.get("changed") and payload.get("config"):
                         version = int(payload.get("version") or version)
                         analytics.save_config(cfg.analytics_config_path, version,

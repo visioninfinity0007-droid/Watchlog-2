@@ -49,14 +49,14 @@ python prototype/tests/e2e_health_pg.py
 # incident bridge), 0055 (agent archive execution) and 0056 (governance reaches the agent).
 # They apply in numeric order AFTER the 0040/0041 baseline above — exactly as production will.
 # ---------------------------------------------------------------------------------------------
-echo "===== stage 3: operations + governance + authoring + evidence — 0049-0058 (0049-0053 live, 0054-0058 pending) ====="
-cp $MIG/0049_*.sql $MIG/005[0-8]_*.sql "$STAGE"/
+echo "===== stage 3: operations + governance + authoring + evidence + safety gate — 0049-0059 (0049-0053 live, 0054-0059 pending) ====="
+cp $MIG/0049_*.sql $MIG/005[0-9]_*.sql "$STAGE"/
 n3=$(ls "$STAGE"/*.sql | wc -l)
-echo "  staged $n3 migrations total (baseline 46 + 0040/0041 + 0049-0058 = 58)"
-[ "$n3" -eq 58 ] || { echo "FATAL: stage 3 expected 58 migrations, got $n3"; exit 1; }
+echo "  staged $n3 migrations total (baseline 46 + 0040/0041 + 0049-0059 = 59)"
+[ "$n3" -eq 59 ] || { echo "FATAL: stage 3 expected 59 migrations, got $n3"; exit 1; }
 WATCHLOG_MIGRATIONS_DIR="$STAGE" python "$APPLY"
 
-echo "===== step 8: prove the pending upgrade EXECUTES on the production-order DB ====="
+echo "===== step 8: prove the pending upgrade EXECUTES + stays DEFAULT-SAFE on the production-order DB ====="
 python prototype/tests/e2e_operations_pg.py        # 0049 lifecycle + versioning + authz + 0054 bridge
 python prototype/tests/e2e_report_pg.py            # 0050 executive report + completeness truth
 python prototype/tests/e2e_archive_pg.py           # 0051 bounded scan + 0055 agent execution + provenance
@@ -64,6 +64,7 @@ python prototype/tests/e2e_multiagent_pg.py        # 0052 single-authority lease
 python prototype/tests/e2e_config_governance_pg.py # 0056 governance/primitives travel to the runtime
 python prototype/tests/e2e_operations_authoring_pg.py  # 0057 every primitive authorable -> engine
 python prototype/tests/e2e_incident_evidence_pg.py     # 0058 bounded evidence: authz + idempotency
+python prototype/tests/e2e_runtime_capability_pg.py    # 0059 default-OFF gate + capability advertisement
 
 echo "===== step 9: re-run Phase-A health smoke — prove 0049-0056 did NOT disturb health ====="
 python prototype/tests/e2e_health_pg.py

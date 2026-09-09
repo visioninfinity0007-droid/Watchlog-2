@@ -83,8 +83,13 @@ def main() -> None:
     owner, tenant, site = bootstrap("ev-owner@example.com", "Ev Co", "Ev Site")
     cam = q("insert into cameras (tenant_id, site_id, channel, name) values (%s,%s,'1','Gate') returning id", tenant, site)[0]
     KEY = "ev-agent-key"
-    agent = q("insert into agents (tenant_id, site_id, agent_key_hash) "
-              "values (%s,%s, encode(sha256(%s::bytea),'hex')) returning id", tenant, site, KEY)[0]
+    agent = q("insert into agents (tenant_id, site_id, agent_key_hash, last_seen_at) "
+              "values (%s,%s, encode(sha256(%s::bytea),'hex'), now()) returning id", tenant, site, KEY)[0]
+    # 0059 gates evidence-task creation behind the site advertising the evidence capabilities; the
+    # agent must report them or the emitter (correctly) creates no task. (No-op before 0059.)
+    if q("select exists(select 1 from pg_proc where proname='wl_agent_report_capabilities')")[0]:
+        q("select wl_agent_report_capabilities(%s,%s,%s::jsonb)", agent, KEY,
+          json.dumps(["operations_evidence_still", "operations_evidence_clip"]))
 
     # foreign tenant/site + agent (for isolation checks)
     owner_b, tenant_b, site_b = bootstrap("ev-foreign@example.com", "Foreign Co", "Foreign Site")
