@@ -162,7 +162,7 @@ def main() -> None:
     if q("select exists(select 1 from pg_proc where proname='wl_set_rule_governance')")[0]:
         gr = make_rule(tenant, site, cam, name="Governed", rule_type="zone_entry")
         v0 = q("select rule_version from monitoring_rules where id=%s", gr)[0]
-        gov = as_user(owner, "select wl_set_rule_governance(%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s)",
+        gov = as_user(owner, "select wl_set_rule_governance(%s,%s::numeric,%s::int,%s::jsonb,%s::jsonb,%s,%s)",
                       gr, 0.85, 300, json.dumps([{"type": "capture_still"}]), json.dumps({}), True, True)[0]
         assert gov["confidence_min"] is not None and abs(float(gov["confidence_min"]) - 0.85) < 1e-6 \
             and gov["cooldown_seconds"] == 300, f"governance set: {gov}"
@@ -170,13 +170,13 @@ def main() -> None:
         assert q("select rule_version from monitoring_rules where id=%s", gr)[0] == v0 + 1, "governance change must bump rule_version"
         bad = False
         try:
-            as_user(owner, "select wl_set_rule_governance(%s,%s)", gr, 1.5)
+            as_user(owner, "select wl_set_rule_governance(%s,%s::numeric)", gr, 1.5)
         except psycopg.Error:
             bad = True
         assert bad, "confidence > 1 must be rejected"
         denied_gov = False
         try:
-            as_user(viewer, "select wl_set_rule_governance(%s,%s)", gr, 0.5)
+            as_user(viewer, "select wl_set_rule_governance(%s,%s::numeric)", gr, 0.5)
         except psycopg.Error:
             denied_gov = True
         assert denied_gov, "a viewer must NOT set rule governance"
