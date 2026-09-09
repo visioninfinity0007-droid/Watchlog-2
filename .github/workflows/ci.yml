@@ -259,6 +259,10 @@ jobs:
         run: python prototype/tests/e2e_operations_pg.py
       - name: Management report integration — executive report + completeness truth (0050)
         run: python prototype/tests/e2e_report_pg.py
+      - name: Archive scan integration — bounded scan + recovered-provenance + separation (0051)
+        run: python prototype/tests/e2e_archive_pg.py
+      - name: Multi-agent lease/fencing integration — single authority + failover (0052)
+        run: python prototype/tests/e2e_multiagent_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
