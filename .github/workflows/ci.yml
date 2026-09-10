@@ -107,6 +107,8 @@ jobs:
         run: python prototype/tests/test_analytics_portal_contract.py
       - name: Portal + installer alignment contract
         run: python prototype/tests/test_portal_alignment_contract.py
+      - name: Intelligence agent + reporting units (native-verify, config-drift, offline-spool, PDF, WhatsApp)
+        run: python -m pytest prototype/tests/test_native_verification.py prototype/tests/test_config_drift.py prototype/tests/test_spool_offline.py prototype/tests/test_intelligence_pdf.py prototype/tests/test_intelligence_whatsapp.py -q
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
@@ -300,6 +302,18 @@ jobs:
         run: python prototype/tests/e2e_runtime_capability_pg.py
       - name: Intelligence pipeline integration — Activity/Episode/Incident grouping + per-site promotion + provenance (0065)
         run: python prototype/tests/e2e_intelligence_pg.py
+      - name: Canonical daily-intelligence dataset integration — one dataset for portal/PDF/WhatsApp + tenant guard (0067)
+        run: python prototype/tests/e2e_daily_intelligence_pg.py
+      - name: Alert engine integration — dedup + severity threshold + atomic claim (0068)
+        run: python prototype/tests/e2e_alert_engine_pg.py
+      - name: Monthly rollup integration — month aggregate over the intelligence layers (0069)
+        run: python prototype/tests/e2e_monthly_rollup_pg.py
+      - name: Recorder capability KB integration — 18-model resolver verdicts, honest unknown (0066)
+        run: python prototype/tests/e2e_capability_kb_pg.py
+      - name: Journeys integration — multi-camera movement paths + provenance + idempotency (0070)
+        run: python prototype/tests/e2e_journeys_pg.py
+      - name: Intelligence RPC tenant-isolation integration — daily/monthly/journeys/policies (0067-0071)
+        run: python prototype/tests/e2e_intelligence_authz_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
