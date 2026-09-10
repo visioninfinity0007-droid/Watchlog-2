@@ -14,6 +14,13 @@ from __future__ import annotations
 
 import html as _html
 
+try:
+    from report_metrics import headline_metrics
+except ImportError:                                   # pragma: no cover - path shim
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from report_metrics import headline_metrics
+
 # Brand palette — identical to office_reporting so the PDF matches the WhatsApp/email surfaces.
 VIOLET = "#5B21FF"
 BLUE = "#1748D3"
@@ -246,29 +253,94 @@ def render_html(report: dict) -> str:
     )
 
 
-def render_pdf(report: dict) -> "bytes | None":
-    """Real PDF bytes when an HTML->PDF engine (WeasyPrint) is installed; else None.
+def render_pdf_html(report: dict) -> str:
+    """A PDF-optimized (table-based, no flexbox) branded document, rendered cleanly by the
+    packaged xhtml2pdf engine. Headline numbers come from headline_metrics (shared source)."""
+    m = headline_metrics(report)
+    meta = report.get("meta") or {}
+    db = report.get("day_boundaries") or {}
+    incidents = report.get("incidents") or []
+    restricted = report.get("restricted") or []
+    people = (report.get("people") or {}).get("summary") or {}
+    cov = report.get("coverage") or {}
+    ratio = float(cov.get("coverage_ratio") or 1)
+    honesty = report.get("honesty") or []
 
-    Never returns a fake/placeholder PDF — callers fall back to shipping render_html() and
-    letting a browser or the report-runner's headless converter produce the PDF.
-    """
-    doc = render_html(report)
+    inc_rows = "".join(
+        f'<tr><td>{_sev_badge(i.get("severity"))}</td><td><b>{_esc(str(i.get("type","")).replace("_"," "))}</b></td>'
+        f'<td>{_esc(i.get("camera"))}</td><td>{_esc(i.get("time"))}</td></tr>' for i in incidents)
+    inc_block = (f'<h2>What needs attention</h2><table class="grid" repeat="1"><thead><tr><th>Severity</th>'
+                 f'<th>Type</th><th>Camera</th><th>Time</th></tr></thead><tbody>{inc_rows}</tbody></table>'
+                 if incidents else '<h2>What needs attention</h2><p class="quiet">No incidents promoted — a quiet day.</p>')
+    restr_block = ("".join(f'<tr><td>{_esc(r.get("camera"))}</td><td>{_esc(r.get("purpose"))}</td>'
+                           f'<td>{_esc(r.get("episodes"))}</td><td>{_esc(r.get("last"))}</td></tr>' for r in restricted))
+    restr_block = (f'<h2>Restricted-area access</h2><table class="grid"><thead><tr><th>Camera</th><th>Purpose</th>'
+                   f'<th>Windows</th><th>Last</th></tr></thead><tbody>{restr_block}</tbody></table>' if restricted else "")
+    cov_warn = ("" if ratio >= 0.999 else
+                f'<p class="warn">Monitoring was not continuous — {_esc(len(cov.get("gaps") or []))} gap(s); activity during a gap is unobserved.</p>')
+    honesty_html = "".join(f"<li>{_esc(h)}</li>" for h in honesty)
+    partial = ' &nbsp; <b>PARTIAL DAY</b>' if meta.get("partial_day") else ''
+
+    css = ("@page { size: A4; margin: 1.5cm; }"
+           "body { font-family: Helvetica, Arial, sans-serif; color:#0B0B0F; font-size:10pt; }"
+           "h1 { color:#1748D3; font-size:17pt; margin:0; }"
+           "h2 { color:#1748D3; font-size:11pt; border-bottom:1px solid #E1E7F0; padding-bottom:2px; margin:14px 0 6px; }"
+           ".sub { color:#6B7280; font-size:9pt; }"
+           "table { width:100%; border-collapse:collapse; }"
+           "table.grid th { background:#F3F7FF; color:#6B7280; font-size:8pt; text-align:left; padding:4px 6px; }"
+           "table.grid td { border-bottom:1px solid #E1E7F0; padding:4px 6px; }"
+           "table.kv td { padding:3px 6px; border-bottom:1px solid #E1E7F0; }"
+           ".hero { background:#F3F7FF; padding:8px; }"
+           ".warn { background:#FFFAEB; color:#B54708; padding:6px; font-size:9pt; }"
+           ".quiet { color:#6B7280; }"
+           ".honesty { color:#6B7280; font-size:8pt; }")
+    return (
+        f'<html><head><meta charset="utf-8"><style>{css}</style></head><body>'
+        f'<table><tr><td><h1>WatchLog</h1><div class="sub">Daily Site Intelligence &middot; by Vision Infinity</div></td>'
+        f'<td align="right"><b>{_esc(m["site"])}</b><br/>{_esc(m["date"])} &middot; {_esc(meta.get("timezone"))}{partial}</td></tr></table>'
+        f'<div class="hero"><table class="kv">'
+        f'<tr><td>Opening</td><td><b>{_esc(m["opening"] or "—")}</b></td><td>Closing</td><td><b>{_esc(m["closing"] or "—")}</b></td>'
+        f'<td>Coverage</td><td><b>{_esc((str(m["coverage_pct"])+"%") if m["coverage_pct"] is not None else "—")}</b></td></tr>'
+        f'<tr><td>Incidents</td><td><b>{m["incidents_total"]}</b> ({m["critical"]} critical)</td>'
+        f'<td>After-hours</td><td><b>{_esc(m["after_hours"] if m["after_hours_verified"] else "not verified")}</b></td>'
+        f'<td>People</td><td class="sub">{m["probable_regular_staff"]} staff / {m["probable_visitor"]} visitor / {m["unclassified"]} unclassified (estimated)</td></tr>'
+        f'</table></div>'
+        f'{cov_warn}{inc_block}{restr_block}'
+        f'<ul class="honesty">{honesty_html}</ul>'
+        f'<div class="sub">Generated {_esc(meta.get("generated_at"))} &middot; {_esc(m["schema"])} &middot; detections are events observed on site, not a headcount.</div>'
+        '</body></html>')
+
+
+def render_pdf(report: dict) -> "bytes | None":
+    """Real PDF bytes from a packaged production engine. Tries WeasyPrint (high fidelity, if
+    installed) then xhtml2pdf (pure-Python, the shipped default). Returns None only when NO
+    engine is available — never a fake/placeholder PDF."""
     try:
         from weasyprint import HTML   # noqa: PLC0415
-    except Exception:                 # noqa: BLE001 — engine not installed in this env
-        return None
+        return HTML(string=render_html(report)).write_pdf()
+    except Exception:                 # noqa: BLE001 — WeasyPrint not installed / failed; fall through
+        pass
     try:
-        return HTML(string=doc).write_pdf()
+        import io
+        from xhtml2pdf import pisa    # noqa: PLC0415
+        buf = io.BytesIO()
+        status = pisa.CreatePDF(render_pdf_html(report), dest=buf)
+        data = buf.getvalue()
+        if status.err or not data.startswith(b"%PDF"):
+            return None
+        return data
     except Exception:                 # noqa: BLE001
         return None
 
 
 def pdf_engine_available() -> bool:
-    try:
-        import weasyprint  # noqa: F401,PLC0415
-        return True
-    except Exception:      # noqa: BLE001
-        return False
+    for mod in ("weasyprint", "xhtml2pdf"):
+        try:
+            __import__(mod)
+            return True
+        except Exception:      # noqa: BLE001
+            continue
+    return False
 
 
-__all__ = ["render_html", "render_pdf", "pdf_engine_available"]
+__all__ = ["render_html", "render_pdf_html", "render_pdf", "pdf_engine_available"]
