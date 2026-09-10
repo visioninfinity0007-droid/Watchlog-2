@@ -68,10 +68,12 @@ TIMEOUT = 30
 try:
     from email_template import render_html as _render_base_html, subject as html_subject
     import analytics_reporting
+    import office_reporting
 except ImportError:  # running from a different cwd
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from email_template import render_html as _render_base_html, subject as html_subject
     import analytics_reporting
+    import office_reporting
 
 
 # ---------------------------------------------------------------------
@@ -183,13 +185,21 @@ def _compose_security(report: dict) -> str:
 
 
 def compose(report: dict) -> str:
-    """Canonical plain-text report, including Site Intelligence when present."""
-    return analytics_reporting.compose(_compose_security, report)
+    """Canonical plain-text report: security events, office brief (0060), then
+    Site Intelligence when measurement-driven analytics exist. Order is
+    deliberate — the office brief is what an office customer reads first."""
+    security = _compose_security(report)
+    text = office_reporting.compose_append(security, report)
+    intel = analytics_reporting.intelligence_lines(report)
+    if intel:
+        text = text.rstrip() + "\n\n*Site intelligence*\n" + "\n".join(intel)
+    return text
 
 
 def render_html(report: dict, portal_url: str = "#") -> str:
-    """Canonical HTML report, including Site Intelligence when present."""
-    return analytics_reporting.render_html(_render_base_html, report, portal_url)
+    """Canonical HTML report: security events, office brief, Site Intelligence."""
+    rendered = analytics_reporting.render_html(_render_base_html, report, portal_url)
+    return office_reporting.insert_html(rendered, report)
 
 
 def _hhmm(ts: str, tz: str) -> str:
