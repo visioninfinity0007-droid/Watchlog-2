@@ -327,7 +327,7 @@ class Email:
 # run
 # ---------------------------------------------------------------------
 
-def run(send: bool, only_site: str | None, on: str | None) -> int:
+def run_legacy(send: bool, only_site: str | None, on: str | None) -> int:
     try:
         import psycopg
     except ImportError:
@@ -455,6 +455,67 @@ def run(send: bool, only_site: str | None, on: str | None) -> int:
     return 1 if failed else 0
 
 
+class _EvolutionTransport:
+    """Adapts the Evolution WhatsApp channel to the outbox transport interface. The idempotency
+    key is passed through best-effort; Evolution does not currently dedup on it, so delivery is
+    at-least-once (the outbox + provider key give effective-once only with a key-honoring
+    provider — see docs/design/DELIVERY_SEMANTICS.md)."""
+    name = "whatsapp"
+
+    def __init__(self):
+        self._wa = WhatsApp()
+
+    @property
+    def configured(self):
+        return self._wa.configured
+
+    def send(self, destination, text, idempotency_key):
+        return self._wa.send(destination, text, idempotency_key=idempotency_key)
+
+
+def run_intelligence(send: bool, only_site: str | None, on: str | None) -> int:
+    """DEFAULT M1 path: frozen snapshot (wl_generate_daily_report) -> render WhatsApp + PDF from
+    the payload -> durable outbox -> transport. One dataset, one snapshot, all surfaces agree."""
+    try:
+        import psycopg
+    except ImportError:
+        print("FATAL: pip install psycopg[binary]")
+        return 2
+    import intelligence_delivery as deliv
+
+    transport = _EvolutionTransport()
+    print(f"  whatsapp {'ready' if transport.configured else 'UNAVAILABLE (enqueue only)'}\n")
+    total_sent = total_enq = 0
+    with psycopg.connect(dsn(), connect_timeout=30, sslmode="require") as conn:
+        with conn.cursor() as cur:
+            sites = cur.execute("select id, tenant_id, name, timezone from sites"
+                                + (" where id = %s" if only_site else "") + " order by name",
+                                (only_site,) if only_site else ()).fetchall()
+            for site_id, tenant_id, name, tz in sites:
+                day = on or cur.execute("select ((now() at time zone %s)::date - 1)::text", (tz,)).fetchone()[0]
+                enq = deliv.enqueue_site_day(cur, site_id, tenant_id, day)
+                conn.commit()
+                total_enq += enq["enqueued"]
+                print(f"  === {name} — {day} — report {str(enq['report_id'])[:8]} — "
+                      f"{enq['enqueued']} recipient(s){' — PDF saved' if enq['pdf_saved'] else ''}"
+                      f"{' — REPORTING DISABLED' if enq['skipped'] else ''} ===")
+            if send and transport.configured:
+                drained = deliv.drain_outbox(cur, "whatsapp", transport)
+                conn.commit()
+                total_sent = drained["sent"]
+                print(f"\n  delivered {drained['sent']} / {drained['attempted']} attempted, {drained['failed']} failed")
+            else:
+                print("\n  (dry run / transport not configured — reports generated + enqueued, not sent)")
+    print(f"  {total_enq} enqueued, {total_sent} sent")
+    return 0
+
+
+def run(send: bool, only_site: str | None, on: str | None, legacy: bool = False) -> int:
+    """The default M1 report path is the canonical snapshot pipeline; --legacy uses the old
+    wl_daily_report compose/render path (kept for compatibility, not the default)."""
+    return run_legacy(send, only_site, on) if legacy else run_intelligence(send, only_site, on)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -462,8 +523,10 @@ def main() -> int:
                     help="actually deliver. Without this it only renders.")
     ap.add_argument("--site", help="one site uuid instead of all")
     ap.add_argument("--date", help="YYYY-MM-DD, default is yesterday per site")
+    ap.add_argument("--legacy", action="store_true",
+                    help="use the pre-canonical wl_daily_report path (compatibility only)")
     a = ap.parse_args()
-    return run(a.send, a.site, a.date)
+    return run(a.send, a.site, a.date, legacy=a.legacy)
 
 
 if __name__ == "__main__":

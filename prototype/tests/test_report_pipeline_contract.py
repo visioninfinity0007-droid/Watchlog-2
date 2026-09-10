@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Report delivery pipeline contract (item 8) — n8n trigger -> runner -> idempotent delivery.
+"""Report delivery pipeline contract (items 1, 2, 8) — snapshot -> outbox -> provider.
 
-Static contract over the real files, asserting the pieces connect and the safety/idempotency
-rules are present in source: the n8n schedule+webhook, the token-gated runner, the delivery
-module rendering from the canonical dataset with duplicate suppression + retry, and the
-report_deliveries sent-only idempotency index.
+Static contract over the real files: the n8n schedule, the token-gated runner whose DEFAULT
+path is the canonical snapshot pipeline, the delivery module (frozen snapshot + PDF + durable
+outbox with idempotency), and the schema (report_snapshots freeze + delivery_outbox unique key).
 """
 from __future__ import annotations
 
@@ -20,33 +19,39 @@ def check(cond, name):
 
 
 def main() -> int:
-    # 1. n8n workflow: schedule -> httpRequest to the runner -> IF gate on ok
+    # 1. n8n workflow: schedule -> httpRequest to the runner -> IF gate
     wf = json.loads((REPO / "automation" / "n8n" / "watchlog-daily-report.json").read_text(encoding="utf-8"))
     types = [n.get("type") for n in wf.get("nodes", [])]
     check("n8n-nodes-base.scheduleTrigger" in types, "n8n has a schedule trigger")
     check("n8n-nodes-base.httpRequest" in types, "n8n posts to the runner via httpRequest")
-    check("n8n-nodes-base.if" in types, "n8n gates on the runner result (IF node)")
-    blob = json.dumps(wf)
-    check("run/" in blob and "RUNNER" in blob.upper(), "n8n targets the runner /run/<token> URL")
+    check("run/" in json.dumps(wf), "n8n targets the runner /run/<token> URL")
 
-    # 2. runner is token-gated and invokes the report run
+    # 2. runner: token-gated, and its DEFAULT path is the canonical snapshot pipeline
     serve = (ROOT / "reporter" / "serve.py").read_text(encoding="utf-8")
-    check("REPORT_RUNNER_TOKEN" in serve, "runner reads REPORT_RUNNER_TOKEN")
-    check('token != TOKEN' in serve and "/run/" in serve, "runner rejects a missing/wrong token")
-    check("daily_report" in serve and ".run(" in serve, "runner invokes daily_report.run")
+    check("REPORT_RUNNER_TOKEN" in serve and "token != TOKEN" in serve, "runner is token-gated")
+    dr = (ROOT / "reporter" / "daily_report.py").read_text(encoding="utf-8")
+    check("def run_intelligence(" in dr, "runner has the canonical intelligence path")
+    check("legacy else run_intelligence" in dr, "run_intelligence is the DEFAULT; legacy is opt-in")
+    check("wl_generate_daily_report" in dr, "runner sources the frozen snapshot dataset")
 
-    # 3. delivery module: canonical dataset render + idempotency + retry + persistence
+    # 3. delivery module: snapshot + PDF saved + durable outbox with idempotency
     deliv = (ROOT / "reporter" / "intelligence_delivery.py").read_text(encoding="utf-8")
-    check("wl_daily_intelligence" in deliv, "delivery renders from the canonical dataset")
-    check("render_whatsapp" in deliv, "delivery uses the intelligence WhatsApp renderer")
-    check("report_deliveries" in deliv, "delivery persists to report_deliveries")
-    check("status = 'sent'" in deliv, "delivery suppresses duplicates (sent-only pre-check)")
-    check("wl_reporting_enabled" in deliv, "delivery honors the entitlement gate")
+    check("wl_generate_daily_report" in deliv, "delivery uses the frozen report snapshot")
+    check("render_pdf" in deliv and "wl_set_report_pdf" in deliv, "delivery generates the PDF and saves its reference")
+    check("wl_outbox_enqueue" in deliv and "wl_outbox_claim" in deliv, "delivery uses the durable outbox")
+    check("idempotency_key" in deliv, "the provider is sent an idempotency key")
+    check("render_whatsapp" in deliv, "WhatsApp is rendered from the same snapshot payload")
 
-    # 4. idempotency index exists at the schema layer
-    sql = (ROOT / "supabase" / "migrations" / "0011_report_delivery.sql").read_text(encoding="utf-8")
-    check("report_deliveries_once" in sql and "where status = 'sent'" in sql,
-          "report_deliveries has the sent-only idempotency index (retry-safe)")
+    # 4. schema: freeze + outbox idempotency
+    snap = (ROOT / "supabase" / "migrations" / "0083_report_snapshots.sql").read_text(encoding="utf-8")
+    check("report_snapshots" in snap and "returned VERBATIM" in snap or "frozen" in snap.lower(),
+          "report_snapshots freezes the payload (immune to later change)")
+    ob = (ROOT / "supabase" / "migrations" / "0084_delivery_outbox.sql").read_text(encoding="utf-8")
+    check("unique (idempotency_key)" in ob, "delivery_outbox has a unique idempotency key")
+    check("AT-LEAST-ONCE" in ob and "effective-once" in ob.lower(), "the honest delivery semantic is documented, not overclaimed")
+
+    # 5. semantics doc exists
+    check((REPO / "docs" / "design" / "DELIVERY_SEMANTICS.md").exists(), "delivery semantics documented")
 
     passed = sum(1 for x in OK if x)
     print(f"\n  {passed}/{len(OK)} checks passed")

@@ -1,102 +1,96 @@
 #!/usr/bin/env python3
-"""Daily-intelligence delivery pipeline (item 8).
+"""Daily-intelligence delivery pipeline (items 1, 2, 8).
 
-Connects the ONE canonical dataset (wl_daily_intelligence, 0074) to the report-delivery model
-(report_recipients + report_deliveries, 0011) with the full production semantics: entitlement
-gate, per-recipient idempotency (duplicate suppression via the sent-only unique index), status
-recording (sent / failed / skipped), and retry (a failed send is re-attempted; a sent one is
-never re-sent).
+The default M1 path: wl_generate_daily_report (frozen snapshot, 0083) -> render WhatsApp + PDF
+from THAT payload -> durable outbox (0084) with a provider idempotency key -> transport -> mark.
 
-The transport is injected, so the whole pipeline is testable with a mock — the real runner
-passes the Evolution WhatsApp transport. The DB handle is a psycopg cursor; the production
-runner (reporter/daily_report.py) uses the same SQL over its Supabase connection.
+- One frozen snapshot per site/day; the PDF is generated and its reference saved to the snapshot.
+- Delivery is durable + at-least-once: enqueue is idempotent, a crashed 'sending' attempt is
+  reclaimed with the SAME idempotency key so a key-honoring provider dedups (effective-once).
+- The transport is injected (mock in tests; Evolution WhatsApp in production).
 
-Delivery to a real client stays gated on a configured recipient — this module never invents a
-destination. Engineering-complete here means: given a recipient, the pipeline delivers, records,
-dedups, and retries correctly. CLIENT RECIPIENT is a separate, per-site input.
+Client delivery stays gated on a configured recipient — the pipeline never invents a destination.
 """
 from __future__ import annotations
 
+import hashlib
+
 try:
     from intelligence_whatsapp import render_whatsapp
+    import intelligence_pdf as ipdf
 except ImportError:                                   # pragma: no cover - path shim
     import sys, pathlib
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from intelligence_whatsapp import render_whatsapp
+    import intelligence_pdf as ipdf
 
 
 class MockTransport:
-    """Deterministic transport for tests. `fail_dests` always fail; everything else succeeds."""
+    """Deterministic transport that HONORS the idempotency key (a key-honoring provider): the
+    same key never sends twice, so a crashed-then-reclaimed attempt is effective-once."""
     name = "whatsapp"
 
     def __init__(self, fail_dests=None):
         self.sent = []
         self.fail = set(fail_dests or [])
+        self._by_key = {}
 
-    def send(self, destination, text):
+    def send(self, destination, text, idempotency_key):
+        if idempotency_key in self._by_key:
+            return (True, self._by_key[idempotency_key], None)     # provider dedup
         if destination in self.fail:
             return (False, None, "mock transport failure")
         pid = f"mock-{len(self.sent) + 1}"
-        self.sent.append((destination, text, pid))
+        self.sent.append((destination, text, pid, idempotency_key))
+        self._by_key[idempotency_key] = pid
         return (True, pid, None)
 
 
-def _events_count(intel: dict) -> int:
-    return int((((intel or {}).get("office") or {}).get("coverage") or {}).get("person_events") or 0)
+def enqueue_site_day(cur, site_id, tenant_id, report_date):
+    """Generate/fetch the frozen snapshot, render+save the PDF, and enqueue each enabled
+    WhatsApp recipient into the durable outbox. Idempotent (re-enqueue is a no-op)."""
+    gen = cur.execute("select wl_generate_daily_report(%s, %s::date)", (site_id, report_date)).fetchone()[0]
+    rid, payload = gen["report_id"], gen["payload"]
 
+    pdf = ipdf.render_pdf(payload)
+    if pdf:
+        cur.execute("select wl_set_report_pdf(%s, %s, %s)", (rid, hashlib.sha256(pdf).hexdigest(), len(pdf)))
 
-def deliver_site_day(cur, site_id, tenant_id, report_date, *, transport, dry_run=False):
-    """Render the canonical daily-intelligence WhatsApp message for one site/day and deliver it
-    to every enabled WhatsApp recipient, idempotently. Returns a summary dict."""
-    intel = cur.execute("select wl_daily_intelligence(%s, %s::date, true)", (site_id, report_date)).fetchone()[0]
-    text = render_whatsapp(intel)
-    events = _events_count(intel)
     enabled = cur.execute("select wl_reporting_enabled(%s)", (tenant_id,)).fetchone()[0]
-    recipients = cur.execute(
-        """select channel, destination, name from report_recipients
-            where tenant_id = %s and enabled and (site_id is null or site_id = %s)
-              and channel in ('whatsapp', 'both')""", (tenant_id, site_id)).fetchall()
-
-    res = {"sent": 0, "skipped": 0, "failed": 0, "message": text, "outcomes": []}
-
     if not enabled:
-        for _ch, dest, _who in recipients:
-            cur.execute(
-                """insert into report_deliveries (tenant_id, site_id, report_date, channel,
-                       destination, status, error, events)
-                   values (%s,%s,%s::date,'whatsapp',%s,'skipped','reporting disabled (trial/subscription)',%s)
-                   on conflict do nothing""",
-                (tenant_id, site_id, report_date, dest, events))
-            res["skipped"] += 1
-            res["outcomes"].append((dest, "skipped_disabled"))
-        return res
+        cur.execute("select wl_set_report_delivery_status(%s, 'skipped')", (rid,))
+        return {"report_id": rid, "enqueued": 0, "skipped": True, "pdf_saved": bool(pdf)}
 
-    for _ch, dest, _who in recipients:
-        already = cur.execute(
-            """select 1 from report_deliveries where site_id = %s and report_date = %s::date
-                and channel = 'whatsapp' and destination = %s and status = 'sent'""",
-            (site_id, report_date, dest)).fetchone()
-        if already:
-            res["skipped"] += 1
-            res["outcomes"].append((dest, "already_sent"))       # duplicate suppression
-            continue
-        if dry_run:
-            res["skipped"] += 1
-            res["outcomes"].append((dest, "dry_run"))
-            continue
-        ok, provider_id, err = transport.send(dest, text)
-        cur.execute(
-            """insert into report_deliveries (tenant_id, site_id, report_date, channel,
-                   destination, status, provider_id, error, events)
-               values (%s,%s,%s::date,'whatsapp',%s,%s,%s,%s,%s) on conflict do nothing""",
-            (tenant_id, site_id, report_date, dest, "sent" if ok else "failed", provider_id, err, events))
-        if ok:
-            res["sent"] += 1
-            res["outcomes"].append((dest, "sent"))
-        else:
-            res["failed"] += 1
-            res["outcomes"].append((dest, "failed"))
+    recips = cur.execute(
+        """select destination from report_recipients where tenant_id = %s and enabled
+            and (site_id is null or site_id = %s) and channel in ('whatsapp','both')""",
+        (tenant_id, site_id)).fetchall()
+    for (dest,) in recips:
+        cur.execute("select wl_outbox_enqueue(%s, 'whatsapp', %s)", (rid, dest))
+    return {"report_id": rid, "enqueued": len(recips), "skipped": False, "pdf_saved": bool(pdf)}
+
+
+def drain_outbox(cur, channel, transport, limit=100, stale_seconds=300):
+    """Claim due deliveries (incl. reclaimed crash-edge rows), render each from its FROZEN
+    snapshot, send with the idempotency key, and record the outcome."""
+    claimed = cur.execute("select wl_outbox_claim(%s, %s, %s)", (channel, limit, stale_seconds)).fetchone()[0]
+    res = {"attempted": len(claimed), "sent": 0, "failed": 0}
+    for row in claimed:
+        snap = cur.execute("select wl_get_report_snapshot(%s)", (row["report_id"],)).fetchone()[0]
+        text = render_whatsapp((snap or {}).get("payload") or {})
+        ok, provider_id, err = transport.send(row["destination"], text, row["idempotency_key"])
+        cur.execute("select wl_outbox_mark(%s, %s, %s, %s)", (row["id"], ok, provider_id, err))
+        cur.execute("select wl_set_report_delivery_status(%s, %s)", (row["report_id"], "delivered" if ok else "failed"))
+        res["sent" if ok else "failed"] += 1
     return res
 
 
-__all__ = ["deliver_site_day", "MockTransport"]
+def deliver_site_day(cur, site_id, tenant_id, report_date, *, transport, dry_run=False):
+    """Convenience: enqueue this site's report then drain the WhatsApp outbox."""
+    enq = enqueue_site_day(cur, site_id, tenant_id, report_date)
+    if dry_run or enq["skipped"]:
+        return {**enq, "attempted": 0, "sent": 0, "failed": 0}
+    return {**enq, **drain_outbox(cur, "whatsapp", transport)}
+
+
+__all__ = ["deliver_site_day", "enqueue_site_day", "drain_outbox", "MockTransport"]
