@@ -105,6 +105,86 @@ def test_inspect_survives_partial_failure():
     assert r["data"]["video_loss"] == {"supported": False}        # failed read -> honest default
 
 
+class MockRecorder:
+    """In-memory recorder with real read-back, for the transactional write engine.
+    apply_broken simulates a write that returns 200 but does not actually change state."""
+    def __init__(self, apply_broken=False):
+        self.apply_broken = apply_broken
+        self.smd = {"1": {"enable": True, "human": True, "vehicle": True, "sensitivity": "Middle"}}
+        self.titles = {"1": "Channel1"}
+        self.clock = {"current_time": "2026-09-10 15:00:00", "timezone": "Islamabad",
+                      "dst_enabled": True, "ntp_enabled": False, "ntp_server": "x"}
+
+    def get_smd(self, ch):
+        return dict(self.smd[str(ch)])
+
+    def set_smd(self, ch, **kw):
+        if self.apply_broken:
+            return
+        for k, v in kw.items():
+            if v is not None:
+                self.smd[str(ch)][k] = v
+
+    def get_channel_title(self, ch):
+        return self.titles.get(str(ch))
+
+    def set_channel_title(self, ch, name):
+        if self.apply_broken:
+            return
+        self.titles[str(ch)] = name
+
+    def get_clock(self):
+        return dict(self.clock)
+
+    def set_time_config(self, **kw):
+        for k, v in kw.items():
+            if v is not None and k in self.clock:
+                self.clock[k] = v
+
+
+def test_smd_write_read_back_verified():
+    r = MockRecorder()
+    res = site_control.execute_write(r, "configure_smd", {"channel": "1", "vehicle": False})
+    assert res["ok"] and res["verified"] and res["changed"]
+    assert res["before"]["vehicle"] is True and res["after"]["vehicle"] is False
+    assert r.smd["1"]["vehicle"] is False and r.smd["1"]["human"] is True   # minimal diff
+
+
+def test_write_is_noop_when_already_desired():
+    res = site_control.execute_write(MockRecorder(), "configure_smd", {"channel": "1", "vehicle": True})
+    assert res["ok"] and res["verified"] and res["changed"] is False
+
+
+def test_write_verify_fail_rolls_back():
+    r = MockRecorder(apply_broken=True)            # write silently does not take
+    res = site_control.execute_write(r, "configure_smd", {"channel": "1", "vehicle": False})
+    assert res["ok"] is False and res["verified"] is False and res["rolled_back"] is True
+    assert r.smd["1"]["vehicle"] is True           # state preserved
+
+
+def test_apply_fault_triggers_rollback():
+    class Raises(MockRecorder):
+        def set_smd(self, ch, **kw):
+            raise DriverError("recorder write failed")
+    r = Raises()
+    res = site_control.execute_write(r, "configure_smd", {"channel": "1", "vehicle": False})
+    assert res["ok"] is False and "error" in res
+    assert r.smd["1"]["vehicle"] is True           # no partial mutation left behind
+
+
+def test_rename_and_time_writes_verify():
+    r = MockRecorder()
+    a = site_control.execute_write(r, "rename_channel", {"channel": "1", "name": "Reception"})
+    assert a["ok"] and r.titles["1"] == "Reception"
+    b = site_control.execute_write(r, "configure_time",
+                                   {"dst_enabled": False, "ntp_enabled": True})
+    assert b["ok"] and r.clock["dst_enabled"] is False and r.clock["ntp_enabled"] is True
+
+
+def test_unsupported_write_refused():
+    assert site_control.execute_write(MockRecorder(), "factory_reset", {})["ok"] is False
+
+
 def test_command_worker_is_dormant_when_disabled():
     """OFF by default: a new capability is never auto-enabled on a live site."""
     import threading

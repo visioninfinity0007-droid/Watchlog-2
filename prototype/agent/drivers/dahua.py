@@ -274,6 +274,68 @@ class DahuaDriver(NvrDriver):
             return {"supported": False, "channels": {}}
         return {"supported": True, "channels": out}
 
+    # -- focused reads + SAFE writes (Site Control managed tier; field-proven on DH-XVR1B08-I) --
+
+    def get_channel_title(self, channel) -> "str | None":
+        ch = int(str(channel)) - 1
+        try:
+            kv = _parse_kv(self._get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle"))
+        except DriverError:
+            return None
+        return kv.get(f"table.ChannelTitle[{ch}].Name")
+
+    def set_channel_title(self, channel, name) -> None:
+        import urllib.parse
+        ch = int(str(channel)) - 1
+        self._get("/cgi-bin/configManager.cgi?action=setConfig&"
+                  f"ChannelTitle[{ch}].Name={urllib.parse.quote(str(name), safe='')}")
+
+    def get_smd(self, channel) -> dict:
+        ch = int(str(channel)) - 1
+        kv = _parse_kv(self._get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"))
+        def b(key):
+            v = kv.get(f"table.SmartMotionDetect[{ch}].{key}")
+            return None if v is None else (str(v).lower() == "true")
+        return {"enable": b("Enable"),
+                "human": b("ObjectTypes.Human"),
+                "vehicle": b("ObjectTypes.Vehicle"),
+                "sensitivity": kv.get(f"table.SmartMotionDetect[{ch}].Sensitivity")}
+
+    def set_smd(self, channel, human=None, vehicle=None, sensitivity=None, enable=None) -> None:
+        ch = int(str(channel)) - 1
+        def tf(v):
+            return "true" if v else "false"
+        parts = []
+        if enable is not None:
+            parts.append(f"SmartMotionDetect[{ch}].Enable={tf(enable)}")
+        if human is not None:
+            parts.append(f"SmartMotionDetect[{ch}].ObjectTypes.Human={tf(human)}")
+        if vehicle is not None:
+            parts.append(f"SmartMotionDetect[{ch}].ObjectTypes.Vehicle={tf(vehicle)}")
+        if sensitivity is not None:
+            parts.append(f"SmartMotionDetect[{ch}].Sensitivity={sensitivity}")
+        for p in parts:
+            self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
+
+    def set_time_config(self, dst_enabled=None, ntp_enabled=None,
+                        ntp_server=None, timezone_index=None) -> None:
+        import urllib.parse
+        def tf(v):
+            return "true" if v else "false"
+        parts = []
+        if dst_enabled is not None:
+            parts.append(f"Locales.DSTEnable={tf(dst_enabled)}")
+        if ntp_enabled is not None:
+            parts.append(f"NTP.Enable={tf(ntp_enabled)}")
+        if ntp_server:
+            parts.append(f"NTP.Address={urllib.parse.quote(str(ntp_server), safe='')}")
+        if timezone_index is not None:
+            parts.append(f"NTP.TimeZone={int(timezone_index)}")
+        for p in parts:
+            self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
+
     def get_clock(self) -> dict:
         """Recorder clock/timezone/DST/NTP, read-only (global.cgi + Locales + NTP config)."""
         def _cfg(name):

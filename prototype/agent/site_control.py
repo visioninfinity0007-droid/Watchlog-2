@@ -99,4 +99,93 @@ def execute_read(driver, action: str, params: "dict | None" = None) -> dict:
         return {"action": action, "ok": False, "error": type(e).__name__}
 
 
-__all__ = ["READ_ACTIONS", "execute_read", "inspect"]
+# ---------------------------------------------------------------------
+# SAFE WRITE plane (managed tier): read -> backup -> minimal diff -> apply -> read-back ->
+# verify; on a failed verify or a driver fault, roll back to the pre-write values and verify
+# the rollback. Only field-proven writes; the recorder-capability gate is enforced cloud-side.
+# ---------------------------------------------------------------------
+
+WRITE_ACTIONS = ("rename_channel", "configure_smd", "configure_time")
+
+# The recorder-capability key each write depends on (checked cloud-side against the model).
+WRITE_CAPABILITY = {
+    "rename_channel": "channel_title",
+    "configure_smd": "human_vehicle_classification",
+    "configure_time": "time_ntp_config",
+}
+
+_SMD_FIELDS = ("human", "vehicle", "sensitivity", "enable")
+_TIME_FIELDS = ("dst_enabled", "ntp_enabled")
+
+_WRITE_SPECS = {
+    "rename_channel": {
+        "read":    lambda d, p: {"name": d.get_channel_title(p["channel"])},
+        "desired": lambda p: {"name": p["name"]},
+        "apply":   lambda d, p, v: d.set_channel_title(p["channel"], v["name"]),
+    },
+    "configure_smd": {
+        "read":    lambda d, p: {k: v for k, v in d.get_smd(p["channel"]).items() if k in _SMD_FIELDS},
+        "desired": lambda p: {k: p[k] for k in _SMD_FIELDS if k in p},
+        "apply":   lambda d, p, v: d.set_smd(p["channel"], **v),
+    },
+    "configure_time": {
+        "read":    lambda d, p: {k: v for k, v in d.get_clock().items() if k in _TIME_FIELDS},
+        "desired": lambda p: {k: p[k] for k in _TIME_FIELDS if k in p},
+        "apply":   lambda d, p, v: d.set_time_config(**v),
+    },
+}
+
+
+def _matches(state: dict, desired: dict) -> bool:
+    return all(state.get(k) == val for k, val in desired.items())
+
+
+def _rollback(read, apply, before: dict, desired: dict) -> bool:
+    """Re-apply the pre-write values for the fields we changed, then verify the restore."""
+    try:
+        restore = {k: before.get(k) for k in desired}
+        apply(restore)
+        return _matches(read(), restore)
+    except Exception:                          # noqa: BLE001
+        return False
+
+
+def execute_write(driver, action: str, params: "dict | None" = None) -> dict:
+    """One transactional safe write. Returns before/after/verified/changed/rolled_back — an
+    HTTP 200 is never treated as success; only a matching read-back is. The action must be in
+    WRITE_ACTIONS; capability + authorization are gated cloud-side before this ever runs."""
+    params = params or {}
+    spec = _WRITE_SPECS.get(action)
+    if spec is None:
+        return {"action": action, "ok": False, "error": "unsupported_write_action"}
+    read = lambda: spec["read"](driver, params)          # noqa: E731
+    apply = lambda v: spec["apply"](driver, params, v)   # noqa: E731
+    try:
+        before = read()
+    except DriverError as e:
+        return {"action": action, "ok": False, "error": _sanitise(e)}
+    desired = spec["desired"](params)
+    if not desired:
+        return {"action": action, "ok": False, "error": "no_desired_state", "before": before}
+    if _matches(before, desired):              # minimal diff: nothing to change
+        return {"action": action, "ok": True, "verified": True, "changed": False,
+                "before": before, "after": before}
+    try:
+        apply(desired)
+    except DriverError as e:                    # apply faulted -> restore
+        return {"action": action, "ok": False, "error": _sanitise(e),
+                "before": before, "rolled_back": _rollback(read, apply, before, desired)}
+    try:
+        after = read()
+    except DriverError:
+        after = None
+    if after is not None and _matches(after, desired):
+        return {"action": action, "ok": True, "verified": True, "changed": True,
+                "before": before, "after": after, "rollback_available": True}
+    # read-back did not match the desired state -> roll back and verify the rollback
+    return {"action": action, "ok": False, "verified": False, "before": before,
+            "after": after, "rolled_back": _rollback(read, apply, before, desired)}
+
+
+__all__ = ["READ_ACTIONS", "WRITE_ACTIONS", "WRITE_CAPABILITY",
+           "execute_read", "execute_write", "inspect"]

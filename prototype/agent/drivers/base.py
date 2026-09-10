@@ -253,6 +253,25 @@ class NvrDriver:
         """
         return {"supported": False}
 
+    # -- focused reads + SAFE writes (Site Control managed tier). A driver that has not
+    #    field-proven a write MUST NOT implement it — the default refuses so the
+    #    transactional executor reports 'unsupported' rather than a silent no-op. --
+
+    def get_channel_title(self, channel) -> "str | None":
+        return None
+
+    def set_channel_title(self, channel, name) -> None:
+        raise DriverError("channel title write not supported on this driver")
+
+    def get_smd(self, channel) -> dict:
+        return {}
+
+    def set_smd(self, channel, **kwargs) -> None:
+        raise DriverError("SMD write not supported on this driver")
+
+    def set_time_config(self, **kwargs) -> None:
+        raise DriverError("time config write not supported on this driver")
+
     def current_faults(self) -> dict:
         """Current, PRESENT-TENSE recorder fault state, read-only, from an active vendor API.
 
