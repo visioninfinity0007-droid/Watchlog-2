@@ -51,9 +51,14 @@ re-publish) was performed.
 
 The agent source changed this session: `native_verification.py` (new), `config_drift.py`
 (new), and an edit to `native_event_collector.py`. **The 0.4.2 installer published earlier no
-longer matches source.** Before any on-box install, the versioned 0.4.2 candidate must be
-**rebuilt from HEAD and re-hash-verified** (the Windows Release + Security Gate workflows do
-this on the pushed SHA). `/latest/` remains untouched.
+longer matches source.** The Windows Release workflow was dispatched on the final SHA `3aeb93d`
+and **rebuilt + hash-verified the installer** — CI artifact `WatchLog-Windows-17` (~345 MB):
+
+- Rebuilt installer SHA-256 = `F0D1317EAC207B28AE1CDAC48F561D71C3C59EE61E933E77DBB9056035FFC6B3`
+- Previously **published** 0.4.2 installer = `3B69D99DB2417865E45BE793E3B6974A63334FB8863EFC10ECE14DEBA36F9734` — **different**, confirming the published artifact is stale.
+
+Before field use, publish/install the **rebuilt** candidate (or a signed production build from
+the same SHA), not the stale one. `/latest/` remains untouched.
 
 ## Genuinely blocked (item 29 — do not wait)
 
