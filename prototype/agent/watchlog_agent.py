@@ -912,14 +912,21 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
 
 
 def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
-                  stop: threading.Event) -> None:
+                  stop: threading.Event, resume_evt: "threading.Event | None" = None) -> None:
     """Run the health cycle on its OWN thread so a probe stall can never delay heartbeat or
-    event upload. Jittered interval so a fleet does not probe in lockstep."""
+    event upload. Jittered interval so a fleet does not probe in lockstep. When the main loop
+    signals a resume (site PC woke from sleep), reconcile IMMEDIATELY instead of waiting a full
+    interval — so a camera that failed while the PC was asleep is caught right away (the H2
+    recorder-state reconciliation runs inside health_cycle)."""
     stop.wait(min(10, cfg.health_seconds))              # let enrollment/sync settle first
     while not stop.is_set():
         health_cycle(cloud, state, cfg, holder)
         jitter = random.uniform(0, max(1.0, cfg.health_seconds * 0.2))
-        stop.wait(cfg.health_seconds + jitter)
+        if resume_evt is not None:
+            if resume_evt.wait(cfg.health_seconds + jitter):
+                resume_evt.clear()                      # woke early for resume reconciliation
+        else:
+            stop.wait(cfg.health_seconds + jitter)
 
 
 # --- commands ----------------------------------------------------------
@@ -1114,7 +1121,11 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                               daemon=True, name="collector")
     worker.start()
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
-    health = threading.Thread(target=health_worker, args=(cfg, state, cloud, holder, stop),
+    import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
+    resume_evt = threading.Event()
+    cov = coverage.CoverageMonitor(loop_period=1.0)
+    health = threading.Thread(target=health_worker,
+                              args=(cfg, state, cloud, holder, stop, resume_evt),
                               daemon=True, name="health")
     health.start()
 
@@ -1123,9 +1134,20 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         f"Ctrl-C to stop.")
 
     next_up = next_beat = 0.0
+    last_wall = time.time()
     try:
         while True:
             clock = time.monotonic()
+            now_wall = time.time()
+            # Suspend/resume detection: a big wall-clock jump across the ~1 s loop means the
+            # site PC was asleep/hibernated/stalled and WatchLog was NOT observing the site.
+            gap = cov.tick(last_wall, now_wall)
+            last_wall = now_wall
+            if gap is not None:
+                log(f"resume: site not observed for ~{int(gap.ended_at - gap.started_at)}s "
+                    f"(site PC sleep/suspend); reconciling recorder health now")
+                resume_evt.set()                        # immediate health reconciliation
+            cov.report_pending(cloud, state)            # best-effort; retries while cloud down
             if clock >= next_up:
                 next_up = clock + cfg.upload_seconds
                 try:
@@ -1144,6 +1166,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
     except KeyboardInterrupt:
         log("stopping...")
         stop.set()
+        resume_evt.set()                                # wake the health thread so it can exit
         worker.join(timeout=5)
         health.join(timeout=5)
         spool.close()

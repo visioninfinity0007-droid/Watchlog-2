@@ -15,6 +15,50 @@ from __future__ import annotations
 
 import html
 
+# Agent-attributed / server-derived coverage-gap causes -> customer-facing wording.
+_CAUSE = {
+    "site_pc_suspend": "site PC asleep",
+    "agent_restart": "agent restarting",
+    "recorder_lan_lost": "recorder LAN lost",
+    "cloud_link_lost": "cloud link lost",
+    "agent_unreachable": "agent offline",
+    "cloud_link_gap": "cloud link lost",
+    "startup": "agent starting",
+    "unknown": "not verified",
+}
+
+
+def _fmt_local(iso, tz: str) -> str:
+    """An ISO timestamp -> HH:MM in the site's timezone (gaps arrive as UTC ISO)."""
+    if not iso:
+        return "?"
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        return dt.astimezone(ZoneInfo(tz)).strftime("%H:%M")
+    except Exception:                                  # noqa: BLE001
+        return str(iso)[11:16]
+
+
+def _coverage_line(report: dict) -> "str | None":
+    """One honest monitoring-coverage line: what fraction of the period WatchLog actually
+    verified, and (when < 100%) the largest not-monitored windows with their cause."""
+    mc = (report.get("office") or {}).get("monitoring_coverage") or {}
+    ratio = mc.get("coverage_ratio")
+    if ratio is None:
+        return None
+    pct = round(float(ratio) * 100)
+    if pct >= 100:
+        return "Monitoring coverage: 100% of the reporting period."
+    tz = report.get("timezone") or "UTC"
+    gaps = mc.get("gaps") or []
+    shown = "; ".join(f"{_fmt_local(g.get('start'), tz)}-{_fmt_local(g.get('end'), tz)} "
+                      f"({_CAUSE.get(g.get('cause'), g.get('cause') or 'not verified')})"
+                      for g in gaps[:2])
+    tail = f" Not monitored: {shown}." if shown else ""
+    return f"Monitoring coverage: {pct}% of the reporting period.{tail}"
+
 
 def has_office(report: dict) -> bool:
     o = report.get("office") or {}
@@ -62,6 +106,10 @@ def office_lines(report: dict) -> list[str]:
     agent = o.get("agent") or {}
     if agent and not agent.get("online", True):
         lines.append("Note: the site agent is not currently reporting — today's coverage may be incomplete.")
+
+    cov = _coverage_line(report)
+    if cov:
+        lines.append(cov)
 
     lines.append("(Figures are activity detections, not a unique headcount.)")
     return lines
@@ -116,6 +164,9 @@ def office_html(report: dict) -> str:
                      f"{_windows(int(r.get('episodes') or 0))}, last {r.get('last')}"
                      + (f", {ah} after-hours" if ah else ""))
     rows += _row("After-hours activity", str(int(o.get("after_hours_total") or 0)))
+    mc = o.get("monitoring_coverage") or {}
+    if mc.get("coverage_ratio") is not None:
+        rows += _row("Monitoring coverage", f"{round(float(mc['coverage_ratio']) * 100)}%")
     if not rows:
         return ""
     return (

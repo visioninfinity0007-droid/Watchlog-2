@@ -18,7 +18,7 @@ import office_reporting as orp  # noqa: E402
 import daily_report  # noqa: E402
 
 
-def _office(full_day=False, after_hours=0):
+def _office(full_day=False, after_hours=0, coverage_ratio=1.0, gaps=None):
     return {
         "coverage": {"first": "14:18", "last": "15:40",
                      "person_events": 231, "full_day": full_day},
@@ -35,6 +35,9 @@ def _office(full_day=False, after_hours=0):
         ],
         "after_hours_total": after_hours,
         "agent": {"last_seen": "2026-09-10T10:40:00+00:00", "online": True},
+        "monitoring_coverage": {"coverage_ratio": coverage_ratio,
+                                "monitored_seconds": 0, "unverified_seconds": 0,
+                                "gaps": gaps or []},
     }
 
 
@@ -76,6 +79,22 @@ class OfficeReportingTests(unittest.TestCase):
         self.assertIn("Office activity", out)
         self.assertLess(out.index("Office activity"), out.index("CTA"))
         self.assertIn("not a unique headcount", out)
+
+    def test_monitoring_coverage_full_is_stated(self):
+        out = orp.compose_append("SECURITY", {"office": _office()})
+        self.assertIn("Monitoring coverage: 100% of the reporting period.", out)
+
+    def test_monitoring_coverage_partial_shows_cause_in_local_time(self):
+        gaps = [{"start": "2026-09-10T21:21:00+00:00",
+                 "end": "2026-09-11T01:28:00+00:00", "cause": "site_pc_suspend"}]
+        report = {"office": _office(coverage_ratio=0.83, gaps=gaps),
+                  "timezone": "Asia/Karachi"}
+        out = orp.compose_append("SECURITY", report)
+        self.assertIn("Monitoring coverage: 83% of the reporting period.", out)
+        self.assertIn("site PC asleep", out)
+        self.assertIn("02:21-06:28", out)          # 21:21/01:28 UTC -> +05:00 PKT
+        # never claims it observed the asleep window
+        self.assertIn("Not monitored:", out)
 
     def test_canonical_report_orders_office_before_site_intelligence(self):
         report = {

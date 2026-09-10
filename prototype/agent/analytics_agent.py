@@ -549,8 +549,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                                args=(cfg, state, stop, authority),
                                daemon=True, name="archive")
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
+    import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
+    resume_evt = threading.Event()
+    cov = coverage.CoverageMonitor(loop_period=1.0)
     health = threading.Thread(target=core.health_worker,
-                              args=(cfg, state, cloud, holder, stop),
+                              args=(cfg, state, cloud, holder, stop, resume_evt),
                               daemon=True, name="health")
     collector.start()
     analytic.start()
@@ -577,9 +580,20 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
              f"heartbeat every {cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, "
              f"outbound only. Ctrl-C to stop.")
     next_upload = next_heartbeat = 0.0
+    last_wall = time.time()
     try:
         while True:
             clock = time.monotonic()
+            now_wall = time.time()
+            # Suspend/resume detection (site PC sleep) — same rule as watchlog_agent.cmd_run:
+            # a big wall-clock jump across the ~1 s loop means WatchLog was NOT observing.
+            gap = cov.tick(last_wall, now_wall)
+            last_wall = now_wall
+            if gap is not None:
+                core.log(f"resume: site not observed for ~{int(gap.ended_at - gap.started_at)}s "
+                         f"(site PC sleep/suspend); reconciling recorder health now")
+                resume_evt.set()                        # immediate health reconciliation
+            cov.report_pending(cloud, state)            # best-effort; retries while cloud down
             if clock >= next_upload:
                 next_upload = clock + cfg.upload_seconds
                 # Fence the authoritative event write (native recorder events + incidents) on the
@@ -607,6 +621,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         core.log("stopping...")
     finally:
         stop.set()
+        resume_evt.set()                                # wake the health thread so it can exit
         collector.join(timeout=5)
         analytic.join(timeout=5)
         archive.join(timeout=5)
