@@ -62,3 +62,21 @@ An action executes only when, **for the exact recorder model** (resolved from th
 | 2×10 cameras | n/a | n/a | n/a | 1×8 delivered | **Commercial decision** |
 
 **Legend:** code-complete = built + unit/txn-tested on branch; gated = passes CI/SG/WR on the exact SHA; deployed = live in prod; field-proven = demonstrated on the real site; client-accepted = signed.
+
+## 8. Release candidate identity + fresh CI (exact SHA, all green)
+| Item | Value |
+| --- | --- |
+| Source SHA (reviewed = built) | `3faded4aef5f03c94e01d18b2c01b966abd32734` |
+| Version | **0.4.2** (all three exes ProductVersion 0.4.2; runtime 0.4.2; wl-upgrade verify-version passes at 0.4.2, rejects 9.9.9) |
+| CI (fork, this SHA) | run `34492989711` — **success** |
+| Windows Security Gate (this SHA) | run `34493023557` — **success** |
+| Windows Release / RC (this SHA) | run `34493026828` — **success** |
+| Artifact | `WatchLog-Windows-16` id `10159009351` (345,011,373 bytes) |
+| `watchlog-agent.exe` SHA-256 | `2D8F94776CECA571F901A347E905DBD24714A2EBED75576D7EB510A4E9BB3449` |
+| `watchlog-setup-ui.exe` SHA-256 | `6FB85319C3D4ABDD0CE4ACDD00FFE5A2C442FEB571D13CA4C6A330A619ED270C` |
+| `WatchLog-Setup.exe` (installer) SHA-256 | `3B69D99DB2417865E45BE793E3B6974A63334FB8863EFC10ECE14DEBA36F9734` |
+
+CI caught one real defect (the office-brief hook broke `test_portal_alignment_contract` — stale `daily_report.compose` assertion); fixed at `3faded4`; 406 local tests + all three gates green. `/latest/` NOT promoted; 0.4.2 NOT installed on SM-HP.
+
+## 9. The single controlled deployment package (item 11) — pending ONE approval
+Execute in order, each step verified before the next: **(A) Server** — apply `0060→0061→0062→0063→0064` to prod (head at `0059`), verify migration head. **(B) Portal/reporter** — deploy the `3faded4` lineage; smoke Dashboard / Site Health / Reports / Incidents / Analytics Setup / Site Control surfaces / authz. **(C) Client** — transactional `0.4.1→0.4.2` on SM-HP (installer SHA-256 above); prove identity, heartbeat, events, health, reboot/resume. **(D) Live Site Control READ** — with SM-HP back on the CCTV LAN, one structured `inspect_recorder` command proving cloud→agent→DH-XVR1B08-I→result→audit with no Dahua login. **(E) Live VideoLoss** — Ch5 (and Ch7/8) VideoLoss → WatchLog "Armory video unavailable". **(F) Live Site Control WRITE** — one field-verified, reversible setting: before → recommendation → explicit approval → agent write → read-back → verified after → audit. WhatsApp remains **engineering-ready / blocked on the client recipient**; Ch5 repair, 2×10, and report calibration remain field/client/commercial.
