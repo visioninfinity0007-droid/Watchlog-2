@@ -109,6 +109,12 @@ jobs:
         run: python prototype/tests/test_portal_alignment_contract.py
       - name: Intelligence agent + reporting units (native-verify, config-drift, offline-spool, PDF, WhatsApp)
         run: python -m pytest prototype/tests/test_native_verification.py prototype/tests/test_config_drift.py prototype/tests/test_spool_offline.py prototype/tests/test_intelligence_pdf.py prototype/tests/test_intelligence_whatsapp.py -q
+      - name: Backfill + advisor + monthly units (backfill, AI site-config skill, monthly render)
+        run: python -m pytest prototype/tests/test_backfill.py prototype/tests/test_site_config_advisor.py prototype/tests/test_intelligence_monthly.py -q
+      - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
+        run: python prototype/tests/test_report_pipeline_contract.py
+      - name: Site Control portal capability-aware UX contract
+        run: python prototype/tests/test_site_control_portal_contract.py
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
@@ -314,6 +320,24 @@ jobs:
         run: python prototype/tests/e2e_journeys_pg.py
       - name: Intelligence RPC tenant-isolation integration — daily/monthly/journeys/policies (0067-0071)
         run: python prototype/tests/e2e_intelligence_authz_pg.py
+      - name: Onboarding + business context integration (0072)
+        run: python prototype/tests/e2e_onboarding_pg.py
+      - name: Visitor/staff inference integration — multi-factor, ambiguous + overlapping (0073)
+        run: python prototype/tests/e2e_entity_inference_pg.py
+      - name: Daily intelligence v2 integration — sustained opening/closing, generic after-hours/restricted (0074)
+        run: python prototype/tests/e2e_daily_intelligence_v2_pg.py
+      - name: Health->incident->alert delivery chain integration — dedup/recovery/retry (0075)
+        run: python prototype/tests/e2e_alert_delivery_pg.py
+      - name: Report calibration integration — reviewer feedback + config tuning (0076)
+        run: python prototype/tests/e2e_calibration_pg.py
+      - name: Offline sync idempotency integration — server half of the resilience cycle
+        run: python prototype/tests/e2e_offline_sync_pg.py
+      - name: Recorder capability KB batch 3 already covered; demo/acceptance preflight integration (0078)
+        run: python prototype/tests/e2e_preflight_pg.py
+      - name: Daily-intelligence WhatsApp delivery pipeline integration — idempotency + retry (item 8)
+        run: python prototype/tests/e2e_intelligence_delivery_pg.py
+      - name: Site/recorder diagnosis integration — capability-aware, tenant-guarded (0079)
+        run: python prototype/tests/e2e_site_diagnosis_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
