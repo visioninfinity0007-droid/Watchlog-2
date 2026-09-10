@@ -18,11 +18,20 @@ import watchlog_agent as core
 from drivers import DriverError
 
 
-def collector(cfg, spool, stop) -> None:
-    """Core event collector with recorder-native AI precedence."""
+def collector(cfg, spool, stop, holder=None) -> None:
+    """Core event collector with recorder-native AI precedence.
+
+    Never dies: on any driver error it backs off and re-opens. CONFIRMED recorder auth
+    failures escalate 5->15->30 min (via ``core._reconnect_wait``) so a wrong password can
+    never hammer the recorder into an account lockout, and a credential change in Setup wakes
+    the wait immediately. Native VideoLoss/disconnect events are fed to the shared health
+    monitor so a camera drop is reflected without waiting for the next probe."""
     detector = core.vision.build(cfg, core.log)
+    auth_failures = 0
+    last_gen = core.credential_store.credential_generation()
     while not stop.is_set():
         driver = None
+        auth_error = False
         try:
             driver, info = core.open_driver(cfg)
             core.log(
@@ -95,12 +104,25 @@ def collector(cfg, spool, stop) -> None:
                     ev.payload.setdefault("source", "recorder_event")
 
                 spool.add(ev.to_json(core.now_utc()))
+
+                # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to the
+                # shared health monitor straight from the event stream (best-effort; a health-side
+                # error must never disturb ingestion).
+                if holder is not None and ev.event_type in core.NATIVE_FAULT_TYPES:
+                    mon = holder.get("monitor")
+                    if mon is not None:
+                        try:
+                            mon.record_native_fault(ev.channel)
+                        except Exception:  # noqa: BLE001
+                            pass
+
                 dropped = spool.trim()
                 if dropped:
                     core.log(
                         f"WARNING: spool over capacity, dropped {dropped} oldest events"
                     )
         except (DriverError, requests.RequestException, RuntimeError) as error:
+            auth_error = core._is_auth_failure(error)
             for line in str(error).splitlines():
                 if line.strip():
                     core.log(f"ERROR: driver: {line.strip()[:200]}")
@@ -120,5 +142,11 @@ def collector(cfg, spool, stop) -> None:
                 except Exception:
                     pass
         if not stop.is_set():
-            core.log(f"driver reconnecting in {core.DRIVER_RETRY_SECONDS}s")
-            stop.wait(core.DRIVER_RETRY_SECONDS)
+            # Escalating backoff on CONFIRMED auth failure (lockout guard); short retry
+            # otherwise. A credential change in Setup wakes the wait and retries immediately.
+            auth_failures = auth_failures + 1 if auth_error else 0
+            if auth_failures == 0:
+                core.log(f"driver reconnecting in {core.DRIVER_RETRY_SECONDS}s")
+            outcome, last_gen = core._reconnect_wait(stop, cfg, auth_failures, last_gen)
+            if outcome == "stop":
+                break

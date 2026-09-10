@@ -255,9 +255,9 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
 
 def wrap_cmd_run(original):
     """Start the incident evidence workers (footage + stills) beside the normal runtime."""
-    def wrapped(cfg, state, cloud, once, device=None):
+    def wrapped(cfg, state, cloud, once, device=None, channels=None):
         if once:
-            return original(cfg, state, cloud, once, device)
+            return original(cfg, state, cloud, once, device, channels)
         stop = threading.Event()
         workers = [
             threading.Thread(target=footage_worker, args=(cfg, state, stop),
@@ -268,7 +268,7 @@ def wrap_cmd_run(original):
         for worker in workers:
             worker.start()
         try:
-            return original(cfg, state, cloud, once, device)
+            return original(cfg, state, cloud, once, device, channels)
         finally:
             stop.set()
             for worker in workers:

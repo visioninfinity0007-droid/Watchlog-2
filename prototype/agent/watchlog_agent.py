@@ -429,7 +429,7 @@ def enroll(cfg: Config, cloud: Cloud, device) -> dict:
         raise SystemExit("FATAL: no enrollment code. Set WATCHLOG_ENROLLMENT_CODE "
                          "or put enrollment_code in watchlog.ini.")
     code = cfg.enrollment_code.strip()
-    log(f"enrolling with code {code}")
+    log("enrolling with the provided setup code")
 
     try:
         res = cloud.call(
@@ -455,7 +455,7 @@ def enroll(cfg: Config, cloud: Cloud, device) -> dict:
     }
     save_state(cfg.state_path, state)
     log(f"enrolled: agent_id={state['agent_id']} site={state['site_id']}")
-    log(f"agent key {mask(state['agent_key'])} written to {cfg.state_path}")
+    log(f"agent identity stored (encrypted) at {cfg.state_path}")
     return state
 
 
@@ -1255,7 +1255,7 @@ def main() -> None:
         else:
             log(f"enrolled  agent_id={state['agent_id']}")
             log(f"          site_id={state['site_id']} tenant_id={state['tenant_id']}")
-            log(f"          key={mask(state.get('agent_key'))}")
+            log("          key=(stored, encrypted)")
             log(f"          enrolled_at={state.get('enrolled_at')}")
         if cfg.spool_path.exists():
             from spool import Spool

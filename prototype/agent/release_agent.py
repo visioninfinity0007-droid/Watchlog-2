@@ -32,7 +32,7 @@ def _strict_setup(*args, **kwargs):
     return values
 
 
-def _setup_validation_complete(cfg, state, cloud, once, device=None):
+def _setup_validation_complete(cfg, state, cloud, once, device=None, channels=None):
     app.core.log(
         "setup validation complete: recorder + WatchLog enrollment proven; "
         "returning control to installer"

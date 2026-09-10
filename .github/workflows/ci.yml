@@ -43,6 +43,10 @@ jobs:
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)
         run: python prototype/tests/test_agent_watchdog_contract.py
+      - name: Packaged agent run-dispatch contract (crash-loop / channels-drift guard)
+        run: python prototype/tests/test_agent_run_dispatch.py
+      - name: Agent log-hygiene contract (never log enrollment code / agent key)
+        run: python prototype/tests/test_agent_log_hygiene.py
       - name: Agent health report (NVR/inventory) contract (Phase A)
         run: python prototype/tests/test_health_report_contract.py
       - name: Camera health report contract (Phase A)
