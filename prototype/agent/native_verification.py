@@ -70,5 +70,25 @@ def is_verifiable(native_event_type: str) -> bool:
     return native_event_type in ("person", "vehicle")
 
 
+def annotate_event(payload: dict, native_event_type: str, local_classes) -> "str | None":
+    """Attach a verification state to a native person/vehicle event's payload (mutates it in place)
+    and return the state. This is the single source of the collector's wiring decision:
+
+      * The recorder's original event is ALWAYS preserved — this only ADDS keys, never removes the
+        event or clears its native fields.
+      * Geometry/temporal events (line crossing, intrusion, dwell) are NOT verifiable from one
+        still: returns None and leaves the payload untouched — never second-guessed, never dropped.
+      * A person/vehicle classification gets `native_verification` set to verified/conflict/
+        unverified; the seen local classes are recorded when present.
+    """
+    if not is_verifiable(native_event_type):
+        return None
+    state = verify(native_event_type, local_classes)
+    payload["native_verification"] = state
+    if local_classes:
+        payload["verified_local_classes"] = sorted({str(c).lower() for c in local_classes})
+    return state
+
+
 __all__ = ["VERIFIED_HUMAN", "VERIFIED_VEHICLE", "CONFLICT", "UNVERIFIED",
-           "verify", "promoted_class", "is_verifiable"]
+           "verify", "promoted_class", "is_verifiable", "annotate_event"]

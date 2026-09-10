@@ -93,10 +93,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
                         if raw:
                             _, found = detector.classify_event(raw)
                             local = [d.label for d in (found or [])]
-                        state = native_verification.verify(ev.event_type, local)
-                        ev.payload["native_verification"] = state
-                        if local:
-                            ev.payload["verified_local_classes"] = sorted(set(local))
+                        state = native_verification.annotate_event(ev.payload, ev.event_type, local)
                         if state == native_verification.CONFLICT:
                             core.log(
                                 f"WARNING: ch{ev.channel} native {ev.event_type} conflicts with "

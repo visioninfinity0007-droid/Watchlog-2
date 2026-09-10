@@ -80,5 +80,48 @@ class PromotedClass(unittest.TestCase):
         self.assertEqual(nv.promoted_class("person", nv.UNVERIFIED), "person")
 
 
+class AnnotateEventWiring(unittest.TestCase):
+    """Behavioral tests of the collector's wiring decision (item 15 semantic change).
+
+    The invariant: the recorder's native event is authoritative and is only ANNOTATED —
+    never dropped, never gated, and geometry events are never second-guessed from one still.
+    """
+    def _native(self, event_type):
+        # a native event payload as the collector holds it, with its recorder provenance
+        return {"native_ai": True, "native_code": "SmartMotion", "source": "recorder_native_ai"}
+
+    def test_raw_event_is_preserved_when_verified(self):
+        p = self._native("person")
+        state = nv.annotate_event(p, "person", ["person"])
+        self.assertEqual(state, nv.VERIFIED_HUMAN)
+        # original recorder provenance untouched; verification ADDED alongside
+        self.assertTrue(p["native_ai"] and p["native_code"] == "SmartMotion")
+        self.assertEqual(p["source"], "recorder_native_ai")
+        self.assertEqual(p["native_verification"], nv.VERIFIED_HUMAN)
+        self.assertEqual(p["verified_local_classes"], ["person"])
+
+    def test_indoor_vehicle_fp_conflicts_and_is_not_promoted(self):
+        p = self._native("vehicle")
+        state = nv.annotate_event(p, "vehicle", ["person"])   # native Vehicle, local sees a person
+        self.assertEqual(state, nv.CONFLICT)
+        self.assertEqual(p["native_verification"], nv.CONFLICT)
+        self.assertIsNone(nv.promoted_class("vehicle", state))  # not promoted as a verified Vehicle
+        self.assertTrue(p["native_ai"])                          # but the raw event is still there
+
+    def test_geometry_event_is_not_second_guessed(self):
+        p = self._native("line_crossing")
+        state = nv.annotate_event(p, "line_crossing", [])       # empty still
+        self.assertIsNone(state)                                 # not verifiable
+        self.assertNotIn("native_verification", p)              # payload untouched
+        self.assertTrue(p["native_ai"])                          # event kept intact
+
+    def test_no_local_evidence_is_unverified_not_dropped(self):
+        p = self._native("vehicle")
+        state = nv.annotate_event(p, "vehicle", None)
+        self.assertEqual(state, nv.UNVERIFIED)
+        self.assertEqual(p["native_verification"], nv.UNVERIFIED)
+        self.assertEqual(nv.promoted_class("vehicle", state), "vehicle")  # kept as native, flagged
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
