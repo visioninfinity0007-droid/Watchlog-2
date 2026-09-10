@@ -10,6 +10,7 @@ const TABS = [
   ["Incidents", "/incidents/"],
   ["Operations", "/operations/"],
   ["Site Health", "/site-health/"],
+  ["Site Control", "/site-control/"],
   ["Analytics", "/analytics/"],
   ["Executive", "/executive/"],
   ["Archive", "/archive/"],
