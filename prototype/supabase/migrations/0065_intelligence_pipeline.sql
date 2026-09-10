@@ -65,7 +65,11 @@ create table if not exists public.intel_incidents (
   status        text not null default 'open' check (status in ('open','acknowledged','resolved')),
   detail_json   jsonb not null default '{}'::jsonb,
   created_at    timestamptz not null default now(),
-  unique (site_id, source_kind, source_id, incident_type)  -- idempotent promotion
+  -- Stable BUSINESS identity, independent of the episode uuid (which is rebuilt on every
+  -- re-derivation). Re-running the pipeline therefore refreshes the same incident row rather
+  -- than duplicating it, and an operator's status/ack survives the refresh. (camera_id is
+  -- effectively always set for a promoted incident; a null-camera incident is degenerate.)
+  unique (site_id, incident_type, camera_id, occurred_at)
 );
 create index if not exists intel_incidents_site_time_idx on public.intel_incidents (site_id, occurred_at desc);
 alter table public.intel_incidents enable row level security;
@@ -195,7 +199,15 @@ begin
      and (not pol.after_hours_only
           or (ep.started_at at time zone v_tz)::time < time '08:00'
           or (ep.started_at at time zone v_tz)::time > time '19:00')
-  on conflict (site_id, source_kind, source_id, incident_type) do nothing;
+  -- Re-derivation rebuilds episode uuids, so match on the incident's stable identity and
+  -- REFRESH its provenance pointer + policy mapping. status is deliberately NOT touched, so
+  -- an operator's acknowledge/resolve is preserved across a report refresh.
+  on conflict (site_id, incident_type, camera_id, occurred_at) do update
+    set source_id  = excluded.source_id,
+        policy_id  = excluded.policy_id,
+        severity   = excluded.severity,
+        confidence = excluded.confidence,
+        detail_json = excluded.detail_json;
   get diagnostics v_rows = row_count;
   return v_rows;
 end $$;
