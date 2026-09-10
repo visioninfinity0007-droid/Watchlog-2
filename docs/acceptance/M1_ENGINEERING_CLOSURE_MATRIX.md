@@ -50,9 +50,17 @@ to prod**).
 
 Agent source changed again this wave (`backfill.py`, `native_verification.annotate_event`,
 `spool.py` configurable cap, `native_event_collector.py`). Per the "one final candidate" rule,
-the 0.4.2 installer is rebuilt **once** from the final green SHA — not re-published per commit.
-The rebuilt-installer SHA-256 is recorded here after the final Windows Release run; `/latest/`
-is never touched.
+the 0.4.2 installer was rebuilt **once** from the final green SHA (Windows Release run
+**34515113008**, SUCCESS) — not re-published per commit. Rebuilt artifact `WatchLog-Windows-18`
+(~345 MB):
+
+- **Final 0.4.2 installer** `WatchLog-Setup.exe` SHA-256 = `6D6FE1D4FFC6CC82BC98BA9701292729263C67C884F6ACEE47D862E2FD8D2C62`
+- agent exe = `9279FBAA776E752C679FD0487CF0322AE41CE9D8CE1EC055C70CC5830272B68B`
+- setup-UI exe = `BD265FBA0865C929D9C1FCCFCEF1CFE2BBAFF5F3C61463C54C20738645E32DF7`
+
+This supersedes every earlier 0.4.2 build (wave-1 `F0D1317E…`, originally-published stale
+`3B69D99D…`). Field-install THIS candidate. `/latest/` is untouched; no intermediate binaries
+were published.
 
 ## Genuinely blocked (do not wait) — unchanged
 
