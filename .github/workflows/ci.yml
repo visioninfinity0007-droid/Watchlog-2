@@ -340,6 +340,18 @@ jobs:
         run: python prototype/tests/e2e_intelligence_delivery_pg.py
       - name: Site/recorder diagnosis integration — capability-aware, tenant-guarded (0079)
         run: python prototype/tests/e2e_site_diagnosis_pg.py
+      - name: Journeys v2 integration — topology gating, concurrency separation, confidence (0080)
+        run: python prototype/tests/e2e_journeys_v2_pg.py
+      - name: Opening/closing state machine integration — sessions, fallback, after-hours truth (0081)
+        run: python prototype/tests/e2e_day_state_pg.py
+      - name: Daily intelligence v3 integration — state machine + honest after-hours folded in (0081)
+        run: python prototype/tests/e2e_daily_intelligence_v3_pg.py
+      - name: Visitor/staff inference v2 integration — journey confidence + coverage + calibration (0082)
+        run: python prototype/tests/e2e_entity_inference_v2_pg.py
+      - name: Report snapshot integration — generate once, freeze, immune to later change (0083)
+        run: python prototype/tests/e2e_report_snapshot_pg.py
+      - name: Delivery outbox integration — provider idempotency + crash-edge reclaim (0084)
+        run: python prototype/tests/e2e_delivery_outbox_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
