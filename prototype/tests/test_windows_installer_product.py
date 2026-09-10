@@ -23,6 +23,7 @@ def main():
     agent = text("prototype/agent/watchlog_agent.py")
     launcher = text("prototype/installer/run-agent.ps1")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
+    upgrade = text("prototype/installer/nsis/wl-upgrade.ps1")
     readme = text("prototype/installer/READ ME FIRST.txt")
     build_ui = text("prototype/agent/build_setup_gui.ps1")
     release = text("tools/build_windows_release.ps1")
@@ -64,6 +65,35 @@ def main():
         "camera-sync failures are classified, not the misleading swallow":
             "AgentSyncError" in backend and "CAMERA_SYNC_AUTH_FAILED" in backend
             and "The site linked to WatchLog, but its cameras could not be added" not in backend,
+
+        # ---- transactional upgrade reliability (the locked-EXE failure class) ----
+        "installer stages the transactional upgrade orchestrator":
+            "InitPluginsDir" in nsis and 'File "/oname=$PLUGINSDIR\\wl-upgrade.ps1"' in nsis and 'File "wl-upgrade.ps1"' in nsis,
+        "upgrade STOPS+verifies the agent BEFORE replacing the binary":
+            "-Stage preflight" in nsis and nsis.index("-Stage preflight") < nsis.index('File "watchlog-agent.exe"'),
+        "a locked agent binary cannot silently continue (SetOverwrite try + error check + rollback)":
+            "SetOverwrite try" in nsis and "${Errors}" in nsis and "-Stage rollback" in nsis,
+        "upgrade verifies the INSTALLED version before starting":
+            "-Stage verify-version" in nsis and "-ExpectedVersion" in nsis,
+        "upgrade verifies the agent is RUNNING after start (commit)":
+            "-Stage commit" in nsis,
+        "no false success: commit precedes the ARP DisplayVersion write":
+            nsis.index("-Stage commit") < nsis.index('"DisplayVersion" "${APPVERSION}"'),
+        "failed upgrade rolls back to the previous working agent":
+            "-Stage rollback" in nsis and "rollback" in upgrade and "wlbak" in upgrade,
+        "helper stops ONLY the exact watchlog-agent.exe (no broad kill)":
+            "Name='watchlog-agent.exe'" in upgrade and "ExecutablePath" in upgrade and "-Force -ErrorAction SilentlyContinue" in upgrade,
+        "helper verifies BOTH file ProductVersion and runtime --version":
+            "VersionInfo.ProductVersion" in upgrade and "--version" in upgrade,
+        "helper verifies a single instance (no duplicate runtime)":
+            "duplicate runtime" in upgrade,
+        "upgrade helper reads/logs NO secret":
+            "agent_key" not in upgrade and "nvr_credential" not in upgrade and "Unprotect" not in upgrade and "ProtectedData" not in upgrade,
+        "agent exposes --version for installed/running version verification":
+            '"--version"' in agent and "print(AGENT_VERSION)" in agent,
+        "upgrade PRESERVES identity + secrets (no state/Secrets deletion during install)":
+            ("RMDir /r" not in nsis.split('Section "Uninstall"')[0]
+             and 'Delete "${DATAROOT}' not in nsis.split('Section "Uninstall"')[0]),
     }
 
     failed = [name for name, ok in checks.items() if not ok]

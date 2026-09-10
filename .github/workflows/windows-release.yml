@@ -131,6 +131,24 @@ jobs:
             throw "packaged agent reports the wrong version (expected $wlVer):`n$agentSelftest"
           }
 
+          # TRANSACTIONAL-UPGRADE VERSION TRUTH (real exe): the installer refuses a false success by
+          # verifying BOTH the file ProductVersion AND the runtime --version equal the release. Prove
+          # both against the REAL packaged exe, and prove the upgrade helper's verify-version PASSES
+          # at the correct version and REJECTS a wrong one.
+          $fileVer = $agent.VersionInfo.ProductVersion
+          if ($fileVer -ne $wlVer) { throw "agent file ProductVersion '$fileVer' != wl_version '$wlVer'" }
+          $runVer = (& $agent.FullName --version 2>$null | Select-Object -First 1).ToString().Trim()
+          if ($runVer -ne $wlVer) { throw "agent --version '$runVer' != wl_version '$wlVer'" }
+          Write-Host "agent version truth OK: file=$fileVer runtime=$runVer"
+          $ud = Join-Path $env:RUNNER_TEMP 'wl-upg-accept'
+          New-Item -ItemType Directory -Force $ud | Out-Null
+          Copy-Item $agent.FullName (Join-Path $ud 'watchlog-agent.exe') -Force
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\prototype\installer\nsis\wl-upgrade.ps1 -Stage verify-version -InstallDir $ud -ExpectedVersion $wlVer
+          if ($LASTEXITCODE -ne 0) { throw "wl-upgrade verify-version FAILED on the real exe at the correct version $wlVer" }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\prototype\installer\nsis\wl-upgrade.ps1 -Stage verify-version -InstallDir $ud -ExpectedVersion '9.9.9'
+          if ($LASTEXITCODE -eq 0) { throw "wl-upgrade verify-version wrongly PASSED for a mismatched version" }
+          Write-Host "wl-upgrade verify-version acceptance OK (real exe: passes at $wlVer, rejects 9.9.9)"
+
           # PACKAGED-EXE DPAPI PROOF: prove the FROZEN setup UI actually drives
           # credential_store -> DPAPI, not merely that it launches. Seed a legacy
           # watchlog.env in an isolated ProgramData, run --migrate-only, then prove a
@@ -219,6 +237,30 @@ jobs:
           Write-Host "Verified installer: $([math]::Round($setup.Length / 1MB, 1)) MB"
           Write-Host "Verified SHA-256: $actual"
 
+          # RECORDED RELEASE IDENTITY (RC hashes): emit a CI-attested manifest of the
+          # INNER agent exe, the setup UI exe and the installer. The installer .sha256
+          # already pins WatchLog-Setup.exe, but the inner watchlog-agent.exe hash is
+          # otherwise unrecoverable from the artifact — capture all three here so the RC's
+          # exact identity is attested by the gated build, never transcribed by hand.
+          $agentHash = (Get-FileHash $agent.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          $setupUiHash = (Get-FileHash $setupUi.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          $manifestLines = @(
+            "WatchLog Windows release manifest",
+            "version=$wlVer",
+            "source_sha=$env:GITHUB_SHA",
+            "run_id=$env:GITHUB_RUN_ID",
+            "run_number=$env:GITHUB_RUN_NUMBER",
+            "workflow_ref=$env:GITHUB_REF",
+            "watchlog-agent.exe.sha256=$agentHash",
+            "watchlog-setup-ui.exe.sha256=$setupUiHash",
+            "WatchLog-Setup.exe.sha256=$actual"
+          )
+          $manifestPath = '.\dist-installer\WatchLog-Release.hashes.txt'
+          Set-Content -Path $manifestPath -Encoding ASCII -Value $manifestLines
+          Write-Host '---- RECORDED RELEASE HASHES (RC identity) ----'
+          $manifestLines | ForEach-Object { Write-Host $_ }
+          Write-Host '-----------------------------------------------'
+
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
         with:
@@ -226,5 +268,6 @@ jobs:
           path: |
             dist-installer/WatchLog-Setup.exe
             dist-installer/WatchLog-Setup.exe.sha256
+            dist-installer/WatchLog-Release.hashes.txt
           if-no-files-found: error
           retention-days: 30

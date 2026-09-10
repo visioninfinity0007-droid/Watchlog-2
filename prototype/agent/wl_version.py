@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-VERSION = "0.3.5"
+VERSION = "0.4.1"
 BUILD_SHA = os.environ.get("WATCHLOG_BUILD_SHA", "")
 BUILD_CHANNEL = os.environ.get("WATCHLOG_BUILD_CHANNEL", "production")
 

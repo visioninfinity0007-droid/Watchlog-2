@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "0.3.5"
+  !define APPVERSION "0.4.1"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -58,31 +58,66 @@ VIAddVersionKey "FileDescription" "WatchLog Windows installer"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 Section "Install"
+  ; The transactional upgrade orchestrator must run BEFORE any binary is replaced, so extract it to
+  ; a temp dir first (the real install-dir copy is written with the other files below).
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\wl-upgrade.ps1" "wl-upgrade.ps1"
+
   ; Detect an already-enrolled installation before replacing any binaries.
   StrCpy $6 "0"
   IfFileExists "$INSTDIR\watchlog.ini" 0 +3
   IfFileExists "${DATAROOT}\agent_state.json" 0 +2
     StrCpy $6 "1"
 
-  ; An upgrade may have the existing long-running task holding files. Stop it,
-  ; but remember it so a failed upgrade can attempt to resume the old task.
+  ; UPGRADE PREFLIGHT: stop the task, stop ONLY the exact watchlog-agent.exe, wait for it to exit,
+  ; verify the binary is UNLOCKED, and back it up. $8 records that an upgrade is in progress so a
+  ; later failure can roll back. If we cannot free the binary we do NOT overwrite anything - the
+  ; existing agent is left installed and running (no half-upgrade, no false success).
   StrCpy $8 "0"
-  nsExec::ExecToStack '"$SYSDIR\schtasks.exe" /Query /TN "${TASKNAME}"'
-  Pop $9
-  Pop $7
-  ${If} $9 == 0
+  ${If} $6 == "1"
     StrCpy $8 "1"
-    DetailPrint "Stopping the existing WatchLog background connection for upgrade..."
-    ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"' $9
+    DetailPrint "Preparing the existing WatchLog agent for a safe upgrade..."
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
+    ${If} $9 != 0
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely stop the running agent to upgrade it, so nothing was changed. Your existing WatchLog is still installed and will keep running. Close anything that may be using WatchLog and run the installer again."
+      Abort "Upgrade preflight failed; existing runtime preserved"
+    ${EndIf}
   ${EndIf}
 
+  ; Replace binaries. SetOverwrite try makes a locked file set the error flag (no silent Ignore),
+  ; so a failed replacement can NEVER pass unnoticed. Preflight already unlocked the agent; this is
+  ; the safety net.
   SetOutPath "$INSTDIR"
+  SetOverwrite try
+  ClearErrors
   File "watchlog-agent.exe"
+  ${If} ${Errors}
+    ${If} $8 == "1"
+      DetailPrint "Could not replace watchlog-agent.exe; rolling back to the previous version..."
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+    ${EndIf}
+    MessageBox MB_ICONSTOP|MB_OK "WatchLog could not replace the agent program (it was still in use). The previous working WatchLog has been kept. Restart Windows and run the installer again."
+    Abort "watchlog-agent.exe replacement failed"
+  ${EndIf}
   File "watchlog-setup-ui.exe"
   File "run-agent.ps1"
   File "register-service.ps1"
+  File "wl-upgrade.ps1"
   File "READ ME FIRST.txt"
   File "setup.ico"
+  SetOverwrite on
+
+  ; UPGRADE VERSION TRUTH: before starting anything, verify the on-disk binary's file ProductVersion
+  ; AND its runtime --version both equal this release. If the binary was not actually replaced, roll
+  ; back and abort rather than register/start/report a version that is not installed.
+  ${If} $6 == "1"
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
+    ${If} $9 != 0
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog was not able to install the new version correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
+      Abort "Installed version did not match; rolled back"
+    ${EndIf}
+  ${EndIf}
 
   ; Keep existing site/enrollment configuration on upgrades. A fresh install
   ; receives public defaults only; the graphical setup writes recorder values.
@@ -142,13 +177,26 @@ Section "Install"
   DetailPrint "Background startup registration exited with code $1"
   ${If} $1 != 0
     ${If} $8 == "1"
-      DetailPrint "Registration failed; attempting to resume the existing WatchLog task..."
-      ExecWait '"$SYSDIR\schtasks.exe" /Run /TN "${TASKNAME}"' $9
+      DetailPrint "Registration failed; rolling back to the previous working WatchLog..."
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
     ${Else}
       ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
     ${EndIf}
     MessageBox MB_ICONSTOP|MB_OK "WatchLog connected the site, but automatic background startup could not be proven. Setup stopped so this is not mistaken for a complete installation."
     Abort "WatchLog background startup registration failed"
+  ${EndIf}
+
+  ; UPGRADE COMMIT: the task is registered + started; prove the EXACT new agent binary is actually
+  ; RUNNING as a single instance and stays alive. If not, roll back to the previous working agent
+  ; and abort. Only after this can the upgrade be considered real.
+  ${If} $6 == "1"
+    DetailPrint "Verifying the upgraded WatchLog agent is running..."
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage commit -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
+    ${If} $9 != 0
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog installed the update but the new agent did not start correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
+      Abort "Upgrade commit (start/alive) failed; rolled back"
+    ${EndIf}
   ${EndIf}
 
   CreateDirectory "${STARTMENU}"

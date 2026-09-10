@@ -510,8 +510,13 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
 
 
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
-                     device=None) -> None:
-    """Core event loop plus analytics worker, sharing one detector instance."""
+                     device=None, channels=None) -> None:
+    """Core event loop plus analytics worker, sharing one detector instance.
+
+    Accepts ``channels`` (the recorder channels enumerated at startup) because the core
+    dispatch in ``watchlog_agent.main`` passes it: this replaces ``core.cmd_run``, so its
+    signature MUST match. ``channels`` seeds the Phase-A camera-health monitor below."""
+    import camera_health
     original_build = core.vision.build
     detector = original_build(cfg, core.log)
     core.vision.build = lambda _cfg, _log: detector
@@ -524,9 +529,18 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     # writes on it. Defaults to authoritative (multi-agent OFF -> unchanged single-agent).
     authority = {"ok": True}
 
+    # Phase-A operational health: the collector (native faults) and the health worker (active
+    # probes) drive the SAME per-camera machines via this holder. Seeded from the channels found
+    # at startup; (re)built lazily by the health cycle once enumeration succeeds if we started with
+    # none. Without this the agent reports NO camera/NVR health and the portal reads UNKNOWN.
+    mon_channels = [str(c.get("channel")) for c in (channels or []) if c.get("channel")]
+    holder = {"monitor": camera_health.CameraHealthMonitor(
+        mon_channels, batch_size=cfg.health_batch, concurrency=cfg.health_concurrency)
+        if mon_channels else None}
+
     stop = threading.Event()
     collector = threading.Thread(target=core.collector,
-                                 args=(cfg, spool, stop),
+                                 args=(cfg, spool, stop, holder),
                                  daemon=True, name="collector")
     analytic = threading.Thread(target=analytics_worker,
                                 args=(cfg, state, detector, stop, authority),
@@ -534,6 +548,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     archive = threading.Thread(target=archive_worker,
                                args=(cfg, state, stop, authority),
                                daemon=True, name="archive")
+    # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
+    health = threading.Thread(target=core.health_worker,
+                              args=(cfg, state, cloud, holder, stop),
+                              daemon=True, name="health")
     collector.start()
     analytic.start()
 
@@ -548,13 +566,16 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         except RuntimeError as error:
             core.log(f"ERROR: upload failed: {error}")
         core.heartbeat(cloud, state, device)
+        core.health_cycle(cloud, state, cfg, holder)
         spool.close()
         core.vision.build = original_build
         return
 
     archive.start()   # background historical scan; lower priority, run mode only
+    health.start()    # Phase-A camera/NVR health probing on its own thread
     core.log(f"running: events every {cfg.upload_seconds}s, analytics enabled, "
-             f"heartbeat every {cfg.heartbeat_seconds}s, outbound only. Ctrl-C to stop.")
+             f"heartbeat every {cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, "
+             f"outbound only. Ctrl-C to stop.")
     next_upload = next_heartbeat = 0.0
     try:
         while True:
@@ -589,6 +610,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         collector.join(timeout=5)
         analytic.join(timeout=5)
         archive.join(timeout=5)
+        health.join(timeout=5)
         spool.close()
         core.vision.build = original_build
         core.log("stopped")

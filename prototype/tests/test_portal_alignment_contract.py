@@ -163,7 +163,11 @@ def check():
     task_pos=NSIS.index(task_exec)
     arp_pos=NSIS.index('WriteRegStr HKLM "${ARPKEY}" "DisplayName"')
     assert setup_pos < arp_pos and task_pos < arp_pos
-    assert 'StrCpy $8 "0"' in NSIS and '/Query /TN "${TASKNAME}"' in NSIS and '/Run /TN "${TASKNAME}"' in NSIS
+    # Upgrades are transactional: the naive schtasks /Query + /End + /Run dance was replaced by the
+    # wl-upgrade.ps1 stages (stop+verify-unlocked -> version truth -> start+alive -> rollback), which
+    # is what makes a locked-binary upgrade incapable of a false success.
+    assert 'StrCpy $8 "0"' in NSIS and '-Stage preflight' in NSIS and '-Stage verify-version' in NSIS \
+        and '-Stage commit' in NSIS and '-Stage rollback' in NSIS
     assert 'nvr_credential.dpapi' in NSIS and NSIS.index('nvr_credential.dpapi') < task_pos
     assert "Register-ScheduledTask -TaskName $task" in REGISTER
     assert "-Force | Out-Null" in REGISTER
