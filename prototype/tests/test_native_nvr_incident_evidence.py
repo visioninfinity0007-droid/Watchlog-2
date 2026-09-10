@@ -46,8 +46,18 @@ def test_packaged_collector_prefers_native_ai():
     src = (AGENT / "native_event_collector.py").read_text(encoding="utf-8")
     assert 'native_ai = bool((ev.payload or {}).get("native_ai"))' in src
     native_block = src.split("if native_ai:", 1)[1].split("elif detector", 1)[0]
-    assert "classify_event" not in native_block
+    # The recorder's native classification is authoritative and is NEVER discarded in this
+    # branch — there is no false-alarm `continue` here (that belongs to the generic-motion
+    # path only). A recorder-native line/intrusion event is not thrown away because a single
+    # still lacked an object at capture time.
     assert "recorder-native AI" in native_block
+    assert "continue" not in native_block
+    # Secondary verification (item 8) may annotate a native person/vehicle classification
+    # against the local model, but ONLY as an attached state and ONLY for simple object types
+    # — it is gated by is_verifiable(), so geometry/temporal events (line-crossing, intrusion)
+    # are never second-guessed from one still, and it never gates the event's existence.
+    assert "native_verification" in native_block and "is_verifiable" in native_block
+    # The generic-motion path still runs the local false-alarm filter.
     assert "classify_event(raw)" in src
 
 
