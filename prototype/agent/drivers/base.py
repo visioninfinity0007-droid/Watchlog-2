@@ -244,6 +244,15 @@ class NvrDriver:
         """
         return {"supported": False, "channels": {}}
 
+    def get_clock(self) -> dict:
+        """Recorder clock / timezone / DST / NTP, read-only, from the vendor time API.
+
+        Returns {'supported': bool, 'current_time': str|None, 'timezone': str|None,
+        'dst_enabled': bool|None, 'ntp_enabled': bool|None, 'ntp_server': str|None}. A driver
+        that cannot read the clock reports supported=False — it never fabricates a time.
+        """
+        return {"supported": False}
+
     def current_faults(self) -> dict:
         """Current, PRESENT-TENSE recorder fault state, read-only, from an active vendor API.
 

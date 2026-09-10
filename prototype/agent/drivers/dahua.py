@@ -274,6 +274,31 @@ class DahuaDriver(NvrDriver):
             return {"supported": False, "channels": {}}
         return {"supported": True, "channels": out}
 
+    def get_clock(self) -> dict:
+        """Recorder clock/timezone/DST/NTP, read-only (global.cgi + Locales + NTP config)."""
+        def _cfg(name):
+            try:
+                return _parse_kv(self._get(
+                    f"/cgi-bin/configManager.cgi?action=getConfig&name={name}"))
+            except DriverError:
+                return {}
+        out: dict = {"supported": True, "current_time": None, "timezone": None,
+                     "dst_enabled": None, "ntp_enabled": None, "ntp_server": None}
+        try:
+            ct = _parse_kv(self._get("/cgi-bin/global.cgi?action=getCurrentTime"))
+            out["current_time"] = ct.get("result") or ct.get("time")
+        except DriverError:
+            pass
+        loc = _cfg("Locales")
+        if loc.get("table.Locales.DSTEnable") is not None:
+            out["dst_enabled"] = str(loc.get("table.Locales.DSTEnable")).lower() == "true"
+        ntp = _cfg("NTP")
+        if ntp.get("table.NTP.Enable") is not None:
+            out["ntp_enabled"] = str(ntp.get("table.NTP.Enable")).lower() == "true"
+        out["ntp_server"] = ntp.get("table.NTP.Address")
+        out["timezone"] = ntp.get("table.NTP.TimeZoneDesc")
+        return out
+
     def current_faults(self) -> dict:
         """Current VideoLoss / VideoBlind channels from the recorder's live event INDEX.
 

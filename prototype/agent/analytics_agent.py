@@ -576,6 +576,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
 
     archive.start()   # background historical scan; lower priority, run mode only
     health.start()    # Phase-A camera/NVR health probing on its own thread
+    sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
+                               daemon=True, name="sitecontrol")
+    sitectl.start()   # Site Control read plane (H6); thread exits at once unless enabled
     core.log(f"running: events every {cfg.upload_seconds}s, analytics enabled, "
              f"heartbeat every {cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, "
              f"outbound only. Ctrl-C to stop.")
@@ -626,6 +629,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         analytic.join(timeout=5)
         archive.join(timeout=5)
         health.join(timeout=5)
+        sitectl.join(timeout=5)
         spool.close()
         core.vision.build = original_build
         core.log("stopped")

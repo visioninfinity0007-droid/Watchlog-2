@@ -201,6 +201,10 @@ class Config:
         self.health_batch = int(get("health_batch") or HEALTH_BATCH)
         self.health_concurrency = int(get("health_concurrency") or HEALTH_CONCURRENCY)
         self.upload_seconds = int(get("upload_seconds") or UPLOAD_SECONDS)
+        # Site Control command plane (H6), read-only executor. OFF by default: a new
+        # capability is never auto-enabled on a live site — enable per-site in the ini.
+        self.site_control_enabled = str(get("site_control") or "false").strip().lower() == "true"
+        self.site_control_seconds = int(get("site_control_seconds") or 15)
 
     def load_recorder_credential(self) -> None:
         """(Re)load the recorder credential from the encrypted split store so
@@ -929,6 +933,43 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
             stop.wait(cfg.health_seconds + jitter)
 
 
+def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
+    """Site Control (H6): poll for a queued READ command, run it against the recorder via the
+    LOCAL driver, and return the structured result. OFF unless cfg.site_control_enabled — a new
+    capability is never auto-enabled on a live site. Strictly read-only: site_control.execute_read
+    implements only read actions. Outbound-only and agent-authenticated; the recorder credential
+    never leaves this process, and a failure here can never disturb events/heartbeat/health."""
+    if not cfg.site_control_enabled:
+        return
+    import site_control
+    stop.wait(min(8, cfg.site_control_seconds))         # let enrollment/sync settle first
+    while not stop.is_set():
+        busy = False
+        try:
+            claimed = cloud.call("wl_agent_claim_command",
+                                 p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+            cmd = (claimed or {}).get("command")
+            if cmd:
+                busy = True
+                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+                try:
+                    res = site_control.execute_read(driver, cmd.get("action"), cmd.get("params"))
+                finally:
+                    try:
+                        driver.close()
+                    except Exception:                    # noqa: BLE001
+                        pass
+                cloud.call("wl_agent_complete_command",
+                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                           p_command_id=cmd["id"],
+                           p_status=("succeeded" if res.get("ok") else "failed"),
+                           p_result=res.get("data"), p_error=res.get("error"))
+        except Exception as e:                           # noqa: BLE001 — Site Control never disturbs the agent
+            log(f"site control: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        if not busy:
+            stop.wait(cfg.site_control_seconds)          # idle poll; drain promptly when busy
+
+
 # --- commands ----------------------------------------------------------
 
 def cmd_selftest() -> int:
@@ -1128,6 +1169,10 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                               args=(cfg, state, cloud, holder, stop, resume_evt),
                               daemon=True, name="health")
     health.start()
+    # Site Control read plane (H6). Thread exits immediately unless enabled in the ini.
+    sitectl = threading.Thread(target=command_worker, args=(cfg, state, cloud, stop),
+                               daemon=True, name="sitecontrol")
+    sitectl.start()
 
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
         f"{cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, outbound only. "
@@ -1169,6 +1214,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         resume_evt.set()                                # wake the health thread so it can exit
         worker.join(timeout=5)
         health.join(timeout=5)
+        sitectl.join(timeout=5)
         spool.close()
         if holder.get("store"):
             try:
