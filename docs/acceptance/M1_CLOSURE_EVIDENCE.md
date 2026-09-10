@@ -5,6 +5,13 @@
 > All work below is **committed on the branch, tested, and gated** — **nothing is deployed to
 > production, no live recorder mutation beyond the already-authorized field fixes, no 0.4.2 client
 > upgrade, and no WhatsApp send.** Those are held for one controlled deployment/approval package (§8).
+>
+> **Classification correction (see `M1_PREDEPLOY_REVIEW.md`):** Site Control READ and WRITE are
+> **CODE/TEST PROVEN, not field-proven** — the cloud→agent→recorder round-trip and a live approved
+> write have not yet run on-site (the live read attempt happened after the host left the CCTV LAN).
+> The write capability gate has been hardened to require **FIELD_VERIFIED** per exact recorder model.
+> Monitoring-coverage cause is the honest generic `observation_gap` (not "asleep"). Offline buffering
+> = pre-existing event spool; historical backfill is NOT implemented (Not verified on this recorder).
 
 ## 1. Commits (10, this closure)
 | SHA | What |

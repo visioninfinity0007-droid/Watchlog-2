@@ -97,11 +97,18 @@ begin
       using errcode = '42501';
   end if;
   v_capjson := wl_recorder_capability(coalesce(v_vendor,'Dahua'), v_model, v_cap);
+  -- Multiple truths must ALL hold for THIS exact recorder model (never cross-authorized from
+  -- another model's docs): verdict=supported, write=true, safety_class=safe_write, AND the
+  -- write is FIELD_VERIFIED on this hardware. For M1 that restricts writes to the subset we
+  -- physically proved on the client's DH-XVR1B08-I; a merely OFFICIAL-DOCUMENTED write on an
+  -- un-field-tested model is refused until it is field-verified.
   if not (v_capjson->>'verdict' = 'supported'
           and (v_capjson->>'write')::boolean is true
-          and v_capjson->>'safety_class' = 'safe_write') then
-    raise exception 'action % is not a hardware-proven safe write for % (%): %',
-      p_action, v_model, v_cap, v_capjson->>'verdict' using errcode = '42501';
+          and v_capjson->>'safety_class' = 'safe_write'
+          and v_capjson->>'evidence_class' = 'FIELD_VERIFIED') then
+    raise exception 'action % is not a FIELD-VERIFIED safe write for % (%): verdict=%, evidence=%',
+      p_action, v_model, v_cap, v_capjson->>'verdict', v_capjson->>'evidence_class'
+      using errcode = '42501';
   end if;
 
   -- MANAGED auto-runs only if this exact action is in the site's managed-allow policy.

@@ -21,8 +21,10 @@ create table if not exists public.agent_coverage_gaps (
   agent_id   uuid references public.agents(id) on delete cascade,
   started_at timestamptz not null,
   ended_at   timestamptz not null,
+  -- 'observation_gap' = the Agent process was not scheduled (sleep/hibernate/off/stall) — the
+  -- honest generic the Agent can PROVE from its own wall clock; it does not assert OS-sleep.
   cause      text not null check (cause in
-               ('site_pc_suspend','agent_restart','recorder_lan_lost','cloud_link_lost')),
+               ('observation_gap','agent_restart','recorder_lan_lost','cloud_link_lost')),
   source     text not null default 'agent',
   created_at timestamptz not null default now()
 );
@@ -39,7 +41,7 @@ create or replace function public.wl_report_coverage_gap(
   p_agent_key  text,
   p_started_at timestamptz,
   p_ended_at   timestamptz,
-  p_cause      text default 'site_pc_suspend'
+  p_cause      text default 'observation_gap'
 ) returns jsonb
 language plpgsql
 security definer
@@ -47,7 +49,7 @@ set search_path = public
 as $$
 declare
   v_agent agents;
-  v_cause text := coalesce(p_cause, 'site_pc_suspend');
+  v_cause text := coalesce(p_cause, 'observation_gap');
 begin
   v_agent := wl_auth_agent(p_agent_id, p_agent_key);
   if v_agent.id is null then
@@ -56,8 +58,8 @@ begin
   if p_ended_at <= p_started_at then
     return jsonb_build_object('ok', false, 'reason', 'empty_interval');
   end if;
-  if v_cause not in ('site_pc_suspend','agent_restart','recorder_lan_lost','cloud_link_lost') then
-    v_cause := 'site_pc_suspend';
+  if v_cause not in ('observation_gap','agent_restart','recorder_lan_lost','cloud_link_lost') then
+    v_cause := 'observation_gap';
   end if;
   if exists (select 1 from agent_coverage_gaps g
               where g.agent_id = v_agent.id
@@ -111,10 +113,12 @@ as $$
     'unverified_seconds', (select secs from unv),
     'monitored_seconds', greatest(0,
         extract(epoch from ((select b from lo) - (select a from lo)))::numeric - (select secs from unv)),
+    -- Intervals are clipped to [lo,hi] before range_agg, so merged unverified <= wall; the
+    -- greatest/least clamp is belt-and-braces so the ratio can never exceed 1 or go negative.
     'coverage_ratio', case
         when (select b from lo) <= (select a from lo) then 1.0
-        else round(1 - (select secs from unv)
-             / nullif(extract(epoch from ((select b from lo) - (select a from lo)))::numeric, 0), 4)
+        else greatest(0::numeric, least(1::numeric, round(1 - (select secs from unv)
+             / nullif(extract(epoch from ((select b from lo) - (select a from lo)))::numeric, 0), 4)))
       end,
     'gaps', (select coalesce(jsonb_agg(jsonb_build_object(
                 'start', to_jsonb(greatest(s.started_at, lo.a)),

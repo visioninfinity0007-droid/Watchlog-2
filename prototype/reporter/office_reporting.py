@@ -17,7 +17,9 @@ import html
 
 # Agent-attributed / server-derived coverage-gap causes -> customer-facing wording.
 _CAUSE = {
-    "site_pc_suspend": "site PC asleep",
+    # Honest: the Agent proves only that it was not running/observing, not the OS-level reason.
+    "observation_gap": "site not monitored (agent not running)",
+    "site_pc_suspend": "site not monitored (agent not running)",   # legacy alias
     "agent_restart": "agent restarting",
     "recorder_lan_lost": "recorder LAN lost",
     "cloud_link_lost": "cloud link lost",

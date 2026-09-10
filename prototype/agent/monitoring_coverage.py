@@ -27,7 +27,13 @@ from datetime import datetime, timezone
 # process was not scheduled. Well above any NTP nudge or normal scheduling jitter.
 DEFAULT_GAP_THRESHOLD = 90.0
 
-CAUSE_SUSPEND = "site_pc_suspend"
+# A wall-clock jump proves only that THIS PROCESS was not scheduled for that span (the loop
+# would otherwise have ticked). That is consistent with OS sleep/hibernate, the PC being off,
+# or a hard stall — the Agent cannot tell which from the clock alone, so it reports the honest
+# generic cause rather than asserting "sleep". (A cloud/ISP outage does NOT freeze the process,
+# so it never produces this gap — it is handled by the spool, not here.)
+CAUSE_OBSERVATION_GAP = "observation_gap"
+CAUSE_SUSPEND = CAUSE_OBSERVATION_GAP        # back-compat alias; do not assert OS-sleep
 
 
 def detect_suspend_gap(prev_wall: float, now_wall: float,
@@ -59,7 +65,7 @@ class CoverageMonitor:
         gap = detect_suspend_gap(prev_wall, now_wall, self.loop_period, self.threshold)
         if gap <= 0:
             return None
-        g = CoverageGap(started_at=now_wall - gap, ended_at=now_wall, cause=CAUSE_SUSPEND)
+        g = CoverageGap(started_at=now_wall - gap, ended_at=now_wall, cause=CAUSE_OBSERVATION_GAP)
         self.pending.append(g)
         return g
 
@@ -85,5 +91,5 @@ class CoverageMonitor:
         return reported
 
 
-__all__ = ["DEFAULT_GAP_THRESHOLD", "CAUSE_SUSPEND", "detect_suspend_gap",
-           "CoverageGap", "CoverageMonitor"]
+__all__ = ["DEFAULT_GAP_THRESHOLD", "CAUSE_OBSERVATION_GAP", "CAUSE_SUSPEND",
+           "detect_suspend_gap", "CoverageGap", "CoverageMonitor"]

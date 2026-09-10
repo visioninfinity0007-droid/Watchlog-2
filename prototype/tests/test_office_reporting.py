@@ -86,14 +86,15 @@ class OfficeReportingTests(unittest.TestCase):
 
     def test_monitoring_coverage_partial_shows_cause_in_local_time(self):
         gaps = [{"start": "2026-09-10T21:21:00+00:00",
-                 "end": "2026-09-11T01:28:00+00:00", "cause": "site_pc_suspend"}]
+                 "end": "2026-09-11T01:28:00+00:00", "cause": "observation_gap"}]
         report = {"office": _office(coverage_ratio=0.83, gaps=gaps),
                   "timezone": "Asia/Karachi"}
         out = orp.compose_append("SECURITY", report)
         self.assertIn("Monitoring coverage: 83% of the reporting period.", out)
-        self.assertIn("site PC asleep", out)
+        # honest cause: never claims a specific OS-level reason (no "asleep")
+        self.assertIn("site not monitored (agent not running)", out)
+        self.assertNotIn("asleep", out.lower())
         self.assertIn("02:21-06:28", out)          # 21:21/01:28 UTC -> +05:00 PKT
-        # never claims it observed the asleep window
         self.assertIn("Not monitored:", out)
 
     def test_canonical_report_orders_office_before_site_intelligence(self):
