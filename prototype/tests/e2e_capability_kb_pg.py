@@ -30,6 +30,7 @@ import psycopg  # noqa: E402
 
 MIG_61 = (ROOT / "supabase" / "migrations" / "0061_recorder_capability_model.sql").read_text(encoding="utf-8")
 MIG_66 = (ROOT / "supabase" / "migrations" / "0066_recorder_capability_kb_batch2.sql").read_text(encoding="utf-8")
+MIG_77 = (ROOT / "supabase" / "migrations" / "0077_recorder_capability_kb_batch3.sql").read_text(encoding="utf-8")
 
 STEPS = []
 def step(ok, name, detail=""):
@@ -50,6 +51,7 @@ def run() -> int:
         try:
             cur.execute(MIG_61)     # idempotent; ensures tables+resolver exist on a fresh DB
             cur.execute(MIG_66)
+            cur.execute(MIG_77)
 
             a = cap(cur, "Dahua", "DH-XVR5108H-I3", "line_crossing")
             step(a["verdict"] == "supported" and a["evidence_class"] == "OFFICIAL_DOCUMENTED",
@@ -71,9 +73,15 @@ def run() -> int:
             f = cap(cur, "Dahua", "DH-XVR1B04-I", "human_vehicle_classification")
             step(f["verdict"] == "supported", "XVR1B04-I SMD human/vehicle = supported", f["verdict"])
 
+            g = cap(cur, "Dahua", "DH-XVR5216AN-I3", "human_vehicle_classification")
+            step(g["verdict"] == "supported" and g["ai_location"] == "both",
+                 "batch-3: XVR5216AN-I3 SMD = supported/both", f"{g['verdict']}/{g['ai_location']}")
+            h = cap(cur, "Hikvision", "DS-7616NI-K2/16P", "line_crossing")
+            step(h["verdict"] == "by_camera", "batch-3: K2/16P line_crossing = by_camera (no recorder engine)", h["verdict"])
+
             cur.execute("select count(distinct model) from recorder_capabilities")
             n = cur.fetchone()[0]
-            step(n >= 18, "at least 18 distinct models seeded", str(n))
+            step(n >= 26, "at least 26 distinct models seeded (batches 1-3)", str(n))
 
             # No FIELD_VERIFIED laundering: every batch-2 fact is OFFICIAL (or below).
             cur.execute("""select count(*) from recorder_capabilities
