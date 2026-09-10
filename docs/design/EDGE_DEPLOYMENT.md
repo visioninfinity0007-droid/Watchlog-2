@@ -107,6 +107,11 @@ box does not lose events during an Internet or cloud outage:
   on the order of a few GB worst-case; **budget 5 GB free minimum, 20 GB recommended** so the spool,
   the agent log under `ProgramData\WatchLog`, and the model never contend. Put it on an SSD — WAL on a
   spinning/eMMC disk under a burst is the main IO risk.
+- **Configurable cap (per deployment, not a desktop constant):** the buffer cap is the `spool_max_rows`
+  config key (`watchlog.ini` / `WATCHLOG_SPOOL_MAX_ROWS`), passed into the `Spool` at construction. A
+  Mode-B Edge box with a 128-256 GB NVMe can raise it to buffer a multi-week outage; a shared Mode-A
+  desktop keeps the 200k default. It is a **row count**, not bytes — size it against the still-size
+  estimate above and the free-storage budget. Unset/0 keeps the default.
 - **AI model storage:** `yolov8n.onnx` (~12 MB) ships beside the exe and is loaded once. If the model
   is absent the filter **fails open** (every event reported, logged once) — the box still functions,
   it just does not filter. The only image that ever leaves the building is a still that already passed

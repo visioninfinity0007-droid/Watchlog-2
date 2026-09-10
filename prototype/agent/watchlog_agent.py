@@ -192,6 +192,9 @@ class Config:
         self.state_path = Path(get("state_file") or (state_dir / "agent_state.json"))
         self.spool_path = Path(get("spool_file")
                                or (self.state_path.parent / "spool.sqlite"))
+        # Buffer cap — sized per deployment (Edge boxes can buffer a longer outage). 0/unset
+        # keeps the Spool default; the value is a row count, not bytes.
+        self.spool_max_rows = int(get("spool_max_rows") or 0)
         # Durable LOCAL health store (increment 5) — separate from the event spool.
         self.health_store_path = Path(get("health_store_file")
                                       or (self.state_path.parent / "health.sqlite"))
@@ -1131,7 +1134,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
     from spool import Spool
     import camera_health
 
-    spool = Spool(cfg.spool_path)
+    spool = Spool(cfg.spool_path, cfg.spool_max_rows)
     log(f"spool: {cfg.spool_path} ({spool.count()} queued)")
 
     # Shared holder so the collector (native faults) and the health worker (probes) drive the
@@ -1334,7 +1337,7 @@ def main() -> None:
             log(f"          enrolled_at={state.get('enrolled_at')}")
         if cfg.spool_path.exists():
             from spool import Spool
-            sp = Spool(cfg.spool_path)
+            sp = Spool(cfg.spool_path, cfg.spool_max_rows)
             log(f"spool     {sp.count()} events queued at {cfg.spool_path}")
             sp.close()
         return

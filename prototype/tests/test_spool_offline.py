@@ -67,21 +67,30 @@ class SpoolDurability(unittest.TestCase):
         self.assertEqual(evs[0]["n"], 0)
         s2.close()
 
+    def test_per_instance_cap_is_configurable(self):
+        # Edge sizing: the buffer cap is per-instance, not a hardcoded desktop constant.
+        s = Spool(self.path, max_rows=10)
+        self.assertEqual(s.max_rows, 10)
+        for i in range(15):
+            s.add({"n": i})
+        self.assertEqual(s.trim(), 5)
+        self.assertEqual(s.count(), 10)
+        s.close()
+        # a falsy cap falls back to the module default
+        s2 = Spool(self.path.with_name("d.sqlite"), max_rows=0)
+        self.assertEqual(s2.max_rows, spool_mod.MAX_ROWS)
+        s2.close()
+
     def test_trim_bounds_the_queue_oldest_first(self):
-        s = Spool(self.path)
-        original = spool_mod.MAX_ROWS
-        try:
-            spool_mod.MAX_ROWS = 10
-            for i in range(15):
-                s.add({"n": i})
-            dropped = s.trim()
-            self.assertEqual(dropped, 5)
-            self.assertEqual(s.count(), 10)
-            _, evs = s.take(100)
-            self.assertEqual([e["n"] for e in evs], list(range(5, 15)))  # oldest 5 dropped
-            self.assertEqual(s.trim(), 0)                                # idempotent at cap
-        finally:
-            spool_mod.MAX_ROWS = original
+        s = Spool(self.path, max_rows=10)
+        for i in range(15):
+            s.add({"n": i})
+        dropped = s.trim()
+        self.assertEqual(dropped, 5)
+        self.assertEqual(s.count(), 10)
+        _, evs = s.take(100)
+        self.assertEqual([e["n"] for e in evs], list(range(5, 15)))  # oldest 5 dropped
+        self.assertEqual(s.trim(), 0)                                # idempotent at cap
         s.close()
 
 
