@@ -15,6 +15,7 @@ import time
 import requests
 
 import watchlog_agent as core
+import native_verification
 from drivers import DriverError
 
 
@@ -81,6 +82,26 @@ def collector(cfg, spool, stop, holder=None) -> None:
                         f"kept ch{ev.channel} {ev.event_type}: "
                         f"recorder-native AI ({(ev.payload or {}).get('native_code', 'smart event')})"
                     )
+                    # Secondary verification (never drops the event): for a simple
+                    # object classification (person/vehicle) with a fresh still, cross-
+                    # check the recorder's label against the local model and attach a
+                    # verification state. This is what stops an indoor native-Vehicle
+                    # false positive from being promoted as a *verified* Vehicle incident
+                    # downstream — the raw recorder event is still preserved and reported.
+                    if detector is not None and native_verification.is_verifiable(ev.event_type):
+                        local = None
+                        if raw:
+                            _, found = detector.classify_event(raw)
+                            local = [d.label for d in (found or [])]
+                        state = native_verification.verify(ev.event_type, local)
+                        ev.payload["native_verification"] = state
+                        if local:
+                            ev.payload["verified_local_classes"] = sorted(set(local))
+                        if state == native_verification.CONFLICT:
+                            core.log(
+                                f"WARNING: ch{ev.channel} native {ev.event_type} conflicts with "
+                                f"local model ({', '.join(sorted(set(local)))}); kept but flagged unverified"
+                            )
                 elif detector is not None and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
                     # Generic motion still gets the existing local false-alarm
                     # filter. This retains the useful reduction in noisy DVR
