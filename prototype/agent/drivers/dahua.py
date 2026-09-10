@@ -274,6 +274,40 @@ class DahuaDriver(NvrDriver):
             return {"supported": False, "channels": {}}
         return {"supported": True, "channels": out}
 
+    def current_faults(self) -> dict:
+        """Current VideoLoss / VideoBlind channels from the recorder's live event INDEX.
+
+        eventManager.cgi?action=getEventIndexes&code=VideoLoss returns the channels that are in
+        that state *right now* (`channels[0]=4` -> 0-based index 4 -> channel "5"), unlike the
+        event STREAM which only emits on a transition. This is what lets the first health cycle
+        after startup/reconnect/resume see a camera that was already lost. A snapshot cannot be
+        trusted for this: a video-loss channel still returns the recorder's black placeholder
+        JPEG, which has a valid header and reads as 'live'.
+
+        Read-only, digest-authenticated, outbound-only. Fail-safe: if a query errors we report
+        supported=False rather than an empty (falsely-clean) fault set.
+        """
+        def _indexes(code):
+            try:
+                kv = _parse_kv(self._get(
+                    f"/cgi-bin/eventManager.cgi?action=getEventIndexes&code={code}"))
+            except DriverError:
+                return None                       # could not query -> unknown, not "none"
+            chans = []
+            for key, val in kv.items():
+                # channels[0]=4  (0-based index) -> channel "5"
+                if key.startswith("channels[") and str(val).strip().lstrip("-").isdigit():
+                    n = int(str(val).strip())
+                    if n >= 0:
+                        chans.append(str(n + 1))
+            return sorted(set(chans), key=int)
+
+        vl = _indexes("VideoLoss")
+        vb = _indexes("VideoBlind")
+        if vl is None and vb is None:
+            return {"supported": False, "video_loss": [], "video_blind": []}
+        return {"supported": True, "video_loss": vl or [], "video_blind": vb or []}
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         Dahua still image. The CGI is 1-based here, unlike the event

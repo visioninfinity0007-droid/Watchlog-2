@@ -109,6 +109,23 @@ def assess_nvr_health(driver) -> dict:
                       "enabled": bool(getattr(c, "enabled", True))}
                      for c in chans],
     }
+
+    # Current present-tense fault state (video loss / tamper) from an active recorder API. This
+    # is what makes an already-lost camera OFFLINE on the FIRST cycle — the event stream only
+    # fires on a transition, so a pre-existing outage would otherwise read as healthy. Fail safe:
+    # a driver that cannot answer reports supported=False and the camera stays probe-judged.
+    try:
+        faults = driver.current_faults()
+    except Exception:                              # noqa: BLE001 — a driver fault is not a verdict
+        faults = {"supported": False}
+    if faults.get("supported"):
+        report["channels"]["current_faults"] = {
+            "supported": True,
+            "video_loss": [str(c) for c in (faults.get("video_loss") or [])],
+            "video_blind": [str(c) for c in (faults.get("video_blind") or [])],
+        }
+    else:
+        report["channels"]["current_faults"] = {"supported": False}
     return report
 
 

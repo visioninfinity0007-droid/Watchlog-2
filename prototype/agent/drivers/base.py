@@ -244,6 +244,20 @@ class NvrDriver:
         """
         return {"supported": False, "channels": {}}
 
+    def current_faults(self) -> dict:
+        """Current, PRESENT-TENSE recorder fault state, read-only, from an active vendor API.
+
+        Distinct from stream_events(), which only fires on a TRANSITION: this answers "which
+        channels are in video loss / tamper RIGHT NOW", so an outage that began before the agent
+        started (or before a reconnect/resume) is still seen without waiting for a fresh event.
+
+        Returns {'supported': bool, 'video_loss': [channel...], 'video_blind': [channel...]}.
+        A driver that cannot query current state MUST report supported=False and empty lists — it
+        must never fabricate "no faults", because that would turn an unverifiable camera green.
+        Channels are 1-based strings, matching list_channels().
+        """
+        return {"supported": False, "video_loss": [], "video_blind": []}
+
     def close(self) -> None:
         pass
 
