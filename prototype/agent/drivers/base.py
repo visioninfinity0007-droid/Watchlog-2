@@ -286,6 +286,30 @@ class NvrDriver:
         """
         return {"supported": False, "video_loss": [], "video_blind": []}
 
+    # -- Historical backfill (recovered intelligence). Vendor-neutral, bounded, cursored. A
+    #    driver that has not VALIDATED archive retrieval against real hardware MUST leave these
+    #    at the 'unsupported' default — recovered data is second-class and must never be
+    #    fabricated. Recovered events are tagged by the backfill runtime, never treated as live.
+    def historical_capability(self) -> dict:
+        """{'events': 'supported'|'unsupported'|'unknown', 'snapshots': ..., 'segments': ...}.
+        Default: honestly unsupported on every axis."""
+        return {"events": "unsupported", "snapshots": "unsupported", "segments": "unsupported"}
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit: int = 500) -> dict:
+        """A bounded, cursored page of recorded events in [start, end).
+        Returns {'status': supported|unsupported|unknown, 'events': [...], 'next_cursor': str|None}.
+        Each event dict carries at least ts, type (and device_event_id when the recorder offers one)."""
+        return {"status": "unsupported", "events": [], "next_cursor": None}
+
+    def get_historical_snapshot(self, channel, ts) -> dict:
+        """A recorded still nearest `ts`. {'status': ..., 'frame_b64': str|None, 'actual_ts': ...}."""
+        return {"status": "unsupported", "frame_b64": None}
+
+    def get_recorded_segment(self, channel, start, end) -> dict:
+        """A recorded clip for [start, end). {'status': ..., 'bytes': bytes|None}. Unimplemented
+        until validated on real hardware (see get_clip)."""
+        return {"status": "unsupported", "bytes": None}
+
     def close(self) -> None:
         pass
 
