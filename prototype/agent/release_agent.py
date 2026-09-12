@@ -9,7 +9,9 @@ policies layered in here:
 * explicit incident-footage requests are serviced outbound-only by the site
   agent when the recorder exposes a validated playback/export path;
 * Dahua archive search/download is installed explicitly so the frozen build
-  includes the read-only recorded-media implementation.
+  includes the read-only recorded-media implementation;
+* recording/storage current truth is refreshed separately from the immutable
+  transition ledger, with Dahua recording positively proven from archive media.
 
 The NSIS installer's explicit ``--setup`` command remains strict and exits after
 recorder + enrollment validation so the background scheduled task owns the
@@ -23,6 +25,7 @@ import analytics_agent as app
 import dahua_archive
 import incident_evidence
 import native_event_collector
+import recording_current
 from drivers.native_recorder import NativeDahuaDriver
 
 _ORIGINAL_SETUP = app.analytics_setup.run
@@ -55,6 +58,10 @@ def main() -> None:
     # there is one clip implementation and one channel-index rule.
     dahua_archive.install()
     NativeDahuaDriver.get_clip = dahua_archive.get_clip
+
+    # Durable transitions remain immutable/change-only; current proof is a
+    # separate snapshot path and uses archive media for positive Dahua truth.
+    recording_current.install(app.core)
 
     explicit_setup = "--setup" in sys.argv
     if explicit_setup:
