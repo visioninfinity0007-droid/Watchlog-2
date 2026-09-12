@@ -23,6 +23,7 @@ import analytics_agent as app
 import dahua_archive
 import incident_evidence
 import native_event_collector
+from drivers.native_recorder import NativeDahuaDriver
 
 _ORIGINAL_SETUP = app.analytics_setup.run
 _ORIGINAL_RUN = app.enhanced_cmd_run
@@ -48,9 +49,12 @@ def main() -> None:
     # tests and older development flows.
     app.core.collector = native_event_collector.collector
 
-    # Explicit install keeps archive retrieval opt-in to the production package
-    # while the driver module retains an honest field-evidence boundary.
+    # The driver registry returns NativeDahuaDriver, which historically carried
+    # its own unvalidated loadfile implementation. Route BOTH the base and the
+    # registered wrapper through the hardened search-before-download path so
+    # there is one clip implementation and one channel-index rule.
     dahua_archive.install()
+    NativeDahuaDriver.get_clip = dahua_archive.get_clip
 
     explicit_setup = "--setup" in sys.argv
     if explicit_setup:
