@@ -15,12 +15,18 @@ Outbound TCP connects only. Nothing is sent beyond an HTTP GET /.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import socket
 import ssl
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
+
+try:
+    import psutil
+except ImportError:                                      # source/dev fallback
+    psutil = None
 
 CONNECT_TIMEOUT = 1.5
 READ_TIMEOUT = 3.0
@@ -156,49 +162,129 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
 # the two families we cannot, so an unsupported unit still gets named.
 SWEEP_PORTS = [80, 8000, 8080, 554, 37777, 34567]
 SWEEP_TIMEOUT = 0.4
+MAX_AUTO_SUBNETS = 8
+
+
+def _usable_ipv4(value: str | None) -> str | None:
+    """Normalize a local IPv4 suitable for a bounded LAN sweep."""
+    if not value:
+        return None
+    try:
+        addr = ipaddress.ip_address(value.split("%", 1)[0])
+    except ValueError:
+        return None
+    if not isinstance(addr, ipaddress.IPv4Address):
+        return None
+    if addr.is_unspecified or addr.is_loopback or addr.is_multicast:
+        return None
+    # Never auto-scan a public /24. CCTV interfaces should be RFC1918 or
+    # link-local; manual IP entry remains available for unusual topologies.
+    if not (addr.is_private or addr.is_link_local):
+        return None
+    return str(addr)
+
+
+def _adapter_ipv4s() -> list[str]:
+    """Reliable active-interface enumeration when psutil is packaged."""
+    if psutil is None:
+        return []
+    found: list[str] = []
+    try:
+        stats = psutil.net_if_stats()
+        for name, addresses in psutil.net_if_addrs().items():
+            if name in stats and not stats[name].isup:
+                continue
+            for address in addresses:
+                if address.family != socket.AF_INET:
+                    continue
+                ip = _usable_ipv4(address.address)
+                if ip and ip not in found:
+                    found.append(ip)
+    except Exception:                                    # noqa: BLE001
+        return []
+    return found
+
+
+def local_ipv4s() -> list[str]:
+    """Every usable local IPv4, with the default-route interface first.
+
+    0.4.2 could scan only the Wi-Fi/default-route /24 while the recorder sat on
+    a separate CCTV Ethernet interface. Packaged setup now enumerates all active
+    adapters, then falls back to hostname resolution if adapter enumeration is
+    unavailable. UDP connect selects an interface but sends no packet.
+    """
+    found: list[str] = []
+
+    def add(value):
+        ip = _usable_ipv4(value)
+        if ip and ip not in found:
+            found.append(ip)
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            add(s.getsockname()[0])
+        finally:
+            s.close()
+    except Exception:                                    # noqa: BLE001
+        pass
+
+    for ip in _adapter_ipv4s():
+        add(ip)
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(info[4][0])
+    except Exception:                                    # noqa: BLE001
+        pass
+
+    return found
 
 
 def local_ipv4() -> str | None:
-    """
-    This machine's LAN address, without shelling out to ipconfig.
+    """Backward-compatible preferred local IPv4 helper."""
+    addresses = local_ipv4s()
+    return addresses[0] if addresses else None
 
-    Opens a UDP socket toward a public address and reads back which local
-    interface the OS chose. No packets are actually sent - UDP connect()
-    only sets the default peer.
-    """
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:                                    # noqa: BLE001
-        return None
+
+def _sweep_bases(subnet: str | None = None) -> tuple[list[str], list[str]]:
+    """Resolve one explicit /24 or every distinct local /24 (bounded)."""
+    if subnet:
+        host = host_of(subnet)
+        parts = host.split(".")
+        if len(parts) < 3 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts[:3]):
+            return [], []
+        return [".".join(parts[:3])], []
+
+    addresses = local_ipv4s()
+    bases: list[str] = []
+    for ip in addresses:
+        base = ".".join(ip.split(".")[:3])
+        if base not in bases:
+            bases.append(base)
+        if len(bases) >= MAX_AUTO_SUBNETS:
+            break
+    return bases, addresses
 
 
 def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
     """
-    Find recorders on the local /24. Returns [(ip, [open ports]), ...].
+    Find recorders on the relevant local /24 network(s).
 
-    This exists because the single most common failure is not a broken
-    driver - it is nobody knowing the recorder's address. Sites are run
-    from a phone app over the vendor's cloud, so the local IP has often
-    never been written down.
+    Explicit subnet keeps the old single-/24 behavior. Automatic discovery scans
+    each distinct active local /24 so a Wi-Fi + CCTV-Ethernet PC cannot hide the
+    recorder merely because Windows routes internet traffic over Wi-Fi.
     """
-    me = local_ipv4()
-    if subnet:
-        base = ".".join(subnet.split(".")[:3])
-    elif me:
-        base = ".".join(me.split(".")[:3])
-    else:
-        log("  could not work out this PC's network; pass one, e.g. "
-            "--find 192.168.100.0")
+    bases, addresses = _sweep_bases(subnet)
+    if not bases:
+        log("  could not work out this PC's network; enter the recorder IP manually")
         return []
 
-    if me:
-        log(f"  this PC is {me}")
-    log(f"  sweeping {base}.1-254 on ports "
-        f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
+    if addresses:
+        log(f"  this PC has local IPv4: {', '.join(addresses)}")
+    log("  sweeping " + ", ".join(f"{base}.1-254" for base in bases) + " on ports "
+        + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
 
     def probe(args):
         ip, port = args
@@ -208,13 +294,17 @@ def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
         except Exception:                                # noqa: BLE001
             return None
 
-    targets = [(f"{base}.{h}", p) for h in range(1, 255) for p in SWEEP_PORTS]
-    found: dict[str, list[int]] = {}
+    targets = [(f"{base}.{h}", p)
+               for base in bases
+               for h in range(1, 255)
+               for p in SWEEP_PORTS]
+    found: dict[str, set[int]] = {}
     with ThreadPoolExecutor(max_workers=256) as pool:
         for hit in pool.map(probe, targets):
             if hit:
-                found.setdefault(hit[0], []).append(hit[1])
-    return sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])
+                found.setdefault(hit[0], set()).add(hit[1])
+    return [(ip, sorted(ports)) for ip, ports in
+            sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
 
 
 def sweep_report(hits: list[tuple[str, list[int]]], log=print) -> None:

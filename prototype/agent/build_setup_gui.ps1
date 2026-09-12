@@ -6,8 +6,16 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# Release reproducibility: 0.4.1 and the first 0.4.2 candidate had identical
+# recorder-discovery source but were rebuilt on different mutable windows-latest
+# images. Pin the freezer version that produced the known-good 0.4.1 release and
+# explicitly retain every recorder-discovery/driver module in the frozen setup UI.
+# psutil is intentionally included because reliable multi-NIC discovery on the
+# customer PC must enumerate active adapters, not only the default internet route.
 Write-Host "Installing WatchLog setup UI build dependencies..." -ForegroundColor Cyan
-python -m pip install --disable-pip-version-check --quiet pyinstaller requests pyside6
+python -m pip install --disable-pip-version-check --quiet "pyinstaller==6.22.2" requests pyside6 psutil
+if ($LASTEXITCODE -ne 0) { throw "setup UI dependency install failed (exit $LASTEXITCODE)" }
+python -m pip show pyinstaller requests pyside6 psutil | Select-String '^(Name|Version):' | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
 
 $icon = Join-Path $root "installer\setup.ico"
 
@@ -39,6 +47,18 @@ $args = @(
   "--version-file", $verFile,
   "--add-data", "$icon;.",
   "--hidden-import", "requests",
+  "--hidden-import", "psutil",
+  # Recorder setup is release-critical. Keep these explicit even though most
+  # are statically imported, so a PyInstaller graph change cannot silently
+  # strip discovery or a vendor driver from a future installer.
+  "--hidden-import", "setup_backend",
+  "--hidden-import", "discover",
+  "--hidden-import", "wsdiscovery",
+  "--hidden-import", "drivers",
+  "--hidden-import", "drivers.base",
+  "--hidden-import", "drivers.dahua",
+  "--hidden-import", "drivers.hikvision",
+  "--hidden-import", "drivers.onvif_driver",
   "--hidden-import", "PySide6.QtCore",
   "--hidden-import", "PySide6.QtGui",
   "--hidden-import", "PySide6.QtWidgets",
