@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Production entrypoint for the packaged WatchLog Site Agent.
 
-Normal agent commands delegate to :mod:`analytics_agent`, with two production
+Normal agent commands delegate to :mod:`analytics_agent`, with production
 policies layered in here:
 
 * recorder-native smart events are retained without requiring a second local
   person/vehicle inference gate;
 * explicit incident-footage requests are serviced outbound-only by the site
-  agent when the recorder exposes a validated playback/export path.
+  agent when the recorder exposes a validated playback/export path;
+* Dahua archive search/download is installed explicitly so the frozen build
+  includes the read-only recorded-media implementation.
 
 The NSIS installer's explicit ``--setup`` command remains strict and exits after
 recorder + enrollment validation so the background scheduled task owns the
@@ -18,6 +20,7 @@ from __future__ import annotations
 import sys
 
 import analytics_agent as app
+import dahua_archive
 import incident_evidence
 import native_event_collector
 
@@ -44,6 +47,10 @@ def main() -> None:
     # the source/prototype collector stays available for isolated regression
     # tests and older development flows.
     app.core.collector = native_event_collector.collector
+
+    # Explicit install keeps archive retrieval opt-in to the production package
+    # while the driver module retains an honest field-evidence boundary.
+    dahua_archive.install()
 
     explicit_setup = "--setup" in sys.argv
     if explicit_setup:
