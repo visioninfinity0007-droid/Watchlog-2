@@ -106,12 +106,13 @@ begin
     perform wl_require_role(array['owner','admin']);
   end if;
 
-  -- Enabling requires a current compatible Agent. Disabling is always allowed.
+  -- Enabling requires a current compatible Agent. Agent capabilities are a
+  -- JSONB array of runtime keys; the `?` operator tests array membership.
   if coalesce(p_enabled, false) and not exists (
     select 1
       from public.agents a
      where a.id = wl_current_site_agent(p_site_id)
-       and 'operations_runtime' = any(coalesce(a.capabilities,'{}'::text[]))
+       and coalesce(a.capabilities, '[]'::jsonb) ? 'operations_runtime'
   ) then
     raise exception 'current agent does not advertise the required control runtime'
       using errcode = '42501';
