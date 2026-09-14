@@ -4,21 +4,43 @@ import { useEffect, useState } from "react";
 import Mark from "./mark";
 import { supabase } from "../lib/supabase";
 
-// WatchLog is AI-first. Operational surfaces remain available as deep links/tools,
-// but customers should not have to learn a 12-module dashboard taxonomy.
+// WatchLog is AI-first. Operational surfaces stay available as focused tools,
+// but every signed-in page uses the same quiet product shell as WatchLog AI.
 const TABS = [
   ["WatchLog AI", "/ai/"],
   ["Reports", "/reports/"],
   ["Setup", "/setup/"],
   ["Settings", "/settings/"],
 ];
+const TOOL_TABS = [
+  ["Site Health", "/site-health/"],
+  ["Incidents", "/incidents/"],
+  ["Camera View", "/control-room/"],
+  ["Analytics", "/analytics/"],
+  ["Evidence Archive", "/archive/"],
+  ["Advanced Site Control", "/site-control/"],
+];
+const TOOL_ACTIVE = new Set(["Overview","Control Room","Incidents","Operations","Site Health","Site Control","Analytics","Executive","Archive","Team"]);
 
 export function Nav({ active, email, right }) {
   const [platform,setPlatform]=useState(null);
-  const [toolsOpen,setToolsOpen]=useState(false);
+  const [toolsOpen,setToolsOpen]=useState(TOOL_ACTIVE.has(active));
   useEffect(()=>{let live=true;(async()=>{const {data}=await supabase().rpc("wl_platform_me");if(live&&data?.role)setPlatform(data);})();return()=>{live=false;};},[]);
-  async function signOut() { await supabase().auth.signOut(); location.replace("/login/"); }
-  return <header className="topbar"><a href="/ai/" className="brandlink"><Mark size={26}/><b>WatchLog</b></a><nav className="nav">{TABS.map(([label,href])=><a key={href} href={href} className={"navlink"+(active===label?" active":"")}>{label}</a>)}<span style={{position:"relative"}}><button type="button" className={"navlink"+(["Overview","Control Room","Incidents","Operations","Site Health","Site Control","Analytics","Executive","Archive","Team"].includes(active)?" active":"")} style={{background:"transparent",border:0,width:"auto",padding:"8px 10px"}} onClick={()=>setToolsOpen((v)=>!v)}>Tools ▾</button>{toolsOpen&&<span style={{position:"absolute",top:"calc(100% + 8px)",left:0,minWidth:190,padding:7,background:"var(--color-surface, #111827)",border:"1px solid var(--wl-target-line, #26354f)",borderRadius:10,zIndex:100,boxShadow:"0 14px 36px rgba(0,0,0,.22)",display:"grid",gap:2}}><a className="navlink" href="/site-health/">Site Health</a><a className="navlink" href="/incidents/">Incidents</a><a className="navlink" href="/control-room/">Camera View</a><a className="navlink" href="/analytics/">Analytics</a><a className="navlink" href="/archive/">Evidence Archive</a><a className="navlink" href="/site-control/">Advanced Site Control</a></span>}</span></nav><span className="spacer"/>{platform&&<a href="/admin/" className="navlink hide-sm" style={{color:"var(--wl-ice)"}}>WatchLog Admin</a>}{email&&<span className="muted hide-sm" style={{fontSize:"var(--font-size-xs)"}}>{email}</span>}{right}<button className="ghost small" onClick={signOut}>Sign out</button></header>;
+  async function signOut(){await supabase().auth.signOut();location.replace("/login/");}
+  return <aside className="productRail">
+    <a href="/ai/" className="productRailBrand"><Mark size={28}/><b>WatchLog</b></a>
+    <nav className="productRailNav" aria-label="WatchLog navigation">
+      {TABS.map(([label,href])=><a key={href} href={href} className={"productRailLink"+(active===label?" active":"")}>{label}</a>)}
+      <button type="button" className={"productRailLink productRailTools"+(TOOL_ACTIVE.has(active)?" active":"")} onClick={()=>setToolsOpen((v)=>!v)} aria-expanded={toolsOpen}>Tools <span>{toolsOpen?"−":"+"}</span></button>
+      {toolsOpen&&<div className="productRailSubnav">{TOOL_TABS.map(([label,href])=><a key={href} href={href} className={"productRailSubLink"+(active===label||((active==="Control Room")&&label==="Camera View")||((active==="Archive")&&label==="Evidence Archive")||((active==="Site Control")&&label==="Advanced Site Control")?" active":"")}>{label}</a>)}</div>}
+    </nav>
+    <div className="productRailBottom">
+      {right&&<div className="productRailUtility">{right}</div>}
+      {platform&&<a href="/admin/" className="productRailAdmin">WatchLog Admin</a>}
+      {email&&<div className="productRailUser" title={email}>{email}</div>}
+      <button className="productRailSignout" onClick={signOut}>Sign out</button>
+    </div>
+  </aside>;
 }
 
 export const SETUP_STEPS=[["awaiting_agent","Waiting for setup"],["enrolled","WatchLog connected"],["recorder_connected","Camera system connected"],["cameras_discovered","Cameras ready"],["ready","Ready"]];
