@@ -1,3 +1,2 @@
-import IncidentWorkspace from "./workspace";
-
-export default function Page(){return <IncidentWorkspace/>;}
+import CustomerIncidents from "./customer-workspace";
+export default function Page(){return <CustomerIncidents/>;}
