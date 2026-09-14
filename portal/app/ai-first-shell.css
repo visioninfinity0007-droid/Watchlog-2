@@ -1,0 +1,314 @@
+/*
+ * AI-first signed-in shell.
+ * Loaded after the legacy visual target layers so existing WatchLog tools retain
+ * their functionality while presenting the same calm, light product language as
+ * WatchLog AI and Guided Setup.
+ */
+
+.shell{
+  min-height:100dvh;
+  display:grid;
+  grid-template-columns:248px minmax(0,1fr);
+  background:#fff;
+  color:#111827;
+  font-family:Geist,Inter,system-ui,sans-serif;
+}
+
+/* ---------- shared product rail ---------- */
+.productRail{
+  position:sticky;
+  top:0;
+  height:100dvh;
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+  padding:0 10px 12px;
+  background:#f7f7f8;
+  border-right:1px solid #e7e7e9;
+  overflow:auto;
+  z-index:20;
+}
+.productRailBrand{
+  height:64px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 7px;
+  color:#111827!important;
+  text-decoration:none!important;
+}
+.productRailBrand svg{fill:#5B21FF!important;filter:none!important}
+.productRailBrand b{font-size:16px;letter-spacing:-.025em;font-weight:720}
+.productRailNav{display:grid;gap:2px;margin-top:4px}
+.productRailLink,.productRailSubLink,.productRailAdmin,.productRailSignout{
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  width:100%!important;
+  min-height:38px;
+  padding:9px 10px!important;
+  border:0!important;
+  border-radius:9px!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  color:#5f6672!important;
+  text-align:left!important;
+  text-decoration:none!important;
+  font-size:12.5px!important;
+  font-weight:560!important;
+}
+.productRailLink:hover,.productRailSubLink:hover,.productRailAdmin:hover,.productRailSignout:hover{
+  background:#eceef1!important;
+  color:#111827!important;
+  text-decoration:none!important;
+}
+.productRailLink.active,.productRailSubLink.active{
+  background:#e9eefb!important;
+  color:#173b92!important;
+}
+.productRailLink.active::before,.productRailSubLink.active::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:8px;
+  bottom:8px;
+  width:3px;
+  border-radius:999px;
+  background:#1748d3;
+}
+.productRailTools{margin-top:8px!important}
+.productRailTools span{font-size:15px;color:#87909d;font-weight:500}
+.productRailSubnav{display:grid;gap:1px;padding:2px 0 5px 12px}
+.productRailSubLink{min-height:34px;padding:7px 9px!important;font-size:11.5px!important;color:#737b87!important}
+.productRailBottom{margin-top:auto;border-top:1px solid #e4e5e8;padding-top:9px;display:grid;gap:2px}
+.productRailUtility{padding:7px 9px 9px;border-bottom:1px solid #e4e5e8;margin-bottom:4px;color:#6b7280;font-size:11px}
+.productRailUtility select,.productRailUtility input{margin:0!important;width:100%!important}
+.productRailAdmin{color:#1748d3!important}
+.productRailUser{padding:8px 10px 3px;color:#9aa0aa;font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.productRailSignout{justify-content:flex-start!important}
+
+/* ---------- signed-in page canvas ---------- */
+.shell>.main{
+  min-width:0;
+  width:100%;
+  max-width:1480px;
+  margin:0 auto;
+  padding:34px clamp(24px,4vw,58px) 72px;
+  background:#fff;
+  color:#111827;
+}
+.shell h1,.shell h2,.shell h3,.shell h4,.shell strong,.shell b{color:#111827}
+.shell .muted{color:#7b8390!important}
+.shell a{color:#1748d3}
+.shell a:hover{text-decoration:none}
+
+/* ---------- page headers ---------- */
+.shell .target-page-head,[class*="portal_pageHead"],[class*="analytics_pageHead"]{
+  margin-bottom:26px!important;
+  align-items:flex-end!important;
+}
+.shell .target-page-head h1,[class*="portal_pageHead"] h1,[class*="analytics_pageHead"] h1{
+  color:#101318!important;
+  font-size:clamp(1.85rem,2.6vw,2.45rem)!important;
+  line-height:1.08!important;
+  letter-spacing:-.04em!important;
+}
+.shell .target-page-head p,[class*="portal_pageHead"] p,[class*="analytics_pageHead"] p{
+  color:#747b88!important;
+  font-size:13px!important;
+  line-height:1.6!important;
+}
+.shell .target-eyebrow,[class*="portal_eyebrow"]{
+  color:#1748d3!important;
+  font-size:9px!important;
+  font-weight:800!important;
+  letter-spacing:.12em!important;
+}
+
+/* ---------- surfaces ---------- */
+.shell .panel,.shell .card,.shell .shot,
+[class*="portal_card__"],[class*="portal_card_"],[class*="portal_featureCard"],
+[class*="portal_metric__"],[class*="portal_metric_"],
+[class*="site-health_metric__"],[class*="site-health_metric_"],
+[class*="site-health_issueCard"],
+[class*="analytics_metric__"],[class*="analytics_metric_"],
+[class*="analytics_card__"],[class*="analytics_card_"]{
+  background:#fff!important;
+  border-color:#e4e7ec!important;
+  color:#111827!important;
+  box-shadow:0 1px 2px rgba(16,24,40,.025),0 10px 34px rgba(16,24,40,.035)!important;
+}
+.shell .panel,[class*="portal_card__"],[class*="portal_card_"],[class*="portal_featureCard"],
+[class*="site-health_issueCard"],[class*="analytics_card__"],[class*="analytics_card_"]{border-radius:14px!important}
+.shell .target-panel-title{padding:17px 18px;border-bottom-color:#e7e9ed!important}
+.shell .target-panel-title h2{color:#111827!important;font-size:15px!important}
+.shell .target-panel-title p{color:#818894!important}
+.shell .target-link{color:#1748d3!important}
+
+[class*="portal_sectionHead"] h2{color:#111827!important;font-size:18px!important;text-transform:none!important;letter-spacing:-.025em!important}
+[class*="portal_sectionHead"] p{color:#7a8390!important}
+[class*="portal_metricLabel"],[class*="site-health_metricLabel"],[class*="analytics_metricLabel"]{
+  color:#8a929e!important;
+  text-transform:none!important;
+  letter-spacing:0!important;
+  font-size:11px!important;
+}
+[class*="portal_metricValue"],[class*="analytics_metricValue"]{color:#111827!important}
+
+/* ---------- forms and actions ---------- */
+.shell input,.shell select,.shell textarea{
+  background:#fff!important;
+  color:#1f2937!important;
+  border:1px solid #dfe3e8!important;
+  box-shadow:none!important;
+}
+.shell input::placeholder,.shell textarea::placeholder{color:#a3a9b2!important}
+.shell input:focus,.shell select:focus,.shell textarea:focus{
+  outline:none!important;
+  border-color:#b7c8ef!important;
+  box-shadow:0 0 0 3px rgba(23,72,211,.07)!important;
+}
+.shell label{color:#566170}
+.shell button{box-shadow:none}
+.shell button.ghost,.shell .closeBtn{
+  background:#fff!important;
+  color:#4f5967!important;
+  border:1px solid #dfe3e8!important;
+}
+.shell button.ghost:hover,.shell .closeBtn:hover{background:#f6f7f9!important;border-color:#d3d8df!important}
+.shell .btn-danger{background:#fff!important;border-color:#efcaca!important;color:#b13a3a!important}
+[class*="portal_primaryLink"],[class*="analytics_primaryAction"]{background:#1748d3!important;color:#fff!important;box-shadow:none!important}
+[class*="portal_secondaryLink"]{background:#fff!important;color:#4b5563!important;border-color:#dfe3e8!important}
+
+/* ---------- tables ---------- */
+.shell table{color:#303846}
+.shell th{background:#fafafa!important;color:#8b929d!important;border-bottom:1px solid #eceef1;font-size:9px}
+.shell td{border-top-color:#eceef1!important}
+.shell tbody tr:hover{background:#fafbfc!important}
+.shell .overview-site-row{background:#fafbfc!important}
+.shell .overview-agent{color:#596273!important}
+
+/* ---------- status ---------- */
+.shell .pill{border:1px solid transparent;font-weight:650}
+.shell .s-ok{color:#167456!important;background:#edf8f3!important;border-color:#d6efe5!important}
+.shell .s-warn{color:#956d17!important;background:#fff8e8!important;border-color:#f4e6b8!important}
+.shell .s-bad{color:#b23e3e!important;background:#fff1f1!important;border-color:#f4d2d2!important}
+.shell .s-unk{color:#7d8590!important;background:#f2f4f6!important;border-color:#e6e8eb!important}
+.shell .banner{background:#fffaf0!important;border-color:#f0dfb9!important;border-left-color:#d99b16!important;box-shadow:none!important;color:#3e4651}
+.shell .banner.clear{background:#f3fbf7!important;border-color:#d9eee4!important;border-left-color:#18a06b!important}
+.shell .banner li{color:#6d7581!important}
+
+/* ---------- tabs ---------- */
+[class*="portal_tabs"]{background:#f5f6f8!important;border-color:#e4e6ea!important}
+[class*="portal_tab"]{color:#747b87!important}
+[class*="portal_tabActive"]{background:#fff!important;color:#1748d3!important;box-shadow:0 1px 3px rgba(16,24,40,.06)!important}
+[class*="analytics_subnav"]{border-bottom-color:#e6e8ec!important}
+[class*="analytics_subnav"] a{color:#7d8590!important}
+[class*="analytics_subnav"] [class*="current"]{color:#1748d3!important;border-bottom-color:#1748d3!important}
+
+/* ---------- reports ---------- */
+.shell .report-layout{gap:16px}
+.shell .daily-report-card{
+  background:linear-gradient(180deg,#f7fbf9,#fff)!important;
+  border-color:#dbeee5!important;
+  box-shadow:0 1px 2px rgba(16,24,40,.025),0 10px 34px rgba(16,24,40,.03)!important;
+}
+.shell .daily-report-head{border-bottom-color:#e5ece8!important}
+.shell .daily-report-body{background:#fff!important;border-color:#e7ebe9!important;color:#374151}
+.shell .daily-report-body ul{color:#56606d!important}
+
+/* ---------- incidents ---------- */
+.shell .incident-filterbar{background:#fff!important}
+.shell .incident-count{color:#818894!important}
+.shell .incident-count strong{color:#111827!important}
+.shell .incident-item{color:#303846!important}
+.shell .incident-item:hover{background:#f7f8fa!important;border-color:#e5e8ed!important}
+.shell .incident-item.selected{background:#f0f4ff!important;border-color:#b7c8ef!important;box-shadow:0 0 0 1px rgba(23,72,211,.07) inset!important}
+.shell .incident-thumb{background:#f2f4f6!important;border-color:#e5e8ed!important}
+.shell .incident-thumb-empty{color:#929aa6!important}
+.shell .incident-item-meta span,.shell .incident-sub,.shell .incident-note{color:#7c8591!important}
+.shell .incident-type{background:#eef4ff!important;color:#1748d3!important}
+.shell .incident-detail{background:#fff!important}
+.shell .incident-frame{background:#f4f5f7!important;border-color:#e3e6ea!important}
+.shell .incident-frame-empty{color:#9299a5!important}
+.shell .incident-meta-item{background:#fafbfc!important;border-color:#e5e8ed!important}
+.shell .incident-meta-item small{color:#8a929e!important}
+
+/* ---------- site health ---------- */
+.shell .health-site-card{
+  background:#fff!important;
+  border-color:#e4e7ec!important;
+  box-shadow:0 1px 2px rgba(16,24,40,.025),0 10px 34px rgba(16,24,40,.03)!important;
+}
+.shell .health-ring{background:conic-gradient(var(--ring) calc(var(--score)*1%),#edf0f3 0)!important}
+.shell .health-ring::after{background:#fff!important;border-color:#edf0f3!important}
+.shell .health-site-summary{color:#7e8793!important}
+.shell .health-camera-list{border-top-color:#e8eaee!important}
+.shell .health-camera-row span:last-child{color:#8b929d!important}
+
+/* ---------- analytics ---------- */
+[class*="analytics_chartVisitor"]{stroke:#1748d3!important;filter:none!important}
+[class*="analytics_chartVehicle"]{stroke:#6e50e7!important}
+[class*="analytics_badge"]{background:#eef4ff!important;color:#1748d3!important}
+[class*="analytics_cameraBtnActive"]{background:#eef4ff!important;color:#1748d3!important}
+[class*="analytics_pack"]:hover:not(:disabled){border-color:#c8d5f4!important;background:#f8faff!important}
+[class*="analytics_ruleForm"]{border-color:#dce4f5!important;background:linear-gradient(180deg,#f8faff,#fff 130px)!important}
+
+/* ---------- shared module details ---------- */
+[class*="portal_callout"]{background:#f4f8ff!important;border-color:#dce5f8!important;color:#374151!important}
+[class*="portal_callout"] p,[class*="portal_roleCard"] p,[class*="portal_listRow"] small{color:#7d8591!important}
+[class*="portal_statusDot"]{background:#1748d3!important;box-shadow:none!important}
+[class*="portal_roleCard"],[class*="portal_detailItem"],[class*="portal_listRow"]{background:#fafbfc!important;border-color:#e5e8ed!important;color:#374151!important}
+[class*="portal_roleCard"] span{color:#1748d3!important}
+[class*="portal_emptyCard"]{border-color:#dfe3e8!important;color:#8b929d!important}
+[class*="portal_copyBox"]{background:#fafbfc!important;border-color:#e0e4e9!important;color:#4b5563!important}
+[class*="portal_progress"]{background:#edf0f3!important}
+[class*="portal_progress"]>span{background:linear-gradient(90deg,#1748d3,#6e50e7)!important}
+
+/* ---------- modal ---------- */
+[class*="portal_modalBackdrop"]{background:rgba(17,24,39,.35)!important}
+[class*="portal_modal"]{background:#fff!important;border-color:#e1e5ea!important;box-shadow:0 30px 90px rgba(15,23,42,.18)!important;color:#111827!important}
+[class*="portal_modalHead"]{border-bottom-color:#e7e9ed!important}
+[class*="portal_modalHead"] h2{color:#111827!important}
+[class*="portal_modalImage"]{background:#f3f4f6!important;border-color:#e2e5e9!important}
+
+/* ---------- misc legacy target pieces ---------- */
+.shell .overview-bar-track{background:#edf0f3!important}
+.shell .overview-bar-fill{background:linear-gradient(90deg,#1748d3,#72d4ff)!important;box-shadow:none!important}
+.shell .overview-count{color:#758090!important}
+.shell .overview-shots .shot{background:#fff!important}
+.shell .setup-progress-row{border-bottom-color:#e8eaee!important}
+.shell .setup-progress-dot{border-color:#cfd5dd!important;color:#5f6977!important}
+.shell .setup-progress-row.active .setup-progress-dot{background:#eef4ff!important;border-color:#1748d3!important}
+.shell .setup-progress-row.pending{opacity:.55}
+.shell .setup-progress-state{color:#1748d3!important}
+
+/* ---------- mobile ---------- */
+@media(max-width:900px){
+  .shell{grid-template-columns:218px minmax(0,1fr)}
+  .shell>.main{padding-left:24px;padding-right:24px}
+}
+@media(max-width:760px){
+  .shell{display:block}
+  .productRail{
+    position:sticky;
+    top:0;
+    height:auto;
+    min-height:58px;
+    padding:0 10px;
+    flex-direction:row;
+    align-items:center;
+    gap:8px;
+    overflow-x:auto;
+    border-right:0;
+    border-bottom:1px solid #e7e7e9;
+  }
+  .productRailBrand{height:58px;flex:0 0 auto;padding-right:8px}.productRailBrand b{display:none}
+  .productRailNav{display:flex;align-items:center;gap:2px;margin:0;white-space:nowrap}
+  .productRailLink{width:auto!important;min-height:34px;padding:7px 9px!important}
+  .productRailTools,.productRailSubnav,.productRailBottom{display:none!important}
+  .shell>.main{padding:24px 14px 54px}
+  .shell .target-page-head,[class*="portal_pageHead"],[class*="analytics_pageHead"]{align-items:flex-start!important;flex-direction:column!important}
+  .shell .target-page-head h1,[class*="portal_pageHead"] h1,[class*="analytics_pageHead"] h1{font-size:1.9rem!important}
+}
