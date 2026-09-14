@@ -62,6 +62,34 @@ nvr_driver = auto
 ; detect_confidence = 0.35            ; below this, an object is a guess
 ; detect_classes    = person,car,motorcycle   ; the scope covers these three
 
+; --- automatic NVR outage recovery (0.4.4) ---------------------------
+; After a monitoring gap, WatchLog reconnects, detects the exact missed
+; interval, and — READ ONLY — backfills recoverable intelligence from the
+; recorder's own archive. It never writes to the recorder, always yields to
+; live monitoring, and is bandwidth/CPU throttled. On by default; recovered
+; coverage is reported separately from live coverage, never blended.
+; recovery_enabled           = true
+; recovery_seconds           = 300     ; how often to look for intervals to recover
+; recovery_chunk_seconds     = 3600    ; bounded work per pass (resumable via checkpoints)
+; recovery_throttle_seconds  = 2.0     ; pause between chunks (be gentle on the recorder)
+; recovery_threshold_seconds = 180     ; a gap longer than this counts as an outage
+
+; --- in-app updates (0.4.4) ------------------------------------------
+; `watchlog-agent --check-update` fetches a SIGNED release manifest over HTTPS
+; for this site's channel and reports whether a newer version is available. It
+; is READ ONLY and never installs anything. With no update_public_key set an
+; update is refused, because the manifest cannot be trusted.
+; update_url               = https://YOUR-HOST/watchlog/manifest.json
+; update_channel           = production   ; internal | pilot | beta | production
+; update_public_key        =              ; base64 Ed25519 release-signing public key
+; update_require_signature = true
+
+; --- diagnostics (change nothing; safe to run any time) --------------
+;   watchlog-agent --probe           identify the recorder on the LAN
+;   watchlog-agent --accept          post-install acceptance self-test
+;   watchlog-agent --check-update    check for a newer signed release (read-only)
+;   watchlog-agent --support-bundle  export a non-secret diagnostics .zip for support
+
 ; --- optional --------------------------------------------------------
 ; state_dir         = C:\ProgramData\WatchLog
 ; state_file        = C:\ProgramData\WatchLog\agent_state.json
