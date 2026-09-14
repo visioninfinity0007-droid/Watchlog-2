@@ -125,6 +125,8 @@ jobs:
         run: python -m pytest prototype/tests/test_site_status.py -q
       - name: Site Status controller — panel action bindings drive the agent CLI (accept/update/rollback/bundle)
         run: python -m pytest prototype/tests/test_status_controller.py -q
+      - name: Retention depth — bounded archive-boundary probe (measured/at_least/empty/unsupported)
+        run: python -m pytest prototype/tests/test_retention.py -q
       - name: Support bundle — non-secret diagnostic export (allowlist redaction, no secret leak)
         run: python -m pytest prototype/tests/test_support_bundle.py -q
       - name: In-app update engine — signed manifest (Ed25519), channels, version + SHA-256 integrity gating

@@ -1463,7 +1463,8 @@ def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
 
 
 def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
-                    _heartbeat=None, _spool_factory=None, _archive=None, _now=None) -> int:
+                    _heartbeat=None, _spool_factory=None, _archive=None, _retention=None,
+                    _now=None) -> int:
     """0.4.4 P1 — emit the WatchLog Site Status document (STATUS_JSON) for the status panel.
 
     Local appliance view: agent identity/version/spool, recorder reachability + archive capability,
@@ -1565,7 +1566,22 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
                               recovery_backlog=0)
 
     recording = ss.recording_view(camera["cameras"], recording=None)
-    storage = ss.storage_view(None)                  # local read has no recorder storage API yet
+
+    # Retention depth (P7): bounded, best-effort. Off by default so the panel refresh stays fast;
+    # WATCHLOG_STATUS_RETENTION=1 (or a dedicated deep recheck) enables the archive-boundary probe.
+    ret = _retention
+    if ret is None and driver is not None and merged and \
+            os.environ.get("WATCHLOG_STATUS_RETENTION", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            import retention as _retmod
+            ret = _retmod.estimate_retention(driver, merged[0]["channel"], now=now)
+        except Exception:  # noqa: BLE001
+            ret = None
+    if ret and ret.get("status") in ("measured", "at_least"):
+        storage = ss.storage_view({"retention_days": ret.get("retention_days"),
+                                   "oldest_recording": ret.get("oldest_recording")})
+    else:
+        storage = ss.storage_view(None)              # honest 'Not available on this recorder'
 
     if driver is not None:
         try:

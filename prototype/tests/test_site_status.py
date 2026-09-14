@@ -213,6 +213,17 @@ class CmdStatusJson(unittest.TestCase):
         self.assertEqual(snap["agent"]["enrollment"], "not_enrolled")
         self.assertEqual(snap["agent"]["cloud"], "unknown")     # never probed without identity
 
+    def test_storage_na_by_default(self):
+        _code, snap = _run_status(_status_cfg())
+        self.assertEqual(snap["storage"]["retention_days"], ss.NA)    # fast path: not probed
+        self.assertEqual(snap["storage"]["oldest_recording"], ss.NA)
+
+    def test_retention_surfaced_when_measured(self):
+        ret = {"status": "measured", "retention_days": 10.2, "oldest_recording": "2026-09-04T11:12:00+00:00"}
+        _code, snap = _run_status(_status_cfg(), _retention=ret)
+        self.assertEqual(snap["storage"]["retention_days"], 10.2)
+        self.assertEqual(snap["storage"]["oldest_recording"], "2026-09-04T11:12:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
