@@ -69,8 +69,12 @@ def main() -> None:
               tenant, site)[0]
     cam = q("insert into cameras (tenant_id, site_id, channel, name) values (%s,%s,'1','Front door') "
             "returning id", tenant, site)[0]
+    # 0085's cameras_configuration_truth trigger auto-creates a camera_health row on camera
+    # insert, so upsert the desired offline/recording state whether or not the row pre-exists.
     conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, recording_state) "
-                 "values (%s,%s,%s,'offline','recording')", (cam, tenant, site))
+                 "values (%s,%s,%s,'offline','recording') "
+                 "on conflict (camera_id) do update set health_state='offline', recording_state='recording'",
+                 (cam, tenant, site))
     conn.execute("insert into nvr_health (agent_id, tenant_id, site_id, nvr_reachable, nvr_auth_ok, storage_state) "
                  "values (%s,%s,%s, true, true, 'ok')", (agent, tenant, site))
 
