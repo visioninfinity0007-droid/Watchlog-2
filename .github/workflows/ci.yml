@@ -113,6 +113,8 @@ jobs:
         run: python -m pytest prototype/tests/test_backfill.py prototype/tests/test_site_config_advisor.py prototype/tests/test_intelligence_monthly.py -q
       - name: Canonical report unification + operational PDF (one dataset -> portal/WhatsApp/PDF, real PDF)
         run: python -m pytest prototype/tests/test_intelligence_report.py -q
+      - name: 0.4.4 release-defect regressions (Dahua archive response-close, build-SHA stamping)
+        run: python -m pytest prototype/tests/test_dahua_archive_close.py prototype/tests/test_build_metadata.py -q
       - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract

@@ -41,3 +41,8 @@ _build_*/
 prototype/models/*
 !prototype/models/yolov8n.onnx
 prototype/build_out.log
+
+# Generated at build time by build_exe.ps1 (build SHA stamp) — never committed
+prototype/agent/build_info.py
+agent/build_info.py
+build_info.py

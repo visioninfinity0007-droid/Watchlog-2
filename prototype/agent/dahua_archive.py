@@ -264,7 +264,17 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime) 
         stream=True,
         timeout=max(driver.timeout, DOWNLOAD_TIMEOUT),
     )
-    return _read_bounded(response)
+    # A streamed response holds the underlying connection open until it is fully
+    # consumed OR explicitly closed. _read_bounded may raise (empty / oversized /
+    # error-body) or return early, so the response is ALWAYS closed here — a leaked
+    # streamed connection would eventually exhaust the recorder's session pool.
+    try:
+        return _read_bounded(response)
+    finally:
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001 — close must never mask the real outcome
+            pass
 
 
 def install() -> None:
