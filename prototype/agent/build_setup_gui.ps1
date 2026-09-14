@@ -52,6 +52,11 @@ $args = @(
   # are statically imported, so a PyInstaller graph change cannot silently
   # strip discovery or a vendor driver from a future installer.
   "--hidden-import", "setup_backend",
+  # Site Status panel (opened via --status) is lazily imported, so name it and its Qt-free
+  # controller explicitly or a graph change could strip the post-install status/control window.
+  "--hidden-import", "site_status_gui",
+  "--hidden-import", "site_status",
+  "--hidden-import", "status_controller",
   "--hidden-import", "discover",
   "--hidden-import", "wsdiscovery",
   "--hidden-import", "drivers",

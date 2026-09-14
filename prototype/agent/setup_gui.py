@@ -549,12 +549,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
     parser.add_argument("--migrate-only", action="store_true")
+    parser.add_argument("--status", action="store_true",
+                        help="open the WatchLog Site Status window instead of first-run setup")
     parser.add_argument("--version", action="store_true")
     args, _unknown = parser.parse_known_args()
     if args.version:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
+
+    if args.status:
+        # Post-install: the same WatchLog app opens into the Site Status / control panel.
+        import site_status_gui
+        return site_status_gui.main(config_path)
 
     if args.migrate_only:
         try:
