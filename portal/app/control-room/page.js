@@ -1,3 +1,2 @@
-import CameraWorkspace from "./workspace";
-
-export default function Page(){return <CameraWorkspace/>;}
+import CustomerCameraView from "./customer-workspace";
+export default function Page(){return <CustomerCameraView/>;}
