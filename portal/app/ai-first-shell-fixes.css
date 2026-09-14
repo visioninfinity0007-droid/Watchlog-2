@@ -19,6 +19,9 @@
 .shell button.primary,.shell .primary{background:#1748d3!important;color:#fff!important;border:1px solid #1748d3!important}
 .shell button.secondary,.shell .secondary{background:#fff!important;color:#4b5563!important;border:1px solid #dfe3e8!important;box-shadow:none!important}
 .shell button.secondary:hover,.shell .secondary:hover{background:#f7f8fa!important;border-color:#d3d8df!important}
+.shell .empty{color:#8a929d!important;background:transparent!important}
+.shell .err{background:#fff4f4!important;color:#a43b3b!important;border:1px solid #f1d2d2!important}
+.shell .ok-note{background:#f1faf6!important;color:#22684f!important;border:1px solid #d4ebdf!important}
 
 /* Site Health module has its own historical dark surfaces. */
 [class*="site-health_pageHead"] h1{color:#111827!important}
@@ -38,14 +41,13 @@
 [class*="analytics_ruleForm"],[class*="analytics_pack"],[class*="analytics_cameraBtn"],[class*="analytics_listRow"]{color:#374151!important}
 [class*="analytics_ruleForm"] input,[class*="analytics_ruleForm"] select{background:#fff!important;color:#1f2937!important;border-color:#dfe3e8!important}
 
-/* Generic links and content cards inside operational tools. */
+/* Generic inline surfaces inside operational tools inherit the shell palette. */
 .shell [style*="background: var(--color-canvas)"],
 .shell [style*="background:var(--color-canvas)"]{background:#f7f8fa!important}
 .shell [style*="background: var(--color-panel)"],
 .shell [style*="background:var(--color-panel)"]{background:#fff!important}
-.shell [style*="border: \"1px solid var(--color-line-dark)\""]{border-color:#e5e7eb!important}
 
-/* Keep camera media dark while surrounding product chrome stays light. */
+/* Keep media content natural while surrounding product chrome stays light. */
 .shell img{color:inherit}
 
 @media(max-width:760px){
