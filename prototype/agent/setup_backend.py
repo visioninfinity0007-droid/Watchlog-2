@@ -580,6 +580,25 @@ def _classify_camera_sync(exc) -> AgentSyncError:
         "WatchLog linked this site but could not add the cameras. Please try again; if it persists, contact WatchLog support.")
 
 
+def merge_camera_config(channels: list, profiles: list) -> list:
+    """Merge the operator's Monitor/Ignore + name choices (0.4.4 P4) into the wl_sync_cameras
+    payload: is_configured = the channel's monitored flag. A discovered channel with no explicit
+    profile stays monitored (the operator saw it in discovery); a channel the operator marked Ignore
+    becomes is_configured=false and never generates a false health warning. Pure/testable."""
+    by_ch = {str(p.get("channel", "")).strip(): p for p in (profiles or [])
+             if str(p.get("channel", "")).strip()}
+    out = []
+    for c in (channels or []):
+        ch = str(c.get("channel", "")).strip()
+        if not ch:
+            continue
+        prof = by_ch.get(ch, {})
+        out.append({"channel": ch,
+                    "name": (prof.get("name") or c.get("name") or ""),
+                    "is_configured": bool(prof.get("monitored", True))})
+    return out
+
+
 def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str], None] | None = None) -> dict:
     """Idempotently reconcile the discovered channels into WatchLog (server-side
     ON CONFLICT (site_id, channel) DO UPDATE). Never reports success on failure; every
@@ -647,7 +666,9 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     state = establish_identity(cloud, state_path, enrollment_code, device, progress)
 
     progress("Adding cameras to this WatchLog site…")
-    mapping = sync_cameras(cloud, state, recorder["channels"], progress)
+    # Honor the operator's Monitor/Ignore + name choices so monitored cameras are configured
+    # immediately and ignored channels never raise a false health warning (0.4.4 P4).
+    mapping = sync_cameras(cloud, state, merge_camera_config(recorder["channels"], profiles), progress)
 
     capabilities = recorder.get("capabilities")
     if capabilities and capabilities.get("channels"):

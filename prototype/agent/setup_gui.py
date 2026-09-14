@@ -294,11 +294,12 @@ class SetupWindow(QMainWindow):
         self.site_type.currentIndexChanged.connect(self.refresh_purpose_suggestions)
         site_row.addWidget(self.site_type, 1)
         cl.addLayout(site_row)
-        self.camera_table = QTableWidget(0, 3)
-        self.camera_table.setHorizontalHeaderLabels(["Channel", "Camera", "Purpose"])
+        self.camera_table = QTableWidget(0, 4)
+        self.camera_table.setHorizontalHeaderLabels(["Channel", "Camera name (editable)", "Monitor", "Purpose"])
         self.camera_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.camera_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.camera_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.camera_table.setMinimumHeight(220)
         cl.addWidget(self.camera_table)
         l.addWidget(c)
@@ -458,17 +459,21 @@ class SetupWindow(QMainWindow):
         for row, camera in enumerate(channels):
             ch = QTableWidgetItem(camera["channel"])
             ch.setFlags(ch.flags() & ~Qt.ItemIsEditable)
-            name = QTableWidgetItem(camera["name"])
-            name.setFlags(name.flags() & ~Qt.ItemIsEditable)
+            name = QTableWidgetItem(camera["name"])           # EDITABLE: give this camera a useful name
             self.camera_table.setItem(row, 0, ch)
             self.camera_table.setItem(row, 1, name)
+            monitor = QComboBox()
+            monitor.addItem("Monitor", True)
+            monitor.addItem("Ignore / unused", False)
+            monitor.setCurrentIndex(0)                        # discovered cameras are monitored by default
+            self.camera_table.setCellWidget(row, 2, monitor)
             combo = QComboBox()
             for key, text in backend.PURPOSES:
                 combo.addItem(text, key)
             suggested = backend.suggest_purpose(camera["name"], site)
             idx = combo.findData(suggested)
             combo.setCurrentIndex(max(0, idx))
-            self.camera_table.setCellWidget(row, 2, combo)
+            self.camera_table.setCellWidget(row, 3, combo)
 
     def refresh_purpose_suggestions(self):
         if self.recorder_result:
@@ -477,12 +482,16 @@ class SetupWindow(QMainWindow):
     def profiles(self):
         rows = []
         for row in range(self.camera_table.rowCount()):
-            combo = self.camera_table.cellWidget(row, 2)
+            monitor = self.camera_table.cellWidget(row, 2)
+            combo = self.camera_table.cellWidget(row, 3)
+            monitored = bool(monitor.currentData()) if monitor else True
             rows.append({
                 "channel": self.camera_table.item(row, 0).text(),
-                "name": self.camera_table.item(row, 1).text(),
+                "name": self.camera_table.item(row, 1).text().strip() or self.camera_table.item(row, 0).text(),
                 "purpose": combo.currentData() if combo else "custom",
-                "analytics_enabled": True,
+                "monitored": monitored,
+                # analytics only runs on monitored cameras; an ignored channel is not analysed
+                "analytics_enabled": monitored,
             })
         return rows
 
