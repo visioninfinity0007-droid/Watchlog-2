@@ -3,9 +3,11 @@
 ; Copy to watchlog.ini and fill in. Place it beside watchlog_agent.py,
 ; or beside watchlog-agent.exe once frozen.
 ;
-; SECRETS GATE: watchlog.ini holds the NVR password and a one-time
-; enrollment code. It is gitignored. Never commit it, never paste its
-; contents into chat or a log.
+; SECRETS GATE: you enter the recorder password here for FIRST-RUN ONLY.
+; Setup migrates it into the machine's encrypted DPAPI store and it should NOT
+; remain in this file afterward (the --accept security check fails if it does).
+; The one-time enrollment code is consumed on first run. This file is gitignored;
+; never commit it, never paste its contents into chat or a log.
 ;
 ; Every setting can also be supplied as an environment variable named
 ; WATCHLOG_<KEY_IN_UPPERCASE>, which takes precedence over this file.
@@ -27,8 +29,10 @@ supabase_publishable_key = sb_publishable_REPLACE_ME
 enrollment_code = WL-PROTO-DEV-0001
 
 ; --- the recorder on the local LAN -----------------------------------
-; The installer types their own NVR details here. These credentials never
-; leave the site: only event metadata is sent upward.
+; The installer types their own NVR details here for first-run. These credentials
+; never leave the site (only event metadata is sent upward), and the password is
+; moved into the encrypted DPAPI store by setup — leave nvr_password = REPLACE_ME
+; here once setup has run; it is not read from this file after migration.
 nvr_url      = http://192.168.1.108
 nvr_username = admin
 nvr_password = REPLACE_ME
