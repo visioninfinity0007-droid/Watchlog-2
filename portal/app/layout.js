@@ -5,6 +5,7 @@ import "./ai-first-shell.css";
 import "./ai-first-shell-fixes.css";
 import "./ux-closure.css";
 import "./ux-final.css";
+import "./setup-conversation.css";
 
 export const metadata = {
   title: "WatchLog",
