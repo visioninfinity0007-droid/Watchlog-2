@@ -16,7 +16,7 @@ Safety / truth rules:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 from typing import Iterable
 
@@ -311,6 +311,68 @@ def historical_capability(driver: DahuaDriver = None) -> dict:
     return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
 
 
+ARCHIVE_PROOF_WINDOW = 1800          # default recent window (30 min) for a setup-time archive proof
+
+
+def prove_recorder_archive(driver, channel, *, now: datetime = None,
+                           window_seconds: int = ARCHIVE_PROOF_WINDOW, limit: int = 8) -> dict:
+    """Prove — bounded and read-only — that this recorder actually RETAINS retrievable footage on
+    one channel, so automatic outage recovery has something to recover. This is the setup-time
+    analog of :func:`enumerate_historical_events`; it never downloads media (fast enough for the
+    setup deadline) and NEVER raises — setup evidence must degrade to an honest status, not crash.
+
+    Honest verdict (mirrors the three-coverage-classes honesty, never fabricated):
+      * ``verified``    recorded segments were enumerated in the recent window (retrievable);
+      * ``empty``       the archive is queryable but has NO footage in the window (recording
+                        off, or a brand-new recorder) — capability present, proof negative;
+      * ``unsupported`` this recorder/driver cannot enumerate an archive at all;
+      * ``unknown``     the recorder was unreachable or answered ambiguously.
+    """
+    now = now or datetime.now(timezone.utc)
+    window_seconds = max(60, int(window_seconds))
+    start = now - timedelta(seconds=window_seconds)
+    minutes = round(window_seconds / 60)
+    proof = {"status": "unknown", "channel": str(channel), "window_seconds": window_seconds,
+             "segments_found": 0, "sample": [], "detail": ""}
+
+    # Capability gate: a driver with no archive enumeration (non-Dahua, or an explicitly
+    # unsupported segment capability) can never prove footage — say so plainly, don't guess.
+    cap = None
+    try:
+        if hasattr(driver, "historical_capability"):
+            cap = driver.historical_capability() or {}
+    except Exception:  # noqa: BLE001 — capability probing must not crash the proof
+        cap = None
+    if not hasattr(driver, "enumerate_historical_events") or (
+            isinstance(cap, dict) and cap.get("segments") == "unsupported"):
+        proof["status"] = "unsupported"
+        proof["detail"] = "This recorder does not expose a searchable recording archive."
+        return proof
+
+    try:
+        result = driver.enumerate_historical_events(channel, start, now, None, limit) or {}
+    except Exception:  # noqa: BLE001 — an unreachable/ambiguous recorder is honest-unknown
+        proof["detail"] = "The recorder did not answer the archive search."
+        return proof
+
+    if str(result.get("status")) != "supported":
+        proof["detail"] = "The recorder was reachable but the archive search was inconclusive."
+        return proof
+
+    events = [e for e in (result.get("events") or []) if e]
+    proof["segments_found"] = len(events)
+    if events:
+        proof["status"] = "verified"
+        proof["sample"] = [e.get("segment") or {} for e in events[:3]]
+        proof["detail"] = (f"{len(events)} recorded segment(s) retrievable on channel "
+                           f"{channel} in the last {minutes} min.")
+    else:
+        proof["status"] = "empty"
+        proof["detail"] = (f"No recorded footage found on channel {channel} in the last "
+                           f"{minutes} min — confirm the recorder is recording this channel.")
+    return proof
+
+
 def install() -> None:
     """Install the validated-shape archive + recovery implementation on DahuaDriver.
 
@@ -327,4 +389,4 @@ def install() -> None:
 
 
 __all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
-           "historical_capability", "install"]
+           "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install"]

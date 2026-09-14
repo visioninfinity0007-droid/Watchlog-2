@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
+import dahua_archive
 import discover
 import watchlog_agent as core
 import wsdiscovery
@@ -376,6 +377,51 @@ def test_recorder(address: str, username: str, password: str,
                     pass
 
     raise ValueError(_CUSTOMER_ERROR.get(last_class, _CUSTOMER_ERROR["connect"]))
+
+
+def verify_recorder_archive(url: str, driver_name: str, username: str, password: str,
+                            channels, *, now=None, window_seconds: int = dahua_archive.ARCHIVE_PROOF_WINDOW,
+                            _build=None, _install=None) -> dict:
+    """0.4.4 §6 — setup-time archive PROOF wrapper.
+
+    ``test_recorder`` already proved identity + credentials + channels; this reuses the proven
+    ``url``/``driver_name`` to build ONE driver, installs the validated archive implementation,
+    and proves retrievable recorded footage on the first channel via
+    :func:`dahua_archive.prove_recorder_archive`. Bounded, read-only, and NEVER raises — an
+    archive check must never block or crash a setup that otherwise succeeded.
+    """
+    build_fn = _build or build
+    install_fn = _install or dahua_archive.install
+    channel = None
+    for cam in (channels or []):
+        channel = cam.get("channel") if isinstance(cam, dict) else getattr(cam, "channel", None)
+        if channel:
+            break
+    if not channel:
+        return {"status": "unknown", "channel": None, "segments_found": 0, "sample": [],
+                "window_seconds": int(window_seconds),
+                "detail": "No camera channel was available to check the archive."}
+
+    try:
+        install_fn()                 # idempotent: patches the driver class with the archive impl
+    except Exception:  # noqa: BLE001 — a driver without this impl degrades to 'unsupported' below
+        pass
+
+    driver = None
+    try:
+        driver = build_fn(driver_name, url, username.strip(), password, RECORDER_PROBE_TIMEOUT)
+        return dahua_archive.prove_recorder_archive(driver, channel, now=now,
+                                                    window_seconds=window_seconds)
+    except Exception:  # noqa: BLE001 — never let the archive proof crash setup
+        return {"status": "unknown", "channel": str(channel), "segments_found": 0, "sample": [],
+                "window_seconds": int(window_seconds),
+                "detail": "The recorder archive could not be checked during setup."}
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def suggest_purpose(camera_name: str, site_type: str) -> str:
