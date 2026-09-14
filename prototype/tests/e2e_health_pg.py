@@ -69,8 +69,17 @@ def main() -> None:
               tenant, site)[0]
     cam = q("insert into cameras (tenant_id, site_id, channel, name) values (%s,%s,'1','Front door') "
             "returning id", tenant, site)[0]
-    # 0085's cameras_configuration_truth trigger auto-creates a camera_health row on camera
-    # insert, so upsert the desired offline/recording state whether or not the row pre-exists.
+    # 0085 (when present) adds cameras.is_configured (default false) and 0086/0089 only open a
+    # camera_offline / not_recording fault for a CONFIGURED camera — the "no fault for an empty
+    # slot" invariant. This camera represents a REAL configured camera that goes offline, so mark
+    # it configured. In production-order (pre-0085) the column does not exist and reconcile has no
+    # such gate, so guard the update on column existence to keep this harness valid in BOTH worlds.
+    if q("select exists(select 1 from information_schema.columns where table_schema='public' "
+         "and table_name='cameras' and column_name='is_configured')")[0]:
+        conn.execute("update cameras set is_configured = true where id=%s", (cam,))
+    # 0085's cameras_configuration_truth trigger materializes a camera_health row (on the insert
+    # and again on the configure update), so upsert the desired offline/recording state whether or
+    # not the row pre-exists; pre-0085 there is no trigger and this simply inserts it.
     conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, recording_state) "
                  "values (%s,%s,%s,'offline','recording') "
                  "on conflict (camera_id) do update set health_state='offline', recording_state='recording'",
