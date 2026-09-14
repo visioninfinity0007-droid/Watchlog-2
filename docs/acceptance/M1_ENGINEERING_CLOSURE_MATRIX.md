@@ -74,3 +74,51 @@ the 2×10 commercial decision. Everything else in the engineering column is done
 2. Rebuild + verify the ONE final 0.4.2 candidate from the final green SHA; field-install on SM-HP.
 3. Deploy the portal (Site Control + onboarding pages) and point the report-runner at the delivery pipeline.
 4. First supervised WhatsApp send = next FULL day, once the client recipient is supplied.
+
+---
+
+# Final product-integration pass (wave 3)
+
+Closes the four (ten-point) gaps found between the built layers and the M1 requirements. After
+this pass the engineering column is genuinely exhausted.
+
+**Final CODE SHA `160c187`** (a real code commit, not docs). Migrations `0080–0084` + reporter
+refactor, all tested against live PG in rolled-back transactions and CI-gated.
+
+| # | Integration item | Delivered | Proof |
+|---|---|---|---|
+| 1 | wl_daily_intelligence is the ACTUAL report source | runner default = `run_intelligence` (frozen snapshot → WhatsApp/PDF from one payload; legacy `wl_daily_report` behind `--legacy`); one `headline_metrics` extraction shared by all surfaces | report unification 7/7 (identical metrics across portal/WhatsApp/PDF) |
+| 2 | PDF operational, not optional | packaged xhtml2pdf (pure-Python, shipped + in CI); real %PDF bytes; runner saves the PDF ref to the snapshot | 7/7 incl. empty-section, coverage-warning, incident/restricted, uncertainty |
+| 3 | Journey Intelligence strengthened | 0080 topology-gated (allowed edges + per-edge temporal bounds), impossible-transition rejection, concurrency separation, confidence + reasons + uncertainty + stable identity; "plausible movement journeys" | e2e 6/6 |
+| 4 | Visitor/staff inference strengthened | 0082 feeds journey confidence + coverage + calibration state; exposes them; "estimated behavioral classification"; still visitor/staff/unclassified, honest | e2e 8/8 |
+| 5 | Opening/closing state machine | 0081 activity-session model (arrival → sustained session → OPEN → quiet period → CLOSED); cleaner/late-motion excluded; entrance/internal/hours/quiet/min configurable; labelled fallback | e2e 8/8 |
+| 6 | After-hours truth | 0081 asserts after-hours ONLY when the schedule is known, else "not verified / schedule incomplete" | e2e (in 8/8) |
+| 7 | Persisted report snapshot | 0083 generate-once + freeze (report id, payload, schema + versions, coverage, PDF ref/hash, delivery status); immune to later config change | e2e 6/6 |
+| 8 | Delivery failure/idempotency | 0084 durable outbox (unique idempotency key, atomic claim, crash-edge stale reclaim); provider-key dedup = effective-once; honest at-least-once semantic documented | e2e 6/6 + DELIVERY_SEMANTICS.md |
+
+## Item 9 — release provenance (recorded distinctly)
+
+The earlier wave's Windows Release ran from `d94f9af`, a docs-only child of code SHA `3aeb93d`
+— binary-equivalent but a different ref, now recorded as such above. For THIS pass all three
+gates run against the one final CODE ref:
+
+- **application code SHA** = `160c187` (the final integration commit)
+- **CI SHA** = `160c187` (fork run `34523322939`, SUCCESS)
+- **artifact source SHA** = `160c187` (Windows Release run `34523342941`, SUCCESS)
+- **Security Gate SHA** = `160c187` (run `34523345583`, SUCCESS)
+- **final 0.4.2 installer** `WatchLog-Setup.exe` SHA-256 = `D55862A57D060F4C1CEB3713E323415563C8EA73A31103F805127A18BB2BC4CC` (artifact `WatchLog-Windows-19`)
+
+This matrix commit is a docs-only child of `160c187`; the artifact source SHA above is the code
+SHA `160c187`, NOT this docs commit.
+
+## DONE
+
+**M1 ENGINEERING COMPLETE — FIELD/CLIENT ACCEPTANCE PENDING.** The remaining gates are only:
+SM-HP/site access · 0.4.2 field upgrade · live Site Control proof · Ch5 physical repair · a full
+monitored day · calibration with the client · the approved WhatsApp recipient · the 2×10
+contractual resolution.
+
+## Item 10 — not deployed (held)
+
+No prod migration (`0065–0084`), no portal/report-runner deploy, no client agent upgrade, no
+recorder write, no WhatsApp client send, `/latest/` untouched.
