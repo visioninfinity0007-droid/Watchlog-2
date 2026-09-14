@@ -4,11 +4,11 @@ import "./module-target.css";
 import "./ai-first-shell.css";
 import "./ai-first-shell-fixes.css";
 import "./ux-closure.css";
+import "./ux-final.css";
 
 export const metadata = {
   title: "WatchLog",
-  description:
-    "Your cameras already see everything. WatchLog tells you what they saw.",
+  description: "Your cameras already see everything. WatchLog tells you what they saw.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },
@@ -20,9 +20,7 @@ export const metadata = {
   },
 };
 
-export const viewport = {
-  themeColor: "#FFFFFF",
-};
+export const viewport = { themeColor: "#FFFFFF" };
 
 export default function RootLayout({ children }) {
   return (
@@ -30,10 +28,7 @@ export default function RootLayout({ children }) {
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"
-          rel="stylesheet"
-        />
+        <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
       </head>
       <body>{children}</body>
     </html>
