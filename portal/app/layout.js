@@ -2,6 +2,7 @@ import "./globals.css";
 import "./visual-target.css";
 import "./module-target.css";
 import "./ai-first-shell.css";
+import "./ai-first-shell-fixes.css";
 
 export const metadata = {
   title: "WatchLog",
@@ -21,7 +22,6 @@ export const metadata = {
 };
 
 export const viewport = {
-  // The customer product is now AI-first and light by default.
   themeColor: "#FFFFFF",
 };
 
