@@ -87,6 +87,10 @@ def render_whatsapp(report: dict) -> str:
     cov = _coverage_line(report)
     if cov:
         lines.append(cov)
+    cc = (headline_metrics(report) or {}).get("coverage_classes")
+    if cc and (cc.get("recovered_hours") or 0):
+        lines.append(f"Coverage: live {cc.get('live_hours')}h · recovered from NVR "
+                     f"{cc.get('recovered_hours')}h · unverified {cc.get('unverified_hours')}h.")
 
     lines += ["", "_Figures are camera detections, not a unique headcount._"]
     msg = "\n".join(lines)

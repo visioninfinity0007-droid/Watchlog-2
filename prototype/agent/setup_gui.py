@@ -28,13 +28,14 @@ if os.name == "nt":
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget, QHeaderView,
 )
 
 import setup_backend as backend
+from status_controller import StatusController
 
 ICE = "#72D4FF"
 BLUE = "#1748D3"
@@ -294,11 +295,12 @@ class SetupWindow(QMainWindow):
         self.site_type.currentIndexChanged.connect(self.refresh_purpose_suggestions)
         site_row.addWidget(self.site_type, 1)
         cl.addLayout(site_row)
-        self.camera_table = QTableWidget(0, 3)
-        self.camera_table.setHorizontalHeaderLabels(["Channel", "Camera", "Purpose"])
+        self.camera_table = QTableWidget(0, 4)
+        self.camera_table.setHorizontalHeaderLabels(["Channel", "Camera name (editable)", "Monitor", "Purpose"])
         self.camera_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.camera_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.camera_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.camera_table.setMinimumHeight(220)
         cl.addWidget(self.camera_table)
         l.addWidget(c)
@@ -316,11 +318,30 @@ class SetupWindow(QMainWindow):
         cl.addWidget(self.progress_label)
         self.connect_error = label("", "muted")
         cl.addWidget(self.connect_error)
+        actions = QHBoxLayout()
         self.retry_btn = QPushButton("Retry")
         self.retry_btn.setObjectName("secondary")
         self.retry_btn.clicked.connect(self.begin_finalize)
         self.retry_btn.hide()
-        cl.addWidget(self.retry_btn)
+        actions.addWidget(self.retry_btn)
+        # Actions available when WatchLog could NOT verify the installation (fail-closed, P1.1).
+        self.incomplete_status_btn = QPushButton("Open Site Status")
+        self.incomplete_status_btn.setObjectName("secondary")
+        self.incomplete_status_btn.clicked.connect(self.open_site_status)
+        self.incomplete_status_btn.hide()
+        actions.addWidget(self.incomplete_status_btn)
+        self.incomplete_bundle_btn = QPushButton("Export Support Bundle")
+        self.incomplete_bundle_btn.setObjectName("secondary")
+        self.incomplete_bundle_btn.clicked.connect(self.export_support_bundle_action)
+        self.incomplete_bundle_btn.hide()
+        actions.addWidget(self.incomplete_bundle_btn)
+        self.incomplete_exit_btn = QPushButton("Exit")
+        self.incomplete_exit_btn.setObjectName("ghost")
+        self.incomplete_exit_btn.clicked.connect(self.cancel)
+        self.incomplete_exit_btn.hide()
+        actions.addWidget(self.incomplete_exit_btn)
+        actions.addStretch(1)
+        cl.addLayout(actions)
         l.addWidget(c)
         l.addStretch(1)
         self.stack.addWidget(page)
@@ -335,6 +356,10 @@ class SetupWindow(QMainWindow):
         l.addWidget(c)
         row = QHBoxLayout()
         row.addStretch(1)
+        open_status = QPushButton("Open Site Status")
+        open_status.setObjectName("secondary")
+        open_status.clicked.connect(self.open_site_status)
+        row.addWidget(open_status)
         finish = QPushButton("Finish")
         finish.clicked.connect(self.finish)
         row.addWidget(finish)
@@ -454,17 +479,21 @@ class SetupWindow(QMainWindow):
         for row, camera in enumerate(channels):
             ch = QTableWidgetItem(camera["channel"])
             ch.setFlags(ch.flags() & ~Qt.ItemIsEditable)
-            name = QTableWidgetItem(camera["name"])
-            name.setFlags(name.flags() & ~Qt.ItemIsEditable)
+            name = QTableWidgetItem(camera["name"])           # EDITABLE: give this camera a useful name
             self.camera_table.setItem(row, 0, ch)
             self.camera_table.setItem(row, 1, name)
+            monitor = QComboBox()
+            monitor.addItem("Monitor", True)
+            monitor.addItem("Ignore / unused", False)
+            monitor.setCurrentIndex(0)                        # discovered cameras are monitored by default
+            self.camera_table.setCellWidget(row, 2, monitor)
             combo = QComboBox()
             for key, text in backend.PURPOSES:
                 combo.addItem(text, key)
             suggested = backend.suggest_purpose(camera["name"], site)
             idx = combo.findData(suggested)
             combo.setCurrentIndex(max(0, idx))
-            self.camera_table.setCellWidget(row, 2, combo)
+            self.camera_table.setCellWidget(row, 3, combo)
 
     def refresh_purpose_suggestions(self):
         if self.recorder_result:
@@ -473,12 +502,16 @@ class SetupWindow(QMainWindow):
     def profiles(self):
         rows = []
         for row in range(self.camera_table.rowCount()):
-            combo = self.camera_table.cellWidget(row, 2)
+            monitor = self.camera_table.cellWidget(row, 2)
+            combo = self.camera_table.cellWidget(row, 3)
+            monitored = bool(monitor.currentData()) if monitor else True
             rows.append({
                 "channel": self.camera_table.item(row, 0).text(),
-                "name": self.camera_table.item(row, 1).text(),
+                "name": self.camera_table.item(row, 1).text().strip() or self.camera_table.item(row, 0).text(),
                 "purpose": combo.currentData() if combo else "custom",
-                "analytics_enabled": True,
+                "monitored": monitored,
+                # analytics only runs on monitored cameras; an ignored channel is not analysed
+                "analytics_enabled": monitored,
             })
         return rows
 
@@ -487,6 +520,9 @@ class SetupWindow(QMainWindow):
             return
         self.go(5)
         self.retry_btn.hide()
+        self.incomplete_status_btn.hide()
+        self.incomplete_bundle_btn.hide()
+        self.incomplete_exit_btn.hide()
         self.connect_error.setText("")
         self.progress_bar.setRange(0, 0)
         public = dict(self.public)
@@ -499,13 +535,61 @@ class SetupWindow(QMainWindow):
         self.status.setText("")
 
     def finalize_ok(self, result):
+        # Install is proven; now run the FULL acceptance suite before declaring Ready. The setup
+        # never shows a green Ready state after a hard acceptance failure (0.4.4 P8).
         self.final_result = result
+        self.progress_label.setText("Running final acceptance checks…")
+        from status_controller import StatusController
+        ctrl = StatusController()
+        self.run_worker(lambda progress=None: ctrl.run_acceptance(), (), self.acceptance_done,
+                        "Running final acceptance checks…")
+
+    def acceptance_done(self, acc):
+        result = self.final_result or {}
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
-        self.success_summary.setText(
-            f"✓ Recorder verified\n✓ WatchLog site linked\n✓ {result['camera_count']} camera(s) connected\n"
-            f"✓ Recorder credential encrypted on this PC\n\n{result['vendor']} {result['model']}")
-        self.go(6)
+        acc = acc or {}
+        verdict = acc.get("verdict", StatusController.CANNOT_VERIFY)
+        # FAIL CLOSED (P1.1): advance to the green Ready page ONLY when acceptance really passed.
+        # A missing / unparseable / could-not-run report BLOCKS Ready — it never reaches READY.
+        if acc.get("ready", False):
+            base = (f"✓ Recorder verified\n✓ WatchLog site linked\n"
+                    f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
+                    f"✓ Recorder credential encrypted on this PC\n\n"
+                    f"{result.get('vendor', '')} {result.get('model', '')}")
+            if acc.get("warnings"):
+                base += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in acc["warnings"])
+            self.success_summary.setText(f"{verdict}\n\n{base}")
+            self.go(6)
+        else:
+            detail = (acc.get("failed") or [])
+            reason = ("\n\nThese required checks need attention before WatchLog is ready:\n" +
+                      "\n".join(f"• {f}" for f in detail)) if detail else \
+                     "\n\nWatchLog could not verify this installation. Fix the issue and retry, or "\
+                     "export a support bundle for help."
+            self.connect_error.setText(verdict + reason)
+            self.retry_btn.setText("Retry")
+            self.retry_btn.show()
+            self.incomplete_status_btn.show()
+            self.incomplete_bundle_btn.show()
+            self.incomplete_exit_btn.show()
+
+    def open_site_status(self):
+        # Post-install, the same WatchLog app opens the Site Status / control panel.
+        import site_status_gui
+        self._status_win = site_status_gui.SiteStatusWindow(self.config_path)
+        self._status_win.show()
+
+    def export_support_bundle_action(self):
+        dest, _ = QFileDialog.getSaveFileName(self, "Save Support Bundle", "watchlog-support.zip",
+                                              "Zip Archive (*.zip)")
+        if not dest:
+            return
+        ctrl = StatusController()
+        self.run_worker(lambda progress=None: ctrl.export_support_bundle(dest_path=dest), (),
+                        lambda r: QMessageBox.information(self, "Support Bundle",
+                            f"Saved to:\n{r['path']}" if r.get("ok") else "Support bundle could not be created."),
+                        "Creating support bundle…")
 
     def finish(self):
         self.exit_code = 0
@@ -549,12 +633,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
     parser.add_argument("--migrate-only", action="store_true")
+    parser.add_argument("--status", action="store_true",
+                        help="open the WatchLog Site Status window instead of first-run setup")
     parser.add_argument("--version", action="store_true")
     args, _unknown = parser.parse_known_args()
     if args.version:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
+
+    if args.status:
+        # Post-install: the same WatchLog app opens into the Site Status / control panel.
+        import site_status_gui
+        return site_status_gui.main(config_path)
 
     if args.migrate_only:
         try:

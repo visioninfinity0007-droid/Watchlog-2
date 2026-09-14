@@ -44,7 +44,7 @@ def run() -> int:
             cam = cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,'1','Reception','reception') returning id",(tid,sa)).fetchone()[0]
             cur.execute("""insert into events (tenant_id,site_id,camera_id,event_type,device_ts,agent_ts,received_at,dedupe_key)
                            values (%s,%s,%s,'person',now(),now(),now(),'pf-1')""",(tid,sa,cam))
-            cur.execute("insert into camera_health (tenant_id,site_id,camera_id,health_state) values (%s,%s,%s,'operational')",(tid,sa,cam))
+            cur.execute("insert into camera_health (tenant_id,site_id,camera_id,health_state) values (%s,%s,%s,'operational') on conflict (camera_id) do update set health_state=excluded.health_state",(tid,sa,cam))
             cur.execute("""insert into incident_policies (tenant_id,site_id,name,promote_to,severity) values (%s,%s,'r','x','warning')""",(tid,sa))
             cur.execute("""insert into report_recipients (tenant_id,site_id,channel,destination,whatsapp_destination)
                            values (%s,%s,'whatsapp','923001112222','923001112222')""",(tid,sa))

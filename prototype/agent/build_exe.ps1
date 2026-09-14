@@ -36,6 +36,22 @@ $entry = "agent\release_agent.py"
 # and CI can read watchlog-agent.exe ProductVersion directly (no console tricks).
 $agentVer = (Select-String -Path (Join-Path $root "agent\wl_version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 if (-not $agentVer) { throw "could not read VERSION from wl_version.py" }
+
+# Stamp the exact build identity into a bundled module so the SHIPPED exe reports its source
+# commit on a customer machine that has no build environment (Section 2: exact build metadata).
+$buildSha = $env:WATCHLOG_BUILD_SHA
+if (-not $buildSha) { $buildSha = $env:GITHUB_SHA }
+if (-not $buildSha) { try { $buildSha = (git -C $root rev-parse HEAD 2>$null) } catch { $buildSha = "" } }
+$buildChannel = $env:WATCHLOG_BUILD_CHANNEL
+if (-not $buildChannel) { $buildChannel = "production" }
+$buildInfo = Join-Path $root "agent\build_info.py"
+@"
+# GENERATED at build time by build_exe.ps1 — do not edit, do not commit (gitignored).
+BUILD_SHA = "$("$buildSha".Trim())"
+BUILD_CHANNEL = "$("$buildChannel".Trim())"
+"@ | Set-Content -Path $buildInfo -Encoding UTF8
+Write-Host "  Build SHA stamped into build_info.py: $("$buildSha".Trim())" -ForegroundColor Gray
+$common += @("--hidden-import", "build_info")
 $vt = ((($agentVer -split '[.+]') + @('0','0','0'))[0..2]) -join ','
 New-Item -ItemType Directory -Force -Path (Join-Path $root "build") | Out-Null
 $verFile = Join-Path $root "build\watchlog-agent.version.txt"

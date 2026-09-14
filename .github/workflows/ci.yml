@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Agent identity + camera enrollment tests
@@ -113,6 +113,26 @@ jobs:
         run: python -m pytest prototype/tests/test_backfill.py prototype/tests/test_site_config_advisor.py prototype/tests/test_intelligence_monthly.py -q
       - name: Canonical report unification + operational PDF (one dataset -> portal/WhatsApp/PDF, real PDF)
         run: python -m pytest prototype/tests/test_intelligence_report.py -q
+      - name: 0.4.4 release-defect regressions (Dahua archive response-close, build-SHA stamping)
+        run: python -m pytest prototype/tests/test_dahua_archive_close.py prototype/tests/test_build_metadata.py -q
+      - name: Automatic outage recovery — detection, bounded/resumable/idempotent backfill, footage AI, wiring
+        run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py -q
+      - name: Setup archive proof — recorder actually retains retrievable footage (verified/empty/unsupported/unknown)
+        run: python -m pytest prototype/tests/test_archive_proof_setup.py -q
+      - name: Post-install acceptance self-test — end-to-end site chain, hard/soft gating, no secret leak
+        run: python -m pytest prototype/tests/test_acceptance_selftest.py -q
+      - name: Site Status model — honest classification (unused≠failure), NA storage, status-json wiring
+        run: python -m pytest prototype/tests/test_site_status.py -q
+      - name: Site Status controller — panel action bindings drive the agent CLI (accept/update/rollback/bundle)
+        run: python -m pytest prototype/tests/test_status_controller.py -q
+      - name: Retention depth — bounded archive-boundary probe (measured/at_least/empty/unsupported)
+        run: python -m pytest prototype/tests/test_retention.py -q
+      - name: Camera Monitor/Ignore merge — setup config folds into the sync payload
+        run: python -m pytest prototype/tests/test_camera_config.py -q
+      - name: Support bundle — non-secret diagnostic export (allowlist redaction, no secret leak)
+        run: python -m pytest prototype/tests/test_support_bundle.py -q
+      - name: In-app update engine — signed manifest (Ed25519), channels, version + SHA-256 integrity gating
+        run: python -m pytest prototype/tests/test_updater.py -q
       - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract
@@ -352,6 +372,12 @@ jobs:
         run: python prototype/tests/e2e_report_snapshot_pg.py
       - name: Delivery outbox integration — provider idempotency + crash-edge reclaim (0084)
         run: python prototype/tests/e2e_delivery_outbox_pg.py
+      - name: Outage recovery + three coverage classes integration — LIVE/RECOVERED/UNVERIFIED (0098)
+        run: python prototype/tests/e2e_recovery_coverage_pg.py
+      - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
+        run: python prototype/tests/e2e_recovery_ingest_pg.py
+      - name: Camera config — wl_sync_cameras honors setup Monitor/Ignore (is_configured), re-sync safe (0100)
+        run: python prototype/tests/e2e_camera_config_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies

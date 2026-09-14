@@ -78,10 +78,13 @@ def main() -> None:
                  "recording_state, storage_state) values (%s,%s,%s, true, true, 'recording', 'ok')",
                  (agent, tenant, site))
     # cam reads UNKNOWN (must count as unknown, NOT downtime); cam2 is OFFLINE with an open fault
+    # 0085 auto-creates camera_health on camera insert; upsert the state under test.
     conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, recording_state) "
-                 "values (%s,%s,%s,'unknown','unknown')", (cam, tenant, site))
+                 "values (%s,%s,%s,'unknown','unknown') on conflict (camera_id) do update set "
+                 "health_state='unknown', recording_state='unknown'", (cam, tenant, site))
     conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, recording_state) "
-                 "values (%s,%s,%s,'offline','recording')", (cam2, tenant, site))
+                 "values (%s,%s,%s,'offline','recording') on conflict (camera_id) do update set "
+                 "health_state='offline', recording_state='recording'", (cam2, tenant, site))
     conn.execute("insert into operational_faults (tenant_id, site_id, camera_id, fault_domain, fault_type, "
                  "severity, state, dedupe_key, opened_at) values (%s,%s,%s,'camera','camera_offline','warning',"
                  "'open', %s, now()-interval '30 min')", (tenant, site, cam2, f"camera:{cam2}:offline"))

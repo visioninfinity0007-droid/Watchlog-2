@@ -28,7 +28,10 @@ def alkhalid_payload(incidents=True, coverage_ratio=0.82, partial=False):
                            "confidence": 0.82, "opening_basis": "entrance arrival then sustained internal activity"},
         "office": {"coverage": {"first": "09:12", "last": "17:40", "person_events": 231, "full_day": True}},
         "coverage": {"coverage_ratio": coverage_ratio,
-                     "gaps": ([] if coverage_ratio >= 0.999 else [{"start": "a", "end": "b", "cause": "observation_gap"}])},
+                     "gaps": ([] if coverage_ratio >= 0.999 else [{"start": "a", "end": "b", "cause": "observation_gap"}]),
+                     "classes": {"live_seconds": 11400, "recovered_seconds": 67200, "unverified_seconds": 7800,
+                                 "live_ratio": 0.13, "recovered_ratio": 0.78, "unverified_ratio": 0.09,
+                                 "total_coverage_ratio": 0.91}},
         "restricted": [{"camera": "Armory Gate", "purpose": "armory", "episodes": 2, "last": "22:03"}],
         "after_hours": {"verified": True, "count": 3, "reason": None},
         "incidents": ([
@@ -83,6 +86,16 @@ class OneDatasetThreeSurfaces(unittest.TestCase):
         self.assertIn("after hours armory", html.lower())
         self.assertIn("Restricted-area access", html)
         self.assertIn("armory", html.lower())
+
+    def test_three_coverage_classes_surfaced_never_blended(self):
+        out = ir.render_report(alkhalid_payload())
+        cc = out["headline"]["coverage_classes"]
+        self.assertEqual(cc["recovered_hours"], round(67200 / 3600, 1))
+        self.assertEqual(cc["live_hours"], round(11400 / 3600, 1))
+        # PDF and WhatsApp both show the three classes distinctly (never a single blended number)
+        self.assertIn("Recovered from NVR", out["pdf_html"])
+        self.assertIn("Live monitored", out["pdf_html"])
+        self.assertIn("recovered from NVR", out["whatsapp"])
 
     def test_visitor_staff_uncertainty_retained(self):
         out = ir.render_report(alkhalid_payload())

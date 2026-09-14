@@ -58,8 +58,8 @@ def run() -> int:
                            values (%s,%s, encode(sha256('k'::bytea),'hex'), now(),'Dahua','DH-XVR1B08-I','dahua')""",(ta,sa))
             c1 = cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,'1','Reception','reception') returning id",(ta,sa)).fetchone()[0]
             c5 = cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,'5','Armory','armory') returning id",(ta,sa)).fetchone()[0]
-            cur.execute("insert into camera_health (tenant_id,site_id,camera_id,health_state) values (%s,%s,%s,'operational')",(ta,sa,c1))
-            cur.execute("insert into camera_health (tenant_id,site_id,camera_id,health_state,reason_code) values (%s,%s,%s,'offline','video_loss')",(ta,sa,c5))
+            cur.execute("insert into camera_health (tenant_id,site_id,camera_id,health_state) values (%s,%s,%s,'operational') on conflict (camera_id) do update set health_state=excluded.health_state",(ta,sa,c1))
+            cur.execute("insert into camera_health (tenant_id,site_id,camera_id,health_state,reason_code) values (%s,%s,%s,'offline','video_loss') on conflict (camera_id) do update set health_state=excluded.health_state, reason_code=excluded.reason_code",(ta,sa,c5))
 
             d = as_ok(ua,"select wl_my_site_diagnosis(%s)",sa)[0]
             step(d["recorder"]["identified"] and d["recorder"]["model"]=="DH-XVR1B08-I", "recorder identity composed")

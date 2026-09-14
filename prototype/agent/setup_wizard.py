@@ -9,9 +9,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import dahua_archive
 import discover
 import wsdiscovery
 from drivers import DriverError, autodetect
+
+_ARCHIVE_PROOF_LABEL = {
+    "verified": "recorded footage is retrievable — outage recovery can backfill",
+    "empty": "recorder reachable but NO recent footage — confirm it is recording",
+    "unsupported": "this recorder has no searchable archive — recovery not available",
+    "unknown": "could not be confirmed right now",
+}
 
 BANNER = r"""
   =========================================================
@@ -186,6 +194,20 @@ def run(cfg_path: Path, supabase_url: str, publishable_key: str,
     except DriverError as exc:
         print(f"  Recorder connected, but camera names could not be listed: {str(exc).splitlines()[0][:120]}")
         channels = []
+
+    # Archive proof (0.4.4 §6): before we promise outage recovery, prove the recorder actually
+    # RETAINS retrievable footage on a channel. Bounded, read-only, best-effort — never blocks setup.
+    archive_proof = {"status": "unknown", "detail": ""}
+    if channels:
+        try:
+            dahua_archive.install()
+        except Exception:  # noqa: BLE001
+            pass
+        archive_proof = dahua_archive.prove_recorder_archive(driver, channels[0].channel)
+        print(f"\n  Archive check: {_ARCHIVE_PROOF_LABEL.get(archive_proof['status'], _ARCHIVE_PROOF_LABEL['unknown'])}")
+        if archive_proof.get("detail"):
+            print(f"    {archive_proof['detail']}")
+
     if not driver.verified_against_hardware:
         print("\n  Compatibility note: this exact recorder model is not yet field-validated.")
         print("  The login and protocol worked; review its first day of events after setup.")
@@ -204,6 +226,9 @@ def run(cfg_path: Path, supabase_url: str, publishable_key: str,
     print("\n  Setup checks are complete.")
     print("  Recorder connection: proven")
     print(f"  Cameras discovered:   {len(channels)}")
+    _archive_summary = {"verified": "retrievable footage confirmed", "empty": "no recent footage found",
+                        "unsupported": "no searchable archive", "unknown": "not confirmed"}
+    print(f"  Recorder archive:     {_archive_summary.get(archive_proof['status'], 'not confirmed')}")
     print("  Network model:        outbound only")
     if not ask_yes("Save this proven configuration and start WatchLog"):
         return None
