@@ -1198,6 +1198,73 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     return 0 if report["ready"] else 2
 
 
+def cmd_support_bundle(cfg: Config, *, dest_dir=None, _section=None, _state=None,
+                       _setup_log=None, _spool_count=None) -> int:
+    """0.4.4 §18 — export a NON-SECRET support bundle (.zip) for WatchLog support.
+
+    Contains build identity, redacted operational config, non-secret identity (UUIDs), local
+    counts and a redacted setup.log tail. NEVER contains the recorder password/username, agent
+    key, enrollment code or any decrypted secret — support_bundle assembles config by allowlist
+    and screens every line. Exit 0 on success.
+    """
+    import configparser as _cp
+    import support_bundle
+    import wl_version
+
+    # Read the raw config section fresh so the allowlist sees EVERY key actually on disk
+    # (including any secret-shaped ones) and drops all but the safe operational settings.
+    if _section is not None:
+        section = _section
+    else:
+        section = {}
+        ini_path = base_dir() / "watchlog.ini"
+        if ini_path.exists():
+            ini = _cp.ConfigParser()
+            try:
+                ini.read(ini_path, encoding="utf-8-sig")
+                if ini.has_section("watchlog"):
+                    section = dict(ini.items("watchlog"))
+            except _cp.Error:
+                section = {}
+
+    state = _state if _state is not None else (load_state(cfg.state_path) or {})
+
+    if _setup_log is not None:
+        setup_log = _setup_log
+    else:
+        setup_log = ""
+        try:
+            from setup_backend import programdata_dir
+            log_path = programdata_dir() / "setup.log"
+            if log_path.exists():
+                setup_log = log_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            setup_log = ""
+
+    if _spool_count is not None:
+        spool_count = _spool_count
+    else:
+        spool_count = None
+        try:
+            from spool import Spool
+            if cfg.spool_path.exists():
+                sp = Spool(cfg.spool_path, cfg.spool_max_rows)
+                try:
+                    spool_count = sp.count()
+                finally:
+                    sp.close()
+        except Exception:  # noqa: BLE001
+            spool_count = None
+
+    files = support_bundle.collect(section, state=state, setup_log=setup_log,
+                                   build_meta=wl_version.build_metadata(), spool_count=spool_count)
+    dest = Path(dest_dir) if dest_dir else Path.cwd()
+    path = support_bundle.write_zip(dest, files)
+    print(f"support bundle written: {path}")
+    print("contents (no secrets): " + ", ".join(files.keys()))
+    return 0
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -1477,6 +1544,8 @@ def main() -> None:
     ap.add_argument("--accept", action="store_true",
                     help="run the post-install acceptance self-test (identity, cloud, "
                          "recorder, cameras, archive, live events, spool) and exit")
+    ap.add_argument("--support-bundle", action="store_true",
+                    help="export a non-secret diagnostic support bundle (.zip) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1522,6 +1591,9 @@ def main() -> None:
     # be walked through setup.
     if args.accept:
         raise SystemExit(cmd_accept(cfg))
+
+    if args.support_bundle:
+        raise SystemExit(cmd_support_bundle(cfg))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time
