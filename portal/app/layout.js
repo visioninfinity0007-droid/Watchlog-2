@@ -3,6 +3,7 @@ import "./visual-target.css";
 import "./module-target.css";
 import "./ai-first-shell.css";
 import "./product-polish.css";
+import "./visual-hotfix.css";
 
 export const metadata = {
   title: "WatchLog",
