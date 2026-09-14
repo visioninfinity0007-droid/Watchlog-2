@@ -1,0 +1,23 @@
+/* Final customer-facing visual QA fixes. Keep these after product-polish.css. */
+
+html,body{overflow-x:hidden}
+.shell{overflow-x:hidden}
+.productRail{overflow-x:hidden!important;scrollbar-width:none}
+.productRail::-webkit-scrollbar{display:none}
+.productRail *{box-sizing:border-box;min-width:0}
+.productRailSites,.productRailRecent,.productRailNav,.productRailSubnav{overflow-x:hidden}
+.productRailRecent{max-height:156px!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:none;padding-right:0}
+.productRailRecent::-webkit-scrollbar{display:none}
+.productRailConversation{width:100%;max-width:100%;overflow:hidden}
+.productRailConversation span,.productRailConversation small{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.productRailNav{scrollbar-width:none}
+.productRailNav::-webkit-scrollbar{display:none}
+
+/* Avoid nested legacy scrollbars inside customer cards/lists. */
+.shell .panel,.shell [class*="portal_card"],.shell [class*="portal_featureCard"]{min-width:0}
+.shell table{max-width:100%}
+
+@media(max-width:760px){
+  .productRail{overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:none}
+  .productRail::-webkit-scrollbar{display:none}
+}
