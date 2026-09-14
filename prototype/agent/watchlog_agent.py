@@ -229,6 +229,12 @@ class Config:
         self.update_channel = (get("update_channel") or "production").strip().lower()
         self.update_public_key = (get("update_public_key") or "").strip()
         self.update_require_signature = str(get("update_require_signature") or "true").strip().lower() == "true"
+        # Camera configuration persisted at setup (channel/name/purpose/monitored) — the LOCAL source
+        # of the monitored-vs-unused classification the Site Status panel renders.
+        try:
+            self.camera_profiles = json.loads(get("camera_profiles_json") or "[]") or []
+        except Exception:  # noqa: BLE001 — a corrupt cache must never crash the agent
+            self.camera_profiles = []
 
     def load_recorder_credential(self) -> None:
         """(Re)load the recorder credential from the encrypted split store so
@@ -1456,6 +1462,123 @@ def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
     return 2 if result.get("rolled_back") else 1
 
 
+def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
+                    _heartbeat=None, _spool_factory=None, _archive=None, _now=None) -> int:
+    """0.4.4 P1 — emit the WatchLog Site Status document (STATUS_JSON) for the status panel.
+
+    Local appliance view: agent identity/version/spool, recorder reachability + archive capability,
+    cameras (with the monitored-vs-unused classification from local config), an archive/recovery
+    verdict, and honest 'not available' storage. Read-only; every probe is guarded and injected, so
+    the whole thing is testable with no recorder/cloud. Exit 0 always (a status read never fails).
+    """
+    import json as _json
+    import site_status as ss
+    import wl_version
+    from types import SimpleNamespace
+
+    now = _now or now_utc()
+    state = _state if _state is not None else (load_state(cfg.state_path) or {})
+
+    # --- agent ---
+    spool_backlog = 0
+    try:
+        if _spool_factory is not None:
+            sp = _spool_factory()
+        else:
+            from spool import Spool
+            sp = Spool(cfg.spool_path, cfg.spool_max_rows)
+        try:
+            spool_backlog = sp.count()
+        finally:
+            try:
+                sp.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        spool_backlog = 0
+
+    cloud_ok = None
+    if state.get("agent_id"):
+        try:
+            cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
+            (_heartbeat or heartbeat)(cloud, state, SimpleNamespace(vendor=None, model=None,
+                                                                    driver=cfg.nvr_driver))
+            cloud_ok = True
+        except Exception:  # noqa: BLE001
+            cloud_ok = False
+
+    agent = ss.agent_view(build_meta=wl_version.build_metadata(), channel=cfg.update_channel,
+                          state=state, running=None, last_heartbeat=None, cloud_ok=cloud_ok,
+                          spool_backlog=spool_backlog, recovery_backlog=0)
+
+    # --- recorder + cameras + archive (one driver open, all guarded) ---
+    driver = info = None
+    try:
+        driver, info = (_open_driver or open_driver)(cfg)
+    except Exception:  # noqa: BLE001 — recorder unreachable is an honest state, not a crash
+        driver = info = None
+
+    capability = None
+    channels = []
+    if driver is not None:
+        try:
+            capability = driver.historical_capability() if hasattr(driver, "historical_capability") else None
+        except Exception:  # noqa: BLE001
+            capability = None
+        try:
+            channels = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+        except Exception:  # noqa: BLE001
+            channels = []
+
+    recorder = ss.recorder_view(
+        reachable=driver is not None, auth_ok=(driver is not None or None),
+        info={"vendor": getattr(info, "vendor", None), "model": getattr(info, "model", None),
+              "driver": getattr(driver, "name", None)} if info is not None else None,
+        capability=capability)
+
+    # monitored-vs-unused classification from local config (falls back to all-monitored)
+    configured = {}
+    names = {}
+    for prof in (cfg.camera_profiles or []):
+        ch = str(prof.get("channel"))
+        if not ch:
+            continue
+        names[ch] = prof.get("name") or None
+        configured[ch] = bool(prof.get("monitored", prof.get("analytics_enabled", True)))
+    merged = [{"channel": c["channel"], "name": names.get(c["channel"]) or c["name"]} for c in channels] \
+        or [{"channel": ch, "name": names.get(ch) or f"Camera {ch}"} for ch in configured]
+    camera = ss.camera_view(merged, configured=configured or None, health=None)
+
+    archive_status = None
+    if driver is not None and merged:
+        try:
+            import dahua_archive
+            try:
+                dahua_archive.install()
+            except Exception:  # noqa: BLE001
+                pass
+            proof = (_archive or dahua_archive.prove_recorder_archive)(driver, merged[0]["channel"])
+            archive_status = (proof or {}).get("status")
+        except Exception:  # noqa: BLE001
+            archive_status = None
+    archive = ss.archive_view(proof_status=archive_status, last_proof_at=iso(now),
+                              recovery_backlog=0)
+
+    recording = ss.recording_view(camera["cameras"], recording=None)
+    storage = ss.storage_view(None)                  # local read has no recorder storage API yet
+
+    if driver is not None:
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    snap = ss.build_snapshot(agent=agent, recorder=recorder, camera=camera, recording=recording,
+                             archive=archive, storage=storage, generated_at=iso(now))
+    print("STATUS_JSON " + _json.dumps(snap, separators=(",", ":")))
+    return 0
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -1752,6 +1875,8 @@ def main() -> None:
                     help="check the signed release manifest for a newer version (read-only) and exit")
     ap.add_argument("--update", action="store_true",
                     help="apply an available signed update transactionally (auto-rollback) and exit")
+    ap.add_argument("--status-json", action="store_true",
+                    help="print the machine-readable Site Status document (for the status panel) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1806,6 +1931,9 @@ def main() -> None:
 
     if args.update:
         raise SystemExit(cmd_update(cfg))
+
+    if args.status_json:
+        raise SystemExit(cmd_status_json(cfg))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time
