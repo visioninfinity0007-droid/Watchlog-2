@@ -133,7 +133,7 @@ jobs:
         run: python -m pytest prototype/tests/test_support_bundle.py -q
       - name: In-app update engine — signed manifest (Ed25519), channels, version + SHA-256 integrity gating
         run: python -m pytest prototype/tests/test_updater.py -q
-      - name: Release manifest generator + consistency gate (single source of truth: website=portal=manifest=artifact)
+      - name: Release manifest generator + consistency gate (one source of truth — website=portal=manifest=artifact)
         run: python -m pytest prototype/tests/test_make_release_manifest.py prototype/tests/test_release_consistency.py -q
       - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
         run: python prototype/tests/test_report_pipeline_contract.py
