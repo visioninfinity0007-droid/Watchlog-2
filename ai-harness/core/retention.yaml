@@ -1,0 +1,50 @@
+# WatchLog evidence retention policy (runtime authority).
+# Enforced by deterministic retention workers (pg_cron + SECURITY DEFINER prune functions) and
+# audited in evidence_deletion_audit. NO AI model may read, extend, or override these values.
+# Customer-facing outcome: "Your CCTV footage stays under your control." The customer's NVR remains
+# the long-term video store; WatchLog never continuously uploads the CCTV archive.
+version: 1
+schema: retention_policy.v1
+
+tiers:
+  operational_snapshot:
+    what: "Event stills for review/health/daily intelligence (snapshots table)."
+    ttl_days: 7
+    store: postgres_bytea            # today: bytea via SECURITY DEFINER base64 RPCs (no public bucket)
+    worker: wl_enforce_retention     # existing daily cron; per-plan floor already >= 7d
+    note: "Per-plan retention (starter/trial 7 / growth 30 / enterprise 90) already covers >=7d."
+  ai_evidence:
+    what: "Snapshots/frames retained for AI analysis + harness evidence workspace (incident stills)."
+    ttl_days: 30
+    store: postgres_bytea
+    worker: wl_prune_incident_evidence     # EXISTS but was never scheduled -> schedule it + widen keep-window to 30d
+    note: "operations_incident_evidence.expires_at default moves 7d -> 30d for AI-evidence rows."
+  incident_video:
+    what: "Temporary incident clip pulled on-demand from the NVR for an authorized window."
+    ttl_hours_min: 48
+    ttl_hours_max: 72
+    store: postgres_bytea_chunks     # incident_clip_requests + incident_clip_chunks, <=32MiB, <=60s
+    worker: wl_prune_incident_clips  # EXISTS at 24h -> retune to 48-72h
+    note: "Only a temporary WatchLog copy where technically required; TTL-deleted automatically."
+  structured_intelligence:
+    what: "Derived records: incidents, coverage, daily intelligence, reports (no raw pixels)."
+    ttl: per_data_policy
+    store: postgres
+    worker: null
+    note: "Retained per WatchLog data policy; not raw visual evidence."
+
+controls:
+  raw_visual_evidence:
+    tenant_isolated: true
+    site_scoped: true
+    encrypted_at_rest: true          # Supabase-managed at-rest encryption; keys never in-band
+    public_bucket_access: false      # served only via SECURITY DEFINER RPCs / short-lived signed URLs
+    authorization: server_side_only  # wl_my_tenant() / wl_assert_my_site — never the model
+    deletion: automatic_by_worker
+    deletion_audited: true           # evidence_deletion_audit (table, tenant/site, keep policy, rows, bytes, ran_at)
+
+audit:
+  table: evidence_deletion_audit
+  written_by: [wl_enforce_retention, wl_prune_incident_evidence, wl_prune_incident_clips]
+  fields: [tenant_id, site_id, tier, keep_policy, rows_deleted, bytes_freed, ran_at]
+  redaction: "never store image bytes or credentials in the audit."

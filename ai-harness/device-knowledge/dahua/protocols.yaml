@@ -1,0 +1,99 @@
+# WatchLog device-knowledge - vendor protocol surface (GENERATED).
+# capability -> {read_method, write_method, safety_class}. Safety: read | safe_write | high_risk | prohibited | na.
+# 'UNKNOWN' write_method = the capability is supported on some models but the exact write path is not documented.
+manufacturer: Dahua
+protocol_families:
+- ONVIF (Profile S/T/G; 21.06-24.06 by model)
+- HTTP CGI API
+- Dahua NetSDK
+evidence_note: 'Family-level CGI / SDK / ONVIF support is OFFICIAL_DOCUMENTED (per each model''s Interoperability
+  line). Endpoint-level CGI names are OFFICIAL-per-spec but host-caveated (research gap G4: the Dahua
+  HTTP API spec is partner-gated; a secondary copy named the endpoints) and were field-corroborated on
+  the client XVR (FIELD-AKSS-001).'
+snapshot_note: snapshot.cgi (Dahua) / /ISAPI/Streaming/channels/<ID>/picture (Hikvision) returns the recorder's
+  LOW snapshot-encode resolution, often CIF 352x288. Full resolution requires a main-stream RTSP keyframe
+  (subtype=0). Field-confirmed on the client Dahua XVR (FIELD-AKSS-001). A video-loss channel returns
+  a black placeholder, so a snapshot alone must never be used to prove liveness.
+surface:
+  human_vehicle_classification:
+    read_method: CGI configManager.cgi?action=getConfig&name=SmartMotionDetect
+    write_method: CGI configManager.cgi?action=setConfig&name=SmartMotionDetect
+    safety_class: safe_write
+  sensitivity_config:
+    read_method: CGI configManager.cgi?action=getConfig&name=SmartMotionDetect (Sensitivity field)
+    write_method: CGI configManager.cgi?action=setConfig&name=SmartMotionDetect (Sensitivity field)
+    safety_class: safe_write
+  line_crossing:
+    read_method: CGI configManager.cgi?action=getConfig&name=VideoAnalyseRule (Class=CrossLineDetection)
+    write_method: CGI configManager.cgi?action=setConfig&name=VideoAnalyseRule (Class=CrossLineDetection)
+    safety_class: safe_write
+  intrusion:
+    read_method: CGI configManager.cgi?action=getConfig&name=VideoAnalyseRule (Class=CrossRegionDetection)
+    write_method: CGI configManager.cgi?action=setConfig&name=VideoAnalyseRule (Class=CrossRegionDetection)
+    safety_class: safe_write
+  face_detection:
+    read_method: CGI eventManager.cgi?action=attach&codes=[FaceDetection] (event); config CGI name UNKNOWN
+      in obtained spec
+    write_method: UNKNOWN - face config CGI not in obtained Dahua HTTP-API copy
+    safety_class: safe_write
+  face_recognition:
+    read_method: UNKNOWN - face-DB CGI not in obtained spec (research gap G4)
+    write_method: UNKNOWN - face-DB CGI not in obtained spec
+    safety_class: safe_write
+  video_loss:
+    read_method: CGI eventManager.cgi?action=getEventIndexes&code=VideoLoss / event stream code VideoLoss
+    write_method: na
+    safety_class: read
+  tamper:
+    read_method: CGI eventManager.cgi VideoBlind index / configManager.cgi name=CoverDetect (read)
+    write_method: na
+    safety_class: read
+  time_ntp_config:
+    read_method: CGI global.cgi?action=getCurrentTime + configManager.cgi name=Locales,NTP
+    write_method: CGI global.cgi?action=setCurrentTime + configManager.cgi name=Locales,NTP
+    safety_class: safe_write
+  channel_title:
+    read_method: CGI configManager.cgi?action=getConfig&name=ChannelTitle
+    write_method: CGI configManager.cgi?action=setConfig&name=ChannelTitle
+    safety_class: safe_write
+  snapshot:
+    read_method: CGI snapshot.cgi?channel=N (low snapshot-encode res, often CIF 352x288; full res via
+      main-stream RTSP keyframe subtype=0)
+    write_method: na
+    safety_class: read
+  event_stream:
+    read_method: CGI eventManager.cgi?action=attach&codes=[All]&heartbeat=5
+    write_method: na
+    safety_class: read
+  storage_health:
+    read_method: CGI storageDevice.cgi?action=getDeviceAllInfo
+    write_method: na
+    safety_class: read
+  recording_mode:
+    read_method: CGI configManager.cgi?action=getConfig&name=RecordMode
+    write_method: CGI configManager.cgi?action=setConfig&name=RecordMode
+    safety_class: high_risk
+  clip_export:
+    read_method: RTSP + NetSDK mediaFileFind; CGI clip-export not documented (UNKNOWN via CGI)
+    write_method: na
+    safety_class: na
+  anpr_lpr:
+    read_method: na - analytic runs on the camera; recorder ingests/records only
+    write_method: na
+    safety_class: na
+    notes: By camera (WizSense/WizMind). Recorder does list-management + search only; cannot originate.
+  people_counting:
+    read_method: na - analytic runs on the camera; recorder ingests/records only
+    write_method: na
+    safety_class: na
+    notes: By camera. Recorder cannot originate.
+  heatmap:
+    read_method: na - analytic runs on the camera; recorder ingests/records only
+    write_method: na
+    safety_class: na
+    notes: By camera. Recorder cannot originate.
+  object_attribute_extraction:
+    read_method: na - analytic runs on the camera; recorder ingests/records only
+    write_method: na
+    safety_class: na
+    notes: Video metadata by camera. Recorder cannot originate.

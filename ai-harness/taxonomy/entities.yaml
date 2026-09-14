@@ -1,0 +1,28 @@
+# WatchLog entity types. Entities are the subjects observations attach to. Identity is NEVER assumed;
+# the default for a person is a non-identity profile. (Privacy: core/privacy.md.)
+version: 1
+schema: entities.v1
+
+entities:
+  - id: person
+    identity_default: IDENTITY_UNVERIFIED
+    profile: anonymous_entity           # first_observed, entrance, dwell, cameras_visited, probable_exit, repeat_visits, confidence
+    identity_upgrade: "only via an authorized face-match skill with human confirmation + lawful basis (WatchLog Face beta)."
+    lawful_basis_required: true
+  - id: vehicle
+    identity_default: unidentified
+    plate: "only via ANPR where the recorder/camera supports it (capability truth); else unavailable."
+  - id: object
+    classes: [bag, box, weapon_candidate, package, tool, unknown]
+    note: "weapon_candidate is a candidate for review, never an assertion."
+  - id: camera
+    truth: "only is_configured channels; carries role (see site-types) + health."
+  - id: zone
+    kind: [inclusion, exclusion, restricted, counting_line, dwell_area]
+    geometry: polygon_or_line
+  - id: recorder
+    truth: "capability from device-knowledge/ with evidence class; credentials never exposed."
+
+anonymous_entity_profile:
+  fields: [first_observed, entrance, dwell, cameras_visited, probable_exit, destinations, repeat_visits, typical_arrival_pattern, confidence]
+  rule: "identity NOT established; used for in/out, dwell, loitering, plausible journeys only where lawful."

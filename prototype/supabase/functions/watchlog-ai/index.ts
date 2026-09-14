@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
+import type { ChatMessage } from "./providers/types.ts";
 
 type Json = Record<string, any>;
 
@@ -205,7 +207,7 @@ function sanitizeResult(value: any) {
   const src = value && typeof value === "object" ? value : {};
   const answer = String(src.answer || "").slice(0, 16000) || "WatchLog could not produce a safe response.";
   const cards = (Array.isArray(src.cards) ? src.cards : []).filter((c: Json) => CARD_TYPES.has(String(c?.type || ""))).slice(0, 6).map((c: Json) => ({ type: c.type, title: String(c.title || "WatchLog").slice(0, 120), data: c.data && typeof c.data === "object" ? c.data : {} }));
-  const suggestions = (Array.isArray(src.suggestions) ? src.suggestions : []).map(String).map((s) => s.slice(0, 140)).filter(Boolean).slice(0, 4);
+  const suggestions = (Array.isArray(src.suggestions) ? src.suggestions : []).map(String).map((s: string) => s.slice(0, 140)).filter(Boolean).slice(0, 4);
   const proposed_actions = (Array.isArray(src.proposed_actions) ? src.proposed_actions : []).filter((a: Json) => ACTION_KINDS.has(String(a?.kind || ""))).slice(0, 4).map((a: Json) => {
     const kind = String(a.kind), label = String(a.label || "Continue").slice(0, 100), data = a.data && typeof a.data === "object" ? { ...a.data } : {};
     if (kind === "navigate") data.href = SAFE_HREFS.has(String(data.href || "")) ? String(data.href) : "/ai/";
@@ -218,18 +220,24 @@ function sanitizeResult(value: any) {
   return { answer, cards, suggestions, proposed_actions, mode: src.mode === "ai" ? "ai" : "guided_fallback" };
 }
 async function callModel(prompt: string, history: any[], context: Json, tools: Json) {
-  const endpoint = Deno.env.get("WATCHLOG_AI_ENDPOINT") || "", apiKey = Deno.env.get("WATCHLOG_AI_API_KEY") || "", model = Deno.env.get("WATCHLOG_AI_MODEL") || "";
-  if (!endpoint || !apiKey || !model) return fallback(prompt, context, tools);
-  const messages = [
+  // Provider resolution: an admin-configured provider (Phase 5 router over provider_configs) takes
+  // precedence; until one exists, the legacy env provider keeps existing deployments working.
+  // No provider => deterministic fallback (INVARIANT: "missing config => fallback").
+  const cfg = legacyEnvProvider();
+  if (!cfg) return fallback(prompt, context, tools);
+  const provider = buildProvider(cfg);
+  const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
-    ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant").map((m: Json) => ({ role: m.role, content: String(m.content || "").slice(0, 20000) })),
+    ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
+      .map((m: Json) => ({ role: m.role as "user" | "assistant", content: String(m.content || "").slice(0, 20000) })),
   ];
-  const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages, temperature: 0.2 }), signal: AbortSignal.timeout(35000) });
-  if (!r.ok) throw new Error(`provider_${r.status}`);
-  const payload = await r.json();
-  const text = payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? payload?.response ?? "";
+  // provider.chat THROWS on any failure (non-200 / empty / timeout) => the request handler catches
+  // it and runs fallback (INVARIANT: "throw => caller runs fallback"). All output flows through
+  // sanitizeResult here and again at the call site.
+  const out = await provider.chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cfg.maxOutput });
+  const text = out.text;
   if (!text) throw new Error("provider_empty_response");
   try { return sanitizeResult({ ...JSON.parse(String(text)), mode: "ai" }); }
   catch { return sanitizeResult({ answer: String(text), mode: "ai" }); }

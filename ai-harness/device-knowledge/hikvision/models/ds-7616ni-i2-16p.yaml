@@ -1,0 +1,245 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Hikvision
+family: I-series NVR (DS-7600NI-I2/P)
+model: DS-7616NI-I2/16P
+firmware_range: V4.63.000 (2023-04-17)
+recorder_type: NVR
+ai_processing_location: camera
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: 16 (+16 PoE)
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: No AI-by-Device table on this datasheet; recorder-side target classification UNKNOWN.
+- capability: line_crossing
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Configurable special-camera smart functions (VCA) only; no recorder AI table.
+- capability: intrusion
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-configured VCA only.
+- capability: region_entrance
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionEntrance (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionEntrance; camera-side.
+- capability: region_exiting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionExiting (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionExiting; camera-side.
+- capability: loitering
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token loitering (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI loitering; camera-side.
+- capability: parking
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token parking (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI parking; camera-side.
+- capability: face_detection
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI token faceSnap (capture)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: face_recognition
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI tokens faceContrast / faceRecognition
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: anpr_lpr
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI (plate/vehicle attrs via camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: people_counting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/counting/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: heatmap
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/heatMap/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: video_loss
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: No exception detail itemized on datasheet.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: No exception detail itemized on datasheet.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+  write:
+    supported: true
+    method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP listed.
+source:
+- url_or_doc: https://www.hikvision.com/.../Datasheet-of-DS-7600NI-I2_P_NVRD_V4.63.000_20230417.pdf
+  title: Hikvision DS-7600NI-I2/P series datasheet (I-series NVR), V4.63.000 2023-04-17
+  retrieved_at: '2026-09-10'
