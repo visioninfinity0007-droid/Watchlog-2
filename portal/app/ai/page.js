@@ -1,5 +1,2 @@
-import AIWorkspace from "./workspace";
-
-export default function Page(){
-  return <AIWorkspace/>;
-}
+import CustomerAI from "./customer-workspace";
+export default function Page(){return <CustomerAI/>;}
