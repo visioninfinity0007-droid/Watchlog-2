@@ -1,0 +1,53 @@
+/* Token normalization for signed-in legacy tools. */
+.shell{
+  --color-canvas:#f7f8fa;
+  --color-panel:#ffffff;
+  --color-line-dark:#e5e7eb;
+  --color-white:#111827;
+  --color-muted-dark:#7b8390;
+  --wl-ice:#1748d3;
+  --wl-target-canvas:#ffffff;
+  --wl-target-canvas-deep:#ffffff;
+  --wl-target-panel:#ffffff;
+  --wl-target-panel-2:#fafbfc;
+  --wl-target-line:#e5e7eb;
+  --wl-target-line-strong:#cbd6f2;
+  --wl-target-shadow:0 1px 2px rgba(16,24,40,.025),0 10px 34px rgba(16,24,40,.035);
+}
+
+.shell h2{color:#111827}
+.shell button.primary,.shell .primary{background:#1748d3!important;color:#fff!important;border:1px solid #1748d3!important}
+.shell button.secondary,.shell .secondary{background:#fff!important;color:#4b5563!important;border:1px solid #dfe3e8!important;box-shadow:none!important}
+.shell button.secondary:hover,.shell .secondary:hover{background:#f7f8fa!important;border-color:#d3d8df!important}
+
+/* Site Health module has its own historical dark surfaces. */
+[class*="site-health_pageHead"] h1{color:#111827!important}
+[class*="site-health_pageHead"] p,[class*="site-health_metricHint"],[class*="site-health_sectionHead"] p{color:#7b8390!important}
+[class*="site-health_eyebrow"]{color:#1748d3!important}
+[class*="site-health_sectionHead"] h2{color:#111827!important;text-transform:none!important;letter-spacing:-.02em!important;font-size:18px!important}
+[class*="site-health_siteCard"]{background:#fff!important;border-color:#e4e7ec!important;box-shadow:0 1px 2px rgba(16,24,40,.025),0 10px 34px rgba(16,24,40,.035)!important}
+[class*="site-health_siteMeta"] div{background:#fafbfc!important;border-color:#e5e8ed!important}
+[class*="site-health_siteMeta"] span{color:#8a929e!important}
+[class*="site-health_issue"]{background:#fafbfc!important;border-color:#e5e8ed!important}
+[class*="site-health_issue"] small{color:#818995!important}
+[class*="site-health_clear"]{background:#f3fbf7!important;border-color:#d7eee2!important;color:#5d6875!important}
+
+/* Analytics module details not covered by the main surface rules. */
+[class*="analytics_pageHead"] p,[class*="analytics_sectionHead"] p,[class*="analytics_hint"],[class*="analytics_muted"]{color:#7b8390!important}
+[class*="analytics_sectionHead"] h2{color:#111827!important}
+[class*="analytics_ruleForm"],[class*="analytics_pack"],[class*="analytics_cameraBtn"],[class*="analytics_listRow"]{color:#374151!important}
+[class*="analytics_ruleForm"] input,[class*="analytics_ruleForm"] select{background:#fff!important;color:#1f2937!important;border-color:#dfe3e8!important}
+
+/* Generic links and content cards inside operational tools. */
+.shell [style*="background: var(--color-canvas)"],
+.shell [style*="background:var(--color-canvas)"]{background:#f7f8fa!important}
+.shell [style*="background: var(--color-panel)"],
+.shell [style*="background:var(--color-panel)"]{background:#fff!important}
+.shell [style*="border: \"1px solid var(--color-line-dark)\""]{border-color:#e5e7eb!important}
+
+/* Keep camera media dark while surrounding product chrome stays light. */
+.shell img{color:inherit}
+
+@media(max-width:760px){
+  .shell h2{font-size:16px}
+}
