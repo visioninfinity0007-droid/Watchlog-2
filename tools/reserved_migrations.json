@@ -1,6 +1,10 @@
 {
   "_comment": "Migration numbers intentionally absent on some branches because another in-flight branch owns them. The linter treats a RESERVED number as a permitted gap (not present here, but not a numbering error). Any UNlisted gap, and any duplicate, still fails. Remove an entry once its branch merges and the number is present on main.",
   "reserved": {
-    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main."
+    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main.",
+    "0101": "Owned by main after the AI-first portal merge (753ff831): 0101 ai_workspace. Applied in production (through 0104), absent on this branch. This branch's agent-authed camera reconfigure RPC moved 0101 -> 0105 to avoid the collision. Remove once this branch rebases onto main.",
+    "0102": "Owned by main after the AI-first portal merge (753ff831): 0102 ai_message_integrity. Applied in production, absent on this branch. Remove once this branch rebases onto main.",
+    "0103": "Owned by main after the AI-first portal merge (753ff831): 0103 production_security_hardening. Applied in production, absent on this branch. Remove once this branch rebases onto main.",
+    "0104": "Owned by main after the AI-first portal merge (753ff831): 0104 ai_runtime_guardrails. Applied in production, absent on this branch. Remove once this branch rebases onto main."
   }
 }

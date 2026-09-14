@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0101 - Agent-authed camera (re)configuration for the Site Status panel
+-- 0105 - Agent-authed camera (re)configuration for the Site Status panel
 --
 -- Post-install "Configure Cameras" (0.4.4 P1.2) must let the operator flip a
 -- channel Monitor <-> Ignore and rename it WITHOUT a reinstall, from the Site

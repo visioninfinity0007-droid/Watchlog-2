@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.4.4 P1.2 — agent-authed Configure Cameras (wl_agent_set_camera_configured, 0101) on real PG.
+"""0.4.4 P1.2 — agent-authed Configure Cameras (wl_agent_set_camera_configured, 0105) on real PG.
 
 Proves the post-install reconfigure RPC: the agent can flip a channel Monitor<->Ignore and rename
 it (no reinstall), the change is authoritative (is_configured updated), and an unknown channel is
