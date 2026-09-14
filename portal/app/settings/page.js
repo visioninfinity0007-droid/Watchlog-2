@@ -1,3 +1,2 @@
-import SettingsWorkspace from "./workspace";
-
-export default function Page(){return <SettingsWorkspace/>;}
+import CustomerSettings from "./customer-workspace";
+export default function Page(){return <CustomerSettings/>;}
