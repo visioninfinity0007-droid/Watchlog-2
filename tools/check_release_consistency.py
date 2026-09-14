@@ -14,14 +14,16 @@ import sys
 
 
 def compare_shas(shas: dict) -> dict:
-    """shas: {source_name: sha256_hex_or_None}. Returns {ok, canonical, mismatches, missing}."""
+    """shas: {source_name: sha256_hex_or_None}. Returns {ok, canonical, mismatches, missing}.
+    The most-common value is the reference; any source that differs is a mismatch."""
+    from collections import Counter
     norm = {k: (v or "").strip().lower() for k, v in shas.items()}
     present = {k: v for k, v in norm.items() if v}
     missing = [k for k, v in norm.items() if not v]
-    values = set(present.values())
-    canonical = next(iter(values)) if len(values) == 1 else None
-    mismatches = sorted(k for k, v in present.items() if canonical is not None and v != canonical)
-    ok = (not missing) and len(values) == 1
+    counts = Counter(present.values())
+    canonical = counts.most_common(1)[0][0] if counts else None
+    mismatches = sorted(k for k, v in present.items() if v != canonical)
+    ok = (not missing) and len(set(present.values())) == 1
     return {"ok": ok, "canonical": canonical, "mismatches": mismatches, "missing": missing,
             "sources": norm}
 
