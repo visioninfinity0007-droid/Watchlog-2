@@ -2,11 +2,7 @@ import "./globals.css";
 import "./visual-target.css";
 import "./module-target.css";
 import "./ai-first-shell.css";
-import "./ai-first-shell-fixes.css";
-import "./ux-closure.css";
-import "./ux-final.css";
-import "./setup-conversation.css";
-import "./ai-customer.css";
+import "./product-polish.css";
 
 export const metadata = {
   title: "WatchLog",
