@@ -82,8 +82,21 @@ def backfill_events(driver, channel, start, end, *, window_seconds=3600, page_li
                     continue
                 seen.add(key)
                 ev = dict(raw)
-                ev.update(channel=str(channel), source=RECOVERED_SOURCE, recovered=True,
-                          provenance=PROVENANCE_LINE)
+                # Canonical wl_ingest_events shape (device_ts is REQUIRED server-side and is dropped
+                # if null): map the recovered event's historical time -> device_ts (PRESERVED, never
+                # the recovery time) and its type -> event_type. Provenance also travels in payload so
+                # it survives ingest and downstream can tell recovered intelligence from live.
+                ev["channel"] = str(channel)
+                ev["event_type"] = raw.get("type") or "recorder_event"
+                ev["device_ts"] = raw.get("ts")
+                ev["agent_ts"] = datetime.now(timezone.utc).isoformat()
+                ev["source"] = RECOVERED_SOURCE
+                ev["recovered"] = True
+                ev["provenance"] = PROVENANCE_LINE
+                ev["payload"] = {**(raw.get("payload") or {}), "source": RECOVERED_SOURCE,
+                                 "recovered": True, "provenance": PROVENANCE_LINE,
+                                 "kind": "recorder_archive_event",
+                                 "device_event_id": raw.get("device_event_id")}
                 recovered += 1
                 if on_event:
                     on_event(ev)

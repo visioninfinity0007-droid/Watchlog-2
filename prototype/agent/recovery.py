@@ -24,10 +24,12 @@ from pathlib import Path
 
 try:
     import backfill
+    import recovery_ai
 except ImportError:                                   # pragma: no cover - path shim
     import sys, pathlib
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import backfill
+    import recovery_ai
 
 DEFAULT_OUTAGE_THRESHOLD = 180        # seconds; below this a reconnect is not an "outage"
 DEFAULT_CHUNK_SECONDS = 3600          # recover one hour of archive per bounded chunk
@@ -79,12 +81,19 @@ class RecoveryRunner:
 
     def __init__(self, cloud, agent_id, agent_key, driver, on_event, *,
                  chunk_seconds: int = DEFAULT_CHUNK_SECONDS, throttle_seconds: float = 0.0,
-                 live_pending=None, log=print):
+                 live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
+                 log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
         self.driver, self.on_event = driver, on_event
         self.chunk_seconds = max(60, int(chunk_seconds))
         self.throttle_seconds = max(0.0, float(throttle_seconds))
         self.live_pending = live_pending or (lambda: False)
+        # Deep recovery (§1): when a detector is available, WatchLog also runs its on-site AI over
+        # recovered FOOTAGE (not just recorder-native event replay). Both are optional/injected so
+        # the runner stays testable and degrades honestly when neither footage nor codec is present.
+        self.detector = detector
+        self.frame_provider = frame_provider
+        self.ai_max_frames = ai_max_frames
         self._log = log
 
     def report_outage(self, last_live, now, cameras=None):
@@ -113,14 +122,26 @@ class RecoveryRunner:
                 self._complete(iv["id"], "in_progress", recovered, seen, chunk_start)
                 return {"id": iv["id"], "status": "in_progress", "recovered": recovered, "yielded": True}
             for cam in cams:
-                res = backfill.backfill_events(self.driver, cam if cam is not None else "1",
-                                               chunk_start, chunk_end, seen=seen, on_event=self.on_event)
-                st = res.get("status")
-                if st == backfill.SUPPORTED:
+                ch = cam if cam is not None else "1"
+                # (a) recorder-native event replay (the recorder's OWN recorded events)
+                res = backfill.backfill_events(self.driver, ch, chunk_start, chunk_end,
+                                               seen=seen, on_event=self.on_event)
+                if res.get("status") == backfill.SUPPORTED:
                     any_supported = True
                     recovered += res.get("recovered", 0)
                 else:
                     any_unsupported = True
+                # (b) deep recovery: WatchLog AI over recovered FOOTAGE (historical frames), when a
+                # detector is wired. Emits recovered-intelligence events with historical timestamps
+                # + representative snapshots; shares the seen-set (distinct 'ai:' key namespace).
+                if self.detector is not None or self.frame_provider is not None:
+                    ai = recovery_ai.backfill_intelligence(
+                        self.driver, self.detector, ch, chunk_start, chunk_end, seen=seen,
+                        on_event=self.on_event, frame_provider=self.frame_provider,
+                        max_frames=self.ai_max_frames)
+                    if ai.get("status") == backfill.SUPPORTED:
+                        any_supported = True
+                        recovered += ai.get("recovered", 0)
             self._complete(iv["id"], "in_progress", recovered, seen, chunk_end)   # checkpoint per chunk
             if self.throttle_seconds:
                 import time

@@ -150,5 +150,87 @@ class RecoveryRun(unittest.TestCase):
         self.assertEqual(cloud.opens[0]["p_cameras"], ["1", "3"])
 
 
+class _FakeDet:
+    def __init__(self, label):
+        self.label = label
+
+    def as_dict(self):
+        return {"label": self.label, "confidence": 0.9, "box": [0, 0, 10, 10]}
+
+
+class _FakeDetector:
+    model_name = "fake-yolo"
+
+    def classify_event(self, jpeg):
+        return True, [_FakeDet("person")]
+
+
+class DeepArchiveDriver:
+    """Serves segment-shaped recorded events; supports BOTH recorder-native replay and segment AI."""
+    def __init__(self, segments, page_size=10):
+        self._segs = sorted(segments, key=lambda s: s["start"])
+        self._page = page_size
+
+    def historical_capability(self):
+        return {"events": "supported", "segments": "supported", "snapshots": "unsupported"}
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        s = datetime.fromisoformat(str(start).replace("Z", "+00:00")) if isinstance(start, str) else start
+        e = datetime.fromisoformat(str(end).replace("Z", "+00:00")) if isinstance(end, str) else end
+        win = [seg for seg in self._segs
+               if s <= datetime.fromisoformat(seg["start"]) < e]
+        off = int(cursor) if cursor else 0
+        page = win[off:off + self._page]
+        nxt = str(off + self._page) if off + self._page < len(win) else None
+        events = [{"ts": seg["start"], "type": "recorded_segment",
+                   "device_event_id": seg["id"], "segment": seg} for seg in page]
+        return {"status": "supported", "events": events, "next_cursor": nxt}
+
+
+class DeepRecoveryRun(unittest.TestCase):
+    """§1 deep: RecoveryRunner runs WatchLog AI over recovered footage, not just event replay."""
+    def _segments(self):
+        return [{"start": (T0 + timedelta(minutes=30 + 60 * i)).isoformat(),
+                 "end": (T0 + timedelta(minutes=35 + 60 * i)).isoformat(), "id": f"S{i}"}
+                for i in range(3)]
+
+    def test_deep_recovery_emits_ai_and_replay_with_history(self):
+        cloud = FakeCloud([interval()])
+        drv = DeepArchiveDriver(self._segments())
+        events = []
+        runner = recovery.RecoveryRunner(cloud, "agent", "key", drv, events.append,
+                                         chunk_seconds=3600, detector=_FakeDetector(),
+                                         frame_provider=lambda d, c, ts: b"JPEGFRAME",
+                                         log=lambda *a: None)
+        out = runner.run_once(limit=1)
+        self.assertEqual(out[0]["status"], "recovered")
+        # both intelligence sources present: recorder-native replay AND AI over footage
+        sources = {e["source"] for e in events}
+        self.assertIn("recorder_archive", sources)
+        self.assertIn("recovered", sources)
+        # the recovered-intelligence events carry a historical snapshot + historical timestamp
+        ai = [e for e in events if e["source"] == "recovered"]
+        self.assertEqual(len(ai), 3)
+        for e in ai:
+            self.assertTrue(e.get("snapshot_b64"))
+            self.assertEqual([o["label"] for o in e["payload"]["objects"]], ["person"])
+            self.assertLess(datetime.fromisoformat(e["device_ts"]), T0 + timedelta(hours=3))
+        self.assertEqual(out[0]["recovered"], 6)          # 3 replay + 3 AI
+
+    def test_partial_when_only_ai_supported(self):
+        # events unsupported but segments supported -> partial (recovered SOME, not all sources)
+        class OnlySegments(DeepArchiveDriver):
+            def historical_capability(self):
+                return {"events": "unsupported", "segments": "supported", "snapshots": "unsupported"}
+        cloud = FakeCloud([interval()])
+        events = []
+        runner = recovery.RecoveryRunner(cloud, "agent", "key", OnlySegments(self._segments()),
+                                         events.append, chunk_seconds=3600, detector=_FakeDetector(),
+                                         frame_provider=lambda d, c, ts: b"J", log=lambda *a: None)
+        out = runner.run_once(limit=1)
+        self.assertEqual(out[0]["status"], "partial")
+        self.assertTrue(all(e["source"] == "recovered" for e in events))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -218,6 +218,10 @@ class Config:
         self.recovery_threshold_seconds = int(get("recovery_threshold_seconds") or 180)
         self.recovery_live_backlog = int(get("recovery_live_backlog") or 500)
         self.last_live_path = Path(get("last_live_file") or (self.state_path.parent / "last_live.json"))
+        # Deep recovery (§1): also run the on-site detector over recovered FOOTAGE (not just
+        # recorder-native event replay). Bounded per chunk; degrades honestly when no frame/codec.
+        self.recovery_ai_enabled = str(get("recovery_ai_enabled") or "true").strip().lower() == "true"
+        self.recovery_ai_max_frames = int(get("recovery_ai_max_frames") or 40)
         # In-app updates (0.4.4 §13/§14). Check-for-updates is READ-ONLY and never auto-applies.
         # update_public_key authenticates the signed release manifest; with no key configured an
         # update is refused (trust nothing) unless update_require_signature is explicitly false.
@@ -1412,6 +1416,16 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
     cams = [str(c.channel) for c in (channels or [])] or None
 
+    # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
+    # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
+    # event replay only — never a crash, never fabricated intelligence.
+    detector = None
+    if cfg.recovery_ai_enabled:
+        try:
+            detector = vision.build(cfg, log)
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: detector unavailable ({type(e).__name__}); event-replay only")
+
     # Startup outage detection: a last-live from a previous run older than the threshold is an outage.
     try:
         last_live = rec.read_last_live(cfg.last_live_path)
@@ -1439,6 +1453,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     chunk_seconds=cfg.recovery_chunk_seconds,
                     throttle_seconds=cfg.recovery_throttle_seconds,
                     live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
+                    detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
                     log=log)
                 runner.run_once(limit=1)
             finally:
