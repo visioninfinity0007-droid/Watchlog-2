@@ -1321,6 +1321,97 @@ def cmd_check_update(cfg: Config, *, _fetch=None) -> int:
     return 0 if action in ("up-to-date", "update") else 2
 
 
+def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
+    """0.4.4 §13/§36 — APPLY an update transactionally (auto-rollback).
+
+    Fetches + verifies the signed manifest; if a newer signed release exists for this channel,
+    downloads the package, verifies its SHA-256 + size, and hands it to the transactional
+    wl-upgrade sequence (preflight -> stage -> verify-version -> register -> commit), rolling back
+    on ANY failure. Identity/config/secrets are preserved (only the binary is swapped). Exit 0 =
+    updated or already up-to-date, 2 = blocked/refused/rolled-back, 1 = error.
+    """
+    import json as _json
+    import platform as _platform
+    import shutil
+    import subprocess
+    import tempfile
+    import updater
+    import wl_version
+
+    current = wl_version.version_string()
+    print(f"watchlog-agent {AGENT_VERSION} — update (channel: {cfg.update_channel})")
+    if not cfg.update_url or not cfg.update_url.lower().startswith("https://"):
+        print("update channel not configured over HTTPS (set update_url in watchlog.ini)")
+        return 1
+
+    fetch = _fetch or (lambda url: requests.get(url, timeout=20).text)
+    try:
+        manifest = updater.parse_manifest(fetch(cfg.update_url))
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not fetch or parse the update manifest: {type(exc).__name__}")
+        return 1
+
+    signature_state = updater.verify_manifest_signature(manifest, cfg.update_public_key)
+    plan = updater.plan_update(manifest, current, cfg.update_channel,
+                              signature_state=signature_state,
+                              require_signature=cfg.update_require_signature)
+    if plan.get("action") == "up-to-date":
+        print(f"already up to date ({current})")
+        return 0
+    if plan.get("action") != "update":
+        print(f"update blocked: {plan.get('reason')}")
+        return 2
+    print(f"update available: {current} -> {plan['target']}; applying transactionally…")
+
+    apply_fn = _apply or updater.apply_update
+    install_dir = str(base_dir())
+    if _apply is None and _platform.system() != "Windows":
+        # The dangerous binary swap only runs on the installed Windows appliance.
+        print("apply is only available on the installed Windows appliance; use --check-update here")
+        return 2
+
+    def _download(url):
+        resp = requests.get(url, timeout=180, stream=True)
+        resp.raise_for_status()
+        fd, path = tempfile.mkstemp(suffix=".pkg")
+        total = 0
+        cap = 512 * 1024 * 1024                       # bounded: never stream an unbounded package
+        with os.fdopen(fd, "wb") as out:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > cap:
+                    raise RuntimeError("update package exceeds the size cap")
+                out.write(chunk)
+        return path
+
+    def _run_stage(stage, expected_version=None):
+        script = base_dir() / "wl-upgrade.ps1"
+        args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+                "-Stage", stage, "-InstallDir", install_dir]
+        if expected_version:
+            args += ["-ExpectedVersion", expected_version]
+        return subprocess.run(args, capture_output=True).returncode
+
+    def _stage_binary(pkg, dest_dir):
+        shutil.copy2(pkg, str(Path(dest_dir) / "watchlog-agent.exe"))
+        return True
+
+    def _register():
+        script = base_dir() / "register-service.ps1"
+        return subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-File", str(script)], capture_output=True).returncode == 0
+
+    result = apply_fn(plan["target"], plan["url"], plan["sha256"], install_dir=install_dir,
+                      size=plan.get("size"), download=_download, run_stage=_run_stage,
+                      stage_binary=_stage_binary, register=_register, log=print)
+    print("UPDATE_APPLY_JSON " + _json.dumps(result, separators=(",", ":")))
+    if result.get("ok"):
+        return 0
+    return 2 if result.get("rolled_back") else 1
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -1615,6 +1706,8 @@ def main() -> None:
                     help="export a non-secret diagnostic support bundle (.zip) and exit")
     ap.add_argument("--check-update", action="store_true",
                     help="check the signed release manifest for a newer version (read-only) and exit")
+    ap.add_argument("--update", action="store_true",
+                    help="apply an available signed update transactionally (auto-rollback) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1666,6 +1759,9 @@ def main() -> None:
 
     if args.check_update:
         raise SystemExit(cmd_check_update(cfg))
+
+    if args.update:
+        raise SystemExit(cmd_update(cfg))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time

@@ -185,6 +185,100 @@ class Ed25519Signature(unittest.TestCase):
         self.assertIs(updater.verify_manifest_signature(m, pub2_b64), False)
 
 
+class ApplyUpdate(unittest.TestCase):
+    def _harness(self, *, stage_exits=None, download_ok=True, verify_ok=True,
+                 stage_binary_ok=True, register_ok=True):
+        calls = []
+        stage_exits = stage_exits or {}
+
+        def download(url):
+            if not download_ok:
+                raise RuntimeError("net down")
+            calls.append(("download", url))
+            return "/tmp/pkg.exe"
+
+        def verify(path, sha, size):
+            calls.append(("verify", path))
+            return (verify_ok, "ok" if verify_ok else "sha256 mismatch — refusing to install")
+
+        def run_stage(stage, expected_version=None):
+            calls.append(("stage", stage, expected_version))
+            return stage_exits.get(stage, 0)
+
+        def stage_binary(pkg, d):
+            calls.append(("stage_binary", pkg, d))
+            return stage_binary_ok
+
+        def register():
+            calls.append(("register",))
+            return register_ok
+
+        return calls, dict(download=download, verify=verify, run_stage=run_stage,
+                           stage_binary=stage_binary, register=register)
+
+    def _apply(self, **h):
+        calls, steps = self._harness(**h)
+        res = updater.apply_update("0.4.5", "https://x/pkg.exe", "a" * 64,
+                                   install_dir="C:/wl", size=10, **steps)
+        stages = [c[1] for c in calls if c[0] == "stage"]
+        return res, calls, stages
+
+    def test_happy_path_commits(self):
+        res, calls, stages = self._apply()
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["stage"], "commit")
+        self.assertEqual(stages, ["preflight", "verify-version", "commit"])
+        self.assertIn(("stage_binary", "/tmp/pkg.exe", "C:/wl"), calls)
+        self.assertIn(("register",), calls)
+
+    def test_download_failure_makes_no_changes(self):
+        res, calls, stages = self._apply(download_ok=False)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["stage"], "download")
+        self.assertFalse(res["rolled_back"])
+        self.assertEqual(stages, [])                     # never touched the agent
+
+    def test_bad_hash_refused_before_preflight(self):
+        res, _calls, stages = self._apply(verify_ok=False)
+        self.assertEqual(res["stage"], "verify")
+        self.assertIn("sha256", res["detail"])
+        self.assertEqual(stages, [])                     # corrupt package never installed
+
+    def test_preflight_refusal_no_rollback(self):
+        res, _calls, stages = self._apply(stage_exits={"preflight": 10})
+        self.assertEqual(res["stage"], "preflight")
+        self.assertFalse(res["rolled_back"])
+        self.assertNotIn("rollback", stages)             # nothing changed -> nothing to roll back
+
+    def test_stage_binary_failure_rolls_back(self):
+        res, _calls, stages = self._apply(stage_binary_ok=False)
+        self.assertEqual(res["stage"], "stage")
+        self.assertTrue(res["rolled_back"])
+        self.assertIn("rollback", stages)
+
+    def test_version_mismatch_rolls_back(self):
+        res, _calls, stages = self._apply(stage_exits={"verify-version": 11})
+        self.assertEqual(res["stage"], "verify-version")
+        self.assertTrue(res["rolled_back"])
+        self.assertIn("rollback", stages)
+
+    def test_register_failure_rolls_back(self):
+        res, _calls, stages = self._apply(register_ok=False)
+        self.assertEqual(res["stage"], "register")
+        self.assertTrue(res["rolled_back"])
+
+    def test_commit_failure_rolls_back(self):
+        res, _calls, stages = self._apply(stage_exits={"commit": 12})
+        self.assertEqual(res["stage"], "commit")
+        self.assertTrue(res["rolled_back"])
+        self.assertIn("rollback", stages)
+
+    def test_rollback_itself_failing_is_reported(self):
+        res, _calls, _stages = self._apply(stage_exits={"commit": 12, "rollback": 1})
+        self.assertFalse(res["ok"])
+        self.assertFalse(res["rolled_back"])             # rollback also failed -> reported honestly
+
+
 def _update_cfg(**over):
     cfg = dict(update_url="https://dl.watchlog.app/manifest.json", update_channel="production",
                update_public_key="", update_require_signature=True)
@@ -244,6 +338,58 @@ class CmdCheckUpdate(unittest.TestCase):
                                       lambda url: json.dumps(m))
         self.assertEqual(code, 0)
         self.assertEqual(plan["action"], "update")
+
+
+class CmdUpdate(unittest.TestCase):
+    def _run(self, cfg, fetch, apply_fn):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = wa.cmd_update(cfg, _fetch=fetch, _apply=apply_fn)
+        return code, buf.getvalue()
+
+    def test_applies_when_update_available(self):
+        captured = {}
+
+        def fake_apply(target, url, sha, **kw):
+            captured.update(target=target, url=url, sha=sha, kw=kw)
+            return {"ok": True, "stage": "commit", "rolled_back": False, "detail": "updated"}
+        code, out = self._run(_update_cfg(update_require_signature=False),
+                              lambda u: json.dumps(base_manifest(version="99.0.0")), fake_apply)
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["target"], "99.0.0")
+        self.assertTrue(captured["url"].endswith("watchlog-agent.exe"))
+        self.assertIn("install_dir", captured["kw"])
+        self.assertIn("applying transactionally", out)
+
+    def test_up_to_date_does_not_apply(self):
+        called = {"n": 0}
+
+        def fake_apply(*a, **k):
+            called["n"] += 1
+            return {"ok": True}
+        code, out = self._run(_update_cfg(update_require_signature=False),
+                              lambda u: json.dumps(base_manifest(version="0.0.1")), fake_apply)
+        self.assertEqual(code, 0)
+        self.assertEqual(called["n"], 0)
+        self.assertIn("already up to date", out)
+
+    def test_blocked_unsigned_does_not_apply(self):
+        called = {"n": 0}
+
+        def fake_apply(*a, **k):
+            called["n"] += 1
+            return {}
+        code, _out = self._run(_update_cfg(),        # require_signature True + no key -> unsigned
+                               lambda u: json.dumps(base_manifest(version="99.0.0")), fake_apply)
+        self.assertEqual(code, 2)
+        self.assertEqual(called["n"], 0)
+
+    def test_rolled_back_returns_2(self):
+        def fake_apply(*a, **k):
+            return {"ok": False, "stage": "commit", "rolled_back": True, "detail": "verify failed"}
+        code, _out = self._run(_update_cfg(update_require_signature=False),
+                               lambda u: json.dumps(base_manifest(version="99.0.0")), fake_apply)
+        self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":
