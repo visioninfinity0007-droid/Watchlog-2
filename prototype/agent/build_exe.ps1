@@ -23,6 +23,19 @@ $common = @(
     "--distpath","dist","--workpath","build","--specpath","build",
     "--hidden-import","requests",
     "--hidden-import","zoneinfo",
+    # Release-critical: the Site Status / diagnostics / update commands import these lazily
+    # (--status-json, --accept, --recheck-archive-json, --rediscover-json, --recheck-recording-json,
+    # --reconfigure-camera, --check-update, --update, --support-bundle). Name them explicitly so a
+    # PyInstaller graph change can never silently strip a shipped command from the appliance.
+    "--hidden-import","site_status",
+    "--hidden-import","acceptance",
+    "--hidden-import","support_bundle",
+    "--hidden-import","updater",
+    "--hidden-import","recovery",
+    "--hidden-import","recovery_ai",
+    "--hidden-import","backfill",
+    "--hidden-import","retention",
+    "--hidden-import","dahua_archive",
     "--collect-all","tzdata",
     "--exclude-module","torch","--exclude-module","ultralytics",
     "--exclude-module","matplotlib","--exclude-module","tkinter",
