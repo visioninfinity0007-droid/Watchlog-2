@@ -14,7 +14,7 @@ CORE BEHAVIOR
 - Never invent a recorder capability, camera state, incident, person identity, count, time, or health state.
 - Recorder capability verdicts and evidence classes are authoritative. UNKNOWN means unconfirmed, not unsupported. OFFICIAL_DOCUMENTED means documented, not field verified. FIELD_VERIFIED is the strongest device evidence.
 - If a requested feature is not native but WatchLog can provide a software analytic, explain that distinction plainly.
-- Never ask for or expose recorder passwords/credentials. They remain on the Site Agent.
+- Never ask for or expose recorder passwords/credentials. They remain on the on-site WatchLog service.
 - Never claim unverified time means "no activity". Use LIVE / RECOVERED / UNVERIFIED provenance honestly.
 - Behavioral identity is never certain: say estimated, probable, plausible movement journey, or unclassified as appropriate.
 - Recorder writes are never silently executed. Any recorder change must be presented as a proposal requiring an authorized human approval and the existing WatchLog Site Control safety gate.
@@ -24,7 +24,7 @@ CORE BEHAVIOR
 SETUP MODE
 When setup is incomplete, act like a friendly setup engineer. Ask only the next useful question. Use the supplied onboarding steps, business context, recorder capability profile and cameras. Typical order:
 1) site type / operating context,
-2) Agent + recorder connection,
+2) WatchLog connection + recorder connection,
 3) camera Monitor/Ignore + friendly names + purposes,
 4) business hours / entrance and restricted mappings,
 5) capability-aware recommendations,
@@ -127,7 +127,7 @@ function genericFallback(prompt: string, ctx: any) {
     return {
       answer: recorder?.model
         ? `This site is using ${[recorder.vendor, recorder.model].filter(Boolean).join(" ")}. I will only describe capabilities recorded in WatchLog's evidence-graded device profile; anything unknown stays unconfirmed.`
-        : "WatchLog has not identified the recorder model for this site yet. Once the Site Agent reports it, I can resolve the exact capability profile instead of guessing.",
+        : "WatchLog has not identified the recorder model for this site yet. Once the on-site WatchLog service reports it, I can resolve the exact capability profile instead of guessing.",
       cards: [{ type: "recorder", title: "Recorder", data: { recorder, capabilities: ctx?.capabilities || [], capability_known: ctx?.capability_known } }],
       suggestions: ["What analytics can this recorder support?", "Check recorder health", "Continue setup"],
       proposed_actions: [], mode: "guided_fallback",
@@ -135,7 +135,7 @@ function genericFallback(prompt: string, ctx: any) {
   }
   if (/coverage|downtime|missed|recovered|unverified/.test(p)) {
     return {
-      answer: "WatchLog keeps live, recovered and unverified monitoring time separate. The coverage card shows the latest server-authoritative coverage for this site; unverified time is never treated as 'no activity'.",
+      answer: "WatchLog keeps live, recovered and unverified monitoring time separate. The coverage card shows the latest verified coverage for this site; unverified time is never treated as 'no activity'.",
       cards: [{ type: "coverage", title: "Monitoring coverage", data: coverage }],
       suggestions: ["Explain any unverified time", "Was anything recovered from the recorder?", "Check site health"],
       proposed_actions: [], mode: "guided_fallback",
@@ -144,8 +144,8 @@ function genericFallback(prompt: string, ctx: any) {
   const recent = ctx?.recent_events || [];
   return {
     answer: recent.length
-      ? `I have the latest WatchLog context for ${ctx?.site?.name || "this site"}, including recorder capability truth, camera health, monitoring coverage and ${recent.length} recent event${recent.length === 1 ? "" : "s"}. Configure the AI provider to enable full natural-language reasoning; the guided WatchLog tools remain available meanwhile.`
-      : `I have the current WatchLog context for ${ctx?.site?.name || "this site"}. Configure the AI provider to enable full natural-language reasoning; setup and health guidance remain available meanwhile.`,
+      ? `I have the latest WatchLog context for ${ctx?.site?.name || "this site"}, including recorder capability truth, camera health, monitoring coverage and ${recent.length} recent event${recent.length === 1 ? "" : "s"}. Full AI reasoning is not configured in this environment yet, so I am using verified WatchLog guidance only.`
+      : `I have the current WatchLog context for ${ctx?.site?.name || "this site"}. Full AI reasoning is not configured in this environment yet, so setup and health guidance use verified WatchLog data only.`,
     cards: [{ type: "health", title: "Current site", data: { site: ctx?.site, connectivity: ctx?.connectivity, faults: ctx?.faults, coverage } }],
     suggestions: ["Check my cameras", "Continue setup", "What can my recorder support?"],
     proposed_actions: [], mode: "guided_fallback",
@@ -198,14 +198,23 @@ Deno.serve(async (req) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
-  if (!supabaseUrl || !anonKey) return jsonResponse({ error: "server_not_configured" }, 503);
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  if (!supabaseUrl || !anonKey || !serviceRoleKey) return jsonResponse({ error: "server_not_configured" }, 503);
 
+  // User-scoped client: every factual read and user write still passes the caller's JWT
+  // through WatchLog's existing tenant/RLS/RPC authorization boundary.
   const sb = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: authHeader } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const { data: { user }, error: userError } = await sb.auth.getUser();
   if (userError || !user) return jsonResponse({ error: "not_authenticated" }, 401);
+
+  // Server-only client is used for one narrow operation: persisting the assistant's
+  // response after the user-scoped context has already been authorized and loaded.
+  const service = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
   let body: any;
   try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
@@ -246,9 +255,9 @@ Deno.serve(async (req) => {
       result.answer += " The full AI reasoning service is temporarily unavailable, so I am showing verified WatchLog guidance only.";
     }
 
-    const saved = await sb.rpc("wl_ai_append_message", {
+    const saved = await service.rpc("wl_ai_append_assistant_message", {
       p_conversation_id: conversationId,
-      p_role: "assistant",
+      p_user_id: user.id,
       p_content: result.answer,
       p_payload: { cards: result.cards, suggestions: result.suggestions, proposed_actions: result.proposed_actions, mode: result.mode },
     });
