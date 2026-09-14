@@ -44,7 +44,6 @@ class Snapshot(unittest.TestCase):
                 "recording": {"y": 1}, "archive": {"archive_access": "empty"}}
         c = controller({"--status-json": (0, tag("STATUS_JSON", snap))})
         self.assertTrue(c.test_recorder()["ok"])
-        self.assertEqual(c.rediscover_cameras()["cameras"], {"x": 1})
 
     def test_recheck_archive_drives_dedicated_fresh_proof(self):
         rep = {"state": "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED", "frame_decoded": False,
@@ -55,6 +54,33 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(r["state"], "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED")
         self.assertFalse(r["frame_decoded"])
         self.assertEqual(r["diagnostics"]["kind"], "dav")
+
+
+class CameraActions(unittest.TestCase):
+    def test_configure_camera(self):
+        c = controller({"--reconfigure-camera": (0, tag("RECONFIGURE_JSON",
+                        {"ok": True, "channel": "2", "is_configured": False, "name": "Spare"}))})
+        r = c.configure_camera("2", monitored=False, name="Spare")
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["result"]["is_configured"])
+
+    def test_configure_camera_failure(self):
+        c = controller({"--reconfigure-camera": (2, tag("RECONFIGURE_JSON", {"ok": False, "reason": "unknown_channel"}))})
+        self.assertFalse(c.configure_camera("9", monitored=True)["ok"])
+
+    def test_rediscover_returns_diff(self):
+        rep = {"discovered": [{"channel": "1"}, {"channel": "9"}], "new": ["9"], "existing": ["1"],
+               "missing": ["5"]}
+        c = controller({"--rediscover-json": (0, tag("REDISCOVER_JSON", rep))})
+        r = c.rediscover_cameras()
+        self.assertEqual(r["new"], ["9"])
+        self.assertEqual(r["missing"], ["5"])
+
+    def test_recheck_recording(self):
+        rep = {"cameras": [{"channel": "1", "state": "VERIFIED"}, {"channel": "2", "state": "NOT RECORDING"}]}
+        c = controller({"--recheck-recording-json": (0, tag("RECORDING_JSON", rep))})
+        r = c.recheck_recording()
+        self.assertEqual([x["state"] for x in r["cameras"]], ["VERIFIED", "NOT RECORDING"])
 
 
 class Acceptance(unittest.TestCase):

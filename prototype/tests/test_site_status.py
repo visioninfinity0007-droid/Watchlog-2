@@ -225,6 +225,97 @@ class CmdStatusJson(unittest.TestCase):
         self.assertEqual(snap["storage"]["oldest_recording"], "2026-09-04T11:12:00+00:00")
 
 
+class ChannelDiff(unittest.TestCase):
+    def test_diff(self):
+        d = ss.channel_diff(["1", "2", "9"], known=["1", "2", "5"], ignored=["2"])
+        self.assertEqual(d["new"], ["9"])
+        self.assertEqual(d["missing"], ["5"])
+        self.assertEqual(d["existing"], ["1", "2"])
+        self.assertEqual(d["ignored_preserved"], ["2"])
+
+
+class _RecDriver:
+    name = "dahua"
+
+    def __init__(self, has_events=True, cap="supported"):
+        self._has = has_events
+        self._cap = cap
+
+    def list_channels(self):
+        return [SimpleNamespace(channel="1", name="Reception"), SimpleNamespace(channel="9", name="New")]
+
+    def historical_capability(self):
+        return {"segments": self._cap, "events": self._cap}
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        if self._cap != "supported":
+            return {"status": self._cap, "events": [], "next_cursor": None}
+        return {"status": "supported", "events": ([{"ts": "x"}] if self._has else []), "next_cursor": None}
+
+    def close(self):
+        pass
+
+
+class CmdRediscover(unittest.TestCase):
+    def test_new_channel_flagged_not_auto_monitored(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            wa.cmd_rediscover_json(_status_cfg(), _open_driver=lambda c: (_RecDriver(), None))
+        rep = json.loads(buf.getvalue().split("REDISCOVER_JSON ", 1)[1].splitlines()[0])
+        self.assertIn("9", rep["new"])          # ch9 discovered, not in config -> NEW (not monitored)
+        self.assertIn("1", rep["existing"])
+        self.assertIn("2", rep["missing"])       # ch2 in config but not discovered
+
+
+class CmdRecheckRecording(unittest.TestCase):
+    def test_states(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            wa.cmd_recheck_recording_json(_status_cfg(), _open_driver=lambda c: (_RecDriver(has_events=True), None))
+        rep = json.loads(buf.getvalue().split("RECORDING_JSON ", 1)[1].splitlines()[0])
+        # only ch1 is monitored in _status_cfg; it has recent footage -> VERIFIED
+        by = {c["channel"]: c["state"] for c in rep["cameras"]}
+        self.assertEqual(by.get("1"), "VERIFIED")
+
+    def test_not_recording(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            wa.cmd_recheck_recording_json(_status_cfg(), _open_driver=lambda c: (_RecDriver(has_events=False), None))
+        rep = json.loads(buf.getvalue().split("RECORDING_JSON ", 1)[1].splitlines()[0])
+        self.assertEqual({c["channel"]: c["state"] for c in rep["cameras"]}.get("1"), "NOT RECORDING")
+
+
+class CmdReconfigureCamera(unittest.TestCase):
+    def test_calls_rpc_and_writes_override(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _status_cfg(state_path=Path(d) / "state.json")
+            calls = {}
+
+            class _Cloud:
+                def call(self, fn, **kw):
+                    calls["fn"] = fn
+                    calls["kw"] = kw
+                    return {"ok": True, "channel": kw["p_channel"], "is_configured": kw["p_configured"]}
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = wa.cmd_reconfigure_camera(cfg, "2", False, "Spare Room",
+                                                 _cloud_factory=lambda: _Cloud(),
+                                                 _state={"agent_id": "a1", "agent_key": "k1"})
+            self.assertEqual(code, 2 if False else 0)     # ok=True -> exit 0
+            self.assertEqual(calls["fn"], "wl_agent_set_camera_configured")
+            self.assertEqual(calls["kw"]["p_configured"], False)
+            override = json.loads((Path(d) / "camera_overrides.json").read_text())
+            self.assertEqual(override["2"]["monitored"], False)
+            self.assertEqual(override["2"]["name"], "Spare Room")
+
+    def test_not_enrolled_blocks(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = wa.cmd_reconfigure_camera(_status_cfg(), "1", True, _state={})
+        self.assertEqual(code, 2)
+
+
 class CmdRecheckArchive(unittest.TestCase):
     def _run(self, **over):
         kwargs = dict(

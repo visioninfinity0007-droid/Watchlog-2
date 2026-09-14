@@ -70,12 +70,31 @@ class StatusController:
                 "recorder": snap.get("recorder")}
 
     def rediscover_cameras(self) -> dict:
-        snap = self.snapshot().get("status") or {}
-        return {"ok": True, "cameras": snap.get("cameras")}
+        """Real rediscover (P1.3): enumerate NVR channels now and diff against the known WatchLog
+        camera inventory — new / existing / missing. New channels are PROPOSED, never silently
+        monitored; the operator confirms, then configure_camera() applies each."""
+        rc, out = self._run(["--rediscover-json"])
+        report = self._tagged(out, "REDISCOVER_JSON") or {}
+        return {"ok": rc == 0 and bool(report), "new": report.get("new", []),
+                "existing": report.get("existing", []), "missing": report.get("missing", []),
+                "report": report}
+
+    def configure_camera(self, channel, monitored: bool, name=None) -> dict:
+        """Post-install Configure Cameras (P1.2): set a channel Monitor/Ignore (+ optional rename)."""
+        args = ["--reconfigure-camera", "--channel", str(channel),
+                "--set-monitored", "true" if monitored else "false"]
+        if name:
+            args += ["--camera-name", str(name)]
+        rc, out = self._run(args)
+        rep = self._tagged(out, "RECONFIGURE_JSON") or {}
+        return {"ok": rc == 0 and bool(rep.get("ok")), "result": rep}
 
     def recheck_recording(self) -> dict:
-        snap = self.snapshot().get("status") or {}
-        return {"ok": True, "recording": snap.get("recording")}
+        """Fresh per-camera recording-current proof (P1.4), not a cached snapshot read."""
+        rc, out = self._run(["--recheck-recording-json"])
+        report = self._tagged(out, "RECORDING_JSON") or {}
+        return {"ok": rc == 0 and bool(report), "cameras": report.get("cameras", []),
+                "report": report}
 
     def recheck_archive(self) -> dict:
         """Run a FRESH archive proof now (dedicated command), not a cached snapshot read (P1.5)."""

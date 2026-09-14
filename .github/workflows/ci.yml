@@ -378,6 +378,8 @@ jobs:
         run: python prototype/tests/e2e_recovery_ingest_pg.py
       - name: Camera config — wl_sync_cameras honors setup Monitor/Ignore (is_configured), re-sync safe (0100)
         run: python prototype/tests/e2e_camera_config_pg.py
+      - name: Camera reconfigure — agent-authed Monitor/Ignore + rename flips is_configured (0101)
+        run: python prototype/tests/e2e_camera_reconfig_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies

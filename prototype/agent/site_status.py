@@ -161,6 +161,18 @@ def recorder_view(*, reachable=None, auth_ok=None, info=None, capability=None,
     }
 
 
+def channel_diff(discovered, known, ignored=None) -> dict:
+    """Rediscover diff (P1.3): fresh NVR channels vs the known WatchLog inventory. Returns new /
+    existing / missing channel-id lists. A NEW channel is PROPOSED only — never auto-monitored;
+    intentionally ignored channels are reported so their Ignore state is preserved on confirm."""
+    disc = {str(c) for c in (discovered or [])}
+    known_set = {str(c) for c in (known or [])}
+    return {"new": sorted(c for c in disc if c not in known_set),
+            "existing": sorted(c for c in disc if c in known_set),
+            "missing": sorted(c for c in known_set if c not in disc),
+            "ignored_preserved": sorted(str(c) for c in (ignored or []))}
+
+
 def build_snapshot(*, agent, recorder, camera, recording, archive, storage, generated_at=None) -> dict:
     """Assemble the full, honest Site Status document from the section views above."""
     return {
@@ -177,4 +189,4 @@ def build_snapshot(*, agent, recorder, camera, recording, archive, storage, gene
 
 __all__ = ["SCHEMA", "NA", "CAMERA_STATES", "RECORDING_STATES", "ARCHIVE_STATES", "RECOVERY_STATES",
            "STORAGE_HEALTH", "camera_view", "recording_view", "archive_view", "storage_view",
-           "agent_view", "recorder_view", "build_snapshot"]
+           "agent_view", "recorder_view", "channel_diff", "build_snapshot"]

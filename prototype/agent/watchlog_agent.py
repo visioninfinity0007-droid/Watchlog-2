@@ -1546,6 +1546,12 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
             continue
         names[ch] = prof.get("name") or None
         configured[ch] = bool(prof.get("monitored", prof.get("analytics_enabled", True)))
+    # Post-install Configure Cameras overrides win over the setup-time profile.
+    for ch, ov in (load_camera_overrides(cfg) or {}).items():
+        if ov.get("monitored") is not None:
+            configured[str(ch)] = bool(ov["monitored"])
+        if ov.get("name"):
+            names[str(ch)] = ov["name"]
     merged = [{"channel": c["channel"], "name": names.get(c["channel"]) or c["name"]} for c in channels] \
         or [{"channel": ch, "name": names.get(ch) or f"Camera {ch}"} for ch in configured]
     camera = ss.camera_view(merged, configured=configured or None, health=None)
@@ -1593,6 +1599,55 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
                              archive=archive, storage=storage, generated_at=iso(now))
     print("STATUS_JSON " + _json.dumps(snap, separators=(",", ":")))
     return 0
+
+
+def _camera_overrides_path(cfg: Config):
+    return cfg.state_path.parent / "camera_overrides.json"
+
+
+def load_camera_overrides(cfg: Config) -> dict:
+    """Local post-install Monitor/Ignore + name overrides the Site Status panel applies on top of
+    the setup-time camera_profiles. {channel: {"monitored": bool, "name": str}}."""
+    try:
+        return json.loads(_camera_overrides_path(cfg).read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def cmd_reconfigure_camera(cfg: Config, channel: str, configured: bool, name=None, *,
+                           _cloud_factory=None, _state=None) -> int:
+    """0.4.4 P1.2 — Configure Cameras post-install (no reinstall). Flips a channel Monitor/Ignore
+    (+ optional rename) via the agent-authed RPC (authoritative: health gating honors it at once)
+    and records a local override so the panel reflects it immediately. Emits RECONFIGURE_JSON.
+    """
+    state = _state if _state is not None else (load_state(cfg.state_path) or {})
+    if not state.get("agent_id"):
+        print('RECONFIGURE_JSON {"ok": false, "reason": "not_enrolled"}')
+        return 2
+    result = {"ok": False, "reason": "unknown"}
+    try:
+        cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
+        result = cloud.call("wl_agent_set_camera_configured", p_agent_id=state["agent_id"],
+                            p_agent_key=state["agent_key"], p_channel=str(channel),
+                            p_configured=bool(configured), p_name=name) or {"ok": False}
+    except Exception as exc:  # noqa: BLE001
+        result = {"ok": False, "reason": type(exc).__name__}
+
+    # Local override so the panel reflects the change without waiting for a portal read.
+    if result.get("ok"):
+        try:
+            overrides = load_camera_overrides(cfg)
+            overrides[str(channel)] = {"monitored": bool(configured),
+                                       "name": (name or overrides.get(str(channel), {}).get("name"))}
+            p = _camera_overrides_path(cfg)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text(json.dumps(overrides), encoding="utf-8")
+            tmp.replace(p)
+        except Exception:  # noqa: BLE001
+            pass
+    print("RECONFIGURE_JSON " + json.dumps(result, separators=(",", ":")))
+    return 0 if result.get("ok") else 2
 
 
 def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _inspect=None,
@@ -1658,6 +1713,104 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
     except Exception:  # noqa: BLE001
         pass
     print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
+    return 0
+
+
+def cmd_rediscover_json(cfg: Config, *, _open_driver=None) -> int:
+    """0.4.4 P1.3 — enumerate NVR channels NOW and diff against the known WatchLog inventory
+    (channels in local config + overrides). New channels are PROPOSED (not auto-monitored);
+    ignored channels are reported so Ignore is preserved. Emits REDISCOVER_JSON. Exit 0 always.
+    """
+    import json as _json
+    import site_status as ss
+
+    out = {"schema": "watchlog.rediscover.v1", "discovered": [], "new": [], "existing": [],
+           "missing": [], "ignored_preserved": [], "detail": ""}
+    driver = None
+    try:
+        driver, _info = (_open_driver or open_driver)(cfg)
+    except Exception:  # noqa: BLE001
+        driver = None
+    if driver is None:
+        out["detail"] = "recorder not reachable"
+        print("REDISCOVER_JSON " + _json.dumps(out, separators=(",", ":")))
+        return 0
+    try:
+        discovered = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+    except Exception:  # noqa: BLE001
+        discovered = []
+    try:
+        driver.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+    overrides = load_camera_overrides(cfg)
+    known = {str(p.get("channel")) for p in (cfg.camera_profiles or []) if p.get("channel")}
+    known |= set(str(k) for k in overrides)
+    ignored = {str(p.get("channel")) for p in (cfg.camera_profiles or [])
+               if p.get("channel") and not p.get("monitored", True)}
+    ignored |= {str(ch) for ch, ov in overrides.items() if ov.get("monitored") is False}
+    out["discovered"] = discovered
+    out.update(ss.channel_diff([c["channel"] for c in discovered], known, ignored))
+    print("REDISCOVER_JSON " + _json.dumps(out, separators=(",", ":")))
+    return 0
+
+
+def cmd_recheck_recording_json(cfg: Config, *, _open_driver=None, _now=None) -> int:
+    """0.4.4 P1.4 — fresh recording-current proof per monitored camera: recent recorded footage
+    exists -> VERIFIED; queryable but none -> NOT RECORDING; archive unsupported -> NOT AVAILABLE;
+    else UNKNOWN. Emits RECORDING_JSON. Read-only; never raises.
+    """
+    import json as _json
+    from datetime import timedelta
+    import dahua_archive
+
+    now = _now or now_utc()
+    out = {"schema": "watchlog.recording_recheck.v1", "checked_at": iso(now), "cameras": [], "detail": ""}
+    driver = None
+    try:
+        driver, _info = (_open_driver or open_driver)(cfg)
+    except Exception:  # noqa: BLE001
+        driver = None
+    if driver is None:
+        out["detail"] = "recorder not reachable"
+        print("RECORDING_JSON " + _json.dumps(out, separators=(",", ":")))
+        return 0
+    try:
+        dahua_archive.install()
+    except Exception:  # noqa: BLE001
+        pass
+
+    monitored = [(str(p["channel"]), p.get("name")) for p in (cfg.camera_profiles or [])
+                 if p.get("channel") and p.get("monitored", True)]
+    if not monitored:
+        try:
+            monitored = [(str(c.channel), c.name) for c in driver.list_channels()]
+        except Exception:  # noqa: BLE001
+            monitored = []
+    start = now - timedelta(minutes=15)
+    rows = []
+    for ch, name in monitored:
+        state = "UNKNOWN"
+        try:
+            if hasattr(driver, "enumerate_historical_events"):
+                res = driver.enumerate_historical_events(ch, start, now, None, 1) or {}
+                st = res.get("status")
+                if st == "supported":
+                    state = "VERIFIED" if res.get("events") else "NOT RECORDING"
+                elif st == "unsupported":
+                    state = "NOT AVAILABLE"
+            else:
+                state = "NOT AVAILABLE"
+        except Exception:  # noqa: BLE001
+            state = "UNKNOWN"
+        rows.append({"channel": ch, "name": name, "state": state})
+    try:
+        driver.close()
+    except Exception:  # noqa: BLE001
+        pass
+    out["cameras"] = rows
+    print("RECORDING_JSON " + _json.dumps(out, separators=(",", ":")))
     return 0
 
 
@@ -1961,6 +2114,16 @@ def main() -> None:
                     help="print the machine-readable Site Status document (for the status panel) and exit")
     ap.add_argument("--recheck-archive-json", action="store_true",
                     help="run a fresh archive proof now (with media-decode diagnostics) and exit")
+    ap.add_argument("--rediscover-json", action="store_true",
+                    help="enumerate NVR channels now and diff against the known inventory, then exit")
+    ap.add_argument("--recheck-recording-json", action="store_true",
+                    help="run a fresh per-camera recording-current proof and exit")
+    ap.add_argument("--reconfigure-camera", action="store_true",
+                    help="post-install: set a channel Monitor/Ignore (+ optional name) and exit")
+    ap.add_argument("--channel", help="channel for --reconfigure-camera")
+    ap.add_argument("--set-monitored", choices=["true", "false"],
+                    help="Monitor (true) or Ignore (false) for --reconfigure-camera")
+    ap.add_argument("--camera-name", help="optional new camera name for --reconfigure-camera")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -2021,6 +2184,19 @@ def main() -> None:
 
     if args.recheck_archive_json:
         raise SystemExit(cmd_recheck_archive_json(cfg))
+
+    if args.rediscover_json:
+        raise SystemExit(cmd_rediscover_json(cfg))
+
+    if args.recheck_recording_json:
+        raise SystemExit(cmd_recheck_recording_json(cfg))
+
+    if args.reconfigure_camera:
+        if not args.channel or args.set_monitored is None:
+            print('RECONFIGURE_JSON {"ok": false, "reason": "missing_channel_or_state"}')
+            raise SystemExit(2)
+        raise SystemExit(cmd_reconfigure_camera(cfg, args.channel, args.set_monitored == "true",
+                                                args.camera_name))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time

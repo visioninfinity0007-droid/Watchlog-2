@@ -18,7 +18,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QApplication, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox,
     QFileDialog, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
@@ -100,6 +100,7 @@ class SiteStatusWindow(QMainWindow):
         self._buttons = []
         specs = [
             ("Test Recorder", self.act_test_recorder, "secondary"),
+            ("Configure Cameras", self.act_configure_cameras, "secondary"),
             ("Rediscover Cameras", self.act_rediscover, "secondary"),
             ("Recheck Recording", self.act_recheck_recording, "secondary"),
             ("Recheck Archive", self.act_recheck_archive, "secondary"),
@@ -200,6 +201,7 @@ class SiteStatusWindow(QMainWindow):
         return "".join(parts)
 
     def _render_cameras(self, cams):
+        self._cameras = list(cams or [])
         self.camera_table.setRowCount(len(cams))
         for row, cam in enumerate(cams):
             for col, val in enumerate((cam.get("channel"), cam.get("name"), cam.get("status"),
@@ -213,11 +215,48 @@ class SiteStatusWindow(QMainWindow):
                   lambda r: (self._notify("Recorder", "Recorder reachable." if r.get("ok")
                              else "Recorder could not be reached."), self.refresh()), "Testing recorder…")
 
+    def act_configure_cameras(self):
+        cams = getattr(self, "_cameras", [])
+        row = self.camera_table.currentRow()
+        if not cams or row < 0 or row >= len(cams):
+            self._notify("Configure Cameras", "Select a camera in the table first.")
+            return
+        cam = cams[row]
+        choice = QMessageBox.question(self, "Configure Camera",
+                                     f"Channel {cam.get('channel')} — monitor this camera?\n\n"
+                                     f"Yes = Monitor · No = Ignore (unused, no health warnings)",
+                                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        if choice == QMessageBox.Cancel:
+            return
+        monitored = choice == QMessageBox.Yes
+        name, ok = QInputDialog.getText(self, "Camera name", "Camera name:", text=cam.get("name") or "")
+        if not ok:
+            return
+        self._run(lambda: self.controller.configure_camera(cam.get("channel"), monitored, name.strip() or None),
+                  lambda r: (self._notify("Configure Cameras", "Saved." if r.get("ok")
+                             else "Could not save the camera configuration."), self.refresh()),
+                  "Saving camera configuration…")
+
     def act_rediscover(self):
-        self._run(self.controller.rediscover_cameras, lambda r: self.refresh(), "Rediscovering cameras…")
+        def done(r):
+            new, missing = r.get("new") or [], r.get("missing") or []
+            if not r.get("ok"):
+                self._notify("Rediscover Cameras", "Could not enumerate the recorder.")
+                return
+            msg = (f"New channels found: {', '.join(new) or 'none'}\n"
+                   f"Configured channels no longer present: {', '.join(missing) or 'none'}\n\n"
+                   f"New channels are NOT monitored automatically. Use Configure Cameras to add them.")
+            self._notify("Rediscover Cameras", msg)
+            self.refresh()
+        self._run(self.controller.rediscover_cameras, done, "Rediscovering cameras…")
 
     def act_recheck_recording(self):
-        self._run(self.controller.recheck_recording, lambda r: self.refresh(), "Rechecking recording…")
+        def done(r):
+            rows = r.get("cameras") or []
+            summary = "\n".join(f"• Ch {c.get('channel')}: {c.get('state')}" for c in rows) or "No monitored cameras."
+            self._notify("Recording", summary)
+            self.refresh()
+        self._run(self.controller.recheck_recording, done, "Rechecking recording…")
 
     def act_recheck_archive(self):
         self._run(self.controller.recheck_archive,
