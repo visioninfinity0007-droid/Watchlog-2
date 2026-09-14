@@ -12,6 +12,8 @@ html,body{overflow-x:hidden}
 .productRailConversation span,.productRailConversation small{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .productRailNav{scrollbar-width:none}
 .productRailNav::-webkit-scrollbar{display:none}
+.productRailAsk{width:100%;box-sizing:border-box;text-decoration:none!important}
+.productRailAsk:hover{text-decoration:none!important}
 
 /* Avoid nested legacy scrollbars inside customer cards/lists. */
 .shell .panel,.shell [class*="portal_card"],.shell [class*="portal_featureCard"]{min-width:0}
