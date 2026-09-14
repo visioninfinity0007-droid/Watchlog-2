@@ -119,6 +119,8 @@ jobs:
         run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py -q
       - name: Setup archive proof — recorder actually retains retrievable footage (verified/empty/unsupported/unknown)
         run: python -m pytest prototype/tests/test_archive_proof_setup.py -q
+      - name: Post-install acceptance self-test — end-to-end site chain, hard/soft gating, no secret leak
+        run: python -m pytest prototype/tests/test_acceptance_selftest.py -q
       - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract

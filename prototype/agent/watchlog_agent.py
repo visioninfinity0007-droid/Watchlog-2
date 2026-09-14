@@ -1058,6 +1058,146 @@ def cmd_selftest() -> int:
     return 2
 
 
+def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
+               _heartbeat=None, _spool_factory=None, _archive=None,
+               live_seconds: int | None = None) -> int:
+    """0.4.4 §10 — post-install acceptance self-test.
+
+    Exercises the REAL runtime chain on THIS site — configuration, local identity, cloud auth,
+    recorder reachability, camera enumeration, retrievable archive (so the outage-recovery
+    promise is real), the live-event path and a healthy local spool — and prints an honest
+    ACCEPTED / BLOCKED report plus a machine-readable ``ACCEPTANCE_JSON`` line for the installer.
+
+    Read-only: it changes no recorder setting and enables no runtime feature (operations/site
+    control stay OFF). Exit 0 = accepted, 2 = blocked. Dependencies are injectable so the whole
+    flow is testable with no cloud, recorder or spool.
+    """
+    import acceptance
+    import dahua_archive
+    from types import SimpleNamespace
+
+    open_driver_fn = _open_driver or open_driver
+    heartbeat_fn = _heartbeat or heartbeat
+    cloud_factory = _cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key))
+    if _spool_factory is None:
+        from spool import Spool
+        spool_factory = lambda: Spool(cfg.spool_path, cfg.spool_max_rows)   # noqa: E731
+    else:
+        spool_factory = _spool_factory
+    archive_fn = _archive or dahua_archive.prove_recorder_archive
+    live_seconds = int(live_seconds if live_seconds is not None
+                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 20))
+    state = _state if _state is not None else load_state(cfg.state_path)
+
+    print(f"watchlog-agent {AGENT_VERSION} — post-install acceptance self-test\n")
+    holder: dict = {}
+
+    def _config():
+        missing = [name for name, value in (("recorder address", cfg.nvr_url),
+                                            ("WatchLog URL", cfg.supabase_url),
+                                            ("WatchLog key", cfg.publishable_key)) if not value]
+        return ("blocked", "missing " + ", ".join(missing)) if missing else ("pass", cfg.nvr_url)
+
+    def _identity():
+        if not state or not state.get("agent_id") or not state.get("agent_key"):
+            return "blocked", "this site is not enrolled yet"
+        return "pass", f"agent {state['agent_id']}"
+
+    def _cloud():
+        if not state:
+            return "blocked", "no local identity to authenticate"
+        device = SimpleNamespace(vendor=None, model=None, driver=cfg.nvr_driver)
+        heartbeat_fn(cloud_factory(), state, device)
+        return "pass", "cloud authenticated this agent"
+
+    def _recorder():
+        driver, info = open_driver_fn(cfg)
+        holder["driver"], holder["info"] = driver, info
+        return "pass", (f"{info.vendor} {info.model or ''}".strip() or "recorder reachable")
+
+    def _cameras():
+        driver = holder.get("driver")
+        if driver is None:
+            return "blocked", "recorder was not reachable"
+        chans = driver.list_channels()
+        holder["channels"] = chans
+        return ("pass", f"{len(chans)} camera(s)") if chans else ("blocked", "no camera channels found")
+
+    def _archive_check():
+        driver = holder.get("driver")
+        chans = holder.get("channels") or []
+        if driver is None or not chans:
+            return "warn", "recorder/cameras unavailable to check the archive"
+        try:
+            dahua_archive.install()
+        except Exception:  # noqa: BLE001 — a driver without the impl reports 'unsupported' honestly
+            pass
+        channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        proof = archive_fn(driver, channel)
+        status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
+        return status, (proof or {}).get("detail")
+
+    def _live():
+        driver = holder.get("driver")
+        if driver is None:
+            return "blocked", "recorder was not reachable"
+        stop = threading.Event()
+        timer = threading.Timer(live_seconds, stop.set)
+        timer.start()
+        seen = 0
+        try:
+            for _ev in driver.stream_events(stop):
+                seen += 1
+                break
+        finally:
+            stop.set()
+            timer.cancel()
+        if seen:
+            return "pass", f"live events flowing (seen within {live_seconds}s)"
+        return "warn", f"no live events during a {live_seconds}s check (a quiet site is normal)"
+
+    def _spool():
+        sp = spool_factory()
+        try:
+            queued = sp.count()
+        finally:
+            try:
+                sp.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return "pass", f"local spool healthy ({queued} queued)"
+
+    checks = [
+        {"key": "config", "label": "Configuration present", "hard": True, "run": _config},
+        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True, "run": _identity},
+        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True, "run": _cloud},
+        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder},
+        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras},
+        {"key": "archive", "label": "Recorded footage retrievable (outage recovery)",
+         "hard": False, "run": _archive_check},
+        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live},
+        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool},
+    ]
+
+    report = acceptance.run_checks(checks, log=print)
+    stats = report["summary"]
+    print()
+    if report["ready"]:
+        print(f"RESULT: ACCEPTED ({stats['passed']} passed, {stats['warned']} warning(s))")
+    else:
+        print(f"RESULT: BLOCKED ({stats['hard_failures']} required check(s) not passing)")
+    # Single machine-readable line for the installer status panel — contains no secrets.
+    print("ACCEPTANCE_JSON " + json.dumps(report, separators=(",", ":")))
+
+    driver = holder.get("driver")
+    if driver is not None:
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return 0 if report["ready"] else 2
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -1334,6 +1474,9 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true",
                     help="prove the on-site AI false-alarm filter is packaged "
                          "and working in this build; needs no config")
+    ap.add_argument("--accept", action="store_true",
+                    help="run the post-install acceptance self-test (identity, cloud, "
+                         "recorder, cameras, archive, live events, spool) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1373,6 +1516,12 @@ def main() -> None:
         return
 
     cfg = Config()
+
+    # Post-install acceptance runs against the config as-is and must never launch the
+    # setup wizard — an unconfigured site should report a 'blocked' config check, not
+    # be walked through setup.
+    if args.accept:
+        raise SystemExit(cmd_accept(cfg))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time
