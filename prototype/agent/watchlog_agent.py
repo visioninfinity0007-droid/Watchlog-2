@@ -208,6 +208,16 @@ class Config:
         # capability is never auto-enabled on a live site — enable per-site in the ini.
         self.site_control_enabled = str(get("site_control") or "false").strip().lower() == "true"
         self.site_control_seconds = int(get("site_control_seconds") or 15)
+        # Automatic NVR outage recovery (0.4.4 §1/§2). READ-ONLY archive backfill of missed
+        # intervals; ON by default (it never writes to the recorder, always yields to live
+        # monitoring, and is throttled). Disable per-site with recovery_enabled = false.
+        self.recovery_enabled = str(get("recovery_enabled") or "true").strip().lower() == "true"
+        self.recovery_seconds = int(get("recovery_seconds") or 300)
+        self.recovery_chunk_seconds = int(get("recovery_chunk_seconds") or 3600)
+        self.recovery_throttle_seconds = float(get("recovery_throttle_seconds") or 2.0)
+        self.recovery_threshold_seconds = int(get("recovery_threshold_seconds") or 180)
+        self.recovery_live_backlog = int(get("recovery_live_backlog") or 500)
+        self.last_live_path = Path(get("last_live_file") or (self.state_path.parent / "last_live.json"))
 
     def load_recorder_credential(self) -> None:
         """(Re)load the recorder credential from the encrypted split store so
@@ -1129,6 +1139,59 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
+                    spool, channels=None) -> None:
+    """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
+    yields the missed interval, reported as a PENDING recovery interval. Then it claims pending
+    intervals and backfills each from the recorder archive in bounded, resumable, idempotent
+    chunks (read-only; recovered events carry recorder_archive provenance). LIVE monitoring always
+    has priority (yields when the live spool has a backlog) and it is throttled. OFF only if
+    recovery_enabled=false. A failure here can never disturb events/heartbeat/health."""
+    if not cfg.recovery_enabled:
+        return
+    import recovery as rec
+    stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
+    cams = [str(c.channel) for c in (channels or [])] or None
+
+    # Startup outage detection: a last-live from a previous run older than the threshold is an outage.
+    try:
+        last_live = rec.read_last_live(cfg.last_live_path)
+        outage = rec.detect_outage(last_live, now_utc(), cfg.recovery_threshold_seconds)
+        if outage:
+            cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
+                       p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
+                       p_ended_at=iso(outage[1]), p_cameras=[])
+            log(f"recovery: detected outage {iso(outage[0])}..{iso(outage[1])}; opened recovery candidate")
+    except Exception as e:                               # noqa: BLE001
+        log(f"recovery: startup detect skipped: {type(e).__name__}")
+
+    while not stop.is_set():
+        try:
+            driver, _info = open_driver(cfg)
+            try:
+                import dahua_archive
+                dahua_archive.install()                  # ensure the historical iface on the driver
+            except Exception:                            # noqa: BLE001
+                pass
+            try:
+                runner = rec.RecoveryRunner(
+                    cloud, state["agent_id"], state["agent_key"], driver,
+                    lambda ev: spool.add(ev),
+                    chunk_seconds=cfg.recovery_chunk_seconds,
+                    throttle_seconds=cfg.recovery_throttle_seconds,
+                    live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
+                    log=log)
+                runner.run_once(limit=1)
+            finally:
+                try:
+                    driver.close()
+                except Exception:                        # noqa: BLE001
+                    pass
+        except Exception as e:                           # noqa: BLE001 — recovery never disturbs the agent
+            log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        stop.wait(cfg.recovery_seconds)
+
+
 def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
             device=None, channels=None) -> None:
     from spool import Spool
@@ -1182,6 +1245,10 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
     sitectl = threading.Thread(target=command_worker, args=(cfg, state, cloud, stop),
                                daemon=True, name="sitecontrol")
     sitectl.start()
+    # Automatic NVR outage recovery (§1/§2). Read-only; yields to live; OFF only if disabled in ini.
+    recov = threading.Thread(target=recovery_worker, args=(cfg, state, cloud, stop, spool, channels),
+                             daemon=True, name="recovery")
+    recov.start()
 
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
         f"{cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, outbound only. "
@@ -1216,6 +1283,14 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as e:
                     log(f"ERROR: heartbeat failed, will retry: "
                         f"{str(e).splitlines()[0][:200]}")
+                # Persist the last-live marker on the heartbeat cadence: the Agent is alive and
+                # observing now, so the NEXT startup can detect an outage as (this time -> restart).
+                if cfg.recovery_enabled:
+                    try:
+                        import recovery as _rec
+                        _rec.persist_last_live(cfg.last_live_path, now_utc())
+                    except Exception:                    # noqa: BLE001
+                        pass
             time.sleep(1)
     except KeyboardInterrupt:
         log("stopping...")
@@ -1224,6 +1299,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         worker.join(timeout=5)
         health.join(timeout=5)
         sitectl.join(timeout=5)
+        recov.join(timeout=5)
         spool.close()
         if holder.get("store"):
             try:

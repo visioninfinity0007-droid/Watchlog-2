@@ -277,13 +277,54 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime) 
             pass
 
 
-def install() -> None:
-    """Install the validated-shape archive implementation on DahuaDriver.
+def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor=None, limit: int = 500) -> dict:
+    """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end) become
+    recoverable intelligence (each recorded segment is a recovered evidence window). Honest
+    status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
+    with empty data, and never masquerading as live). Read-only; bounded by FINDER_COUNT.
+    """
+    try:
+        recs = find_recordings(driver, channel, start, end, max_items=min(max(1, int(limit)), FINDER_COUNT))
+    except (NvrUnreachable, NvrAuthFailed):
+        return {"status": "unknown", "events": [], "next_cursor": None}
+    except DriverError:
+        # An ambiguous clock/search response failed closed upstream — unknown, not unsupported.
+        return {"status": "unknown", "events": [], "next_cursor": None}
+    events = []
+    for r in recs:
+        st = r.get("StartTime") or r.get("BeginTime") or r.get("startTime")
+        et = r.get("EndTime") or r.get("endTime")
+        path = r.get("FilePath") or r.get("filepath")
+        events.append({
+            "ts": st,
+            "type": "recorded_segment",
+            "device_event_id": path or f"{channel}:{st}:{et}",
+            "channel": str(channel),
+            "segment": {"start": st, "end": et, "path": path},
+        })
+    return {"status": "supported", "events": events, "next_cursor": None}
 
-    Keeping this as an explicit production-entrypoint patch makes packaging
-    deterministic while preserving the field-evidence boundary in dahua.py.
+
+def historical_capability(driver: DahuaDriver = None) -> dict:
+    """Dahua archive: segment enumeration + bounded clip retrieval are supported (validated on the
+    Cooper-I pilot path); snapshot-at-timestamp is not exposed on the validated path."""
+    return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
+
+
+def install() -> None:
+    """Install the validated-shape archive + recovery implementation on DahuaDriver.
+
+    Keeping this as an explicit production-entrypoint patch makes packaging deterministic while
+    preserving the field-evidence boundary in dahua.py.
     """
     DahuaDriver.get_clip = get_clip
+    DahuaDriver.enumerate_historical_events = (
+        lambda self, channel, start, end, cursor=None, limit=500:
+        enumerate_historical_events(self, channel, start, end, cursor, limit))
+    DahuaDriver.get_recorded_segment = (
+        lambda self, channel, start, end: {"status": "supported", "bytes": get_clip(self, channel, start, end)})
+    DahuaDriver.historical_capability = lambda self: historical_capability(self)
 
 
-__all__ = ["find_recordings", "has_recording", "get_clip", "install"]
+__all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
+           "historical_capability", "install"]

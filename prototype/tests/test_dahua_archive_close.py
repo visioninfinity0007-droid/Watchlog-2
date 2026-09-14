@@ -121,5 +121,36 @@ class StreamCloses(unittest.TestCase):
         self.assertIn("response.close()", block)
 
 
+class EnumerateHistorical(unittest.TestCase):
+    """Recovery enumeration: archive segments -> recovered intelligence with provenance shape."""
+    def test_segments_become_recovered_events(self):
+        drv = FakeDriver(FakeResponse())      # stream resp unused for enumeration
+        res = da.enumerate_historical_events(drv, "1", START, END)
+        self.assertEqual(res["status"], "supported")
+        self.assertEqual(len(res["events"]), 1)
+        ev = res["events"][0]
+        self.assertEqual(ev["type"], "recorded_segment")
+        self.assertTrue(ev["ts"])
+        self.assertEqual(ev["channel"], "1")
+        self.assertIn("segment", ev)
+
+    def test_capability_reports_supported(self):
+        cap = da.historical_capability()
+        self.assertEqual(cap["events"], "supported")
+        self.assertEqual(cap["segments"], "supported")
+
+    def test_unreachable_is_unknown_not_fabricated(self):
+        class Dead:
+            def get(self, url, params=None, timeout=None, stream=False):
+                import requests as _r
+                raise _r.exceptions.ConnectionError("recorder offline")
+        class DeadDriver(FakeDriver):
+            def __init__(self):
+                super().__init__(FakeResponse()); self.s = Dead()
+        res = da.enumerate_historical_events(DeadDriver(), "1", START, END)
+        self.assertEqual(res["status"], "unknown")      # honest: unknown, not a fake 'supported'
+        self.assertEqual(res["events"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

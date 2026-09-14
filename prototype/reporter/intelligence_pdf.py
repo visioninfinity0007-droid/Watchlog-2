@@ -278,6 +278,14 @@ def render_pdf_html(report: dict) -> str:
                    f'<th>Windows</th><th>Last</th></tr></thead><tbody>{restr_block}</tbody></table>' if restricted else "")
     cov_warn = ("" if ratio >= 0.999 else
                 f'<p class="warn">Monitoring was not continuous — {_esc(len(cov.get("gaps") or []))} gap(s); activity during a gap is unobserved.</p>')
+    cc = m.get("coverage_classes")
+    cov_classes = ""
+    if cc:
+        cov_classes = ('<h2>Coverage</h2><table class="grid"><thead><tr><th>Class</th><th>Hours</th></tr></thead><tbody>'
+                       f'<tr><td>Live monitored</td><td>{_esc(cc.get("live_hours"))}</td></tr>'
+                       f'<tr><td>Recovered from NVR</td><td>{_esc(cc.get("recovered_hours"))}</td></tr>'
+                       f'<tr><td>Unverified</td><td>{_esc(cc.get("unverified_hours"))}</td></tr>'
+                       '</tbody></table><p class="sub">Live, recovered and unverified time are reported separately, never blended.</p>')
     honesty_html = "".join(f"<li>{_esc(h)}</li>" for h in honesty)
     partial = ' &nbsp; <b>PARTIAL DAY</b>' if meta.get("partial_day") else ''
 
@@ -305,7 +313,7 @@ def render_pdf_html(report: dict) -> str:
         f'<td>After-hours</td><td><b>{_esc(m["after_hours"] if m["after_hours_verified"] else "not verified")}</b></td>'
         f'<td>People</td><td class="sub">{m["probable_regular_staff"]} staff / {m["probable_visitor"]} visitor / {m["unclassified"]} unclassified (estimated)</td></tr>'
         f'</table></div>'
-        f'{cov_warn}{inc_block}{restr_block}'
+        f'{cov_warn}{cov_classes}{inc_block}{restr_block}'
         f'<ul class="honesty">{honesty_html}</ul>'
         f'<div class="sub">Generated {_esc(meta.get("generated_at"))} &middot; {_esc(m["schema"])} &middot; detections are events observed on site, not a headcount.</div>'
         '</body></html>')
