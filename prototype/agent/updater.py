@@ -91,7 +91,7 @@ def verify_ed25519(message: bytes, signature_b64: str, public_key_b64: str):
     except Exception:  # noqa: BLE001 — backend not packaged: 'cannot verify', not 'invalid'
         return None
     if not signature_b64 or not public_key_b64:
-        return False
+        return None  # no signature and/or no configured key => cannot verify (unsigned posture)
     try:
         pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key_b64))
     except Exception:  # noqa: BLE001 — a malformed key cannot verify anything

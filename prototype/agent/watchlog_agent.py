@@ -218,6 +218,13 @@ class Config:
         self.recovery_threshold_seconds = int(get("recovery_threshold_seconds") or 180)
         self.recovery_live_backlog = int(get("recovery_live_backlog") or 500)
         self.last_live_path = Path(get("last_live_file") or (self.state_path.parent / "last_live.json"))
+        # In-app updates (0.4.4 §13/§14). Check-for-updates is READ-ONLY and never auto-applies.
+        # update_public_key authenticates the signed release manifest; with no key configured an
+        # update is refused (trust nothing) unless update_require_signature is explicitly false.
+        self.update_url = (get("update_url") or "").strip()
+        self.update_channel = (get("update_channel") or "production").strip().lower()
+        self.update_public_key = (get("update_public_key") or "").strip()
+        self.update_require_signature = str(get("update_require_signature") or "true").strip().lower() == "true"
 
     def load_recorder_credential(self) -> None:
         """(Re)load the recorder credential from the encrypted split store so
@@ -1265,6 +1272,51 @@ def cmd_support_bundle(cfg: Config, *, dest_dir=None, _section=None, _state=None
     return 0
 
 
+def cmd_check_update(cfg: Config, *, _fetch=None) -> int:
+    """0.4.4 §13/§36 — check for updates (READ-ONLY).
+
+    Fetches the signed release manifest for THIS site's channel over HTTPS, verifies its Ed25519
+    signature, and reports whether an update is available. It NEVER downloads or installs anything
+    — the transactional apply (via wl-upgrade.ps1) is a separate, deliberate step. Exit 0 =
+    up-to-date or update-available, 2 = blocked (untrusted / too-old / unknown-channel), 1 = error.
+    """
+    import json as _json
+    import updater
+    import wl_version
+
+    current = wl_version.version_string()
+    print(f"watchlog-agent {AGENT_VERSION} — check for updates (channel: {cfg.update_channel})")
+    if not cfg.update_url:
+        print("update channel not configured (set update_url in watchlog.ini)")
+        return 1
+    if not cfg.update_url.lower().startswith("https://"):
+        print("refusing to fetch the update manifest over a non-HTTPS URL")
+        return 1
+
+    fetch = _fetch or (lambda url: requests.get(url, timeout=20).text)
+    try:
+        manifest = updater.parse_manifest(fetch(cfg.update_url))
+    except Exception as exc:  # noqa: BLE001 — network/parse failure is an honest error, not a crash
+        print(f"could not fetch or parse the update manifest: {type(exc).__name__}")
+        return 1
+
+    signature_state = updater.verify_manifest_signature(manifest, cfg.update_public_key)
+    plan = updater.plan_update(manifest, current, cfg.update_channel,
+                              signature_state=signature_state,
+                              require_signature=cfg.update_require_signature)
+    action = plan.get("action")
+    if action == "up-to-date":
+        print(f"up to date ({current} on {cfg.update_channel})")
+    elif action == "update":
+        print(f"update available: {current} -> {plan['target']} on {cfg.update_channel}")
+        if plan.get("notes"):
+            print(f"  notes: {plan['notes']}")
+    else:
+        print(f"update blocked: {plan.get('reason')} (channel {cfg.update_channel})")
+    print("UPDATE_JSON " + _json.dumps(plan, separators=(",", ":")))
+    return 0 if action in ("up-to-date", "update") else 2
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -1546,6 +1598,8 @@ def main() -> None:
                          "recorder, cameras, archive, live events, spool) and exit")
     ap.add_argument("--support-bundle", action="store_true",
                     help="export a non-secret diagnostic support bundle (.zip) and exit")
+    ap.add_argument("--check-update", action="store_true",
+                    help="check the signed release manifest for a newer version (read-only) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1594,6 +1648,9 @@ def main() -> None:
 
     if args.support_bundle:
         raise SystemExit(cmd_support_bundle(cfg))
+
+    if args.check_update:
+        raise SystemExit(cmd_check_update(cfg))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time

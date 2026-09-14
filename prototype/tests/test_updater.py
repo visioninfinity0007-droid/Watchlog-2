@@ -11,15 +11,20 @@ Two layers:
 from __future__ import annotations
 
 import base64
+import io
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))
 
 import updater  # noqa: E402
+import watchlog_agent as wa  # noqa: E402
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -178,6 +183,67 @@ class Ed25519Signature(unittest.TestCase):
         m = base_manifest()
         m["signature"] = self._sign(priv, m)
         self.assertIs(updater.verify_manifest_signature(m, pub2_b64), False)
+
+
+def _update_cfg(**over):
+    cfg = dict(update_url="https://dl.watchlog.app/manifest.json", update_channel="production",
+               update_public_key="", update_require_signature=True)
+    cfg.update(over)
+    return SimpleNamespace(**cfg)
+
+
+def _run_check(cfg, fetch):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = wa.cmd_check_update(cfg, _fetch=fetch)
+    out = buf.getvalue()
+    plan = json.loads(out.split("UPDATE_JSON ", 1)[1].splitlines()[0]) if "UPDATE_JSON " in out else None
+    return code, out, plan
+
+
+class CmdCheckUpdate(unittest.TestCase):
+    def test_not_configured(self):
+        code, out, _ = _run_check(_update_cfg(update_url=""), lambda url: "")
+        self.assertEqual(code, 1)
+        self.assertIn("not configured", out)
+
+    def test_refuses_non_https(self):
+        code, out, _ = _run_check(_update_cfg(update_url="http://dl.watchlog.app/m.json"),
+                                  lambda url: "")
+        self.assertEqual(code, 1)
+        self.assertIn("non-HTTPS", out)
+
+    def test_network_error_is_reported_not_crash(self):
+        def boom(url):
+            raise RuntimeError("dns failure")
+        code, out, _ = _run_check(_update_cfg(), boom)
+        self.assertEqual(code, 1)
+        self.assertIn("could not fetch", out)
+        self.assertNotIn("dns failure", out)   # raw error not echoed
+
+    def test_unsigned_blocked_by_default(self):
+        code, _out, plan = _run_check(_update_cfg(), lambda url: json.dumps(base_manifest(version="0.9.9")))
+        self.assertEqual(code, 2)
+        self.assertEqual(plan["reason"], "manifest_unsigned")
+
+    def test_update_available_when_signature_not_required(self):
+        cfg = _update_cfg(update_require_signature=False)
+        code, out, plan = _run_check(cfg, lambda url: json.dumps(base_manifest(version="99.0.0")))
+        self.assertEqual(code, 0)
+        self.assertEqual(plan["action"], "update")
+        self.assertIn("update available", out)
+
+    @unittest.skipUnless(HAVE_CRYPTO, "cryptography backend not available")
+    def test_signed_manifest_reports_update(self):
+        priv = Ed25519PrivateKey.generate()
+        pub_b64 = base64.b64encode(priv.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+        m = base_manifest(version="99.0.0")
+        m["signature"] = base64.b64encode(priv.sign(updater.canonical_manifest_bytes(m))).decode()
+        code, _out, plan = _run_check(_update_cfg(update_public_key=pub_b64),
+                                      lambda url: json.dumps(m))
+        self.assertEqual(code, 0)
+        self.assertEqual(plan["action"], "update")
 
 
 if __name__ == "__main__":
