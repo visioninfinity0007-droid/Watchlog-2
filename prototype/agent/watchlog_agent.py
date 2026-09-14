@@ -1070,8 +1070,8 @@ def cmd_selftest() -> int:
 
 
 def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
-               _heartbeat=None, _spool_factory=None, _archive=None,
-               live_seconds: int | None = None) -> int:
+               _heartbeat=None, _spool_factory=None, _archive=None, _detector=None,
+               _ini_text=None, live_seconds: int | None = None) -> int:
     """0.4.4 §10 — post-install acceptance self-test.
 
     Exercises the REAL runtime chain on THIS site — configuration, local identity, cloud auth,
@@ -1178,16 +1178,60 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
                 pass
         return "pass", f"local spool healthy ({queued} queued)"
 
+    def _ai():
+        # Same packaged AI as live/recovery: prove the false-alarm filter runs and discards a blank
+        # frame. Fail-open by design, so a missing runtime/model WARNS (not blocks) — but a
+        # production build should pass.
+        det = _detector if _detector is not None else (vision.build(cfg, log=lambda *a: None)
+                                                       if getattr(cfg, "detect", True) else None)
+        if det is None or not getattr(det, "available", True):
+            return "warn", "AI false-alarm filter not packaged (every event will be kept)"
+        try:
+            import io as _io
+            from PIL import Image
+            buf = _io.BytesIO()
+            Image.new("RGB", (320, 240), (120, 120, 120)).save(buf, "JPEG")
+            keep, _dets = det.classify_event(buf.getvalue())
+        except Exception as exc:  # noqa: BLE001
+            return "warn", f"AI self-test could not run ({type(exc).__name__})"
+        return ("pass", "AI packaged; blank frame discarded") if keep is False else \
+               ("warn", "AI loaded but did not discard a blank frame")
+
+    def _runtime():
+        import wl_version
+        meta = wl_version.build_metadata()
+        if not meta.get("build_sha"):
+            return "warn", f"agent {meta.get('version')} (build SHA not stamped — not a release build)"
+        return "pass", f"agent {meta.get('version_string')}"
+
+    def _security():
+        text = _ini_text
+        if text is None:
+            try:
+                p = base_dir() / "watchlog.ini"
+                text = p.read_text(encoding="utf-8-sig", errors="replace") if p.exists() else ""
+            except Exception:  # noqa: BLE001
+                text = ""
+        import re as _re
+        m = _re.search(r"(?im)^\s*nvr_password\s*=\s*(.+?)\s*$", text or "")
+        val = (m.group(1).strip() if m else "")
+        if val and val.upper() != "REPLACE_ME":
+            return "blocked", "a plaintext recorder password is present in watchlog.ini (must live only in the encrypted store)"
+        return "pass", "no plaintext recorder password on disk"
+
     checks = [
         {"key": "config", "label": "Configuration present", "hard": True, "run": _config},
         {"key": "identity", "label": "Site enrolled (local identity)", "hard": True, "run": _identity},
+        {"key": "runtime", "label": "Runtime version + build identity", "hard": False, "run": _runtime},
         {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True, "run": _cloud},
         {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder},
         {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras},
         {"key": "archive", "label": "Recorded footage retrievable (outage recovery)",
          "hard": False, "run": _archive_check},
         {"key": "live", "label": "Live events flowing", "hard": False, "run": _live},
+        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai},
         {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool},
+        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True, "run": _security},
     ]
 
     report = acceptance.run_checks(checks, log=print)

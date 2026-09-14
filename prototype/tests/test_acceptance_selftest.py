@@ -118,6 +118,23 @@ class FakeSpool:
         self.closed = True
 
 
+class AcceptDetector:
+    """A packaged detector that discards a blank frame -> the AI acceptance check passes."""
+    available = True
+    model_name = "accept-yolo"
+
+    def classify_event(self, jpeg):
+        return False, []
+
+
+class UnavailableDetector:
+    available = False
+    model_name = None
+
+    def classify_event(self, jpeg):
+        return True, None
+
+
 def _cfg():
     return SimpleNamespace(
         nvr_url="http://10.0.0.9", supabase_url="https://x.supabase.co",
@@ -135,6 +152,8 @@ def _run_accept(**over):
         _heartbeat=lambda cloud, state, device: None,
         _spool_factory=lambda: FakeSpool(),
         _archive=lambda driver, channel: {"status": "verified", "detail": "2 segment(s) retrievable"},
+        _detector=AcceptDetector(),
+        _ini_text="",                       # no plaintext recorder password on disk
         live_seconds=1,
     )
     kwargs.update(over)
@@ -153,8 +172,21 @@ class CmdAccept(unittest.TestCase):
         self.assertIn("RESULT: ACCEPTED", out)
         self.assertTrue(report["ready"])
         keys = [c["key"] for c in report["checks"]]
-        self.assertEqual(keys, ["config", "identity", "cloud", "recorder",
-                                "cameras", "archive", "live", "spool"])
+        self.assertEqual(keys, ["config", "identity", "runtime", "cloud", "recorder",
+                                "cameras", "archive", "live", "ai", "spool", "security"])
+
+    def test_plaintext_recorder_password_blocks(self):
+        code, out, report = _run_accept(_ini_text="[watchlog]\nnvr_password = Sup3rSecret!\n")
+        self.assertEqual(code, 2)
+        by = {c["key"]: c for c in report["checks"]}
+        self.assertEqual(by["security"]["status"], "blocked")
+        self.assertIn("plaintext recorder password", by["security"]["detail"])
+
+    def test_ai_unavailable_warns_but_accepts(self):
+        code, out, report = _run_accept(_detector=UnavailableDetector())
+        self.assertEqual(code, 0)                       # AI is fail-open: warns, does not block
+        by = {c["key"]: c for c in report["checks"]}
+        self.assertEqual(by["ai"]["status"], "warn")
 
     def test_recorder_down_blocks(self):
         def boom(cfg):
