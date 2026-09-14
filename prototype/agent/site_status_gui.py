@@ -193,9 +193,10 @@ class SiteStatusWindow(QMainWindow):
     def _rich(self, rows):
         parts = []
         for k, v in rows:
-            colour = _COLOR.get(str(v), TEXT)
+            disp = "—" if v is None else str(v)          # never render Python None to the customer
+            colour = _COLOR.get(disp, TEXT)
             parts.append(f"<div style='margin:2px 0'>{k}: <span style='color:{colour}'>"
-                         f"{str(v).replace('_', ' ')}</span></div>")
+                         f"{disp.replace('_', ' ')}</span></div>")
         return "".join(parts)
 
     def _render_cameras(self, cams):
@@ -219,7 +220,9 @@ class SiteStatusWindow(QMainWindow):
         self._run(self.controller.recheck_recording, lambda r: self.refresh(), "Rechecking recording…")
 
     def act_recheck_archive(self):
-        self._run(self.controller.recheck_archive, lambda r: self.refresh(), "Rechecking archive…")
+        self._run(self.controller.recheck_archive,
+                  lambda r: (self._notify("Archive", r.get("state") or "Archive could not be checked."),
+                             self.refresh()), "Rechecking archive…")
 
     def act_acceptance(self):
         self._run(self.controller.run_acceptance,

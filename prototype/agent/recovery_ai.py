@@ -137,6 +137,69 @@ def recovered_frame(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_F
     return decode_jpeg_frame(clip, decoder=decoder) if clip else None
 
 
+def media_kind(head: bytes) -> str:
+    """Classify recorder media by magic bytes only (never inspects/logs content). Dahua archive is
+    DHAV/DAV; some units serve MP4 or JPEG stills."""
+    if not head:
+        return "empty"
+    if head[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if len(head) >= 8 and head[4:8] == b"ftyp":
+        return "mp4"
+    if head[:4] == b"DHAV" or b"DHAV" in head[:16]:
+        return "dav"
+    return "unknown"
+
+
+def inspect_and_decode(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_FRAME_CLIP_SECONDS):
+    """P2 media path: fetch a bounded historical clip (or a recorder-native frame), record safe
+    DIAGNOSTICS (media size + magic + selected decoder + result — never image contents or secrets),
+    and try to decode one representative JPEG frame. Returns (frame_jpeg | None, diagnostics).
+    Never raises; a missing frame source or codec is an honest 'not decoded'.
+    """
+    diag = {"media_size": 0, "kind": "none", "magic_hex": "", "decoder": "none", "decoded": False}
+    start = _as_dt(ts)
+    end = start + timedelta(seconds=max(1, int(clip_seconds)))
+
+    getter = getattr(driver, "get_recorded_frame", None)
+    if callable(getter):
+        try:
+            frame = getter(channel, start)
+            if frame:
+                diag.update(media_size=len(frame), kind=media_kind(frame[:16]),
+                            magic_hex=frame[:8].hex(), decoder="recorder_frame", decoded=True)
+                return frame, diag
+        except Exception:  # noqa: BLE001
+            pass
+
+    clip = None
+    seg = getattr(driver, "get_recorded_segment", None)
+    if callable(seg):
+        try:
+            res = seg(channel, start, end) or {}
+            if isinstance(res, dict):
+                clip = res.get("bytes") if res.get("status") == SUPPORTED else None
+            else:
+                clip = res
+        except Exception:  # noqa: BLE001
+            clip = None
+    if not clip:
+        cg = getattr(driver, "get_clip", None)
+        if callable(cg):
+            try:
+                clip = cg(channel, start, end)
+            except Exception:  # noqa: BLE001
+                clip = None
+    if not clip:
+        return None, diag
+
+    diag.update(media_size=len(clip), magic_hex=clip[:8].hex(), kind=media_kind(clip[:16]))
+    frame = decode_jpeg_frame(clip, decoder=decoder)
+    diag["decoder"] = "injected" if decoder else "opencv"
+    diag["decoded"] = bool(frame)
+    return frame, diag
+
+
 def analyze_segment(detector, frame_jpeg, *, channel, ts, device_event_id=None, segment=None,
                     now=None):
     """Run the detector over one historical frame and build a RECOVERED intelligence event.
@@ -244,5 +307,6 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
             "quiet": quiet, "duplicates": duplicates, "provenance": RECOVERED_SOURCE}
 
 
-__all__ = ["decode_jpeg_frame", "recovered_frame", "analyze_segment", "backfill_intelligence",
-           "RECOVERED_SOURCE", "PROVENANCE_LINE", "DEFAULT_FRAME_CLIP_SECONDS"]
+__all__ = ["decode_jpeg_frame", "recovered_frame", "media_kind", "inspect_and_decode",
+           "analyze_segment", "backfill_intelligence", "RECOVERED_SOURCE", "PROVENANCE_LINE",
+           "DEFAULT_FRAME_CLIP_SECONDS"]

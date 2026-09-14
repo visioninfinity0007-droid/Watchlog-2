@@ -78,22 +78,40 @@ class StatusController:
         return {"ok": True, "recording": snap.get("recording")}
 
     def recheck_archive(self) -> dict:
-        snap = self.snapshot().get("status") or {}
-        return {"ok": True, "archive": snap.get("archive")}
+        """Run a FRESH archive proof now (dedicated command), not a cached snapshot read (P1.5)."""
+        rc, out = self._run(["--recheck-archive-json"])
+        report = self._tagged(out, "ARCHIVE_JSON") or {}
+        return {"ok": rc == 0 and bool(report), "state": report.get("state"),
+                "frame_decoded": report.get("frame_decoded"), "diagnostics": report.get("diagnostics"),
+                "report": report}
 
     # --- actions ------------------------------------------------------------
+    CANNOT_VERIFY = "SETUP INCOMPLETE — WATCHLOG COULD NOT VERIFY THIS INSTALLATION"
+
     def run_acceptance(self) -> dict:
-        rc, out = self._run(["--accept"])
+        """FAIL CLOSED (P1.1): only a REAL, valid acceptance report may produce a Ready verdict.
+        A command that could not launch, timed out, returned no report, returned a malformed
+        report, or raised is treated as 'could not verify' and BLOCKS Ready — never a green pass.
+        """
+        try:
+            rc, out = self._run(["--accept"])
+        except Exception:  # noqa: BLE001 — launch failure / timeout / any exception -> cannot verify
+            return {"exit": -1, "ready": False, "verified": False, "verdict": self.CANNOT_VERIFY,
+                    "failed": [], "warnings": [], "report": None}
         report = self._tagged(out, "ACCEPTANCE_JSON")
+        verified = isinstance(report, dict) and "ready" in report      # a real, parseable report
         checks = (report or {}).get("checks", []) or []
         failed = [c.get("label") or c.get("key") for c in checks
                   if c.get("hard") and c.get("status") != "pass"]
         warnings = [c.get("label") or c.get("key") for c in checks if c.get("status") == "warn"]
-        if rc == 0:
+        if not verified:
+            ready, verdict = False, self.CANNOT_VERIFY
+        elif rc == 0 and report.get("ready") is True:
+            ready = True
             verdict = "WATCHLOG READY WITH WARNINGS" if warnings else "WATCHLOG READY"
         else:
-            verdict = "SETUP INCOMPLETE — ACTION REQUIRED"
-        return {"exit": rc, "ready": rc == 0, "verdict": verdict,
+            ready, verdict = False, "SETUP INCOMPLETE — ACTION REQUIRED"
+        return {"exit": rc, "ready": ready, "verified": verified, "verdict": verdict,
                 "failed": failed, "warnings": warnings, "report": report}
 
     def check_update(self) -> dict:

@@ -192,5 +192,38 @@ class BackfillIntelligence(unittest.TestCase):
         self.assertTrue(summary.get("stopped_at_limit"))
 
 
+class MediaInspect(unittest.TestCase):
+    def test_media_kind_by_magic(self):
+        self.assertEqual(recovery_ai.media_kind(b"\xff\xd8\xff\xe0blah"), "jpeg")
+        self.assertEqual(recovery_ai.media_kind(b"\x00\x00\x00\x18ftypmp42"), "mp4")
+        self.assertEqual(recovery_ai.media_kind(b"DHAV....."), "dav")
+        self.assertEqual(recovery_ai.media_kind(b"random-bytes-here"), "unknown")
+        self.assertEqual(recovery_ai.media_kind(b""), "empty")
+
+    def test_inspect_prefers_recorded_frame(self):
+        drv = SegDriver(SEGS, frame=b"\xff\xd8\xffJPEGFRAME")
+        frame, diag = recovery_ai.inspect_and_decode(drv, "1", SEGS[0]["start"])
+        self.assertEqual(frame, b"\xff\xd8\xffJPEGFRAME")
+        self.assertEqual(diag["decoder"], "recorder_frame")
+        self.assertTrue(diag["decoded"])
+        self.assertEqual(diag["kind"], "jpeg")
+
+    def test_inspect_decodes_clip_with_diagnostics(self):
+        drv = SegDriver(SEGS, frame=None, clip=b"DHAV" + b"\x00" * 40)
+        frame, diag = recovery_ai.inspect_and_decode(drv, "1", SEGS[0]["start"],
+                                                     decoder=lambda b: b"DECODED")
+        self.assertEqual(frame, b"DECODED")
+        self.assertEqual(diag["kind"], "dav")
+        self.assertEqual(diag["media_size"], 44)
+        self.assertTrue(diag["decoded"])
+        self.assertEqual(diag["decoder"], "injected")
+
+    def test_inspect_no_source_is_not_decoded(self):
+        drv = SegDriver(SEGS, frame=None, clip=None)
+        frame, diag = recovery_ai.inspect_and_decode(drv, "1", SEGS[0]["start"])
+        self.assertIsNone(frame)
+        self.assertFalse(diag["decoded"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1595,6 +1595,72 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     return 0
 
 
+def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _inspect=None,
+                             _now=None) -> int:
+    """0.4.4 P1.5 — run a FRESH archive proof NOW (never cached) and classify honestly:
+    ARCHIVE VERIFIED / ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED / ARCHIVE EMPTY /
+    ARCHIVE UNSUPPORTED / ARCHIVE FAILED. Emits ARCHIVE_JSON with safe media diagnostics
+    (size + magic + decoder + result — never image contents or secrets). Exit 0 always.
+    """
+    import json as _json
+    import dahua_archive
+    import recovery_ai
+
+    now = _now or now_utc()
+    out = {"schema": "watchlog.archive_recheck.v1", "state": "ARCHIVE FAILED",
+           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": ""}
+    driver = None
+    try:
+        driver, _info = (_open_driver or open_driver)(cfg)
+    except Exception:  # noqa: BLE001
+        driver = None
+    if driver is None:
+        out["detail"] = "recorder not reachable"
+        print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
+        return 0
+    try:
+        dahua_archive.install()
+    except Exception:  # noqa: BLE001
+        pass
+
+    channel = "1"
+    for prof in (getattr(cfg, "camera_profiles", None) or []):
+        if prof.get("monitored", True) and prof.get("channel"):
+            channel = str(prof["channel"])
+            break
+    out["channel"] = channel
+
+    try:
+        proof = (_archive or dahua_archive.prove_recorder_archive)(driver, channel) or {}
+        status = proof.get("status")
+    except Exception:  # noqa: BLE001
+        proof, status = {}, "error"
+
+    if status == "verified":
+        sample = proof.get("sample") or []
+        ts = (sample[0].get("start") if sample and isinstance(sample[0], dict) else None) or iso(now)
+        try:
+            frame, diag = (_inspect or recovery_ai.inspect_and_decode)(driver, channel, ts)
+        except Exception:  # noqa: BLE001
+            frame, diag = None, {}
+        out["diagnostics"] = diag or {}
+        out["frame_decoded"] = bool(frame)
+        out["state"] = "ARCHIVE VERIFIED" if frame else "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED"
+    elif status == "empty":
+        out["state"] = "ARCHIVE EMPTY"
+    elif status == "unsupported":
+        out["state"] = "ARCHIVE UNSUPPORTED"
+    else:
+        out["state"] = "ARCHIVE FAILED"
+
+    try:
+        driver.close()
+    except Exception:  # noqa: BLE001
+        pass
+    print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
+    return 0
+
+
 def cmd_probe(cfg: Config) -> None:
     """Identify the recorder. Touches no cloud service — pure diagnosis."""
     log(f"probing {cfg.nvr_url}")
@@ -1893,6 +1959,8 @@ def main() -> None:
                     help="apply an available signed update transactionally (auto-rollback) and exit")
     ap.add_argument("--status-json", action="store_true",
                     help="print the machine-readable Site Status document (for the status panel) and exit")
+    ap.add_argument("--recheck-archive-json", action="store_true",
+                    help="run a fresh archive proof now (with media-decode diagnostics) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1950,6 +2018,9 @@ def main() -> None:
 
     if args.status_json:
         raise SystemExit(cmd_status_json(cfg))
+
+    if args.recheck_archive_json:
+        raise SystemExit(cmd_recheck_archive_json(cfg))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time

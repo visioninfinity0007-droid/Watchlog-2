@@ -225,5 +225,42 @@ class CmdStatusJson(unittest.TestCase):
         self.assertEqual(snap["storage"]["oldest_recording"], "2026-09-04T11:12:00+00:00")
 
 
+class CmdRecheckArchive(unittest.TestCase):
+    def _run(self, **over):
+        kwargs = dict(
+            _open_driver=lambda c: (_FakeDriver(), SimpleNamespace(vendor="Dahua", model="XVR")),
+            _archive=lambda driver, ch: {"status": "verified",
+                                         "sample": [{"start": "2026-09-14T22:00:00+00:00"}]},
+            _inspect=lambda driver, ch, ts: (b"JPEG", {"kind": "dav", "media_size": 44, "decoded": True}),
+        )
+        kwargs.update(over)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = wa.cmd_recheck_archive_json(_status_cfg(), **kwargs)
+        rep = json.loads(buf.getvalue().split("ARCHIVE_JSON ", 1)[1].splitlines()[0])
+        return code, rep
+
+    def test_verified_with_decoded_frame(self):
+        _c, rep = self._run()
+        self.assertEqual(rep["state"], "ARCHIVE VERIFIED")
+        self.assertTrue(rep["frame_decoded"])
+        self.assertEqual(rep["diagnostics"]["kind"], "dav")
+
+    def test_available_frame_unverified(self):
+        _c, rep = self._run(_inspect=lambda d, c, t: (None, {"kind": "dav", "decoded": False}))
+        self.assertEqual(rep["state"], "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED")
+        self.assertFalse(rep["frame_decoded"])
+
+    def test_empty_and_unsupported(self):
+        self.assertEqual(self._run(_archive=lambda d, c: {"status": "empty"})[1]["state"], "ARCHIVE EMPTY")
+        self.assertEqual(self._run(_archive=lambda d, c: {"status": "unsupported"})[1]["state"],
+                         "ARCHIVE UNSUPPORTED")
+
+    def test_recorder_down_is_failed(self):
+        def boom(c):
+            raise RuntimeError("refused")
+        self.assertEqual(self._run(_open_driver=boom)[1]["state"], "ARCHIVE FAILED")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

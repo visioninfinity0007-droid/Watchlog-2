@@ -44,8 +44,17 @@ class Snapshot(unittest.TestCase):
                 "recording": {"y": 1}, "archive": {"archive_access": "empty"}}
         c = controller({"--status-json": (0, tag("STATUS_JSON", snap))})
         self.assertTrue(c.test_recorder()["ok"])
-        self.assertEqual(c.recheck_archive()["archive"]["archive_access"], "empty")
         self.assertEqual(c.rediscover_cameras()["cameras"], {"x": 1})
+
+    def test_recheck_archive_drives_dedicated_fresh_proof(self):
+        rep = {"state": "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED", "frame_decoded": False,
+               "diagnostics": {"kind": "dav", "media_size": 44, "decoded": False}}
+        c = controller({"--recheck-archive-json": (0, tag("ARCHIVE_JSON", rep))})
+        r = c.recheck_archive()
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["state"], "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED")
+        self.assertFalse(r["frame_decoded"])
+        self.assertEqual(r["diagnostics"]["kind"], "dav")
 
 
 class Acceptance(unittest.TestCase):
@@ -75,6 +84,29 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(r["verdict"], "SETUP INCOMPLETE — ACTION REQUIRED")
         self.assertFalse(r["ready"])
         self.assertEqual(r["failed"], ["No plaintext password"])
+
+    # --- fail-closed (P1.1): could-not-verify must NEVER be Ready ---
+    def test_no_report_fails_closed_even_if_exit_zero(self):
+        c = controller({"--accept": (0, "some noise but no ACCEPTANCE_JSON line")})
+        r = c.run_acceptance()
+        self.assertFalse(r["ready"])
+        self.assertFalse(r["verified"])
+        self.assertEqual(r["verdict"], "SETUP INCOMPLETE — WATCHLOG COULD NOT VERIFY THIS INSTALLATION")
+
+    def test_malformed_report_fails_closed(self):
+        c = controller({"--accept": (0, "ACCEPTANCE_JSON {not valid json")})
+        r = c.run_acceptance()
+        self.assertFalse(r["ready"])
+        self.assertFalse(r["verified"])
+
+    def test_launch_exception_fails_closed(self):
+        def boom(args, timeout=None):
+            raise RuntimeError("agent binary not found")
+        c = StatusController(run_agent=boom)
+        r = c.run_acceptance()
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["exit"], -1)
+        self.assertIn("COULD NOT VERIFY", r["verdict"])
 
 
 class Updates(unittest.TestCase):

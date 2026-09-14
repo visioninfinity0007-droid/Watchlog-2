@@ -28,13 +28,14 @@ if os.name == "nt":
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget, QHeaderView,
 )
 
 import setup_backend as backend
+from status_controller import StatusController
 
 ICE = "#72D4FF"
 BLUE = "#1748D3"
@@ -317,11 +318,30 @@ class SetupWindow(QMainWindow):
         cl.addWidget(self.progress_label)
         self.connect_error = label("", "muted")
         cl.addWidget(self.connect_error)
+        actions = QHBoxLayout()
         self.retry_btn = QPushButton("Retry")
         self.retry_btn.setObjectName("secondary")
         self.retry_btn.clicked.connect(self.begin_finalize)
         self.retry_btn.hide()
-        cl.addWidget(self.retry_btn)
+        actions.addWidget(self.retry_btn)
+        # Actions available when WatchLog could NOT verify the installation (fail-closed, P1.1).
+        self.incomplete_status_btn = QPushButton("Open Site Status")
+        self.incomplete_status_btn.setObjectName("secondary")
+        self.incomplete_status_btn.clicked.connect(self.open_site_status)
+        self.incomplete_status_btn.hide()
+        actions.addWidget(self.incomplete_status_btn)
+        self.incomplete_bundle_btn = QPushButton("Export Support Bundle")
+        self.incomplete_bundle_btn.setObjectName("secondary")
+        self.incomplete_bundle_btn.clicked.connect(self.export_support_bundle_action)
+        self.incomplete_bundle_btn.hide()
+        actions.addWidget(self.incomplete_bundle_btn)
+        self.incomplete_exit_btn = QPushButton("Exit")
+        self.incomplete_exit_btn.setObjectName("ghost")
+        self.incomplete_exit_btn.clicked.connect(self.cancel)
+        self.incomplete_exit_btn.hide()
+        actions.addWidget(self.incomplete_exit_btn)
+        actions.addStretch(1)
+        cl.addLayout(actions)
         l.addWidget(c)
         l.addStretch(1)
         self.stack.addWidget(page)
@@ -500,6 +520,9 @@ class SetupWindow(QMainWindow):
             return
         self.go(5)
         self.retry_btn.hide()
+        self.incomplete_status_btn.hide()
+        self.incomplete_bundle_btn.hide()
+        self.incomplete_exit_btn.hide()
         self.connect_error.setText("")
         self.progress_bar.setRange(0, 0)
         public = dict(self.public)
@@ -526,32 +549,47 @@ class SetupWindow(QMainWindow):
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
         acc = acc or {}
-        verdict = acc.get("verdict", "WATCHLOG READY WITH WARNINGS")
-        base = (f"✓ Recorder verified\n✓ WatchLog site linked\n"
-                f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
-                f"✓ Recorder credential encrypted on this PC\n\n"
-                f"{result.get('vendor', '')} {result.get('model', '')}")
-        # A report that could not be produced (e.g. agent binary absent in a dev run) is a
-        # "could not verify" WARNING, not a hard failure — but a real hard failure blocks Ready.
-        if acc.get("ready", False) or acc.get("report") is None:
+        verdict = acc.get("verdict", StatusController.CANNOT_VERIFY)
+        # FAIL CLOSED (P1.1): advance to the green Ready page ONLY when acceptance really passed.
+        # A missing / unparseable / could-not-run report BLOCKS Ready — it never reaches READY.
+        if acc.get("ready", False):
+            base = (f"✓ Recorder verified\n✓ WatchLog site linked\n"
+                    f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
+                    f"✓ Recorder credential encrypted on this PC\n\n"
+                    f"{result.get('vendor', '')} {result.get('model', '')}")
             if acc.get("warnings"):
                 base += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in acc["warnings"])
             self.success_summary.setText(f"{verdict}\n\n{base}")
             self.go(6)
         else:
-            # Do NOT advance to the green Ready page. Show the failing required checks and let the
-            # operator fix and retry (the existing Retry re-runs install + acceptance).
-            self.connect_error.setText(
-                f"{verdict}\n\nThese required checks need attention before WatchLog is ready:\n" +
-                "\n".join(f"• {f}" for f in acc.get("failed", []) or ["a required check failed"]))
+            detail = (acc.get("failed") or [])
+            reason = ("\n\nThese required checks need attention before WatchLog is ready:\n" +
+                      "\n".join(f"• {f}" for f in detail)) if detail else \
+                     "\n\nWatchLog could not verify this installation. Fix the issue and retry, or "\
+                     "export a support bundle for help."
+            self.connect_error.setText(verdict + reason)
             self.retry_btn.setText("Retry")
             self.retry_btn.show()
+            self.incomplete_status_btn.show()
+            self.incomplete_bundle_btn.show()
+            self.incomplete_exit_btn.show()
 
     def open_site_status(self):
         # Post-install, the same WatchLog app opens the Site Status / control panel.
         import site_status_gui
         self._status_win = site_status_gui.SiteStatusWindow(self.config_path)
         self._status_win.show()
+
+    def export_support_bundle_action(self):
+        dest, _ = QFileDialog.getSaveFileName(self, "Save Support Bundle", "watchlog-support.zip",
+                                              "Zip Archive (*.zip)")
+        if not dest:
+            return
+        ctrl = StatusController()
+        self.run_worker(lambda progress=None: ctrl.export_support_bundle(dest_path=dest), (),
+                        lambda r: QMessageBox.information(self, "Support Bundle",
+                            f"Saved to:\n{r['path']}" if r.get("ok") else "Support bundle could not be created."),
+                        "Creating support bundle…")
 
     def finish(self):
         self.exit_code = 0
