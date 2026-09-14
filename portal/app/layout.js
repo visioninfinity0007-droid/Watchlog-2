@@ -1,6 +1,7 @@
 import "./globals.css";
 import "./visual-target.css";
 import "./module-target.css";
+import "./ai-first-shell.css";
 
 export const metadata = {
   title: "WatchLog",
@@ -20,17 +21,14 @@ export const metadata = {
 };
 
 export const viewport = {
-  // Matches the dark product canvas, so the mobile browser chrome does not
-  // flash white against it on load.
-  themeColor: "#0B1220",
+  // The customer product is now AI-first and light by default.
+  themeColor: "#FFFFFF",
 };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <head>
-        {/* Geist is the geometric grotesque the chosen direction calls
-            for; Inter is the fallback already present everywhere. */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
