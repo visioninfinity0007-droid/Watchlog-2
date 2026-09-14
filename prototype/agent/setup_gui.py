@@ -335,6 +335,10 @@ class SetupWindow(QMainWindow):
         l.addWidget(c)
         row = QHBoxLayout()
         row.addStretch(1)
+        open_status = QPushButton("Open Site Status")
+        open_status.setObjectName("secondary")
+        open_status.clicked.connect(self.open_site_status)
+        row.addWidget(open_status)
         finish = QPushButton("Finish")
         finish.clicked.connect(self.finish)
         row.addWidget(finish)
@@ -499,13 +503,46 @@ class SetupWindow(QMainWindow):
         self.status.setText("")
 
     def finalize_ok(self, result):
+        # Install is proven; now run the FULL acceptance suite before declaring Ready. The setup
+        # never shows a green Ready state after a hard acceptance failure (0.4.4 P8).
         self.final_result = result
+        self.progress_label.setText("Running final acceptance checks…")
+        from status_controller import StatusController
+        ctrl = StatusController()
+        self.run_worker(lambda progress=None: ctrl.run_acceptance(), (), self.acceptance_done,
+                        "Running final acceptance checks…")
+
+    def acceptance_done(self, acc):
+        result = self.final_result or {}
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
-        self.success_summary.setText(
-            f"✓ Recorder verified\n✓ WatchLog site linked\n✓ {result['camera_count']} camera(s) connected\n"
-            f"✓ Recorder credential encrypted on this PC\n\n{result['vendor']} {result['model']}")
-        self.go(6)
+        acc = acc or {}
+        verdict = acc.get("verdict", "WATCHLOG READY WITH WARNINGS")
+        base = (f"✓ Recorder verified\n✓ WatchLog site linked\n"
+                f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
+                f"✓ Recorder credential encrypted on this PC\n\n"
+                f"{result.get('vendor', '')} {result.get('model', '')}")
+        # A report that could not be produced (e.g. agent binary absent in a dev run) is a
+        # "could not verify" WARNING, not a hard failure — but a real hard failure blocks Ready.
+        if acc.get("ready", False) or acc.get("report") is None:
+            if acc.get("warnings"):
+                base += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in acc["warnings"])
+            self.success_summary.setText(f"{verdict}\n\n{base}")
+            self.go(6)
+        else:
+            # Do NOT advance to the green Ready page. Show the failing required checks and let the
+            # operator fix and retry (the existing Retry re-runs install + acceptance).
+            self.connect_error.setText(
+                f"{verdict}\n\nThese required checks need attention before WatchLog is ready:\n" +
+                "\n".join(f"• {f}" for f in acc.get("failed", []) or ["a required check failed"]))
+            self.retry_btn.setText("Retry")
+            self.retry_btn.show()
+
+    def open_site_status(self):
+        # Post-install, the same WatchLog app opens the Site Status / control panel.
+        import site_status_gui
+        self._status_win = site_status_gui.SiteStatusWindow(self.config_path)
+        self._status_win.show()
 
     def finish(self):
         self.exit_code = 0

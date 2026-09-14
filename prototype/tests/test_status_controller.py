@@ -50,23 +50,31 @@ class Snapshot(unittest.TestCase):
 
 class Acceptance(unittest.TestCase):
     def test_ready(self):
-        rep = {"ready": True, "summary": {"warned": 0}}
+        rep = {"ready": True, "checks": [{"key": "recorder", "label": "Recorder reachable",
+                                          "hard": True, "status": "pass"}]}
         c = controller({"--accept": (0, tag("ACCEPTANCE_JSON", rep))})
         r = c.run_acceptance()
         self.assertEqual(r["verdict"], "WATCHLOG READY")
         self.assertTrue(r["ready"])
+        self.assertEqual(r["failed"], [])
+        self.assertEqual(r["warnings"], [])
 
     def test_ready_with_warnings(self):
-        rep = {"ready": True, "summary": {"warned": 2}}
+        rep = {"ready": True, "checks": [{"key": "ai", "label": "On-site AI filter", "hard": False,
+                                          "status": "warn"}]}
         c = controller({"--accept": (0, tag("ACCEPTANCE_JSON", rep))})
-        self.assertEqual(c.run_acceptance()["verdict"], "WATCHLOG READY WITH WARNINGS")
+        r = c.run_acceptance()
+        self.assertEqual(r["verdict"], "WATCHLOG READY WITH WARNINGS")
+        self.assertEqual(r["warnings"], ["On-site AI filter"])
 
-    def test_blocked(self):
-        rep = {"ready": False, "summary": {"warned": 0, "hard_failures": 1}}
+    def test_blocked_lists_failed_checks(self):
+        rep = {"ready": False, "checks": [{"key": "security", "label": "No plaintext password",
+                                           "hard": True, "status": "blocked"}]}
         c = controller({"--accept": (2, tag("ACCEPTANCE_JSON", rep))})
         r = c.run_acceptance()
         self.assertEqual(r["verdict"], "SETUP INCOMPLETE — ACTION REQUIRED")
         self.assertFalse(r["ready"])
+        self.assertEqual(r["failed"], ["No plaintext password"])
 
 
 class Updates(unittest.TestCase):

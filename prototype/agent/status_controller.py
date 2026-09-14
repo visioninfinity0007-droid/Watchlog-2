@@ -85,12 +85,16 @@ class StatusController:
     def run_acceptance(self) -> dict:
         rc, out = self._run(["--accept"])
         report = self._tagged(out, "ACCEPTANCE_JSON")
-        warned = (report or {}).get("summary", {}).get("warned", 0)
+        checks = (report or {}).get("checks", []) or []
+        failed = [c.get("label") or c.get("key") for c in checks
+                  if c.get("hard") and c.get("status") != "pass"]
+        warnings = [c.get("label") or c.get("key") for c in checks if c.get("status") == "warn"]
         if rc == 0:
-            verdict = "WATCHLOG READY WITH WARNINGS" if warned else "WATCHLOG READY"
+            verdict = "WATCHLOG READY WITH WARNINGS" if warnings else "WATCHLOG READY"
         else:
             verdict = "SETUP INCOMPLETE — ACTION REQUIRED"
-        return {"exit": rc, "ready": rc == 0, "verdict": verdict, "report": report}
+        return {"exit": rc, "ready": rc == 0, "verdict": verdict,
+                "failed": failed, "warnings": warnings, "report": report}
 
     def check_update(self) -> dict:
         rc, out = self._run(["--check-update"])
