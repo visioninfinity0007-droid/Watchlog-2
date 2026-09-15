@@ -4,10 +4,11 @@ import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {selectedSiteId} from "../site-context";
 
+const REPORT_STYLE="Write this as a finished customer-facing management brief in plain, natural business language. Lead with what management needs to know and what needs action. Do not describe WatchLog's internal process or implementation. Do not use internal terms such as canonical dataset, frozen report, snapshot, frame, detector event, pixel verification, evidence class, RPC, provenance, pipeline, or tool result. Routine movement is not an incident.";
 const PROMPTS={
-  daily:"Give me today's management report. Cover monitoring reliability, important activity, security attention and the priority action.",
-  monthly:"Summarize the last 30 days for management: monitoring reliability, important patterns, incidents and the most important change.",
-  executive:"Give me a concise executive summary: monitoring reliability, security attention, meaningful patterns and the highest-priority action."
+  daily:`Give me today's management report. Cover serious security attention, office activity, important site observations, monitoring confidence and the priority action. ${REPORT_STYLE}`,
+  monthly:`Summarize the last 30 days for management. Cover meaningful security patterns, recurring operational observations, restricted-area concerns, coverage confidence and the most important management actions. ${REPORT_STYLE}`,
+  executive:`Give me a concise executive summary for leadership. State the security position, important operational patterns, anything requiring attention and the highest-priority action. ${REPORT_STYLE}`
 };
 const VALID_VIEWS=new Set(["daily","yesterday","monthly","executive"]);
 
@@ -45,7 +46,7 @@ export default function useReport(){
         if(!live)return;
         setBusy(false);
         if(r.error){setError(say(r.error));return}
-        if(!r.data){setError("No saved report is available for yesterday yet.");return}
+        if(!r.data){setError("Yesterday's report is not available yet.");return}
         setSnapshot(r.data);
         return;
       }
