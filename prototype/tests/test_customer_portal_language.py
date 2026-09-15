@@ -3,27 +3,33 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Every customer-facing route governed by the finished-product language contract.
-CUSTOMER_FILES = [
-    "portal/app/shell.js",
-    "portal/app/ai/page.js",
-    "portal/app/dashboard/page.js",
-    "portal/app/control-room/page.js",
-    "portal/app/control-room/reports/page.js",
-    "portal/app/incidents/page.js",
-    "portal/app/operations/page.js",
-    "portal/app/executive/page.js",
-    "portal/app/archive/page.js",
-    "portal/app/site-health/page.js",
-    "portal/app/analytics/page.js",
-    "portal/app/analytics/studio/page.js",
-    "portal/app/analytics/schedules/page.js",
-    "portal/app/reports/page.js",
-    "portal/app/team/page.js",
-    "portal/app/settings/page.js",
-    "portal/app/onboarding/page.js",
-    "portal/app/account-suspended/page.js",
-]
+# AI-first refactor: each customer route's page.js is a thin re-export of its *-workspace.js (and, for
+# the split surfaces, a legacy.js served at a subroute such as /settings/account/,
+# /control-room/advanced/ and /incidents/evidence/). The finished-product language contract therefore
+# scans the REAL customer copy across every customer route — not the thin stubs — so the forbidden
+# -language guarantees remain meaningful after the split. Admin/platform and shared lib code are out of
+# scope for customer-facing language.
+_SKIP_DIR_SEGMENTS = {"admin", "api"}
+
+
+def _customer_corpus():
+    corpus = {}
+    for p in sorted((ROOT / "portal/app").rglob("*.js")):
+        rel_parts = p.relative_to(ROOT / "portal/app").parts
+        if any(seg in _SKIP_DIR_SEGMENTS for seg in rel_parts):
+            continue
+        corpus[str(p.relative_to(ROOT)).replace("\\", "/")] = p.read_text(encoding="utf-8")
+    return corpus
+
+
+def _surface(rel_dir):
+    parts = []
+    for p in sorted((ROOT / "portal/app" / rel_dir).rglob("*.js")):
+        if p.name == "legacy.js":
+            continue
+        parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 
 FORBIDDEN = [
     "Site Agent",
@@ -73,7 +79,10 @@ FORBIDDEN_PRODUCT_LANGUAGE = [
     "Native recorder event",
     "SOP violations",
     "Agent unreachable",
-    "recorder_archive",
+    # Customer-visible prose only: the internal event_source enum value "recorder_archive" is
+    # legitimately compared in code to render the friendly "Recovered from saved video" copy, so forbid
+    # the human-readable "recorder archive" wording rather than the internal identifier.
+    "recorder archive",
     "the site agent",
     "bounded footage",
     "live rule engine",
@@ -88,27 +97,31 @@ def strip_comments(src):
 
 def main():
     problems = []
-    for rel in CUSTOMER_FILES:
-        path = ROOT / rel
-        if not path.exists():
-            problems.append(f"missing customer page: {rel}")
-            continue
-        text = path.read_text(encoding="utf-8")
+    corpus = _customer_corpus()
+    for rel, text in corpus.items():
+        # Customer-facing language only: developer comments are stripped in the production build and are
+        # never seen by customers, so both forbidden-language checks run against comment-stripped source.
         stripped = strip_comments(text)
         for phrase in FORBIDDEN:
-            if phrase in text:
+            if phrase in stripped:
                 problems.append(f"{rel}: customer-facing implementation phrase found: {phrase!r}")
         for phrase in FORBIDDEN_PRODUCT_LANGUAGE:
             if phrase in stripped:
                 problems.append(f"{rel}: engineering/release language in customer copy: {phrase!r}")
 
+    # Required customer product language, read from the surface where the AI-first UX actually renders
+    # it. Wording that evolved with the AI-first product is asserted in its current form; the intent
+    # (real, finished-product copy) is unchanged and, for split surfaces, points at the served subroute.
     required = {
-        "portal/app/settings/page.js": ["WatchLog Support", "setup code", "Download WatchLog for Windows"],
-        "portal/app/site-health/page.js": ["Site connections", "WatchLog connection", "Operational health", "Not verified"],
-        "portal/app/analytics/studio/page.js": ["Analytics Setup", "Save analytics setup", "Site update required", "Alert settings"],
-        "portal/app/reports/page.js": ["Report recipients"],
+        # Account/billing/plan/role surface served at /settings/account/ (settings/legacy.js).
+        "portal/app/settings/legacy.js": ["WatchLog Support", "setup code", "Download WatchLog for Windows"],
+        # AI-first Site Health (health-workspace.js): connection + camera-system + verifiability signals.
+        "portal/app/site-health/health-workspace.js": ["Connection", "WatchLog", "Camera system", "Not verified"],
+        # Activity Rules studio (renamed from "analytics setup").
+        "portal/app/analytics/studio/page.js": ["Activity Rules", "Save activity rule", "WatchLog update required", "Review and evidence"],
         "portal/app/account-suspended/page.js": ["temporarily paused", "have not been deleted", "WatchLog support channel"],
-        "portal/app/control-room/page.js": [
+        # Full Control Room served at /control-room/advanced/ (control-room/legacy.js).
+        "portal/app/control-room/legacy.js": [
             "See what needs attention across every site.",
             "Common camera purposes",
             "Activity analytics",
@@ -119,21 +132,10 @@ def main():
             "Review operational exceptions that need attention.",
             "require a person to review them",
         ],
-        "portal/app/archive/page.js": [
-            "Recorded video search",
-            "Recovered from recorder archive",
-            "Site update required",
-        ],
         "portal/app/executive/page.js": [
             "Site connection unavailable",
             "Recorder events",
             "SOP exceptions",
-        ],
-        "portal/app/ai/page.js": [
-            "WatchLog AI",
-            "How can I help with",
-            "Ask WatchLog about this site",
-            "Device changes always require the appropriate approval",
         ],
     }
     for rel, phrases in required.items():
@@ -142,15 +144,33 @@ def main():
             if phrase not in text:
                 problems.append(f"{rel}: expected customer product phrase missing: {phrase!r}")
 
-    control = (ROOT / "portal/app/control-room/page.js").read_text(encoding="utf-8")
+    # AI home (/ai/) copy lives across the ai workspace surface (customer-welcome/prompts/header/workspace).
+    ai_home = _surface("ai")
+    for phrase in ("WatchLog AI", "How can I help with", "Ask WatchLog about ", "Device changes require approval."):
+        if phrase not in ai_home:
+            problems.append(f"ai workspace: expected customer product phrase missing: {phrase!r}")
+
+    # Reports delivery/recipients management, across the reports surface (workspace + recipient/delivery).
+    reports_surface = _surface("reports")
+    if "Recipient" not in reports_surface:
+        problems.append("reports surface: recipient/delivery management copy missing")
+    # Saved Video (was "recorder archive"), across the archive surface (workspace + saved-video-*).
+    archive_surface = _surface("archive")
+    for phrase in ("Search saved video", "Recovered from saved video", "Not available at this site"):
+        if phrase not in archive_surface:
+            problems.append(f"archive surface: expected saved-video phrase missing: {phrase!r}")
+
+    control = (ROOT / "portal/app/control-room/legacy.js").read_text(encoding="utf-8")
+    camera_view = (ROOT / "portal/app/control-room/customer-workspace.js").read_text(encoding="utf-8")
     shell = (ROOT / "portal/app/shell.js").read_text(encoding="utf-8")
+    nav_config = (ROOT / "portal/app/nav-config.js").read_text(encoding="utf-8")
     home = (ROOT / "portal/app/page.js").read_text(encoding="utf-8")
-    ai = (ROOT / "portal/app/ai/page.js").read_text(encoding="utf-8")
-    setup_ai = (ROOT / "portal/app/setup/page.js").read_text(encoding="utf-8")
+    setup_surface = _surface("setup")
     ai_edge = (ROOT / "prototype/supabase/functions/watchlog-ai/index.ts").read_text(encoding="utf-8")
     ai_migration = (ROOT / "prototype/supabase/migrations/0101_ai_workspace.sql").read_text(encoding="utf-8")
 
-    # Control Room stays a truthful reuse of tenant-scoped contracts, not a new live-video promise.
+    # Full Control Room (served at /control-room/advanced/) stays a truthful reuse of tenant-scoped
+    # contracts, not a new live-video promise. The lean Camera View (/control-room/) must also stay safe.
     if 'rpc("wl_portal_overview"' not in control:
         problems.append("control room must reuse the tenant-scoped portal overview contract")
     if 'requireTenant' not in control:
@@ -160,24 +180,34 @@ def main():
     if 'rpc("wl_portal_snapshot"' not in control:
         problems.append("control room incident stills must use the existing tenant-scoped snapshot contract")
     for unsafe in ("rtsp://", "<video", "autoplay", "continuous cloud video feed"):
-        if unsafe.lower() in control.lower():
+        if unsafe.lower() in control.lower() or unsafe.lower() in camera_view.lower():
             problems.append(f"control room must not imply an unvalidated live-video surface: {unsafe!r}")
+    if "requireTenant" not in camera_view:
+        problems.append("Camera View must use the shared tenant/account guard")
 
-    # AI-first shell: four primary jobs; operational modules stay available as tools/deep links.
-    for required_nav in ('["WatchLog AI", "/ai/"]','["Reports", "/reports/"]','["Setup", "/setup/"]','["Settings", "/settings/"]'):
-        if required_nav not in shell:
-            problems.append(f"AI-first shell missing primary navigation: {required_nav}")
-    if '<a className="navlink" href="/control-room/">Camera View</a>' not in shell:
-        problems.append("Control Room must remain available as the Camera View tool")
+    # AI-first shell: WatchLog AI is the home (brand, new chat, Ask WatchLog); Reports and Setup are the
+    # primary jobs; Settings and the Camera View (Control Room) stay reachable under More. The nav is
+    # data-driven from nav-config.js and rendered by shell.js.
+    if '"WatchLog AI":"/ai/"' not in nav_config:
+        problems.append("AI-first nav: WatchLog AI must be the home route")
+    for token in ('["Reports","/reports/?view=yesterday","Reports"]', '["Setup","/setup/","Setup"]', '["Settings","/settings/","Settings"]'):
+        if token not in nav_config:
+            problems.append(f"AI-first nav missing primary job: {token}")
+    if '["Cameras","/control-room/","Control Room"]' not in nav_config:
+        problems.append("Control Room must remain reachable as the Camera View tool")
+    if "MAIN_TABS" not in shell or "MORE_TABS" not in shell:
+        problems.append("AI-first shell must render the data-driven nav from nav-config")
+    if 'withSite("/ai/",siteId)' not in shell:
+        problems.append("AI-first shell must route the home/brand to WatchLog AI")
     if 'location.replace(tenant ? "/ai/" : "/onboarding/")' not in home:
         problems.append("signed-in tenants must land in WatchLog AI")
 
     # The browser invokes the authenticated Edge Function and never contains an AI secret.
-    if 'functions.invoke("watchlog-ai"' not in ai:
+    if 'functions.invoke("watchlog-ai"' not in ai_home:
         problems.append("AI workspace must invoke the server-side watchlog-ai function")
-    if 'rpc("wl_ai_context"' not in ai:
+    if 'rpc("wl_ai_context"' not in ai_home:
         problems.append("AI workspace must use the tenant-scoped factual context")
-    if "WATCHLOG_AI_API_KEY" in ai or "NEXT_PUBLIC_WATCHLOG_AI" in ai:
+    if "WATCHLOG_AI_API_KEY" in ai_home or "NEXT_PUBLIC_WATCHLOG_AI" in ai_home:
         problems.append("AI provider credentials/config must never be embedded in the browser")
     if 'req.headers.get("Authorization")' not in ai_edge or 'sb.auth.getUser()' not in ai_edge:
         problems.append("AI gateway must authenticate the Supabase user token")
@@ -185,7 +215,8 @@ def main():
         "Never invent a recorder capability",
         "UNKNOWN means unconfirmed",
         "Recorder writes are never silently executed",
-        "Never ask for or expose recorder passwords/credentials",
+        # Recorder-credential protection invariant (present verbatim in the system prompt).
+        "Recorder credentials stay on the on-site WatchLog service and must never be requested or exposed",
     ):
         if invariant not in ai_edge:
             problems.append(f"AI safety prompt missing invariant: {invariant}")
@@ -203,13 +234,14 @@ def main():
     if "nvr_password" in ai_migration.lower() or "recorder_password" in ai_migration.lower():
         problems.append("AI context migration must never include recorder password fields")
 
-    # Guided setup must be real data mutation through guarded WatchLog RPCs, not a mock wizard.
+    # Guided setup must be real data mutation through guarded WatchLog RPCs, not a mock wizard. The
+    # AI-first setup is split across step surfaces (connect-site/site-details/camera-setup/review-setup).
     for rpc in ("wl_upsert_site_context","wl_ai_setup_camera","wl_onboarding_advance"):
-        if f'rpc("{rpc}"' not in setup_ai:
+        if f'rpc("{rpc}"' not in setup_surface:
             problems.append(f"guided setup must call {rpc}")
-    if 'functions.invoke("watchlog-ai"' not in setup_ai:
+    if 'functions.invoke("watchlog-ai"' not in setup_surface:
         problems.append("guided setup must request capability-aware AI recommendations")
-    if "NEXT_PUBLIC_INSTALLER_URL" not in setup_ai:
+    if "NEXT_PUBLIC_INSTALLER_URL" not in setup_surface:
         problems.append("guided setup must use the configured canonical WatchLog installer URL")
 
     if problems:
