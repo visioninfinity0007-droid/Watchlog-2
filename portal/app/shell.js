@@ -7,7 +7,7 @@ import {rememberSite,selectedSiteId,selectedSiteName,withSite} from "./site-cont
 import {MAIN_TABS,MORE_TABS,MORE_ACTIVE,ACTIVE_ROUTE} from "./nav-config";
 
 function RailSkeleton({lines=3}){
-  return <div className="productRailSkeleton" aria-hidden="true">{Array.from({length:lines},(_,i)=><div className="productRailSkeletonRow" key={i}><span/><small/></div>)}</div>;
+  return <div className="productRailSkeleton" aria-hidden="true">{Array.from({length:lines},(_,i)=><div className="productRailSkeletonRow" key={i}><span/></div>)}</div>;
 }
 
 export function Nav({active,email,right,currentSiteId=""}){
@@ -78,7 +78,11 @@ export function Nav({active,email,right,currentSiteId=""}){
 
       <div className="productRailSectionLabel productRailRecentLabel">Recent</div>
       <div className="productRailRecent">
-        {!navReady?<RailSkeleton lines={4}/>:conversations.slice(0,8).map(c=><a key={c.id} href={`/ai/?site=${encodeURIComponent(c.site_id||siteId)}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>c.site_id&&choose(c.site_id,c.site_name||"")} className="productRailConversation"><span>{c.title||"WatchLog conversation"}</span><small>{c.site_name||"Site conversation"}</small></a>)}
+        {!navReady?<RailSkeleton lines={5}/>:conversations.slice(0,8).map(c=>{
+          const title=c.title||"WatchLog conversation";
+          const siteName=c.site_name||"Site conversation";
+          return <a key={c.id} title={`${title} · ${siteName}`} href={`/ai/?site=${encodeURIComponent(c.site_id||siteId)}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>c.site_id&&choose(c.site_id,c.site_name||"")} className="productRailConversation"><span>{title}</span></a>;
+        })}
         {navReady&&!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}
       </div>
 
