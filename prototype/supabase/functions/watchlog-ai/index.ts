@@ -1,6 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
+import {
+  normalizeMode, isExternal, egressAllowed, noModelIntent, buildCandidates,
+  type AiMode, type RouteAudit,
+} from "./providers/router.ts";
 
 type Json = Record<string, any>;
 
@@ -219,28 +223,86 @@ function sanitizeResult(value: any) {
   });
   return { answer, cards, suggestions, proposed_actions, mode: src.mode === "ai" ? "ai" : "guided_fallback" };
 }
-async function callModel(prompt: string, history: any[], context: Json, tools: Json) {
-  // Provider resolution: an admin-configured provider (Phase 5 router over provider_configs) takes
-  // precedence; until one exists, the legacy env provider keeps existing deployments working.
-  // No provider => deterministic fallback (INVARIANT: "missing config => fallback").
-  const cfg = legacyEnvProvider();
-  if (!cfg) return fallback(prompt, context, tools);
-  const provider = buildProvider(cfg);
-  const messages: ChatMessage[] = [
+function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[] {
+  return [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
     ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
       .map((m: Json) => ({ role: m.role as "user" | "assistant", content: String(m.content || "").slice(0, 20000) })),
   ];
-  // provider.chat THROWS on any failure (non-200 / empty / timeout) => the request handler catches
-  // it and runs fallback (INVARIANT: "throw => caller runs fallback"). All output flows through
-  // sanitizeResult here and again at the call site.
-  const out = await provider.chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cfg.maxOutput });
-  const text = out.text;
-  if (!text) throw new Error("provider_empty_response");
-  try { return sanitizeResult({ ...JSON.parse(String(text)), mode: "ai" }); }
-  catch { return sanitizeResult({ answer: String(text), mode: "ai" }); }
+}
+function baseAudit(mode: AiMode, route: RouteAudit["route"], extra: Partial<RouteAudit>): RouteAudit {
+  return {
+    mode, route, provider_id: null, provider_name: null, model: null, used_fallback: false,
+    egress: "n/a", latency_ms: 0, candidates_tried: 0, tool_calls: [], outcome: "ok", ...extra,
+  };
+}
+// The router: tenant/site authorization has already happened by the time we get here. We resolve the
+// WatchLog mode -> provider(s) from the DB, apply the site egress policy AFTER resolution, fail closed
+// on invalid config, try the configured fallback next, and keep the verified-data guided fallback as
+// the floor. Provider/model identities are returned ONLY in `audit` (Admin/audit), never in `result`.
+async function routeChat(opts: {
+  service: any; prompt: string; history: any[]; context: Json; tools: Json;
+  mode: AiMode; siteAllowsExternal: boolean; toolCalls: string[];
+}): Promise<{ result: Json; audit: RouteAudit }> {
+  const { service, prompt, history, context, tools, mode, siteAllowsExternal, toolCalls } = opts;
+
+  // NO_MODEL: WatchLog already knows canonical health/status/coverage answers — no LLM, no egress.
+  if (noModelIntent(prompt)) {
+    return { result: sanitizeResult(fallback(prompt, context, tools)),
+             audit: baseAudit(mode, "no_model", { outcome: "deterministic", tool_calls: toolCalls }) };
+  }
+
+  // Resolve the mode -> providers from DB (service-role only). A resolver error is treated as
+  // "unresolved" and flows to the deterministic floor — never an open failure.
+  let resolved: any = null;
+  try {
+    const r = await service.rpc("wl_ai_resolve_mode", { p_mode: mode, p_needs_vision: false });
+    if (!r.error) resolved = r.data;
+  } catch { /* resolved stays null */ }
+
+  const { candidates, modeExternalAllowed, primaryInvalid } = buildCandidates(resolved, legacyEnvProvider());
+
+  if (candidates.length === 0) {
+    // Either nothing is configured, or the configured primary is structurally invalid (fail closed).
+    const outcome = primaryInvalid ? "config_invalid" : "no_provider_configured";
+    return { result: sanitizeResult(fallback(prompt, context, tools)),
+             audit: baseAudit(mode, "guided_fallback", { outcome, tool_calls: toolCalls }) };
+  }
+
+  const messages = buildMessages(context, tools, history);
+  let anyBlocked = false, tried = 0, last = candidates[candidates.length - 1].cfg;
+
+  for (const cand of candidates) {
+    last = cand.cfg;
+    // Egress gate AFTER resolution: a local-only site can never be sent to an external model, no
+    // matter what an admin configured for the mode/provider.
+    if (!egressAllowed(cand.cfg, siteAllowsExternal, modeExternalAllowed)) { anyBlocked = true; continue; }
+    tried++;
+    try {
+      const out = await buildProvider(cand.cfg).chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cand.cfg.maxOutput });
+      if (!out.text) throw new Error("provider_empty_response");
+      let parsed: Json;
+      try { parsed = sanitizeResult({ ...JSON.parse(String(out.text)), mode: "ai" }); }
+      catch { parsed = sanitizeResult({ answer: String(out.text), mode: "ai" }); }
+      return { result: parsed, audit: {
+        mode, route: cand.isFallback ? "ai_fallback" : "ai_primary",
+        provider_id: cand.cfg.id, provider_name: cand.cfg.name, model: cand.cfg.model,
+        used_fallback: cand.isFallback, egress: isExternal(cand.cfg) ? "external" : "local",
+        latency_ms: out.latencyMs || 0, candidates_tried: tried, tool_calls: toolCalls, outcome: "ok",
+      } };
+    } catch { /* try the next configured candidate */ }
+  }
+
+  // All candidates were blocked or failed -> verified-data guided fallback (the floor).
+  return { result: sanitizeResult(fallback(prompt, context, tools)), audit: {
+    mode, route: "guided_fallback",
+    provider_id: last?.id ?? null, provider_name: last?.name ?? null, model: last?.model ?? null,
+    used_fallback: false, egress: anyBlocked && tried === 0 ? "blocked_local_only" : "n/a",
+    latency_ms: 0, candidates_tried: tried, tool_calls: toolCalls,
+    outcome: tried === 0 && anyBlocked ? "egress_blocked" : "all_providers_failed",
+  } };
 }
 
 Deno.serve(async (req) => {
@@ -292,13 +354,40 @@ Deno.serve(async (req) => {
     if (ctxResult.error) throw ctxResult.error;
     if (historyResult.error) throw historyResult.error;
     const tools = await gatherTools(sb, prompt, siteId, ctxResult.data || {});
+    const toolCalls = Object.keys(tools).filter((k) => k !== "site_local_date" && (tools as Json)[k] != null);
 
-    let result: Json;
-    try { result = sanitizeResult(await callModel(prompt, historyResult.data || [], ctxResult.data || {}, tools)); }
-    catch (providerError) {
-      console.error("watchlog-ai provider unavailable", providerError instanceof Error ? providerError.message : "unknown");
+    // Site data-egress policy (tenant-owned). Unreadable => local-only; never fail open.
+    let siteAllowsExternal = false;
+    try {
+      const eg = await sb.rpc("wl_ai_site_egress", { p_site_id: siteId });
+      if (!eg.error) siteAllowsExternal = !!eg.data?.external_egress_allowed;
+    } catch { /* default local-only */ }
+
+    const mode = normalizeMode(body?.mode);
+    let result: Json, audit: RouteAudit;
+    try {
+      ({ result, audit } = await routeChat({
+        service, prompt, history: historyResult.data || [], context: ctxResult.data || {},
+        tools, mode, siteAllowsExternal, toolCalls,
+      }));
+    } catch (routerError) {
+      console.error("watchlog-ai router error", routerError instanceof Error ? routerError.message : "unknown");
       result = sanitizeResult(fallback(prompt, ctxResult.data || {}, tools));
-      result.answer += " Full model reasoning is temporarily unavailable, so this answer uses verified WatchLog data and deterministic guidance only.";
+      audit = baseAudit(mode, "guided_fallback", { outcome: "router_error", tool_calls: toolCalls });
+    }
+    if (audit.route === "guided_fallback") {
+      result.answer += " Full model reasoning is not configured or is temporarily unavailable, so this answer uses verified WatchLog data and deterministic guidance only.";
+    }
+
+    // Route audit — mode/provider/model/fallback/egress/latency/tool-calls for Admin + audit ONLY.
+    // Provider identities are NEVER placed in the browser response below. Best-effort; never blocks.
+    try {
+      const logged = await service.rpc("wl_ai_log_route", {
+        p: { ...audit, tenant_id: tenantRes.data, site_id: siteId, user_id: user.id, conversation_id: conversationId },
+      });
+      if (logged.error) console.error("watchlog-ai route log failed", String(logged.error?.message || "").slice(0, 200));
+    } catch (logErr) {
+      console.error("watchlog-ai route log threw", logErr instanceof Error ? logErr.message : "unknown");
     }
 
     const saved = await service.rpc("wl_ai_append_assistant_message", { p_conversation_id: conversationId, p_user_id: user.id, p_content: result.answer, p_payload: { cards: result.cards, suggestions: result.suggestions, proposed_actions: result.proposed_actions, mode: result.mode } });

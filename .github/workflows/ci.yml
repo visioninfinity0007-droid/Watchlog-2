@@ -382,6 +382,8 @@ jobs:
         run: python prototype/tests/e2e_camera_config_pg.py
       - name: AI providers — owner-gated config + Vault-guarded keys + service-role-only key resolver (0105)
         run: python prototype/tests/e2e_ai_providers_pg.py
+      - name: AI routing — per-site egress policy (local-only default) + service/admin-only route audit (0106)
+        run: python prototype/tests/e2e_ai_routing_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
@@ -419,3 +421,17 @@ jobs:
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f prototype/supabase/ci_prelude.sql
       - name: Production-order simulation (0042-0048 baseline -> 0040/0041 -> incident lifecycle -> health smoke)
         run: bash prototype/tests/prod_order_integration.sh
+
+  edge-ai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Router policy unit tests (fail-closed config, egress gate, NO_MODEL, candidate ordering)
+        working-directory: prototype/supabase/functions/watchlog-ai
+        run: deno test providers/router_test.ts
+      - name: Type-check the WatchLog AI edge function (provider router + secure config)
+        working-directory: prototype/supabase/functions/watchlog-ai
+        run: deno check index.ts
