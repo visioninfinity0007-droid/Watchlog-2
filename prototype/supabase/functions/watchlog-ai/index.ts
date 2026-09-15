@@ -1,4 +1,11 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
+import type { ChatMessage } from "./providers/types.ts";
+import {
+  normalizeMode, isExternal, egressAllowed, noModelIntent, buildCandidates,
+  stripEvidenceImages, evidenceSummary, retrieveEvidence,
+  type AiMode, type RouteAudit,
+} from "./providers/router.ts";
 
 type Json = Record<string, any>;
 
@@ -183,6 +190,16 @@ function dailyFallback(tools: Json) {
 }
 function fallback(prompt: string, ctx: Json, tools: Json) {
   const p = prompt.toLowerCase(), cameras = ctx?.cameras || [], faults = ctx?.faults || [], recorder = ctx?.recorder || {}, coverage = ctx?.coverage || {};
+  if (tools?.evidence) {
+    const ev = tools.evidence, sum = evidenceSummary(ev);
+    return {
+      answer: sum.text + (ev?.window?.from ? ` Window: ${ev.window.from} to ${ev.window.to}.` : ""),
+      cards: [{ type: "incident", title: `Evidence — ${ev?.window?.label || "requested window"}`,
+        data: { events: sum.events, cameras: sum.cameras, span: sum.span, index: (ev?.index || []).slice(0, 8) } }],
+      suggestions: ["Show the snapshots", "Which cameras were involved?", "Check site health"],
+      proposed_actions: [{ kind: "navigate", label: "Open incidents", data: { href: "/incidents/" } }], mode: "guided_fallback",
+    };
+  }
   if (/setup|configure|connect|install|what can|capabilit/.test(p)) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
     return { answer: next ? `The next recorded setup step is ${String(next.label || next.key).toLowerCase()}. I checked the exact recorder capability profile before making this recommendation.` : "The recorded setup checklist is complete. I can still refine monitoring using the evidence-graded recorder profile and WatchLog software analytics.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
@@ -205,7 +222,7 @@ function sanitizeResult(value: any) {
   const src = value && typeof value === "object" ? value : {};
   const answer = String(src.answer || "").slice(0, 16000) || "WatchLog could not produce a safe response.";
   const cards = (Array.isArray(src.cards) ? src.cards : []).filter((c: Json) => CARD_TYPES.has(String(c?.type || ""))).slice(0, 6).map((c: Json) => ({ type: c.type, title: String(c.title || "WatchLog").slice(0, 120), data: c.data && typeof c.data === "object" ? c.data : {} }));
-  const suggestions = (Array.isArray(src.suggestions) ? src.suggestions : []).map(String).map((s) => s.slice(0, 140)).filter(Boolean).slice(0, 4);
+  const suggestions = (Array.isArray(src.suggestions) ? src.suggestions : []).map(String).map((s: string) => s.slice(0, 140)).filter(Boolean).slice(0, 4);
   const proposed_actions = (Array.isArray(src.proposed_actions) ? src.proposed_actions : []).filter((a: Json) => ACTION_KINDS.has(String(a?.kind || ""))).slice(0, 4).map((a: Json) => {
     const kind = String(a.kind), label = String(a.label || "Continue").slice(0, 100), data = a.data && typeof a.data === "object" ? { ...a.data } : {};
     if (kind === "navigate") data.href = SAFE_HREFS.has(String(data.href || "")) ? String(data.href) : "/ai/";
@@ -217,22 +234,105 @@ function sanitizeResult(value: any) {
   });
   return { answer, cards, suggestions, proposed_actions, mode: src.mode === "ai" ? "ai" : "guided_fallback" };
 }
-async function callModel(prompt: string, history: any[], context: Json, tools: Json) {
-  const endpoint = Deno.env.get("WATCHLOG_AI_ENDPOINT") || "", apiKey = Deno.env.get("WATCHLOG_AI_API_KEY") || "", model = Deno.env.get("WATCHLOG_AI_MODEL") || "";
-  if (!endpoint || !apiKey || !model) return fallback(prompt, context, tools);
-  const messages = [
+// Two-stage evidence retrieval, tenant/site scoped via the user's own client (wl_assert_my_site
+// inside the RPCs). Stage 1 = compact index (no bytes); stage 2 = full bundles for the few relevant
+// events. Only called on a MODEL route for an evidence-intent prompt — a NO_MODEL question never
+// touches the evidence workspace.
+async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json): Promise<Json | null> {
+  return retrieveEvidence((name, args) => rpcOptional(sb, name, args), prompt, siteId, ctx, new Date());
+}
+function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[] {
+  return [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
-    ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant").map((m: Json) => ({ role: m.role, content: String(m.content || "").slice(0, 20000) })),
+    ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
+      .map((m: Json) => ({ role: m.role as "user" | "assistant", content: String(m.content || "").slice(0, 20000) })),
   ];
-  const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages, temperature: 0.2 }), signal: AbortSignal.timeout(35000) });
-  if (!r.ok) throw new Error(`provider_${r.status}`);
-  const payload = await r.json();
-  const text = payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? payload?.response ?? "";
-  if (!text) throw new Error("provider_empty_response");
-  try { return sanitizeResult({ ...JSON.parse(String(text)), mode: "ai" }); }
-  catch { return sanitizeResult({ answer: String(text), mode: "ai" }); }
+}
+function baseAudit(mode: AiMode, route: RouteAudit["route"], extra: Partial<RouteAudit>): RouteAudit {
+  return {
+    mode, route, provider_id: null, provider_name: null, model: null, used_fallback: false,
+    egress: "n/a", latency_ms: 0, candidates_tried: 0, tool_calls: [], outcome: "ok", ...extra,
+  };
+}
+// The router: tenant/site authorization has already happened by the time we get here. We resolve the
+// WatchLog mode -> provider(s) from the DB, apply the site egress policy AFTER resolution, fail closed
+// on invalid config, try the configured fallback next, and keep the verified-data guided fallback as
+// the floor. Provider/model identities are returned ONLY in `audit` (Admin/audit), never in `result`.
+async function routeChat(opts: {
+  sb: any; service: any; prompt: string; siteId: string; history: any[]; context: Json; tools: Json;
+  mode: AiMode; siteAllowsExternal: boolean; toolCalls: string[];
+}): Promise<{ result: Json; audit: RouteAudit }> {
+  const { sb, service, prompt, siteId, history, context, tools, mode, siteAllowsExternal, toolCalls } = opts;
+
+  // NO_MODEL: canonical health/status/coverage answered from verified data — no LLM, no egress, and
+  // (crucially) NO evidence workspace access.
+  if (noModelIntent(prompt)) {
+    return { result: sanitizeResult(fallback(prompt, context, tools)),
+             audit: baseAudit(mode, "no_model", { outcome: "deterministic", tool_calls: toolCalls }) };
+  }
+
+  // Scoped, two-stage evidence retrieval — only for an evidence-intent MODEL route.
+  const evidence = await loadEvidence(sb, prompt, siteId, context);
+  const toolsEv = evidence ? { ...tools, evidence } : tools;
+  const evToolCalls = evidence
+    ? [...toolCalls, "evidence_index", ...(Array.isArray(evidence.bundles) && evidence.bundles.length ? ["evidence_bundle"] : [])]
+    : toolCalls;
+
+  // Resolve the mode -> providers from DB (service-role only). A resolver error flows to the floor.
+  let resolved: any = null;
+  try {
+    const r = await service.rpc("wl_ai_resolve_mode", { p_mode: mode, p_needs_vision: false });
+    if (!r.error) resolved = r.data;
+  } catch { /* resolved stays null */ }
+
+  const { candidates, modeExternalAllowed, primaryInvalid } = buildCandidates(resolved, legacyEnvProvider());
+
+  if (candidates.length === 0) {
+    // Nothing configured, or the configured primary is structurally invalid (fail closed).
+    const outcome = primaryInvalid ? "config_invalid" : "no_provider_configured";
+    return { result: sanitizeResult(fallback(prompt, context, toolsEv)),
+             audit: baseAudit(mode, "guided_fallback", { outcome, tool_calls: evToolCalls }) };
+  }
+
+  let anyBlocked = false, tried = 0, last = candidates[candidates.length - 1].cfg;
+  for (const cand of candidates) {
+    last = cand.cfg;
+    // Egress gate AFTER resolution: a local-only site can never be sent to an external model, no
+    // matter what an admin configured for the mode/provider.
+    if (!egressAllowed(cand.cfg, siteAllowsExternal, modeExternalAllowed)) { anyBlocked = true; continue; }
+    tried++;
+    // Evidence images accompany the prompt ONLY to an egress-permitted provider; the explicit strip
+    // keeps a LOCAL-ONLY site's images away from any external model (defense in depth).
+    const evForProvider = evidence
+      ? (isExternal(cand.cfg) && !(siteAllowsExternal && modeExternalAllowed) ? stripEvidenceImages(evidence) : evidence)
+      : null;
+    const messages = buildMessages(context, evidence ? { ...tools, evidence: evForProvider } : tools, history);
+    try {
+      const out = await buildProvider(cand.cfg).chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cand.cfg.maxOutput });
+      if (!out.text) throw new Error("provider_empty_response");
+      let parsed: Json;
+      try { parsed = sanitizeResult({ ...JSON.parse(String(out.text)), mode: "ai" }); }
+      catch { parsed = sanitizeResult({ answer: String(out.text), mode: "ai" }); }
+      return { result: parsed, audit: {
+        mode, route: cand.isFallback ? "ai_fallback" : "ai_primary",
+        provider_id: cand.cfg.id, provider_name: cand.cfg.name, model: cand.cfg.model,
+        used_fallback: cand.isFallback, egress: isExternal(cand.cfg) ? "external" : "local",
+        latency_ms: out.latencyMs || 0, candidates_tried: tried, tool_calls: evToolCalls, outcome: "ok",
+      } };
+    } catch { /* try the next configured candidate */ }
+  }
+
+  // All candidates were blocked or failed -> verified-data guided fallback (the floor), grounded on
+  // the loaded evidence when the question was an evidence query.
+  return { result: sanitizeResult(fallback(prompt, context, toolsEv)), audit: {
+    mode, route: "guided_fallback",
+    provider_id: last?.id ?? null, provider_name: last?.name ?? null, model: last?.model ?? null,
+    used_fallback: false, egress: anyBlocked && tried === 0 ? "blocked_local_only" : "n/a",
+    latency_ms: 0, candidates_tried: tried, tool_calls: evToolCalls,
+    outcome: tried === 0 && anyBlocked ? "egress_blocked" : "all_providers_failed",
+  } };
 }
 
 Deno.serve(async (req) => {
@@ -284,13 +384,40 @@ Deno.serve(async (req) => {
     if (ctxResult.error) throw ctxResult.error;
     if (historyResult.error) throw historyResult.error;
     const tools = await gatherTools(sb, prompt, siteId, ctxResult.data || {});
+    const toolCalls = Object.keys(tools).filter((k) => k !== "site_local_date" && (tools as Json)[k] != null);
 
-    let result: Json;
-    try { result = sanitizeResult(await callModel(prompt, historyResult.data || [], ctxResult.data || {}, tools)); }
-    catch (providerError) {
-      console.error("watchlog-ai provider unavailable", providerError instanceof Error ? providerError.message : "unknown");
+    // Site data-egress policy (tenant-owned). Unreadable => local-only; never fail open.
+    let siteAllowsExternal = false;
+    try {
+      const eg = await sb.rpc("wl_ai_site_egress", { p_site_id: siteId });
+      if (!eg.error) siteAllowsExternal = !!eg.data?.external_egress_allowed;
+    } catch { /* default local-only */ }
+
+    const mode = normalizeMode(body?.mode);
+    let result: Json, audit: RouteAudit;
+    try {
+      ({ result, audit } = await routeChat({
+        sb, service, prompt, siteId, history: historyResult.data || [], context: ctxResult.data || {},
+        tools, mode, siteAllowsExternal, toolCalls,
+      }));
+    } catch (routerError) {
+      console.error("watchlog-ai router error", routerError instanceof Error ? routerError.message : "unknown");
       result = sanitizeResult(fallback(prompt, ctxResult.data || {}, tools));
-      result.answer += " Full model reasoning is temporarily unavailable, so this answer uses verified WatchLog data and deterministic guidance only.";
+      audit = baseAudit(mode, "guided_fallback", { outcome: "router_error", tool_calls: toolCalls });
+    }
+    if (audit.route === "guided_fallback") {
+      result.answer += " Full model reasoning is not configured or is temporarily unavailable, so this answer uses verified WatchLog data and deterministic guidance only.";
+    }
+
+    // Route audit — mode/provider/model/fallback/egress/latency/tool-calls for Admin + audit ONLY.
+    // Provider identities are NEVER placed in the browser response below. Best-effort; never blocks.
+    try {
+      const logged = await service.rpc("wl_ai_log_route", {
+        p: { ...audit, tenant_id: tenantRes.data, site_id: siteId, user_id: user.id, conversation_id: conversationId },
+      });
+      if (logged.error) console.error("watchlog-ai route log failed", String(logged.error?.message || "").slice(0, 200));
+    } catch (logErr) {
+      console.error("watchlog-ai route log threw", logErr instanceof Error ? logErr.message : "unknown");
     }
 
     const saved = await service.rpc("wl_ai_append_assistant_message", { p_conversation_id: conversationId, p_user_id: user.id, p_content: result.answer, p_payload: { cards: result.cards, suggestions: result.suggestions, proposed_actions: result.proposed_actions, mode: result.mode } });

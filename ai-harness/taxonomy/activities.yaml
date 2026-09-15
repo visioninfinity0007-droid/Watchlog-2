@@ -1,0 +1,54 @@
+# WatchLog activities — Layer 2. An ACTIVITY is a meaningful pattern built from one or more
+# OBSERVATIONS over time. Activities are still NOT incidents; an incident requires an activity to
+# meet an incident definition (incidents/) with sufficient evidence.
+version: 1
+schema: activities.v1
+
+activities:
+  - id: LOITERING
+    from: [PERSON_PRESENT, DWELL]
+    definition: "A person remains in an area beyond a dwell threshold without a routine purpose."
+    guards: ["dwell threshold is site/zone specific", "waiting in a reception queue is not loitering"]
+    confidence_note: "requires a continuous track; fragmented tracks -> WEAK."
+  - id: TAILGATING
+    from: [LINE_CROSS, PROXIMITY]
+    definition: "Two people pass an access line on a single authorization event."
+    requires_capability: "tracking + line + timing; native line-cross alone cannot prove it."
+  - id: PERIMETER_BREACH
+    from: [ZONE_ENTER, AFTER_HOURS]
+    definition: "Entry into a restricted zone, weighted by schedule and zone class."
+  - id: ENTRY
+    from: [LINE_CROSS]
+    definition: "A directional in-crossing at an entrance (feeds people-counting/occupancy)."
+  - id: EXIT
+    from: [LINE_CROSS]
+    definition: "A directional out-crossing at an entrance."
+  - id: OCCUPANCY_ESTIMATE
+    from: [ENTRY, EXIT, CROWDING]
+    definition: "Estimated people present; an estimate, never an exact unique count."
+  - id: OBJECT_ABANDONMENT
+    from: [OBJECT_LEFT, DWELL]
+    definition: "An object left and unattended beyond a threshold."
+  - id: OBJECT_LOSS
+    from: [OBJECT_REMOVED]
+    definition: "An object removed; loss-prevention candidate, human review required (never 'theft')."
+  - id: PLAUSIBLE_JOURNEY
+    from: [MULTI_CAMERA_MOVEMENT]
+    definition: "A plausible same-entity path across cameras with valid topology/timing."
+    guards: ["plausible movement, NOT unique identity", "carries the uncertainty of the weakest hop"]
+  - id: OPENING
+    from: [OPENING_ACTIVITY, FIRST_ENTRY]
+    definition: "Estimated site opening."
+  - id: CLOSING
+    from: [CLOSING_ACTIVITY]
+    definition: "Estimated site closing."
+  - id: PPE_NONCOMPLIANCE
+    from: [PERSON_PRESENT]
+    definition: "A person in a work zone missing required PPE (hardhat/vest/mask), via a policy check."
+    requires_capability: "software PPE analytic; label per site policy."
+  - id: MAN_MACHINE_PROXIMITY
+    from: [PROXIMITY]
+    definition: "A person within an unsafe distance of machinery/vehicle in an industrial zone."
+  - id: CAMERA_HEALTH_DEGRADED
+    from: [CAMERA_OFFLINE, CAMERA_OBSTRUCTED, CAMERA_TAMPERED, RECORDING_GAP]
+    definition: "A reliability activity: a camera/feed is not delivering trustworthy coverage."

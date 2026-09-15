@@ -1,0 +1,277 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Hikvision
+family: DeepinMind 96 NVR
+model: iDS-9632NXI-I8/X
+firmware_range: V4.60.110 (2022-02-18)
+recorder_type: NVR
+ai_processing_location: both
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: 32
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/Smart, /ISAPI/System/Video/inputs/channels/<ID>/VCAResource (GET); MD2.0 human/vehicle
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Human/vehicle classification is camera-side on DeepinMind-96 (the recorder runs the four heavy
+    engines instead).
+- capability: line_crossing
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/LineDetection/<ID> (PUT) - exact sub-path UNKNOWN (not in obtained guides)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder Perimeter up to 16-ch. Four engine modes; no more than two enabled at once (capacities
+    drop when two run).
+- capability: intrusion
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/FieldDetection/<ID> (PUT) - exact sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder Perimeter up to 16-ch.
+- capability: face_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI token faceSnap (capture)
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 8-ch @8MP capture
+- capability: face_recognition
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI tokens faceContrast / faceRecognition
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 16-ch compare; 32 libs / 100,000 faces
+- capability: object_attribute_extraction
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: 'ISAPI /ISAPI/Smart (recorder engine: video structuralization)'
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Video structuralization 8-ch (recorder engine).
+- capability: high_altitude_object_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: 'ISAPI /ISAPI/Smart (recorder engine: throwing-objects)'
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Throwing-objects 8-ch (recorder engine).
+- capability: region_entrance
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionEntrance (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionEntrance; camera-side.
+- capability: region_exiting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionExiting (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionExiting; camera-side.
+- capability: loitering
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token loitering (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI loitering; camera-side.
+- capability: parking
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token parking (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI parking; camera-side.
+- capability: anpr_lpr
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI (plate/vehicle attrs via camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side even on this 'AI NVR'.
+- capability: people_counting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/counting/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: heatmap
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/heatMap/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: video_loss
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: No API/exception row on datasheet.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: No API/exception row on datasheet.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+  write:
+    supported: true
+    method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP.
+source:
+- url_or_doc: https://www.hikvision.com/.../Datasheet-of-iDS-9600NXI-I8_X_DeepinMind-NVRC_V4.60.110_20220218.pdf
+  title: Hikvision iDS-9600NXI-I8/X(C) series datasheet (DeepinMind 96 NVR), V4.60.110 2022-02-18
+  retrieved_at: '2026-09-10'

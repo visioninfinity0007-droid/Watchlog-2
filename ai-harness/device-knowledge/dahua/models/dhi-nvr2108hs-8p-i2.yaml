@@ -1,0 +1,186 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Dahua
+family: NVR2-I2 (WizSense)
+model: DHI-NVR2108HS-8P-I2
+firmware_range: Rev002 (2022)
+recorder_type: NVR (IP)
+ai_processing_location: both
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: UNKNOWN
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: both
+  read:
+    supported: true
+    method: CGI configManager.cgi?action=getConfig&name=SmartMotionDetect
+  write:
+    supported: true
+    method: CGI configManager.cgi?action=setConfig&name=SmartMotionDetect
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: SMD Plus AI-by-NVR D:4 + by-camera 6
+- capability: line_crossing
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: both
+  read:
+    supported: true
+    method: CGI configManager.cgi?action=getConfig&name=VideoAnalyseRule (Class=CrossLineDetection)
+  write:
+    supported: true
+    method: CGI configManager.cgi?action=setConfig&name=VideoAnalyseRule (Class=CrossLineDetection)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Perimeter AI-by-NVR D:1 + by-camera 4.
+- capability: intrusion
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: both
+  read:
+    supported: true
+    method: CGI configManager.cgi?action=getConfig&name=VideoAnalyseRule (Class=CrossRegionDetection)
+  write:
+    supported: true
+    method: CGI configManager.cgi?action=setConfig&name=VideoAnalyseRule (Class=CrossRegionDetection)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Perimeter AI-by-NVR D:1 + by-camera 4.
+- capability: face_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: both
+  read:
+    supported: true
+    method: CGI eventManager.cgi?action=attach&codes=[FaceDetection] (event); config CGI name UNKNOWN
+      in obtained spec
+  write:
+    supported: true
+    method: UNKNOWN - face config CGI not in obtained Dahua HTTP-API copy
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: AI-by-NVR D:1 + by-camera 5
+- capability: face_recognition
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: both
+  read:
+    supported: true
+    method: UNKNOWN - face-DB CGI not in obtained spec (research gap G4)
+  write:
+    supported: true
+    method: UNKNOWN - face-DB CGI not in obtained spec
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: AI-by-NVR D:1; DB 10/5000; by-camera 5
+- capability: anpr_lpr
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet silent.
+- capability: people_counting
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet silent.
+- capability: heatmap
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet silent.
+- capability: video_loss
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI eventManager.cgi?action=getEventIndexes&code=VideoLoss / event stream code VideoLoss
+  write:
+    supported: false
+    method: na
+    safety_class: read
+  verification:
+    required: true
+  notes: Camera offline anomaly + video loss general alarm.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Explicit tamper not itemized; privacy masking only.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI global.cgi?action=getCurrentTime + configManager.cgi name=Locales,NTP
+  write:
+    supported: true
+    method: CGI global.cgi?action=setCurrentTime + configManager.cgi name=Locales,NTP
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP.
+source:
+- url_or_doc: https://material.dahuasecurity.com/uploads/cpq/prm-os-srv-res/smart/datasheetzipfiles/NVR2108HS-8P-I2_datasheet_20220614.pdf
+  title: Dahua DHI-NVR2108HS-8P-I2 datasheet (NVR2-I2 WizSense), Rev002 2022
+  retrieved_at: '2022-06-14'

@@ -1,0 +1,185 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Hikvision
+family: Q-series Pro NVR
+model: DS-7616NI-Q2
+firmware_range: V4.71.200 (2022-10-31)
+recorder_type: NVR
+ai_processing_location: both
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: 16
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart, /ISAPI/System/Video/inputs/channels/<ID>/VCAResource (GET); MD2.0 human/vehicle
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart (PUT) - MD2.0 write sub-path UNKNOWN in obtained guides
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Motion Detection 2.0 Human/Vehicle Analysis recorder D:4 (not AcuSense).
+- capability: line_crossing
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Configurable special-camera smart functions; camera-side.
+- capability: intrusion
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Configurable special-camera smart functions; camera-side.
+- capability: face_detection
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not listed; silent.
+- capability: face_recognition
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not listed; silent.
+- capability: anpr_lpr
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not listed; silent.
+- capability: people_counting
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not listed; silent.
+- capability: heatmap
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not listed; silent.
+- capability: video_loss
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet has no exception/event table.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet has no exception/event table.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+  write:
+    supported: true
+    method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP.
+source:
+- url_or_doc: https://assets.hikvision.com/prd/public/all/doc/m000000579/Datasheet-of-DS-7616NI-Q2-NVRD_V4.71.200_20221031.pdf
+  title: Hikvision DS-7616NI-Q2(D) datasheet (Q-series Pro NVR), V4.71.200
+  retrieved_at: '2022-10-31'

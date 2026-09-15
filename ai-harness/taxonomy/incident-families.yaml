@@ -1,0 +1,40 @@
+# WatchLog incident families. Each incident definition (incidents/<family>/*.yaml) belongs to one
+# family. Families map to the product pillars and set default review/notification posture.
+version: 1
+schema: incident_families.v1
+
+families:
+  - id: reliability
+    pillar: "CCTV Reliability"
+    covers: "camera offline/obstructed/tampered, recording gaps, coverage loss, storage/retention faults."
+    default_review: operational
+    customer_language: "Know your CCTV is working."
+  - id: security
+    pillar: "Security Intelligence"
+    covers: "restricted-area/after-hours presence, perimeter breach, tampering, weapon-present, break-in indicators."
+    default_review: human_required
+    customer_language: "Know when something matters and get evidence."
+  - id: safety
+    pillar: "Operational Intelligence (safety)"
+    covers: "PPE non-compliance, man-machine proximity, worker-under-load, open-edge/hole, fall, fire/smoke."
+    default_review: human_required
+    customer_language: "Reduce site hazards."
+  - id: operations
+    pillar: "Operational Intelligence"
+    covers: "opening/closing, occupancy/crowding, dwell, entries/exits, queue, plausible journeys."
+    default_review: informational
+    customer_language: "Understand what is happening at your site."
+  - id: loss_prevention
+    pillar: "Loss Prevention Intelligence"
+    covers: "object removal, restricted access, after-hours activity, unusual dwell, person-object interaction."
+    default_review: human_required
+    forbidden: "never assert 'theft'; loss-prevention framing with human review only."
+  - id: people
+    pillar: "People Intelligence"
+    covers: "entries/exits, occupancy, dwell, loitering, visitor-flow, opening/closing estimates, known/unknown person."
+    default_review: informational
+    constraint: "respect coverage + confidence; no unique-person counts unless the measurement supports it."
+  - id: compliance
+    pillar: "Compliance / Reporting"
+    covers: "coverage attestations, retention/deletion audits, access-log style episodes (e.g. armory access)."
+    default_review: informational
