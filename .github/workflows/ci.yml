@@ -147,6 +147,8 @@ jobs:
         run: python prototype/tests/test_capabilities.py
       - name: Vendor capability matrix contract (honest — no fabricated capability)
         run: python prototype/tests/test_vendor_capability_matrix.py
+      - name: AI device-knowledge registry — normalized, source-linked, evidence-graded; FIELD_VERIFIED guarded
+        run: python prototype/tests/test_device_knowledge_validator.py
       - name: Email template tests
         run: python prototype/tests/test_email_template.py
       - name: ONNX inference test (skips if model absent)
