@@ -3,6 +3,7 @@
 // NO_MODEL classification, and candidate ordering.  Run:  deno test providers/router_test.ts
 import {
   normalizeMode, dbProviderToConfig, isExternal, egressAllowed, noModelIntent, buildCandidates,
+  isEvidenceIntent, stripEvidenceImages, resolveEvidenceWindow, resolveCameraId, evidenceSummary,
 } from "./router.ts";
 import type { ProviderConfig } from "./types.ts";
 
@@ -59,6 +60,52 @@ Deno.test("noModelIntent: canonical status = true; reasoning/setup = false", () 
   eq(noModelIntent("Explain the monitoring coverage and why it dropped"), false, "explain -> model");
   eq(noModelIntent("help me set up line crossing"), false, "setup -> model");
   eq(noModelIntent("what should I monitor for a retail site"), false, "recommend -> model");
+});
+
+Deno.test("evidence intent vs NO_MODEL: status is caught by NO_MODEL first (evidence never loads)", () => {
+  eq(isEvidenceIntent("What happened around the armory last night?"), true, "armory last night");
+  eq(isEvidenceIntent("show me footage from the entrance"), true, "footage");
+  eq(noModelIntent("are my cameras online?"), true, "status is NO_MODEL, so evidence is never loaded (#8)");
+});
+
+Deno.test("resolveEvidenceWindow: 'last night' is a ~12h overnight window in the site tz, in the past", () => {
+  const now = new Date("2026-09-15T09:00:00Z");   // Asia/Karachi is UTC+5 -> local 14:00
+  const w = resolveEvidenceWindow("what happened last night", now, "Asia/Karachi");
+  eq(w.label, "last night", "label");
+  assert(new Date(w.from) < new Date(w.to), "from before to");
+  const hours = (new Date(w.to).getTime() - new Date(w.from).getTime()) / 3600000;
+  assert(hours >= 11 && hours <= 13, "~12h window, got " + hours);
+  assert(new Date(w.to) < now, "window is entirely in the past");
+});
+
+Deno.test("resolveCameraId: matches a named/purposed camera, else null (all cameras)", () => {
+  const cams = [{ id: "c1", name: "Armory", purpose: "restricted" }, { id: "c2", name: "Front Gate", purpose: "entrance" }];
+  eq(resolveCameraId("what happened around the armory", cams), "c1", "by name");
+  eq(resolveCameraId("who was at the entrance", cams), "c2", "by purpose");
+  eq(resolveCameraId("what happened last night", cams), null, "no camera named -> all cameras");
+});
+
+Deno.test("#9 evidence egress: a LOCAL-ONLY site's images never reach an external model", () => {
+  const ext = dbProviderToConfig(EXTERNAL)!;
+  eq(egressAllowed(ext, false, true), false, "external provider is not egress-allowed for a local-only site");
+  const ev = { bundles: [{ snapshots: [{ id: "s1", image_b64: "SECRET-IMAGE", camera_id: "c1" }] }] };
+  const stripped = stripEvidenceImages(ev);
+  eq(stripped.bundles[0].snapshots[0].image_b64, undefined, "image bytes removed");
+  eq(stripped.bundles[0].snapshots[0].image_omitted, true, "snapshot marked image_omitted");
+  eq(stripped.images_withheld, true, "evidence flagged images_withheld");
+});
+
+Deno.test("evidenceSummary: grounded — cites distinct events, cameras and detections", () => {
+  const ev = { window: { label: "last night" },
+    index: [{ event_ref: "e1", camera_id: "c1", captured_at: "2026-09-14T22:10:00Z" },
+            { event_ref: "e1", camera_id: "c1", captured_at: "2026-09-14T22:11:00Z" },
+            { event_ref: "e2", camera_id: "c2", captured_at: "2026-09-14T23:00:00Z" }],
+    bundles: [{ detections: [[{ label: "person", confidence: 0.8 }]] }] };
+  const s = evidenceSummary(ev);
+  eq(s.events, 2, "2 distinct events");
+  eq(s.cameras.length, 2, "2 distinct cameras");
+  assert(s.text.includes("2 events"), "mentions event count");
+  assert(s.text.toLowerCase().includes("person"), "mentions detection label");
 });
 
 Deno.test("buildCandidates: primary+fallback ordered; unconfigured uses env bridge; invalid primary flagged", () => {

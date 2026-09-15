@@ -91,6 +91,92 @@ export function noModelIntent(prompt: string): boolean {
   return /\b(online|offline|not recording|are (my|the) cameras|which cameras|cameras (are )?(down|offline)|camera health|site health|health status|system status|is the site (online|up|healthy)|monitoring coverage|unverified time|recovered (time|footage)|how many (cameras|incidents|sites|events)|recorder model|what recorder|is .+ (online|offline|recording))\b/.test(s);
 }
 
+// ---------------------------------------------------------------------
+// Evidence retrieval policy (Phase 6-7). The router loads scoped evidence only for evidence-intent
+// prompts on a MODEL route — a NO_MODEL/status question never touches the evidence workspace. Image
+// bytes are attached to a provider prompt only when that provider passes the egress gate, so a
+// local-only site's images can never reach an external model.
+// ---------------------------------------------------------------------
+export function isEvidenceIntent(prompt: string): boolean {
+  const s = String(prompt || "").toLowerCase();
+  return /\b(what happened|happened|last night|overnight|this morning|yesterday|footage|clip|snapshot|show me|who was|any (activity|movement|one|body|intrusion)|intrud|break.?in|around the|near the|at the|armoury|armory|entrance|loading|perimeter|gate|door|camera \d)\b/.test(s);
+}
+
+// Remove decrypted image bytes from an evidence structure (keep all metadata). Used when the chosen
+// provider must NOT receive images (external provider that the egress policy does not permit).
+export function stripEvidenceImages(evidence: any): any {
+  if (!evidence || typeof evidence !== "object") return evidence;
+  const bundles = Array.isArray(evidence.bundles) ? evidence.bundles.map((b: any) => ({
+    ...b,
+    snapshots: Array.isArray(b.snapshots)
+      ? b.snapshots.map((s: any) => ({ id: s.id, captured_at: s.captured_at, camera_id: s.camera_id,
+          evidence_class: s.evidence_class, content_type: s.content_type, image_omitted: true }))
+      : b.snapshots,
+  })) : evidence.bundles;
+  return { ...evidence, images_withheld: true, bundles };
+}
+
+// Resolve the time window from the prompt, in the site's timezone. Boundaries are the site-local day;
+// exact DST-midnight edges are irrelevant for evidence windowing.
+export function resolveEvidenceWindow(prompt: string, now: Date, tz: string): { from: string; to: string; label: string } {
+  const s = String(prompt || "").toLowerCase();
+  const offset = (() => {
+    try {
+      const dtf = new Intl.DateTimeFormat("en-US", { timeZone: tz || "UTC", hour12: false,
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const p: Record<string, string> = {};
+      for (const part of dtf.formatToParts(now)) p[part.type] = part.value;
+      const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+      return asUTC - now.getTime();       // ms to add to a UTC instant to get local wall time
+    } catch { return 0; }
+  })();
+  const localNow = new Date(now.getTime() + offset);
+  const midnightUTC = Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()) - offset;
+  const H = 3600_000, D = 86400_000;
+  let from: number, to: number, label: string;
+  if (/last night|overnight/.test(s)) { from = midnightUTC - 6 * H; to = midnightUTC + 6 * H; label = "last night"; }
+  else if (/this morning/.test(s)) { from = midnightUTC + 5 * H; to = midnightUTC + 12 * H; label = "this morning"; }
+  else if (/yesterday/.test(s)) { from = midnightUTC - D; to = midnightUTC; label = "yesterday"; }
+  else if (/today/.test(s)) { from = midnightUTC; to = now.getTime(); label = "today"; }
+  else { from = now.getTime() - D; to = now.getTime(); label = "last 24h"; }
+  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), label };
+}
+
+// Match a camera the prompt names (by name or purpose). Returns the camera id, or null for all cameras.
+export function resolveCameraId(prompt: string, cameras: any[]): string | null {
+  const s = String(prompt || "").toLowerCase();
+  for (const c of Array.isArray(cameras) ? cameras : []) {
+    const name = String(c?.name || "").toLowerCase().trim();
+    const purpose = String(c?.purpose || "").toLowerCase().trim();
+    if ((name && s.includes(name)) || (purpose && purpose.length > 2 && s.includes(purpose))) return c.id;
+  }
+  // common synonyms -> purpose
+  const syn: Record<string, string> = { armoury: "armory", "front door": "entrance", gate: "entrance" };
+  for (const [word, p] of Object.entries(syn)) {
+    if (s.includes(word)) { const hit = (cameras || []).find((c: any) => String(c?.purpose || "").toLowerCase().includes(p)); if (hit) return hit.id; }
+  }
+  return null;
+}
+
+// A compact, grounded summary of an evidence result (timestamps / cameras / detections) — usable by
+// the deterministic floor so even a NO-provider deployment answers an evidence question truthfully.
+export function evidenceSummary(evidence: any): { text: string; events: number; cameras: string[]; span: string | null } {
+  const index: any[] = Array.isArray(evidence?.index) ? evidence.index : [];
+  const bundles: any[] = Array.isArray(evidence?.bundles) ? evidence.bundles : [];
+  const events = new Set(index.map((e) => e.event_ref)).size;
+  const cams = [...new Set(index.map((e) => e.camera_id).filter(Boolean))].map(String);
+  const times = index.map((e) => e.captured_at).filter(Boolean).sort();
+  const span = times.length ? `${times[0]} … ${times[times.length - 1]}` : null;
+  const labels = new Set<string>();
+  for (const b of bundles) for (const d of (Array.isArray(b?.detections) ? b.detections : []))
+    for (const x of (Array.isArray(d) ? d : [d])) if (x?.label) labels.add(String(x.label));
+  const detTxt = labels.size ? ` Detected: ${[...labels].slice(0, 6).join(", ")}.` : "";
+  const text = events
+    ? `WatchLog found ${events} event${events === 1 ? "" : "s"} with retained evidence${cams.length ? ` across ${cams.length} camera${cams.length === 1 ? "" : "s"}` : ""} in the requested window (${evidence?.window?.label || "window"}).${detTxt}`
+    : `WatchLog has no retained evidence for the requested window (${evidence?.window?.label || "window"}). Unverified monitoring time is never reported as "no activity".`;
+  return { text, events, cameras: cams, span };
+}
+
 // A candidate provider in priority order, tagged as primary or a configured fallback.
 export interface Candidate {
   cfg: ProviderConfig;

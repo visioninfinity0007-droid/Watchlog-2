@@ -144,7 +144,7 @@ def main() -> int:
     step(aud[0] >= 1 and aud[1] >= 3 and gone == 0, "deletion audit persists after raw evidence deleted",
          f"audit_rows={aud[0]} deleted={aud[1]}")
 
-    ok = all(STEPS) and len(STEPS) == 8
+    ok = all(STEPS) and len(STEPS) == 9
     print(("OK — " if ok else "FAIL — ") + f"{sum(STEPS)}/{len(STEPS)} checks passed")
     return 0 if ok else 1
 

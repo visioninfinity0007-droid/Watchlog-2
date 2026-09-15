@@ -3,6 +3,7 @@ import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
   normalizeMode, isExternal, egressAllowed, noModelIntent, buildCandidates,
+  isEvidenceIntent, stripEvidenceImages, resolveEvidenceWindow, resolveCameraId, evidenceSummary,
   type AiMode, type RouteAudit,
 } from "./providers/router.ts";
 
@@ -189,6 +190,16 @@ function dailyFallback(tools: Json) {
 }
 function fallback(prompt: string, ctx: Json, tools: Json) {
   const p = prompt.toLowerCase(), cameras = ctx?.cameras || [], faults = ctx?.faults || [], recorder = ctx?.recorder || {}, coverage = ctx?.coverage || {};
+  if (tools?.evidence) {
+    const ev = tools.evidence, sum = evidenceSummary(ev);
+    return {
+      answer: sum.text + (ev?.window?.from ? ` Window: ${ev.window.from} to ${ev.window.to}.` : ""),
+      cards: [{ type: "incident", title: `Evidence — ${ev?.window?.label || "requested window"}`,
+        data: { events: sum.events, cameras: sum.cameras, span: sum.span, index: (ev?.index || []).slice(0, 8) } }],
+      suggestions: ["Show the snapshots", "Which cameras were involved?", "Check site health"],
+      proposed_actions: [{ kind: "navigate", label: "Open incidents", data: { href: "/incidents/" } }], mode: "guided_fallback",
+    };
+  }
   if (/setup|configure|connect|install|what can|capabilit/.test(p)) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
     return { answer: next ? `The next recorded setup step is ${String(next.label || next.key).toLowerCase()}. I checked the exact recorder capability profile before making this recommendation.` : "The recorded setup checklist is complete. I can still refine monitoring using the evidence-graded recorder profile and WatchLog software analytics.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
@@ -223,6 +234,25 @@ function sanitizeResult(value: any) {
   });
   return { answer, cards, suggestions, proposed_actions, mode: src.mode === "ai" ? "ai" : "guided_fallback" };
 }
+// Two-stage evidence retrieval, tenant/site scoped via the user's own client (wl_assert_my_site
+// inside the RPCs). Stage 1 = compact index (no bytes); stage 2 = full bundles for the few relevant
+// events. Only called on a MODEL route for an evidence-intent prompt — a NO_MODEL question never
+// touches the evidence workspace.
+async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json): Promise<Json | null> {
+  if (!isEvidenceIntent(prompt)) return null;
+  const tz = ctx?.site?.timezone || "UTC";
+  const w = resolveEvidenceWindow(prompt, new Date(), tz);
+  const cameraId = resolveCameraId(prompt, ctx?.cameras || []);
+  const idx = await rpcOptional(sb, "wl_ai_evidence_index", { p_site_id: siteId, p_from: w.from, p_to: w.to, p_camera_id: cameraId });
+  const index = idx.ok && Array.isArray(idx.data) ? idx.data : [];
+  const eventRefs = [...new Set(index.map((e: Json) => e.event_ref).filter(Boolean))].slice(0, 4);
+  const bundles: Json[] = [];
+  for (const ref of eventRefs) {
+    const b = await rpcOptional(sb, "wl_ai_evidence_bundle", { p_site_id: siteId, p_event_ref: ref });
+    if (b.ok && b.data?.found) bundles.push(b.data);
+  }
+  return { window: w, camera_id: cameraId, index: index.slice(0, 20), bundles };
+}
 function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[] {
   return [
     { role: "system", content: SYSTEM_PROMPT },
@@ -243,19 +273,26 @@ function baseAudit(mode: AiMode, route: RouteAudit["route"], extra: Partial<Rout
 // on invalid config, try the configured fallback next, and keep the verified-data guided fallback as
 // the floor. Provider/model identities are returned ONLY in `audit` (Admin/audit), never in `result`.
 async function routeChat(opts: {
-  service: any; prompt: string; history: any[]; context: Json; tools: Json;
+  sb: any; service: any; prompt: string; siteId: string; history: any[]; context: Json; tools: Json;
   mode: AiMode; siteAllowsExternal: boolean; toolCalls: string[];
 }): Promise<{ result: Json; audit: RouteAudit }> {
-  const { service, prompt, history, context, tools, mode, siteAllowsExternal, toolCalls } = opts;
+  const { sb, service, prompt, siteId, history, context, tools, mode, siteAllowsExternal, toolCalls } = opts;
 
-  // NO_MODEL: WatchLog already knows canonical health/status/coverage answers — no LLM, no egress.
+  // NO_MODEL: canonical health/status/coverage answered from verified data — no LLM, no egress, and
+  // (crucially) NO evidence workspace access.
   if (noModelIntent(prompt)) {
     return { result: sanitizeResult(fallback(prompt, context, tools)),
              audit: baseAudit(mode, "no_model", { outcome: "deterministic", tool_calls: toolCalls }) };
   }
 
-  // Resolve the mode -> providers from DB (service-role only). A resolver error is treated as
-  // "unresolved" and flows to the deterministic floor — never an open failure.
+  // Scoped, two-stage evidence retrieval — only for an evidence-intent MODEL route.
+  const evidence = await loadEvidence(sb, prompt, siteId, context);
+  const toolsEv = evidence ? { ...tools, evidence } : tools;
+  const evToolCalls = evidence
+    ? [...toolCalls, "evidence_index", ...(Array.isArray(evidence.bundles) && evidence.bundles.length ? ["evidence_bundle"] : [])]
+    : toolCalls;
+
+  // Resolve the mode -> providers from DB (service-role only). A resolver error flows to the floor.
   let resolved: any = null;
   try {
     const r = await service.rpc("wl_ai_resolve_mode", { p_mode: mode, p_needs_vision: false });
@@ -265,21 +302,25 @@ async function routeChat(opts: {
   const { candidates, modeExternalAllowed, primaryInvalid } = buildCandidates(resolved, legacyEnvProvider());
 
   if (candidates.length === 0) {
-    // Either nothing is configured, or the configured primary is structurally invalid (fail closed).
+    // Nothing configured, or the configured primary is structurally invalid (fail closed).
     const outcome = primaryInvalid ? "config_invalid" : "no_provider_configured";
-    return { result: sanitizeResult(fallback(prompt, context, tools)),
-             audit: baseAudit(mode, "guided_fallback", { outcome, tool_calls: toolCalls }) };
+    return { result: sanitizeResult(fallback(prompt, context, toolsEv)),
+             audit: baseAudit(mode, "guided_fallback", { outcome, tool_calls: evToolCalls }) };
   }
 
-  const messages = buildMessages(context, tools, history);
   let anyBlocked = false, tried = 0, last = candidates[candidates.length - 1].cfg;
-
   for (const cand of candidates) {
     last = cand.cfg;
     // Egress gate AFTER resolution: a local-only site can never be sent to an external model, no
     // matter what an admin configured for the mode/provider.
     if (!egressAllowed(cand.cfg, siteAllowsExternal, modeExternalAllowed)) { anyBlocked = true; continue; }
     tried++;
+    // Evidence images accompany the prompt ONLY to an egress-permitted provider; the explicit strip
+    // keeps a LOCAL-ONLY site's images away from any external model (defense in depth).
+    const evForProvider = evidence
+      ? (isExternal(cand.cfg) && !(siteAllowsExternal && modeExternalAllowed) ? stripEvidenceImages(evidence) : evidence)
+      : null;
+    const messages = buildMessages(context, evidence ? { ...tools, evidence: evForProvider } : tools, history);
     try {
       const out = await buildProvider(cand.cfg).chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cand.cfg.maxOutput });
       if (!out.text) throw new Error("provider_empty_response");
@@ -290,17 +331,18 @@ async function routeChat(opts: {
         mode, route: cand.isFallback ? "ai_fallback" : "ai_primary",
         provider_id: cand.cfg.id, provider_name: cand.cfg.name, model: cand.cfg.model,
         used_fallback: cand.isFallback, egress: isExternal(cand.cfg) ? "external" : "local",
-        latency_ms: out.latencyMs || 0, candidates_tried: tried, tool_calls: toolCalls, outcome: "ok",
+        latency_ms: out.latencyMs || 0, candidates_tried: tried, tool_calls: evToolCalls, outcome: "ok",
       } };
     } catch { /* try the next configured candidate */ }
   }
 
-  // All candidates were blocked or failed -> verified-data guided fallback (the floor).
-  return { result: sanitizeResult(fallback(prompt, context, tools)), audit: {
+  // All candidates were blocked or failed -> verified-data guided fallback (the floor), grounded on
+  // the loaded evidence when the question was an evidence query.
+  return { result: sanitizeResult(fallback(prompt, context, toolsEv)), audit: {
     mode, route: "guided_fallback",
     provider_id: last?.id ?? null, provider_name: last?.name ?? null, model: last?.model ?? null,
     used_fallback: false, egress: anyBlocked && tried === 0 ? "blocked_local_only" : "n/a",
-    latency_ms: 0, candidates_tried: tried, tool_calls: toolCalls,
+    latency_ms: 0, candidates_tried: tried, tool_calls: evToolCalls,
     outcome: tried === 0 && anyBlocked ? "egress_blocked" : "all_providers_failed",
   } };
 }
@@ -367,7 +409,7 @@ Deno.serve(async (req) => {
     let result: Json, audit: RouteAudit;
     try {
       ({ result, audit } = await routeChat({
-        service, prompt, history: historyResult.data || [], context: ctxResult.data || {},
+        sb, service, prompt, siteId, history: historyResult.data || [], context: ctxResult.data || {},
         tools, mode, siteAllowsExternal, toolCalls,
       }));
     } catch (routerError) {
