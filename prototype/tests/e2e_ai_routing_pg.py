@@ -127,9 +127,9 @@ def main() -> int:
 
     # 8. platform admin reads it; provider/model visible; NO key material
     padmin = q("insert into auth.users (email) values (%s) returning id", f"route-padmin-{sfx}@watchlog.test")[0]
-    q("insert into platform_admins(user_id, role) values (%s,'platform_admin') "
-      "on conflict (user_id) do update set role=excluded.role", padmin)
-    rows = as_user(padmin, "select wl_ai_route_audit(100, %s)", site)[0][0]
+    conn.execute("insert into platform_admins(user_id, role) values (%s,'platform_admin') "
+                 "on conflict (user_id) do update set role=excluded.role", (padmin,))
+    rows = as_user(padmin, "select wl_ai_route_audit(100, %s)", site)[0]
     blob = json.dumps(rows)
     step(isinstance(rows, list) and len(rows) == 1 and rows[0]["provider_name"] == "VI Ollama"
          and rows[0]["model"] == "qwen3:8b" and "sk-" not in blob and "api_key" not in blob,
