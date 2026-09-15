@@ -11,7 +11,9 @@ const TABS = [
   ["Support", "/admin/support/"],
   ["Audit", "/admin/audit/"],
   ["Admins", "/admin/admins/"],
+  ["AI & Models", "/admin/ai/"],
 ];
+const OWNER_ONLY_TABS = new Set(["Admins", "AI & Models"]);
 
 export async function requirePlatformAdmin() {
   const sb = supabase();
@@ -50,7 +52,7 @@ export function AdminNav({ active, admin }) {
       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", color: "var(--color-violet-bright)" }}>OPERATIONS</span>
     </a>
     <nav className="nav">
-      {TABS.filter(([label]) => label !== "Admins" || admin?.role === "platform_owner").map(([label, href]) =>
+      {TABS.filter(([label]) => !OWNER_ONLY_TABS.has(label) || admin?.role === "platform_owner").map(([label, href]) =>
         <a key={href} href={href} className={"navlink" + (active === label ? " active" : "")}>{label}</a>)}
     </nav>
     <span className="spacer" />

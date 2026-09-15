@@ -1,0 +1,188 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Dahua
+family: NVR4000-I
+model: DHI-NVR4216-16P-I
+firmware_range: Rev001.001 (2019)
+recorder_type: NVR (IP, 16-PoE)
+ai_processing_location: both
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: 16
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI configManager.cgi?action=getConfig&name=SmartMotionDetect
+  write:
+    supported: true
+    method: CGI configManager.cgi?action=setConfig&name=SmartMotionDetect
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Perimeter human/vehicle secondary recognition; metadata search.
+- capability: line_crossing
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI configManager.cgi?action=getConfig&name=VideoAnalyseRule (Class=CrossLineDetection)
+  write:
+    supported: true
+    method: CGI configManager.cgi?action=setConfig&name=VideoAnalyseRule (Class=CrossLineDetection)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Perimeter recorder 4ch, 10 IVS rules; tripwire.
+- capability: intrusion
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI configManager.cgi?action=getConfig&name=VideoAnalyseRule (Class=CrossRegionDetection)
+  write:
+    supported: true
+    method: CGI configManager.cgi?action=setConfig&name=VideoAnalyseRule (Class=CrossRegionDetection)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Perimeter recorder 4ch; intrusion.
+- capability: face_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI eventManager.cgi?action=attach&codes=[FaceDetection] (event); config CGI name UNKNOWN
+      in obtained spec
+  write:
+    supported: true
+    method: UNKNOWN - face config CGI not in obtained Dahua HTTP-API copy
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Face capture/detection with FD camera.
+- capability: face_recognition
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: UNKNOWN - face-DB CGI not in obtained spec (research gap G4)
+  write:
+    supported: true
+    method: UNKNOWN - face-DB CGI not in obtained spec
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 2ch video / 8ch picture stream FR; DB 10 dbs/20000 imgs; 12 face pics/s.
+- capability: anpr_lpr
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: na - analytic runs on the camera; recorder ingests/records only
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ANPR by Dahua ITC camera; recorder does list mgmt + search only.
+- capability: people_counting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: na - analytic runs on the camera; recorder ingests/records only
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: AI-series application; camera-side.
+- capability: heatmap
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not mentioned in datasheet.
+- capability: video_loss
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI eventManager.cgi?action=getEventIndexes&code=VideoLoss / event stream code VideoLoss
+  write:
+    supported: false
+    method: na
+    safety_class: read
+  verification:
+    required: true
+  notes: 'Video Detection: Video Loss.'
+- capability: tamper
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI eventManager.cgi VideoBlind index / configManager.cgi name=CoverDetect (read)
+  write:
+    supported: false
+    method: na
+    safety_class: read
+  verification:
+    required: true
+  notes: Tampering.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: CGI global.cgi?action=getCurrentTime + configManager.cgi name=Locales,NTP
+  write:
+    supported: true
+    method: CGI global.cgi?action=setCurrentTime + configManager.cgi name=Locales,NTP
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP.
+source:
+- url_or_doc: https://www.dahuasecurity.com/ (model purged; genuine manufacturer PDF via distributor mirror)
+  title: Dahua DHI-NVR4216-16P-I datasheet (NVR4000-I AI series), Rev001.001 2019. MIRROR provenance caveat.
+  retrieved_at: '2019-02-26'
+provenance_caveat: 'MIRROR provenance: model discontinued/purged from dahuasecurity.com; genuine manufacturer
+  PDF obtained via a distributor mirror. Datasheet-grade, never field-verified.'

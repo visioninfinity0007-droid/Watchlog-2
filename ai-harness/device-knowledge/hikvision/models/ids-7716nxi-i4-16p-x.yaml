@@ -1,0 +1,187 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Hikvision
+family: DeepinMind NVR
+model: iDS-7716NXI-I4/16P/X
+firmware_range: V4.1.70 (2019-08-13, baseline rev)
+recorder_type: NVR
+ai_processing_location: both
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: 16 (+16 PoE)
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart, /ISAPI/System/Video/inputs/channels/<ID>/VCAResource (GET); MD2.0 human/vehicle
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart (PUT) - MD2.0 write sub-path UNKNOWN in obtained guides
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 16-ch human/vehicle recognition; facial-analytics and human/vehicle mutually exclusive.
+- capability: line_crossing
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/LineDetection/<ID> (PUT) - exact sub-path UNKNOWN (not in obtained guides)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder-side multiple VCA + human/vehicle analysis (not itemized by name).
+- capability: intrusion
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/FieldDetection/<ID> (PUT) - exact sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder-side VCA / human-vehicle analysis.
+- capability: face_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI token faceSnap (capture)
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 8-ch face capture.
+- capability: face_recognition
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI tokens faceContrast / faceRecognition
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 16-ch face comparison; 32 libraries / 100,000 pictures; mutually exclusive with human/vehicle.
+- capability: anpr_lpr
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not documented in this (B) rev.
+- capability: people_counting
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not documented.
+- capability: heatmap
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Not documented.
+- capability: video_loss
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet silent.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet silent.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+  write:
+    supported: true
+    method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP.
+source:
+- url_or_doc: https://pro-av.hikvision.com/
+  title: Hikvision iDS-7716NXI-I4/16P/X(B) datasheet (DeepinMind NVR), V4.1.70 (2019 baseline rev)
+  retrieved_at: '2019-08-13'
+provenance_caveat: 2019 baseline datasheet rev; newer revisions may itemize more (e.g. ANPR). Datasheet-grade,
+  never field-verified.

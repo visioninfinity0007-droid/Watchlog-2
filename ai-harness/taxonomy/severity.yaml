@@ -1,0 +1,35 @@
+# WatchLog severity + escalation model.
+# Severity is a property of an INCIDENT (or incident candidate), never of a raw observation.
+version: 1
+schema: severity.v1
+
+# Escalation ladder — the model may move UP a rung only when evidence for that rung exists.
+# It must never skip straight to the top. (DeepCamera pattern, WatchLog-governed.)
+ladder:
+  - state: routine
+    numeric: 0
+    meaning: "Normal, expected activity for this site/time. Not an incident."
+  - state: notable
+    numeric: 25
+    meaning: "Worth logging/review; within normal bounds (e.g. a visitor after hours by appointment)."
+  - state: suspicious
+    numeric: 55
+    meaning: "Deviates from normal in a way that warrants attention: loitering, casing, tampering signs, repeated unexplained visits."
+    requires: "at least one corroborating observation beyond mere presence."
+  - state: critical
+    numeric: 85
+    meaning: "Strong evidence of a serious event: forced entry, weapon present, person in distress, fire/smoke, armory/vault breach after hours."
+    requires: "evidence-backed activity + coverage that supports the claim; never inferred from a single low-confidence frame."
+
+severity_levels: [low, medium, high]   # customer-facing rollup of the ladder
+level_from_numeric:
+  low:    {min: 0,  max: 39}
+  medium: {min: 40, max: 74}
+  high:   {min: 75, max: 100}
+
+# Guards — hard rules the model cannot override.
+guards:
+  - "Presence alone (PERSON_PRESENT / VEHICLE_PRESENT) is never above 'notable'."
+  - "AFTER_HOURS raises severity only in combination with a restricted area or an abnormal activity."
+  - "A DETECTION_GAP (see core/confidence.md) can never raise severity — missing evidence is not evidence."
+  - "Site-type context sets the baseline: the same observation is 'routine' at a retail entrance and 'critical' at an armory gate after hours."

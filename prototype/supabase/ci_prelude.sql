@@ -38,4 +38,17 @@ as $$
   )::uuid
 $$;
 
--- auth.role()/auth.email() are not referenced by the migrations, so they are intentionally omitted.
+-- auth.role() — reads the JWT 'role' claim, exactly like Supabase. Referenced by service-role-gated
+-- RPCs (0102 assistant-message authoring; 0105 AI provider key resolver / health writeback).
+-- Defaults to 'authenticated' when unset, matching Supabase for an authenticated request.
+create or replace function auth.role() returns text
+language sql stable
+as $$
+  select coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role',
+    'authenticated'
+  )
+$$;
+
+-- auth.email() is not referenced by the migrations, so it is intentionally omitted.
