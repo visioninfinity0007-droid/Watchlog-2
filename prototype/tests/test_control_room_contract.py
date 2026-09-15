@@ -3,7 +3,13 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PAGE = (ROOT / "portal/app/control-room/page.js").read_text(encoding="utf-8")
+# AI-first split: /control-room/ is now the lean "Camera View" (customer-workspace.js) and the full
+# operations Control Room — overview, saved layouts and every safety boundary — lives at
+# /control-room/advanced/ (control-room/legacy.js). This contract enforces the full feature where it
+# is implemented AND additionally verifies the customer-facing Camera View surface stays safe. No
+# security property is removed.
+PAGE = (ROOT / "portal/app/control-room/legacy.js").read_text(encoding="utf-8")
+CAMERA_VIEW = (ROOT / "portal/app/control-room/customer-workspace.js").read_text(encoding="utf-8")
 MIG = (ROOT / "prototype/supabase/migrations/0039_control_room_layouts.sql").read_text(encoding="utf-8")
 
 
@@ -30,6 +36,13 @@ def main():
     for unsafe in ("rtsp://", "<video", "autoplay"):
         if unsafe.lower() in PAGE.lower():
             raise AssertionError(f"unvalidated live-video mechanism present: {unsafe}")
+
+    # The customer-facing Camera View surface (/control-room/) must ALSO never imply live video, and
+    # must use the shared tenant guard.
+    for unsafe in ("rtsp://", "<video", "autoplay"):
+        if unsafe.lower() in CAMERA_VIEW.lower():
+            raise AssertionError(f"Camera View implies unvalidated live video: {unsafe}")
+    require(CAMERA_VIEW, "requireTenant", "Camera View must use the shared tenant/account guard")
 
     # Shared account-status/tenant guard and existing tenant-safe data surfaces.
     require(PAGE, "requireTenant", "Control Room must use shared tenant/account guard")

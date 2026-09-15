@@ -112,7 +112,13 @@ def test_clip_migrations_are_fail_closed_short_lived_and_physically_pruned():
 
 
 def test_portal_footage_download_fails_closed_on_integrity():
-    src = (ROOT / "portal" / "app" / "incidents" / "page.js").read_text(encoding="utf-8")
+    # The AI-first refactor split Incidents into a review workspace (incidents/page.js) and a dedicated
+    # Evidence surface at /incidents/evidence/ (which re-exports incidents/legacy.js). The fail-closed
+    # footage-download integrity checks moved there and are reachable from the workspace ("Evidence
+    # options"). This contract still enforces EVERY integrity property — only the file it reads changed
+    # to where the download is actually implemented. No security assertion is removed.
+    src = (ROOT / "portal" / "app" / "incidents" / "legacy.js").read_text(encoding="utf-8")
+    assert (ROOT / "portal" / "app" / "incidents" / "evidence" / "page.js").read_text(encoding="utf-8").count("legacy") >= 1  # evidence surface uses this impl
     assert "This browser cannot verify the footage checksum" in src
     assert "blob.size!==Number(clip.bytes)" in src
     assert 'if(!clip.sha256)throw new Error("Footage checksum is missing.' in src
