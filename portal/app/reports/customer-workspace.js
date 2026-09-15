@@ -6,7 +6,7 @@ import ui from "../portal.module.css";
 import styles from "./reports.module.css";
 import useReport from "./use-report";
 
-const VIEWS=[["daily","Today"],["yesterday","Yesterday"],["monthly","30 days"],["executive","Executive"]];
+const VIEWS=[["yesterday","Yesterday"],["daily","Today"],["monthly","30 days"],["executive","Executive"]];
 function dateLabel(v){if(!v)return"Yesterday";const d=new Date(`${v}T12:00:00`);return d.toLocaleDateString([], {weekday:"long",month:"long",day:"numeric",year:"numeric"})}
 function severityClass(v){return v==="critical"?styles.dotCritical:v==="attention"?styles.dotAttention:""}
 
