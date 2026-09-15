@@ -19,6 +19,8 @@ import ipaddress
 import re
 import socket
 import ssl
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -160,8 +162,20 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
 # A short list for sweeping a whole subnet - 254 hosts x 13 ports is slow
 # and mostly pointless. These six catch every recorder we can support plus
 # the two families we cannot, so an unsupported unit still gets named.
-SWEEP_PORTS = [80, 8000, 8080, 554, 37777, 34567]
-SWEEP_TIMEOUT = 0.4
+# Every port the rest of the setup stack can actually talk to. This list must stay a
+# superset of setup_backend._WEB_PORTS / _DAHUA_SDK_PORTS: a recorder whose only open
+# port was 443/88/81/8443 used to be invisible to discovery even though the login step
+# already knew how to drive it (field: HTTPS-only and alt-web-port recorders reported as
+# "no recorder found" while manual IP entry worked).
+SWEEP_PORTS = [80, 443, 8000, 8080, 8443, 81, 88, 8081, 554, 37777, 37778, 34567]
+# 0.4s silently dropped slow embedded recorders and any host behind Wi-Fi jitter — a
+# single missed SYN meant "nothing found". Use a more forgiving budget, then give the
+# hosts that stayed completely silent one longer second chance on the dominant ports.
+SWEEP_TIMEOUT = 0.9
+SWEEP_RETRY_TIMEOUT = 1.6
+SWEEP_RETRY_PORTS = [80, 443, 37777, 8000]
+# Concurrency absorbs the wider port list so wall-clock stays in the same few seconds.
+SWEEP_WORKERS = 768
 MAX_AUTO_SUBNETS = 8
 
 
@@ -176,6 +190,11 @@ def _usable_ipv4(value: str | None) -> str | None:
     if not isinstance(addr, ipaddress.IPv4Address):
         return None
     if addr.is_unspecified or addr.is_loopback or addr.is_multicast:
+        return None
+    # Reserved 240.0.0.0/4 is never a LAN host, and Python classifies it as "private",
+    # so is_private alone would accept a subnet mask (255.255.255.0) scraped out of an
+    # ipconfig dump and then sweep a nonsense /24.
+    if addr.is_reserved:
         return None
     # Never auto-scan a public /24. CCTV interfaces should be RFC1918 or
     # link-local; manual IP entry remains available for unusual topologies.
@@ -205,6 +224,35 @@ def _adapter_ipv4s() -> list[str]:
     return found
 
 
+def _command_ipv4s() -> list[str]:
+    """Adapter enumeration that does not depend on psutil being packaged.
+
+    psutil is an optional import and was never added to the frozen build, so the
+    shipped installer silently lost multi-adapter discovery and swept only the
+    default-route /24 — exactly the blind spot local_ipv4s() exists to close.
+    Parse the OS's own interface dump as well. _usable_ipv4 rejects masks (255.x
+    is not private) and public addresses; a default gateway shares its host's /24
+    so an extra hit is harmless. Locale-independent: no label parsing.
+    """
+    kwargs = {"capture_output": True, "text": True, "timeout": 6}
+    if sys.platform.startswith("win"):
+        cmd = ["ipconfig"]
+        # --windowed setup UI: never flash a console window.
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        cmd = ["ip", "-4", "-o", "addr"]
+    try:
+        proc = subprocess.run(cmd, **kwargs)             # noqa: S603
+    except Exception:                                    # noqa: BLE001
+        return []
+    found: list[str] = []
+    for raw in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", proc.stdout or ""):
+        ip = _usable_ipv4(raw)
+        if ip and ip not in found:
+            found.append(ip)
+    return found
+
+
 def local_ipv4s() -> list[str]:
     """Every usable local IPv4, with the default-route interface first.
 
@@ -231,6 +279,11 @@ def local_ipv4s() -> list[str]:
         pass
 
     for ip in _adapter_ipv4s():
+        add(ip)
+
+    # Runs even when psutil is present: a CCTV NIC that psutil misses (or a build
+    # without psutil at all) must never silently shrink the swept network set.
+    for ip in _command_ipv4s():
         add(ip)
 
     try:
@@ -287,22 +340,32 @@ def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
         + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
 
     def probe(args):
-        ip, port = args
+        ip, port, budget = args
         try:
-            with socket.create_connection((ip, port), timeout=SWEEP_TIMEOUT):
+            with socket.create_connection((ip, port), timeout=budget):
                 return ip, port
         except Exception:                                # noqa: BLE001
             return None
 
-    targets = [(f"{base}.{h}", p)
-               for base in bases
-               for h in range(1, 255)
-               for p in SWEEP_PORTS]
+    all_hosts = [f"{base}.{h}" for base in bases for h in range(1, 255)]
     found: dict[str, set[int]] = {}
-    with ThreadPoolExecutor(max_workers=256) as pool:
-        for hit in pool.map(probe, targets):
-            if hit:
-                found.setdefault(hit[0], set()).add(hit[1])
+
+    def run(targets):
+        with ThreadPoolExecutor(max_workers=SWEEP_WORKERS) as pool:
+            for hit in pool.map(probe, targets):
+                if hit:
+                    found.setdefault(hit[0], set()).add(hit[1])
+
+    run([(ip, port, SWEEP_TIMEOUT) for ip in all_hosts for port in SWEEP_PORTS])
+
+    # Second chance: one dropped SYN (slow embedded recorder, Wi-Fi jitter) was
+    # indistinguishable from "no recorder here". Only pay for it when the first pass
+    # found nothing at all — that is exactly the "no recorder found" report — so a
+    # normal successful scan stays as fast as before.
+    if not found:
+        log("  nothing answered on the first pass; retrying slowly before giving up ...")
+        run([(ip, port, SWEEP_RETRY_TIMEOUT) for ip in all_hosts for port in SWEEP_RETRY_PORTS])
+
     return [(ip, sorted(ports)) for ip, ports in
             sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
 

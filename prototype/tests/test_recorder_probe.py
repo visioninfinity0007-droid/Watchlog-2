@@ -9,7 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
@@ -108,6 +108,65 @@ class ProbeTests(unittest.TestCase):
         bases, addresses = discover._sweep_bases("not-an-ip")
         self.assertEqual([], bases)
         self.assertEqual([], addresses)
+
+
+class DiscoveryBlindSpotTests(unittest.TestCase):
+    """Field regression: the setup wizard showed an empty recorder list ("no recorder
+    found") while typing the recorder's IP manually worked. Two causes: the sweep never
+    probed the port the recorder actually listened on, and one dropped SYN was
+    indistinguishable from an empty network."""
+
+    def test_sweep_ports_cover_every_port_the_login_step_supports(self):
+        import setup_backend as sb
+        swept = set(discover.SWEEP_PORTS)
+        missing_web = set(sb._WEB_PORTS) - swept
+        self.assertFalse(
+            missing_web,
+            f"login step drives web ports discovery never scans: {sorted(missing_web)}")
+        self.assertFalse(set(sb._DAHUA_SDK_PORTS) - swept)
+
+    def test_https_only_and_alt_web_port_recorders_are_scanned(self):
+        for port in (443, 8443, 81, 88, 8081):
+            self.assertIn(
+                port, discover.SWEEP_PORTS,
+                f"a recorder reachable only on {port} would stay invisible")
+
+    def test_sweep_gives_a_silent_host_a_second_chance(self):
+        def fake_conn(address, timeout=None):
+            ip, port = address
+            if ip == "10.0.0.7" and port == 443 and timeout == discover.SWEEP_RETRY_TIMEOUT:
+                return MagicMock()
+            raise OSError("filtered")
+
+        with patch.object(discover, "_sweep_bases", return_value=(["10.0.0"], ["10.0.0.5"])), \
+             patch("socket.create_connection", side_effect=fake_conn):
+            hits = discover.sweep(log=lambda *_a: None)
+        self.assertEqual([("10.0.0.7", [443])], hits)
+
+    def test_command_ipv4s_parses_interfaces_and_rejects_masks(self):
+        sample = """
+Ethernet adapter CCTV:
+   IPv4 Address. . . . . . . . . . . : 192.168.1.50
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : 192.168.1.1
+Wireless LAN adapter Wi-Fi:
+   IPv4 Address. . . . . . . . . . . : 10.20.30.40
+"""
+        with patch.object(discover.subprocess, "run",
+                          return_value=SimpleNamespace(stdout=sample)):
+            found = discover._command_ipv4s()
+        self.assertIn("192.168.1.50", found)
+        self.assertIn("10.20.30.40", found)
+        self.assertNotIn("255.255.255.0", found)
+
+    def test_cctv_nic_is_still_enumerated_without_psutil(self):
+        """psutil is an optional import; a build without it must not silently shrink the
+        swept network set back to the default-route /24."""
+        with patch.object(discover, "psutil", None), \
+             patch.object(discover, "_command_ipv4s", return_value=["192.168.1.50"]), \
+             patch("socket.getaddrinfo", side_effect=OSError("no dns")):
+            found = discover.local_ipv4s()
+        self.assertIn("192.168.1.50", found)
 
 
 if __name__ == "__main__":

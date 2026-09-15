@@ -22,6 +22,7 @@ $common = @(
     "--onefile","--name","watchlog-agent","--console","--clean","--noconfirm",
     "--distpath","dist","--workpath","build","--specpath","build",
     "--hidden-import","requests",
+    "--hidden-import","psutil",
     "--hidden-import","zoneinfo",
     "--collect-all","tzdata",
     "--exclude-module","torch","--exclude-module","ultralytics",
@@ -76,8 +77,8 @@ if ($WithAI) {
   yolo export model=yolov8n.pt format=onnx
 then copy it there."
     }
-    Write-Host "Installing production dependencies (onnxruntime, numpy, pillow, tzdata)..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests onnxruntime numpy pillow tzdata
+    Write-Host "Installing production dependencies (psutil, onnxruntime, numpy, pillow, tzdata)..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata
     $ai = @(
         "--hidden-import","numpy",
         "--hidden-import","onnxruntime","--collect-all","onnxruntime",
@@ -89,7 +90,7 @@ then copy it there."
 } else {
     $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
     Write-Host "Installing lean build dependencies..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests tzdata
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata
     Write-Host "Freezing lean diagnostic build (analytics measurement pauses without AI)..." -ForegroundColor Cyan
     python -m PyInstaller @common @lean $entry
 }
