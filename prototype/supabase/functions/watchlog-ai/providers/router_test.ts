@@ -4,6 +4,7 @@
 import {
   normalizeMode, dbProviderToConfig, isExternal, egressAllowed, noModelIntent, buildCandidates,
   isEvidenceIntent, stripEvidenceImages, resolveEvidenceWindow, resolveCameraId, evidenceSummary,
+  retrieveEvidence,
 } from "./router.ts";
 import type { ProviderConfig } from "./types.ts";
 
@@ -106,6 +107,40 @@ Deno.test("evidenceSummary: grounded — cites distinct events, cameras and dete
   eq(s.cameras.length, 2, "2 distinct cameras");
   assert(s.text.includes("2 events"), "mentions event count");
   assert(s.text.toLowerCase().includes("person"), "mentions detection label");
+});
+
+Deno.test("armory last night: two-stage retrieval — compact index first, load only the selected event, grounded", async () => {
+  const calls: string[] = [];
+  const rpc = async (name: string, args: Record<string, any>) => {
+    calls.push(name);
+    if (name === "wl_ai_evidence_index") {
+      // stage 1 must be scoped to the resolved camera + a last-night window
+      eq(args.p_camera_id, "cam-armory", "index scoped to the resolved armory camera");
+      assert(new Date(args.p_to as string) < new Date("2026-09-15T09:00:00Z"), "window is in the past");
+      return { ok: true, data: [
+        { event_ref: "evt-armory-1", camera_id: "cam-armory", captured_at: "2026-09-14T22:10:00Z", has_payload: true },
+        { event_ref: "evt-armory-1", camera_id: "cam-armory", captured_at: "2026-09-14T22:11:00Z", has_payload: true },
+      ] };
+    }
+    if (name === "wl_ai_evidence_bundle") {
+      eq(args.p_event_ref, "evt-armory-1", "stage 2 loads only the selected event");
+      return { ok: true, data: { found: true, snapshots: [{ image_b64: "IMG", camera_id: "cam-armory" }],
+        detections: [[{ label: "person", confidence: 0.8 }]] } };
+    }
+    return { ok: false };
+  };
+  const ctx = { site: { id: "site-1", timezone: "Asia/Karachi" },
+    cameras: [{ id: "cam-armory", name: "Armory", purpose: "restricted" }] };
+  const ev = await retrieveEvidence(rpc, "What happened around the armory last night?", "site-1", ctx, new Date("2026-09-15T09:00:00Z"));
+  assert(ev, "evidence loaded for an evidence-intent prompt");
+  eq(calls[0], "wl_ai_evidence_index", "stage 1 (compact index) runs first");
+  assert(calls.includes("wl_ai_evidence_bundle"), "stage 2 (bundle) loads the relevant event");
+  eq(ev.camera_id, "cam-armory", "resolved the armory camera");
+  const s = evidenceSummary(ev);
+  eq(s.events, 1, "one distinct event");
+  assert(s.text.toLowerCase().includes("person"), "answer is grounded on the detection");
+  // a non-evidence status prompt never runs retrieval
+  eq(await retrieveEvidence(rpc, "is the site online?", "site-1", ctx, new Date()), null, "status prompt -> no retrieval");
 });
 
 Deno.test("buildCandidates: primary+fallback ordered; unconfigured uses env bridge; invalid primary flagged", () => {

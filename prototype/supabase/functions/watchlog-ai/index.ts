@@ -3,7 +3,7 @@ import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
   normalizeMode, isExternal, egressAllowed, noModelIntent, buildCandidates,
-  isEvidenceIntent, stripEvidenceImages, resolveEvidenceWindow, resolveCameraId, evidenceSummary,
+  stripEvidenceImages, evidenceSummary, retrieveEvidence,
   type AiMode, type RouteAudit,
 } from "./providers/router.ts";
 
@@ -239,19 +239,7 @@ function sanitizeResult(value: any) {
 // events. Only called on a MODEL route for an evidence-intent prompt — a NO_MODEL question never
 // touches the evidence workspace.
 async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json): Promise<Json | null> {
-  if (!isEvidenceIntent(prompt)) return null;
-  const tz = ctx?.site?.timezone || "UTC";
-  const w = resolveEvidenceWindow(prompt, new Date(), tz);
-  const cameraId = resolveCameraId(prompt, ctx?.cameras || []);
-  const idx = await rpcOptional(sb, "wl_ai_evidence_index", { p_site_id: siteId, p_from: w.from, p_to: w.to, p_camera_id: cameraId });
-  const index = idx.ok && Array.isArray(idx.data) ? idx.data : [];
-  const eventRefs = [...new Set(index.map((e: Json) => e.event_ref).filter(Boolean))].slice(0, 4);
-  const bundles: Json[] = [];
-  for (const ref of eventRefs) {
-    const b = await rpcOptional(sb, "wl_ai_evidence_bundle", { p_site_id: siteId, p_event_ref: ref });
-    if (b.ok && b.data?.found) bundles.push(b.data);
-  }
-  return { window: w, camera_id: cameraId, index: index.slice(0, 20), bundles };
+  return retrieveEvidence((name, args) => rpcOptional(sb, name, args), prompt, siteId, ctx, new Date());
 }
 function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[] {
   return [

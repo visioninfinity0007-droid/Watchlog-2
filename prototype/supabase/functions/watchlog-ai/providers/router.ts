@@ -177,6 +177,28 @@ export function evidenceSummary(evidence: any): { text: string; events: number; 
   return { text, events, cameras: cams, span };
 }
 
+// Two-stage retrieval orchestration, dependency-injected on an `rpc` caller so it is testable without
+// a live stack. Stage 1 searches the compact index; stage 2 loads full bundles for only the few
+// relevant events. Returns null for a non-evidence prompt (so a NO_MODEL/status query never runs it).
+export async function retrieveEvidence(
+  rpc: (name: string, args: Record<string, unknown>) => Promise<{ ok: boolean; data?: any }>,
+  prompt: string, siteId: string, ctx: any, now: Date,
+): Promise<any | null> {
+  if (!isEvidenceIntent(prompt)) return null;
+  const tz = ctx?.site?.timezone || "UTC";
+  const w = resolveEvidenceWindow(prompt, now, tz);
+  const cameraId = resolveCameraId(prompt, ctx?.cameras || []);
+  const idx = await rpc("wl_ai_evidence_index", { p_site_id: siteId, p_from: w.from, p_to: w.to, p_camera_id: cameraId });
+  const index = idx.ok && Array.isArray(idx.data) ? idx.data : [];
+  const eventRefs = [...new Set(index.map((e: any) => e.event_ref).filter(Boolean))].slice(0, 4);
+  const bundles: any[] = [];
+  for (const ref of eventRefs) {
+    const b = await rpc("wl_ai_evidence_bundle", { p_site_id: siteId, p_event_ref: ref });
+    if (b.ok && b.data?.found) bundles.push(b.data);
+  }
+  return { window: w, camera_id: cameraId, index: index.slice(0, 20), bundles };
+}
+
 // A candidate provider in priority order, tagged as primary or a configured fallback.
 export interface Candidate {
   cfg: ProviderConfig;
