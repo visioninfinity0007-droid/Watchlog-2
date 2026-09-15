@@ -2,7 +2,7 @@
 import {useEffect,useState} from "react";
 import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
-import {selectedSiteId} from "../site-context";
+import {rememberSite,selectedSiteId} from "../site-context";
 
 const REPORT_STYLE="Write this as a finished customer-facing management brief in plain, natural business language. Lead with what management needs to know and what needs action. Do not describe WatchLog's internal process or implementation. Do not use internal terms such as canonical dataset, frozen report, snapshot, frame, detector event, pixel verification, evidence class, RPC, provenance, pipeline, or tool result. Routine movement is not an incident.";
 const PROMPTS={
@@ -18,6 +18,7 @@ function yesterdayInKarachi(){
   const v=Object.fromEntries(parts.filter(x=>x.type!=="literal").map(x=>[x.type,x.value]));
   return `${v.year}-${v.month}-${v.day}`;
 }
+function allowedSite(list,id){return Boolean(id)&&list.some(s=>String(s.id)===String(id))}
 
 export default function useReport(){
   const[email,setEmail]=useState("");
@@ -25,16 +26,31 @@ export default function useReport(){
   const[view,setView]=useState("yesterday");
   const[answer,setAnswer]=useState("");
   const[snapshot,setSnapshot]=useState(null);
-  const[busy,setBusy]=useState(false);
+  const[busy,setBusy]=useState(true);
   const[error,setError]=useState("");
 
-  useEffect(()=>{(async()=>{
-    const g=await requireTenant();if(!g)return;
+  useEffect(()=>{let live=true;(async()=>{
+    const g=await requireTenant();if(!g||!live)return;
     setEmail(g.session.user.email||"");
-    const params=new URLSearchParams(location.search),requested=params.get("view");
-    setSiteId(params.get("site")||selectedSiteId());
-    if(VALID_VIEWS.has(requested))setView(requested);
-  })()},[]);
+    const sb=supabase();
+    const sitesResult=await sb.rpc("wl_sites");
+    if(!live)return;
+    if(sitesResult.error){setError(say(sitesResult.error));setBusy(false);return}
+    const sites=sitesResult.data||[];
+    const params=new URLSearchParams(location.search),requestedView=params.get("view");
+    if(VALID_VIEWS.has(requestedView))setView(requestedView);
+    const requestedSite=params.get("site")||selectedSiteId()||"";
+    const resolvedSite=allowedSite(sites,requestedSite)?requestedSite:(sites[0]?.id||"");
+    if(!resolvedSite){setError("No site is available for this account yet.");setBusy(false);return}
+    const resolved=sites.find(s=>s.id===resolvedSite);
+    rememberSite(resolvedSite,resolved?.name||"");
+    setSiteId(resolvedSite);
+    if(requestedSite!==resolvedSite){
+      params.set("site",resolvedSite);
+      if(!params.get("view"))params.set("view",requestedView||"yesterday");
+      history.replaceState(null,"",`${location.pathname}?${params.toString()}${location.hash||""}`);
+    }
+  })().catch(e=>{if(live){setError(say(e)||"WatchLog could not load this report.");setBusy(false)}});return()=>{live=false}},[]);
 
   useEffect(()=>{
     if(!siteId)return;
