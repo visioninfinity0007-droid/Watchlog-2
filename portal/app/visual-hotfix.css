@@ -7,13 +7,16 @@ html,body{overflow-x:hidden}
 .productRail *{box-sizing:border-box;min-width:0}
 .productRailSites,.productRailRecent,.productRailNav,.productRailSubnav{overflow-x:hidden}
 
-/* Recent conversations belong to the rail flow; do not create a cramped nested scroller. */
-.productRailRecent{max-height:none!important;overflow:visible!important;padding-right:0}
+/* Keep core navigation permanently visible. Recent conversations load asynchronously
+   and must never push Reports, Setup or More out of the viewport after hydration. */
+.productRailNav{flex:0 0 auto;scrollbar-width:none}
+.productRailNav::-webkit-scrollbar{display:none}
+.productRailRecentLabel{flex:0 0 auto}
+.productRailRecent{flex:1 1 auto;min-height:72px;max-height:none!important;overflow-y:auto!important;overflow-x:hidden!important;padding-right:2px;scrollbar-width:thin}
 .productRailConversation{width:100%;max-width:100%;overflow:hidden;padding-top:9px!important;padding-bottom:9px!important}
 .productRailConversation span{display:-webkit-box;width:100%;max-width:100%;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal!important;text-overflow:ellipsis;line-height:1.35}
 .productRailConversation small{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.productRailNav{scrollbar-width:none}
-.productRailNav::-webkit-scrollbar{display:none}
+.productRailBottom{flex:0 0 auto;margin-top:8px!important}
 .productRailAsk{width:100%;box-sizing:border-box;text-decoration:none!important}
 .productRailAsk:hover{text-decoration:none!important}
 
@@ -43,5 +46,6 @@ html,body{overflow-x:hidden}
   .shell{display:block!important}
   .productRail{overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:none}
   .productRail::-webkit-scrollbar{display:none}
+  .productRailRecent{flex:0 0 auto;max-height:180px!important}
   .watchlogComposerDisclaimer{font-size:10px;margin-bottom:6px;padding:0 8px}
 }
