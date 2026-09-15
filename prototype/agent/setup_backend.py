@@ -236,6 +236,25 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
     return attempts[:5], None                   # bounded: never minutes of probing
 
 
+def _probe_web_ports(host: str, timeout: float | None = None, deadline: float = 6.0) -> list[int]:
+    """Targeted rescue for the flaky 0.4s subnet sweep, which frequently finds a Dahua's SDK port
+    (37777) but misses its slower embedded HTTP port (80). Re-probe the standard web ports on THIS
+    host with the generous per-host timeout, stopping at the first that answers — one reachable web
+    port is enough to proceed. Returns [] when none respond (a genuine, fail-closed web_unreachable)."""
+    import socket
+    budget = discover.CONNECT_TIMEOUT if timeout is None else timeout
+    start = time.monotonic()
+    for port in _WEB_PORTS:
+        if time.monotonic() - start > deadline:
+            break
+        try:
+            with socket.create_connection((host, port), timeout=budget):
+                return [port]
+        except OSError:
+            continue
+    return []
+
+
 def _classify_exception(exc: Exception) -> str:
     text = str(exc).lower()
     if "401" in text or "unauthor" in text or "403" in text:
@@ -274,7 +293,7 @@ def _setup_log(message: str) -> None:
 
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
-                  hint: dict | None = None, _scan=None, _build=None) -> dict:
+                  hint: dict | None = None, _scan=None, _build=None, _probe=None) -> dict:
     """Prove recorder identity + credentials + channel list — fast and bounded.
 
     `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
@@ -284,6 +303,7 @@ def test_recorder(address: str, username: str, password: str,
     progress = progress or (lambda _message: None)
     scan_fn = _scan or (lambda h: discover.scan(h, log=lambda _m: None))
     build_fn = _build or build
+    probe_fn = _probe or _probe_web_ports
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
 
@@ -317,6 +337,16 @@ def test_recorder(address: str, username: str, password: str,
             except Exception as exc:
                 _setup_log(f"scan failed host={host}: {_redact(str(exc), password)}")
                 open_ports = []
+        # Targeted web-port rescue: a recorder was found but no web port registered. The fast 0.4s
+        # subnet sweep (or a stale discovery hint) commonly misses a Dahua's slower embedded HTTP
+        # port (80) while catching its SDK port (37777). Re-probe the standard web ports on THIS host
+        # with the generous per-host timeout before declaring the web service unreachable. This is a
+        # rescue for a false negative, NOT a weakening: if HTTP is genuinely absent it still fails closed.
+        if open_ports and not any(p in open_ports for p in _WEB_PORTS):
+            rescued = probe_fn(host)
+            if rescued:
+                _setup_log(f"web-port rescue host={host} added={rescued}")
+                open_ports = sorted(set(open_ports) | set(rescued))
         attempts, hard_error = plan_recorder_probes(host, open_ports, vendor_hint)
 
     fam = vendor_hint or _vendor_hint_from_ports(open_ports)
