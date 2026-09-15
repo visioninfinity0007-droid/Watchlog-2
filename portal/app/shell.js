@@ -7,7 +7,7 @@ import {rememberSite,selectedSiteId,selectedSiteName,withSite} from "./site-cont
 import {MAIN_TABS,MORE_TABS,MORE_ACTIVE,ACTIVE_ROUTE} from "./nav-config";
 
 function RailSkeleton({lines=3}){
-  return <div className="productRailSkeleton" aria-hidden="true">{Array.from({length:lines},(_,i)=><div className="productRailSkeletonRow" key={i}><span/></div>)}</div>;
+  return <div className="productRailSkeleton" aria-hidden="true">{Array.from({length:lines},(_,i)=><div className="productRailSkeletonRow" key={i}><span/><i/></div>)}</div>;
 }
 function allowedSite(list,id){return Boolean(id)&&list.some(s=>String(s.id)===String(id))}
 
@@ -19,6 +19,8 @@ export function Nav({active,email,right,currentSiteId=""}){
   const[siteId,setSiteId]=useState(currentSiteId||"");
   const[moreOpen,setMoreOpen]=useState(MORE_ACTIVE.has(active));
   const[mobileOpen,setMobileOpen]=useState(false);
+  const[convId,setConvId]=useState("");
+  useEffect(()=>{try{setConvId(new URLSearchParams(window.location.search).get("conversation")||"")}catch{}},[]);
 
   useEffect(()=>{let live=true;(async()=>{
     const sb=supabase();
@@ -88,7 +90,8 @@ export function Nav({active,email,right,currentSiteId=""}){
           const title=c.title||"WatchLog conversation";
           const siteName=c.site_name||"Site conversation";
           const conversationSite=allowedSite(sites,c.site_id)?c.site_id:siteId;
-          return <a key={c.id} title={`${title} · ${siteName}`} href={`/ai/?site=${encodeURIComponent(conversationSite||"")}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>conversationSite&&choose(conversationSite,c.site_name||"")} className="productRailConversation"><span>{title}</span></a>;
+          const isCurrent=Boolean(convId)&&String(c.id)===String(convId);
+          return <a key={c.id} title={`${title} · ${siteName}`} aria-current={isCurrent?"page":undefined} href={`/ai/?site=${encodeURIComponent(conversationSite||"")}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>conversationSite&&choose(conversationSite,c.site_name||"")} className={"productRailConversation"+(isCurrent?" active":"")}><span>{title}</span><small>{siteName}</small></a>;
         })}
         {navReady&&!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}
       </div>
