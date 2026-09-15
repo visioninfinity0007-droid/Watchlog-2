@@ -9,6 +9,7 @@ import {MAIN_TABS,MORE_TABS,MORE_ACTIVE,ACTIVE_ROUTE} from "./nav-config";
 function RailSkeleton({lines=3}){
   return <div className="productRailSkeleton" aria-hidden="true">{Array.from({length:lines},(_,i)=><div className="productRailSkeletonRow" key={i}><span/></div>)}</div>;
 }
+function allowedSite(list,id){return Boolean(id)&&list.some(s=>String(s.id)===String(id))}
 
 export function Nav({active,email,right,currentSiteId=""}){
   const[platform,setPlatform]=useState(null);
@@ -32,20 +33,25 @@ export function Nav({active,email,right,currentSiteId=""}){
       const next=s.data||[];
       setSites(next);
       setConversations(c.data||[]);
-      const preferred=currentSiteId||selectedSiteId()||next[0]?.id||"";
-      if(preferred){
-        setSiteId(preferred);
-        rememberSite(preferred,next.find(x=>x.id===preferred)?.name||selectedSiteName());
-      }
+      const requested=currentSiteId||selectedSiteId()||"";
+      const preferred=allowedSite(next,requested)?requested:(next[0]?.id||"");
+      setSiteId(preferred);
+      if(preferred)rememberSite(preferred,next.find(x=>x.id===preferred)?.name||selectedSiteName());
     }finally{
       if(live)setNavReady(true);
     }
   })();return()=>{live=false}},[]);
 
   useEffect(()=>{
-    if(currentSiteId&&currentSiteId!==siteId){
-      setSiteId(currentSiteId);
-      rememberSite(currentSiteId,sites.find(x=>x.id===currentSiteId)?.name||selectedSiteName());
+    if(!sites.length)return;
+    if(currentSiteId&&allowedSite(sites,currentSiteId)){
+      if(currentSiteId!==siteId){setSiteId(currentSiteId);rememberSite(currentSiteId,sites.find(x=>x.id===currentSiteId)?.name||"")}
+      return;
+    }
+    if(!allowedSite(sites,siteId)){
+      const fallback=sites[0]?.id||"";
+      setSiteId(fallback);
+      if(fallback)rememberSite(fallback,sites[0]?.name||"");
     }
   },[currentSiteId,siteId,sites]);
 
@@ -81,7 +87,8 @@ export function Nav({active,email,right,currentSiteId=""}){
         {!navReady?<RailSkeleton lines={5}/>:conversations.slice(0,8).map(c=>{
           const title=c.title||"WatchLog conversation";
           const siteName=c.site_name||"Site conversation";
-          return <a key={c.id} title={`${title} · ${siteName}`} href={`/ai/?site=${encodeURIComponent(c.site_id||siteId)}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>c.site_id&&choose(c.site_id,c.site_name||"")} className="productRailConversation"><span>{title}</span></a>;
+          const conversationSite=allowedSite(sites,c.site_id)?c.site_id:siteId;
+          return <a key={c.id} title={`${title} · ${siteName}`} href={`/ai/?site=${encodeURIComponent(conversationSite||"")}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>conversationSite&&choose(conversationSite,c.site_name||"")} className="productRailConversation"><span>{title}</span></a>;
         })}
         {navReady&&!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}
       </div>
