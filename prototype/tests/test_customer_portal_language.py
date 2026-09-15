@@ -220,8 +220,17 @@ def main():
     ):
         if invariant not in ai_edge:
             problems.append(f"AI safety prompt missing invariant: {invariant}")
-    if 'WATCHLOG_AI_ENDPOINT' not in ai_edge or 'WATCHLOG_AI_API_KEY' not in ai_edge or 'WATCHLOG_AI_MODEL' not in ai_edge:
+    # AI provider config is server-side. The governed provider router (migration 0105 ai_providers +
+    # Vault, resolved by the service role via wl_ai_resolve_mode) is primary; the legacy WATCHLOG_AI_*
+    # env bridge is preserved in the provider registry (providers/registry.ts) for existing deployments.
+    # Read the whole watchlog-ai function surface, not just index.ts, so the relocated env bridge counts.
+    ai_fn = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / "prototype/supabase/functions/watchlog-ai").rglob("*.ts")))
+    if 'WATCHLOG_AI_ENDPOINT' not in ai_fn or 'WATCHLOG_AI_API_KEY' not in ai_fn or 'WATCHLOG_AI_MODEL' not in ai_fn:
         problems.append("AI provider must be server-side and environment-configured")
+    if 'wl_ai_resolve_mode' not in ai_edge:
+        problems.append("AI provider must resolve server-side from the DB provider router (service-role only)")
 
     # AI context and setup mutations reuse exact WatchLog truth; no credential is returned.
     for rpc in ("wl_ai_new_conversation","wl_ai_conversations","wl_ai_messages","wl_ai_append_message","wl_ai_context","wl_ai_setup_camera"):
