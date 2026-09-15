@@ -62,7 +62,7 @@ def make_build(rules, shared):
     return _build
 
 
-def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None):
+def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None, probe=None):
     shared = {"built": []}
     progress = []
     scan = None
@@ -71,10 +71,13 @@ def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None):
                                    vendor_guess=vendor_guess) for p in scan_ports]
         scan = lambda _host: results
     build = make_build(rules or {}, shared)
+    # Default probe does no network I/O (returns no web ports) so tests never touch the LAN; a test
+    # opts into the web-port rescue by passing probe=lambda h, **k: [80].
+    probe_fn = probe or (lambda _host, **_k: [])
     try:
         result = backend.test_recorder(address, "admin", "pass1234",
                                        progress=progress.append, hint=hint,
-                                       _scan=scan, _build=build)
+                                       _scan=scan, _build=build, _probe=probe_fn)
         return {"ok": True, "result": result, "built": shared["built"], "progress": progress}
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "built": shared["built"], "progress": progress}
@@ -120,6 +123,29 @@ def test_dahua_sdk_only_no_http_is_web_unreachable():
     assert not out["ok"]
     assert "web service is not reachable" in out["error"]
     assert out["built"] == []                                   # never attempts 37777 as HTTP
+
+
+# --- 4b. Flaky sweep missed HTTP 80: targeted web-port rescue recovers it ---
+
+def test_dahua_sdk_found_web_rescue_recovers_http80():
+    # Discovery found the Dahua on its SDK port (37777) but the 0.4s sweep missed HTTP 80. The
+    # targeted per-host rescue re-probes and finds 80, so login proceeds instead of a false negative.
+    out = run("192.168.100.119", hint={"ports": [554, 37777], "vendor_hint": "dahua"},
+              probe=lambda _host, **_k: [80],
+              rules={"dahua-cgi": {"vendor": "Dahua", "model": "DH-XVR1B08", "channels": 8}})
+    assert out["ok"]
+    assert out["result"]["url"] == "http://192.168.100.119"     # rescued 80 -> plain http
+    assert out["built"][0][0] == "dahua-cgi"
+    assert len(out["result"]["channels"]) == 8
+
+
+def test_web_rescue_still_fails_closed_when_http_genuinely_absent():
+    # If the rescue finds no web port either, WatchLog still fails closed (HTTP really is disabled).
+    out = run("192.168.100.119", hint={"ports": [554, 37777], "vendor_hint": "dahua"},
+              probe=lambda _host, **_k: [])
+    assert not out["ok"]
+    assert "web service is not reachable" in out["error"]
+    assert out["built"] == []
 
 
 # --- 5. HTTPS-only Dahua ----------------------------------------------------
