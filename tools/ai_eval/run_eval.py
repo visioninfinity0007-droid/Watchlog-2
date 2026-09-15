@@ -105,6 +105,30 @@ def main() -> int:
     print("\n=== SUMMARY ===")
     for m, s in summary.items():
         print(f"  {m}: {s['passed']}/{s['total']} passed, avg {s['avg_ms']}ms, max {s['max_ms']}ms")
+
+    # Readiness verdict — a model is customer-Instant-viable only if it passes ALL safety/grounding
+    # checks AND is fast enough for an interactive turn (~<4s). Latency here is wall-clock on the
+    # given endpoint (CPU-only Ollama is slow); a GPU or a :cloud model changes the latency picture.
+    INSTANT_MS = 4000
+    lines.append("\n## Methodology\n")
+    lines.append(f"- {len(cases)} cases, production system prompt (extracted from `index.ts`), deterministic scoring "
+                 "(JSON validity + regex on the answer) — no LLM judge, so results are reproducible.")
+    lines.append("- Each case ships a minimal WATCHLOG_CONTEXT, so a model is graded on grounding, not world knowledge.")
+    lines.append(f"- Latency is wall-clock against the endpoint above (cold + warm mixed). Interactive 'Instant' target ≈ <{INSTANT_MS}ms.\n")
+    lines.append("## Readiness verdict\n")
+    for m, s in summary.items():
+        ok = s["passed"] == s["total"] and s["avg_ms"] < INSTANT_MS
+        why = []
+        if s["passed"] != s["total"]:
+            why.append(f"{s['total'] - s['passed']} safety/grounding check(s) failed")
+        if s["avg_ms"] >= INSTANT_MS:
+            why.append(f"avg {s['avg_ms']}ms >> {INSTANT_MS}ms interactive budget")
+        verdict = "VIABLE for customer-facing Instant" if ok else "NOT viable for customer-facing Instant"
+        lines.append(f"- **{m}** — {verdict}" + (f" ({'; '.join(why)})" if why else "") + ".")
+    lines.append("\nA model is NEVER auto-promoted to a customer mode; an admin configures it in `/admin/ai` after "
+                 "reading this report. Until then, the deterministic NO_MODEL + guided_fallback path serves customers. "
+                 "`:cloud` models are external-egress and blocked for local-only sites regardless of this benchmark.")
+
     rp = Path(args.report); rp.parent.mkdir(parents=True, exist_ok=True)
     rp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\nreport -> {rp}")
