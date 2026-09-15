@@ -13,3 +13,7 @@ requests>=2.31
 # place that would change.
 Pillow>=10.0
 ultralytics>=8.2
+
+# Interface enumeration for recorder discovery (multi-NIC sweep). Optional import in
+# discover.py, but a build without it loses multi-adapter discovery silently.
+psutil>=5.9

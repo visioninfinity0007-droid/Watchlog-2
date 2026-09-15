@@ -119,12 +119,16 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 
     progress("Checking the local network for CCTV recorders…")
     try:
+        # Keep this guard derived from discover.SWEEP_PORTS. It used to be a second
+        # hardcoded list that had drifted out of sync (it accepted 81/88/443/8081 that
+        # the sweep never probed), which hid HTTPS-only and alt-web-port recorders.
+        candidate_ports = set(discover.SWEEP_PORTS)
         for ip, ports in discover.sweep(None, log=lambda _m: None):
             ports = sorted(ports)
-            if not any(port in ports for port in (80, 81, 88, 443, 554, 8000, 8080, 8081, 37777, 34567)):
+            if not any(port in candidate_ports for port in ports):
                 continue
             hint = "Recorder candidate"
-            if 37777 in ports:
+            if any(p in ports for p in _DAHUA_SDK_PORTS):
                 hint = "Dahua-family recorder candidate"
             elif 8000 in ports:
                 hint = "Hikvision-family recorder candidate"
