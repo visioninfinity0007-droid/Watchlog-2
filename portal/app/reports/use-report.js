@@ -21,7 +21,7 @@ function yesterdayInKarachi(){
 export default function useReport(){
   const[email,setEmail]=useState("");
   const[siteId,setSiteId]=useState("");
-  const[view,setView]=useState("daily");
+  const[view,setView]=useState("yesterday");
   const[answer,setAnswer]=useState("");
   const[snapshot,setSnapshot]=useState(null);
   const[busy,setBusy]=useState(false);
