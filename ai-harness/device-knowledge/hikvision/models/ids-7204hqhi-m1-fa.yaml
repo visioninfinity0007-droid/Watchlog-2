@@ -1,0 +1,246 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Hikvision
+family: Turbo AcuSense DVR (iDS-7200HQHI-M1/FA)
+model: iDS-7204HQHI-M1/FA
+firmware_range: V4.26.130 (2021-05-17)
+recorder_type: DVR (tribrid)
+ai_processing_location: both
+hardware:
+  max_analog_ch: 4
+  max_ip_ch: up to 5/10/18 (by model, enhanced-IP mode)
+  max_ip_resolution: UNKNOWN
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart, /ISAPI/System/Video/inputs/channels/<ID>/VCAResource (GET); MD2.0 human/vehicle
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart (PUT) - MD2.0 write sub-path UNKNOWN in obtained guides
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: MD2.0 all analog ch (default on); one of {face | MD2.0 | perimeter}; enhanced-IP mode may disable
+    smart events.
+- capability: line_crossing
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/LineDetection/<ID> (PUT) - exact sub-path UNKNOWN (not in obtained guides)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder-side Perimeter 2-ch (iDS-7204/7208); mutually exclusive with MD2.0/face.
+- capability: intrusion
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/FieldDetection/<ID> (PUT) - exact sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder-side Perimeter 2-ch (iDS-7204/7208).
+- capability: face_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI token faceSnap (capture)
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 1-ch HD analog face capture.
+- capability: face_recognition
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI tokens faceContrast / faceRecognition
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 1-ch face compare; 16 libs / 500 faces.
+- capability: region_entrance
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionEntrance (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionEntrance; camera-side.
+- capability: region_exiting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionExiting (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionExiting; camera-side.
+- capability: loitering
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token loitering (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI loitering; camera-side.
+- capability: parking
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token parking (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI parking; camera-side.
+- capability: anpr_lpr
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI (plate/vehicle attrs via camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: people_counting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/counting/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: heatmap
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/heatMap/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side.
+- capability: video_loss
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet has no exception/event table.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Datasheet has no exception/event table.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+  write:
+    supported: true
+    method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP; datasheet lists ONVIF (ISAPI/SDK not itemized - research gap).
+source:
+- url_or_doc: https://www.hikvision.com/.../Datasheet-of-iDS-7200HQHI-M1_FA_V4.26.130_20210517.pdf
+  title: Hikvision iDS-7200HQHI-M1/FA(C) series datasheet (Turbo AcuSense DVR), V4.26.130 2021-05-17
+  retrieved_at: '2026-09-10'

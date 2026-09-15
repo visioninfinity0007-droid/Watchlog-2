@@ -1,0 +1,222 @@
+# WatchLog observation primitives — Layer 1 of the semantic hierarchy.
+#
+# An OBSERVATION is the smallest grounded fact WatchLog can assert about a moment on a camera.
+# Observations are NOT incidents. Activities are built from observations; incidents from
+# evidence-backed activities (see taxonomy/activities.yaml, incidents/).
+#
+# Fields per primitive:
+#   id            stable machine key
+#   layer         observation
+#   label         human label
+#   sources       where a true instance can come from, each with an evidence posture:
+#                   recorder_native | watchlog_software | vlm | derived
+#   inputs        what is required to assert it (camera role, analytics, tracking, schedule, KB)
+#   confidence    what raises/lowers confidence for this primitive
+#   not           what this observation explicitly does NOT mean (guards escalation)
+#   maps_to       existing WatchLog event_type(s) where a native mapping exists (else null)
+version: 1
+schema: observation_primitives.v1
+
+primitives:
+  - id: PERSON_PRESENT
+    layer: observation
+    label: Person present
+    sources: [recorder_native, watchlog_software, vlm]
+    inputs: {analytics: [smd_human, person_detection], min_track_frames: 1}
+    confidence: {raise: [tracked>1 frame, clear view], lower: [single frame, occlusion, IR/low-light]}
+    not: "Not an intruder, not a known/unknown identity, not 'after hours' by itself."
+    maps_to: [person]
+  - id: VEHICLE_PRESENT
+    layer: observation
+    label: Vehicle present
+    sources: [recorder_native, watchlog_software, vlm]
+    inputs: {analytics: [smd_vehicle, vehicle_detection]}
+    confidence: {raise: [tracked, class stable via voting], lower: [flicker between car/truck]}
+    not: "Not a plate/identity (that is ANPR), not 'suspicious'."
+    maps_to: [vehicle]
+  - id: OBJECT_PRESENT
+    layer: observation
+    label: Object present / class detected
+    sources: [watchlog_software, vlm]
+    inputs: {analytics: [object_detection]}
+    confidence: {raise: [known class], lower: [open-vocabulary/VLM guess]}
+    not: "Class label only; not intent."
+    maps_to: null
+
+  - id: ZONE_ENTER
+    layer: observation
+    label: Entered a defined zone
+    sources: [recorder_native, watchlog_software]
+    inputs: {geometry: zone_polygon, tracking: true}
+    confidence: {raise: [track crosses boundary with dwell], lower: [boundary jitter]}
+    not: "Zone entry is not intrusion unless the zone is restricted AND schedule/authority say so."
+    maps_to: [intrusion]
+  - id: ZONE_EXIT
+    layer: observation
+    label: Exited a defined zone
+    sources: [recorder_native, watchlog_software]
+    inputs: {geometry: zone_polygon, tracking: true}
+    confidence: {}
+    not: null
+    maps_to: null
+  - id: LINE_CROSS
+    layer: observation
+    label: Crossed a tripwire / line (directional)
+    sources: [recorder_native, watchlog_software]
+    inputs: {geometry: line, tracking: true, direction: true}
+    confidence: {raise: [clean directional cross], lower: [loiter on the line]}
+    not: "Direction matters; an in/out count is an activity, not this primitive."
+    maps_to: [line_crossing]
+
+  - id: DWELL
+    layer: observation
+    label: Remained in an area beyond a threshold
+    sources: [watchlog_software]
+    inputs: {tracking: true, threshold_seconds: required}
+    confidence: {raise: [continuous track], lower: [track fragmentation / re-id gaps]}
+    not: "Dwell is not loitering-with-intent; loitering is an activity built on dwell + context."
+    maps_to: null
+  - id: PROXIMITY
+    layer: observation
+    label: Two entities within a distance (person↔person / person↔vehicle / person↔machine)
+    sources: [watchlog_software]
+    inputs: {tracking: true, pair: required}
+    confidence: {lower: [monocular distance estimate]}
+    not: "Proximity is not contact and not interaction."
+    maps_to: null
+  - id: CROWDING
+    layer: observation
+    label: Count of a class in a region exceeds a threshold in a window
+    sources: [watchlog_software]
+    inputs: {analytics: [counting], region: optional, window_seconds: required}
+    confidence: {lower: [overlap/occlusion undercount]}
+    not: "Occupancy estimate, not a unique-person count unless the measurement supports it."
+    maps_to: null
+
+  - id: AFTER_HOURS
+    layer: observation
+    label: Occurred outside configured operating hours
+    sources: [derived]
+    inputs: {schedule: site_schedule, site_local_time: true}
+    confidence: {}
+    not: "A modifier on another observation; not an incident alone."
+    maps_to: null
+  - id: REPEATED_VISIT
+    layer: observation
+    label: Same (non-identified) entity observed across separated times
+    sources: [derived, watchlog_software]
+    inputs: {reid: true}
+    confidence: {lower: [re-id uncertainty]}
+    not: "Not an identity; a non-identity entity profile only where lawful."
+    maps_to: null
+
+  - id: OBJECT_LEFT
+    layer: observation
+    label: Object appeared and remained (abandoned-object candidate)
+    sources: [recorder_native, watchlog_software]
+    inputs: {analytics: [left_object]}
+    confidence: {lower: [static-scene false positives]}
+    not: "Left object is not a threat classification."
+    maps_to: [object_left]
+  - id: OBJECT_REMOVED
+    layer: observation
+    label: Object that was present is gone (removal candidate)
+    sources: [recorder_native, watchlog_software]
+    inputs: {analytics: [taken_away]}
+    confidence: {lower: [occlusion mistaken for removal]}
+    not: "Removal is not theft; loss-prevention framing requires human review."
+    maps_to: [object_removed]
+
+  # --- reliability observations (Pillar 1) ---
+  - id: CAMERA_OFFLINE
+    layer: observation
+    label: Camera not producing signal / recorder reports video loss
+    sources: [recorder_native, watchlog_software]
+    inputs: {health: camera_health, gate: is_configured}
+    confidence: {raise: [recorder current_faults.video_loss], note: "fails safe to UNKNOWN, never to healthy"}
+    not: "An unconfigured channel is never CAMERA_OFFLINE."
+    maps_to: [video_loss]
+  - id: CAMERA_OBSTRUCTED
+    layer: observation
+    label: View blocked (fog/glare/condensation/spider-web/occlusion)
+    sources: [vlm, watchlog_software]
+    inputs: {vision: quality_check}
+    confidence: {lower: [transient weather vs persistent]}
+    not: "Obstruction is a reliability fault, not tampering unless evidence shows intent."
+    maps_to: null
+  - id: CAMERA_TAMPERED
+    layer: observation
+    label: Camera moved / covered / defocused (tamper)
+    sources: [recorder_native, watchlog_software]
+    inputs: {analytics: [tamper]}
+    confidence: {raise: [native tamper event], lower: [sudden legitimate scene change]}
+    not: null
+    maps_to: [tamper]
+  - id: RECORDING_GAP
+    layer: observation
+    label: A window with no monitored coverage (agent down / unverified)
+    sources: [derived]
+    inputs: {coverage: wl_site_coverage_report_classes}
+    confidence: {}
+    not: "A gap is 'we cannot say', never 'nothing happened'."
+    maps_to: null
+
+  # --- identity observations (Pillar 2 / Face beta) — never asserted beyond evidence ---
+  - id: KNOWN_PERSON
+    layer: observation
+    label: Face/embedding matched an authorized watchlist entry
+    sources: [watchlog_software]
+    inputs: {skill: face-match, threshold: required, human_confirm: recommended}
+    confidence: {raise: [high similarity + good face quality], lower: [blur/pose/low-pixel]}
+    not: "A match is a candidate; identity is established only with confirmation + lawful basis."
+    maps_to: [face]
+  - id: UNKNOWN_PERSON
+    layer: observation
+    label: Person present with no watchlist match
+    sources: [watchlog_software]
+    inputs: {skill: face-match}
+    confidence: {}
+    not: "Unknown is not suspicious."
+    maps_to: null
+  - id: IDENTITY_UNVERIFIED
+    layer: observation
+    label: Identity cannot be established from available evidence
+    sources: [derived]
+    inputs: {}
+    confidence: {}
+    not: "The correct default; never upgrade to KNOWN_PERSON without a real match."
+    maps_to: null
+
+  # --- operational / temporal ---
+  - id: OPENING_ACTIVITY
+    layer: observation
+    label: Activity consistent with the site opening
+    sources: [derived]
+    inputs: {schedule: site_schedule, first_motion: true}
+    confidence: {lower: [estimate; label as 'estimated opening']}
+    not: null
+    maps_to: null
+  - id: CLOSING_ACTIVITY
+    layer: observation
+    label: Activity consistent with the site closing
+    sources: [derived]
+    inputs: {schedule: site_schedule, last_motion: true}
+    confidence: {lower: [estimate]}
+    not: null
+    maps_to: null
+  - id: UNUSUAL_SEQUENCE
+    layer: observation
+    label: Ordering of observations deviates from the site's normal pattern
+    sources: [derived]
+    inputs: {baseline: site_baseline}
+    confidence: {lower: [sparse baseline]}
+    not: "Deviation is a flag for review, not a conclusion."
+    maps_to: null
+  - id: MULTI_CAMERA_MOVEMENT
+    layer: observation
+    label: Plausible same-entity movement across cameras with valid timing/topology
+    sources: [derived, watchlog_software]
+    inputs: {skill: journey-correlation, topology: site_topology}
+    confidence: {raise: [impossible-hop rejection passes], lower: [simultaneous fusion, weak re-id]}
+    not: "Plausible movement, NOT a unique visitor and NOT identity."
+    maps_to: null

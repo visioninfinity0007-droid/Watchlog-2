@@ -1,0 +1,247 @@
+# WatchLog device-knowledge registry - GENERATED, evidence-graded, honest-unknown.
+# Source of truth: the DB capability KB (migrations 0061/0066/0077) + docs/research/*.
+# Do not hand-edit; do not upgrade an evidence_class without a dated source.
+# Evidence: FIELD_VERIFIED > OFFICIAL_DOCUMENTED > IMPLEMENTED_UNVERIFIED > UNSUPPORTED > UNKNOWN.
+# Verdict: supported | unsupported | by_camera | unknown.  Safety: read | safe_write | high_risk | prohibited | na.
+manufacturer: Hikvision
+family: K-series AcuSense NVR (NXI, PoE)
+model: DS-7616NXI-K2/16P
+firmware_range: V4.74.000 (2023-02-09)
+recorder_type: NVR
+ai_processing_location: both
+hardware:
+  max_analog_ch: 0
+  max_ip_ch: 16 (+16 PoE)
+  max_ip_resolution: 4 MP (8 MP w/ enhanced SVC)
+capabilities:
+- capability: human_vehicle_classification
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart, /ISAPI/System/Video/inputs/channels/<ID>/VCAResource (GET); MD2.0 human/vehicle
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart (PUT) - MD2.0 write sub-path UNKNOWN in obtained guides
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 'Motion Detection 2.0, all channels; one-of-three engines {face | MD2.0 | perimeter} - mutually
+    exclusive. NOTE: 2-ch here vs 1-ch on DS-7616NXI-K1 - same series, different capacity.'
+- capability: line_crossing
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/LineDetection/<ID> (PUT) - exact sub-path UNKNOWN (not in obtained guides)
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder-side Perimeter Protection 2-ch (K2/16P). ISAPI Smart write sub-path UNKNOWN in obtained
+    guides.
+- capability: intrusion
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+  write:
+    supported: true
+    method: ISAPI /ISAPI/Smart/FieldDetection/<ID> (PUT) - exact sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: Recorder-side Perimeter Protection 2-ch (K2/16P); bundled with line-crossing.
+- capability: face_detection
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI token faceSnap (capture)
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 1-ch @8MP capture.
+- capability: face_recognition
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI tokens faceContrast / faceRecognition
+  write:
+    supported: true
+    method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: 4-ch compare; 16 libs / 20,000 faces.
+- capability: region_entrance
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionEntrance (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionEntrance token; camera-side, not a recorder-side engine.
+- capability: region_exiting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token regionExiting (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI regionExiting token; camera-side.
+- capability: loitering
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token loitering (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI loitering token; camera-side.
+- capability: parking
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI behavior token parking (camera-side)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: ISAPI parking token; camera-side.
+- capability: anpr_lpr
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI (plate/vehicle attrs via camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side only, even on this AcuSense NVR.
+- capability: people_counting
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/counting/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side only.
+- capability: heatmap
+  support:
+    verdict: by_camera
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: camera
+  read:
+    supported: null
+    method: ISAPI /ISAPI/System/Video/inputs/channels/heatMap/collection (camera)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Camera-side only.
+- capability: video_loss
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Per-model datasheet not itemized; ISAPI videoLoss event token exists platform-level.
+- capability: tamper
+  support:
+    verdict: unknown
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: na
+  read:
+    supported: null
+    method: UNKNOWN (source silent on this capability)
+  write:
+    supported: null
+    method: na
+    safety_class: na
+  verification:
+    required: true
+  notes: Per-model datasheet not itemized; ISAPI tamperDetection token exists platform-level.
+- capability: time_ntp_config
+  support:
+    verdict: supported
+    evidence_class: OFFICIAL_DOCUMENTED
+  ai_location: recorder
+  read:
+    supported: true
+    method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+  write:
+    supported: true
+    method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  verification:
+    required: true
+  notes: NTP; API row ONVIF (S/G); SDK; ISAPI.
+source:
+- url_or_doc: https://www.hikvision.com/.../Datasheet-of-DS-7616NXI-K2_16P_V4.74.000_20230209.pdf
+  title: Hikvision DS-7616NXI-K2/16P datasheet (K-series AcuSense NVR), V4.74.000 2023-02-09
+  retrieved_at: '2026-09-10'
