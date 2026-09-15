@@ -3,6 +3,8 @@ import {useCallback,useEffect,useRef,useState} from "react";
 import {supabase,say} from "../../lib/supabase";
 import {rememberSite,selectedSiteId} from "../site-context";
 
+function allowedSite(list,id){return Boolean(id)&&list.some(s=>String(s.id)===String(id))}
+
 export default function useCustomerChat(){
   const[email,setEmail]=useState("");
   const[sites,setSites]=useState([]);
@@ -41,14 +43,22 @@ export default function useCustomerChat(){
 
     const list=sitesResult.data||[];
     const params=new URLSearchParams(location.search);
-    const id=params.get("site")||selectedSiteId()||list[0]?.id||"";
-    const conv=params.get("conversation")||"";
+    const requestedSite=params.get("site")||selectedSiteId()||"";
+    const id=allowedSite(list,requestedSite)?requestedSite:(list[0]?.id||"");
+    if(!id){setSites(list);setError("No site is available for this account yet.");setBooting(false);return}
+    const requestedConversation=params.get("conversation")||"";
+    const conv=requestedSite&&requestedSite!==id?"":requestedConversation;
     const prompt=params.get("prompt")||"";
     setSites(list);setSiteId(id);setConversationId(conv);
     if(prompt)setDraft(prompt);
-    if(id)rememberSite(id,list.find(x=>x.id===id)?.name||"");
+    rememberSite(id,list.find(x=>x.id===id)?.name||"");
+    if(requestedSite!==id){
+      params.set("site",id);
+      params.delete("conversation");
+      history.replaceState(null,"",`${location.pathname}?${params.toString()}${location.hash||""}`);
+    }
 
-    const contextPromise=id?sb.rpc("wl_ai_context",{p_site_id:id}):Promise.resolve({data:null,error:null});
+    const contextPromise=sb.rpc("wl_ai_context",{p_site_id:id});
     const messagesPromise=conv?sb.rpc("wl_ai_messages",{p_conversation_id:conv,p_limit:100}):Promise.resolve({data:[],error:null});
     const[contextResult,messageResult]=await Promise.all([contextPromise,messagesPromise]);
     if(!live)return;
