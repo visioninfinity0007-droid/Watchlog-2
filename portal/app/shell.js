@@ -1,11 +1,98 @@
 "use client";
 import {useEffect,useMemo,useState} from "react";
-import Mark from "./mark";import MobileLauncher from "./mobile-launcher";import {supabase} from "../lib/supabase";import {rememberSite,selectedSiteId,selectedSiteName,withSite} from "./site-context";import {MAIN_TABS,MORE_TABS,MORE_ACTIVE,ACTIVE_ROUTE} from "./nav-config";
-export function Nav({active,email,right,currentSiteId=""}){const[platform,setPlatform]=useState(null),[sites,setSites]=useState([]),[conversations,setConversations]=useState([]),[siteId,setSiteId]=useState(currentSiteId||""),[moreOpen,setMoreOpen]=useState(MORE_ACTIVE.has(active)),[mobileOpen,setMobileOpen]=useState(false);
-useEffect(()=>{let live=true;(async()=>{const sb=supabase();const[p,s,c]=await Promise.all([sb.rpc("wl_platform_me"),sb.rpc("wl_sites"),sb.rpc("wl_ai_conversations",{p_limit:12})]);if(!live)return;if(p.data?.role)setPlatform(p.data);const next=s.data||[];setSites(next);setConversations(c.data||[]);const preferred=currentSiteId||selectedSiteId()||next[0]?.id||"";if(preferred){setSiteId(preferred);rememberSite(preferred,next.find(x=>x.id===preferred)?.name||selectedSiteName())}})();return()=>{live=false}},[currentSiteId]);
-useEffect(()=>{if(currentSiteId&&currentSiteId!==siteId){setSiteId(currentSiteId);rememberSite(currentSiteId,sites.find(x=>x.id===currentSiteId)?.name||"")}},[currentSiteId,siteId,sites]);
-const currentSite=useMemo(()=>sites.find(x=>x.id===siteId)||null,[sites,siteId]),route=ACTIVE_ROUTE[active]||"/ai/";function choose(id,name){setSiteId(id);rememberSite(id,name);setMobileOpen(false)}async function signOut(){await supabase().auth.signOut();location.replace("/login/")}
-return <><MobileLauncher open={mobileOpen} onToggle={()=>setMobileOpen(v=>!v)}/>{mobileOpen&&<button className="productRailScrim" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"/>}<aside className={`productRail ${mobileOpen?"open":""}`}><div className="productRailMobileHead"><a href={withSite("/ai/",siteId)} className="productRailBrand"><Mark size={28}/><b>WatchLog</b></a><button className="productRailMenu" onClick={()=>setMobileOpen(false)} aria-label="Close WatchLog navigation">×</button></div><a className="productRailNewChat" href={withSite("/ai/",siteId)}><span className="productRailPlus">＋</span><span>New chat</span></a><div className="productRailSectionLabel">Sites</div><div className="productRailSites">{sites.length?sites.map(s=><a key={s.id} href={withSite(route,s.id)} onClick={()=>choose(s.id,s.name)} className={`productRailSite ${s.id===siteId?"active":""}`}><span>{s.name}</span><small>{s.online?"Monitoring":s.setup_state==="ready"?"Needs attention":"Setup required"}</small></a>):<a className="productRailSite" href="/settings/"><span>Add your first site</span><small>Get started</small></a>}</div><nav className="productRailNav" aria-label="WatchLog navigation">{MAIN_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailLink"+(active===match?" active":"")}>{label}</a>)}<button type="button" className={"productRailLink productRailTools"+(MORE_ACTIVE.has(active)?" active":"")} onClick={()=>setMoreOpen(v=>!v)} aria-expanded={moreOpen}>More <span>{moreOpen?"−":"+"}</span></button>{moreOpen&&<div className="productRailSubnav">{MORE_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailSubLink"+(active===match?" active":"")}>{label}</a>)}</div>}</nav><div className="productRailSectionLabel productRailRecentLabel">Recent</div><div className="productRailRecent">{conversations.slice(0,5).map(c=><a key={c.id} href={`/ai/?site=${encodeURIComponent(c.site_id||siteId)}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>c.site_id&&choose(c.site_id,c.site_name||"")} className="productRailConversation"><span>{c.title||"WatchLog conversation"}</span><small>{c.site_name||"Site conversation"}</small></a>)}{!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}</div><div className="productRailBottom"><a className="productRailAsk" href={withSite("/ai/",siteId)} onClick={()=>setMobileOpen(false)}><span>✦</span> Ask WatchLog</a>{right&&<div className="productRailUtility">{right}</div>}{platform&&<a href="/admin/" className="productRailAdmin">WatchLog Admin</a>}<button className="productRailSignout" onClick={signOut}>Sign out</button></div></aside></>}
-export const SETUP_STEPS=[["awaiting_agent","Waiting for setup"],["enrolled","WatchLog connected"],["recorder_connected","Camera system connected"],["cameras_discovered","Cameras ready"],["ready","Ready"]];export function setupPill(state,online){const i=SETUP_STEPS.findIndex(([k])=>k===state),label=i>=0?SETUP_STEPS[i][1]:"Setup status unavailable";if(state==="ready")return[label,online?"s-ok":"s-warn"];if(state==="awaiting_agent")return[label,"s-unk"];return[label,"s-warn"]}
+import Mark from "./mark";
+import MobileLauncher from "./mobile-launcher";
+import {supabase} from "../lib/supabase";
+import {rememberSite,selectedSiteId,selectedSiteName,withSite} from "./site-context";
+import {MAIN_TABS,MORE_TABS,MORE_ACTIVE,ACTIVE_ROUTE} from "./nav-config";
+
+function RailSkeleton({lines=3}){
+  return <div className="productRailSkeleton" aria-hidden="true">{Array.from({length:lines},(_,i)=><div className="productRailSkeletonRow" key={i}><span/><small/></div>)}</div>;
+}
+
+export function Nav({active,email,right,currentSiteId=""}){
+  const[platform,setPlatform]=useState(null);
+  const[sites,setSites]=useState([]);
+  const[conversations,setConversations]=useState([]);
+  const[navReady,setNavReady]=useState(false);
+  const[siteId,setSiteId]=useState(currentSiteId||"");
+  const[moreOpen,setMoreOpen]=useState(MORE_ACTIVE.has(active));
+  const[mobileOpen,setMobileOpen]=useState(false);
+
+  useEffect(()=>{let live=true;(async()=>{
+    const sb=supabase();
+    try{
+      const[p,s,c]=await Promise.all([
+        sb.rpc("wl_platform_me"),
+        sb.rpc("wl_sites"),
+        sb.rpc("wl_ai_conversations",{p_limit:12})
+      ]);
+      if(!live)return;
+      if(p.data?.role)setPlatform(p.data);
+      const next=s.data||[];
+      setSites(next);
+      setConversations(c.data||[]);
+      const preferred=currentSiteId||selectedSiteId()||next[0]?.id||"";
+      if(preferred){
+        setSiteId(preferred);
+        rememberSite(preferred,next.find(x=>x.id===preferred)?.name||selectedSiteName());
+      }
+    }finally{
+      if(live)setNavReady(true);
+    }
+  })();return()=>{live=false}},[]);
+
+  useEffect(()=>{
+    if(currentSiteId&&currentSiteId!==siteId){
+      setSiteId(currentSiteId);
+      rememberSite(currentSiteId,sites.find(x=>x.id===currentSiteId)?.name||selectedSiteName());
+    }
+  },[currentSiteId,siteId,sites]);
+
+  const currentSite=useMemo(()=>sites.find(x=>x.id===siteId)||null,[sites,siteId]);
+  const route=ACTIVE_ROUTE[active]||"/ai/";
+  function choose(id,name){setSiteId(id);rememberSite(id,name);setMobileOpen(false)}
+  async function signOut(){await supabase().auth.signOut();location.replace("/login/")}
+
+  return <>
+    <MobileLauncher open={mobileOpen} onToggle={()=>setMobileOpen(v=>!v)}/>
+    {mobileOpen&&<button className="productRailScrim" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"/>}
+    <aside className={`productRail ${mobileOpen?"open":""}`} aria-busy={!navReady}>
+      <div className="productRailMobileHead">
+        <a href={withSite("/ai/",siteId)} className="productRailBrand"><Mark size={28}/><b>WatchLog</b></a>
+        <button className="productRailMenu" onClick={()=>setMobileOpen(false)} aria-label="Close WatchLog navigation">×</button>
+      </div>
+
+      <a className="productRailNewChat" href={withSite("/ai/",siteId)}><span className="productRailPlus">＋</span><span>New chat</span></a>
+
+      <div className="productRailSectionLabel">Sites</div>
+      <div className="productRailSites">
+        {!navReady?<RailSkeleton lines={1}/>:sites.length?sites.map(s=><a key={s.id} href={withSite(route,s.id)} onClick={()=>choose(s.id,s.name)} className={`productRailSite ${s.id===siteId?"active":""}`}><span>{s.name}</span><small>{s.online?"Monitoring":s.setup_state==="ready"?"Needs attention":"Setup required"}</small></a>):<a className="productRailSite" href="/settings/"><span>Add your first site</span><small>Get started</small></a>}
+      </div>
+
+      <nav className="productRailNav" aria-label="WatchLog navigation">
+        {MAIN_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailLink"+(active===match?" active":"")}>{label}</a>)}
+        <button type="button" className={"productRailLink productRailTools"+(MORE_ACTIVE.has(active)?" active":"")} onClick={()=>setMoreOpen(v=>!v)} aria-expanded={moreOpen}>More <span>{moreOpen?"−":"+"}</span></button>
+        {moreOpen&&<div className="productRailSubnav">{MORE_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailSubLink"+(active===match?" active":"")}>{label}</a>)}</div>}
+      </nav>
+
+      <div className="productRailSectionLabel productRailRecentLabel">Recent</div>
+      <div className="productRailRecent">
+        {!navReady?<RailSkeleton lines={4}/>:conversations.slice(0,8).map(c=><a key={c.id} href={`/ai/?site=${encodeURIComponent(c.site_id||siteId)}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>c.site_id&&choose(c.site_id,c.site_name||"")} className="productRailConversation"><span>{c.title||"WatchLog conversation"}</span><small>{c.site_name||"Site conversation"}</small></a>)}
+        {navReady&&!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}
+      </div>
+
+      <div className="productRailBottom">
+        <a className="productRailAsk" href={withSite("/ai/",siteId)} onClick={()=>setMobileOpen(false)}><span>✦</span> Ask WatchLog</a>
+        {right&&<div className="productRailUtility">{right}</div>}
+        {platform&&<a href="/admin/" className="productRailAdmin">WatchLog Admin</a>}
+        <button className="productRailSignout" onClick={signOut}>Sign out</button>
+      </div>
+    </aside>
+  </>;
+}
+
+export const SETUP_STEPS=[["awaiting_agent","Waiting for setup"],["enrolled","WatchLog connected"],["recorder_connected","Camera system connected"],["cameras_discovered","Cameras ready"],["ready","Ready"]];
+export function setupPill(state,online){const i=SETUP_STEPS.findIndex(([k])=>k===state),label=i>=0?SETUP_STEPS[i][1]:"Setup status unavailable";if(state==="ready")return[label,online?"s-ok":"s-warn"];if(state==="awaiting_agent")return[label,"s-unk"];return[label,"s-warn"]}
 async function accountState(sb){const{data,error}=await sb.rpc("wl_my_account");if(!error)return data;if(/wl_my_account|schema cache|function/i.test(error.message||""))return undefined;throw error}
 export async function requireTenant(){const sb=supabase();const{data:{session}}=await sb.auth.getSession();if(!session){location.replace("/login/");return null}try{const account=await accountState(sb);if(account?.account_status==="suspended"){location.replace("/account-suspended/");return null}if(account===null){location.replace("/onboarding/");return null}}catch{location.replace("/login/");return null}const{data:tenant,error}=await sb.rpc("wl_my_tenant");if(error||!tenant){location.replace("/onboarding/");return null}return{session,tenant}}
