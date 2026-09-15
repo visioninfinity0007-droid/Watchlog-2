@@ -14,26 +14,21 @@ html,body{overflow-x:hidden}
 
 /* ChatGPT-like rail behavior: core navigation is fixed; only conversation history scrolls. */
 .productRailRecentLabel{flex:0 0 auto}
-.productRailRecent{flex:1 1 auto;min-height:64px;max-height:none!important;overflow-y:auto!important;overflow-x:hidden!important;padding-right:2px;scrollbar-width:thin;scrollbar-color:transparent transparent;overscroll-behavior:contain}
-.productRailRecent:hover{scrollbar-color:#c8cbd1 transparent}
-.productRailRecent::-webkit-scrollbar{width:6px;height:0}
+.productRailRecent{flex:1 1 auto;min-height:64px;max-height:none!important;overflow-y:auto!important;overflow-x:hidden!important;padding-right:0;scrollbar-width:none;overscroll-behavior:contain;align-content:start}
+.productRailRecent::-webkit-scrollbar{display:none!important;width:0!important;height:0!important}
 .productRailRecent::-webkit-scrollbar-button{display:none!important;width:0!important;height:0!important}
-.productRailRecent::-webkit-scrollbar-track{background:transparent}
-.productRailRecent::-webkit-scrollbar-thumb{background:transparent;border-radius:999px}
-.productRailRecent:hover::-webkit-scrollbar-thumb{background:#c8cbd1}
-.productRailConversation{width:100%;max-width:100%;overflow:hidden;padding-top:8px!important;padding-bottom:8px!important}
-.productRailConversation span{display:-webkit-box;width:100%;max-width:100%;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal!important;text-overflow:ellipsis;line-height:1.32}
-.productRailConversation small{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.productRailConversation{display:flex!important;align-items:center!important;width:100%;max-width:100%;min-height:36px!important;overflow:hidden;padding:7px 10px!important;border-radius:8px!important;gap:0!important}
+.productRailConversation span{display:block!important;width:100%;max-width:100%;overflow:hidden!important;white-space:nowrap!important;text-overflow:ellipsis!important;line-height:1.3!important;font-size:13px!important;font-weight:560!important}
+.productRailConversation small{display:none!important}
 .productRailBottom{flex:0 0 auto;margin-top:8px!important;background:#f7f7f8}
 .productRailAsk{width:100%;box-sizing:border-box;text-decoration:none!important}
 .productRailAsk:hover{text-decoration:none!important}
 
 /* Neutral skeletons replace false empty/setup states while tenant data hydrates. */
-.productRailSkeleton{display:grid;gap:8px;padding:5px 10px 8px}
-.productRailSkeletonRow{display:grid;gap:6px;padding:5px 0}
-.productRailSkeletonRow span,.productRailSkeletonRow small{position:relative;overflow:hidden;background:#e8e8eb;border-radius:999px}
-.productRailSkeletonRow span{height:11px;width:78%}.productRailSkeletonRow small{height:8px;width:48%}
-.productRailSkeletonRow span:after,.productRailSkeletonRow small:after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.72),transparent);animation:railShimmer 1.35s infinite}
+.productRailSkeleton{display:grid;gap:5px;padding:4px 10px 7px}
+.productRailSkeletonRow{display:flex;align-items:center;min-height:32px;padding:4px 0}
+.productRailSkeletonRow span{position:relative;overflow:hidden;background:#e8e8eb;border-radius:999px;height:10px;width:76%}
+.productRailSkeletonRow span:after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.72),transparent);animation:railShimmer 1.35s infinite}
 @keyframes railShimmer{100%{transform:translateX(100%)}}
 
 /* One clean AI composer surface: no inner textarea box or browser focus artifact. */
@@ -73,4 +68,4 @@ html,body{overflow-x:hidden}
   .watchlogComposerDisclaimer{font-size:9.5px;margin-bottom:6px;padding:0 8px}
   .routeLoadingShell{display:block;padding-top:58px}.routeLoadingRail{display:none}.routeLoadingTop{height:58px}.routeLoadingCenter{padding-bottom:80px}.routeLoadingComposer{bottom:14px;width:calc(100% - 24px)}
 }
-@media(prefers-reduced-motion:reduce){.productRailSkeletonRow span:after,.productRailSkeletonRow small:after,.routeLoadingBrand:after,.routeLoadingButton:after,.routeLoadingLine:after,.routeLoadingTop span:after,.routeLoadingCenter i:after,.routeLoadingCenter b:after,.routeLoadingCenter span:after,.routeLoadingComposer:after{animation:none}}
+@media(prefers-reduced-motion:reduce){.productRailSkeletonRow span:after,.routeLoadingBrand:after,.routeLoadingButton:after,.routeLoadingLine:after,.routeLoadingTop span:after,.routeLoadingCenter i:after,.routeLoadingCenter b:after,.routeLoadingCenter span:after,.routeLoadingComposer:after{animation:none}}
