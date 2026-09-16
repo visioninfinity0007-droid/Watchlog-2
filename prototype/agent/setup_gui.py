@@ -545,14 +545,11 @@ class SetupWindow(QMainWindow):
         # Install is proven; now run the FULL acceptance suite before declaring Ready. The setup
         # never shows a green Ready state after a hard acceptance failure (0.4.4 P8).
         self.final_result = result
-        # CONNECT FIRST, VERIFY SECOND (0.4.7). The installer only registers the
-        # background task AFTER this wizard exits, so anything that stops the wizard
-        # exiting used to leave the site enrolled, heartbeated once, and then offline
-        # forever. Enrollment and the recorder credential are already proven here, so
-        # start the agent NOW. Acceptance is a report; it must never decide whether a
-        # site reports. Idempotent: the installer runs the same script again later.
-        self.progress_label.setText("Starting WatchLog in the background…")
-        self.agent_start = backend.ensure_background_agent()
+        # The background agent was already started inside finalize_install, on the worker
+        # thread. It must NOT be started from here: this is the GUI thread, and blocking it
+        # freezes the window mid-repaint -- which is exactly why 0.4.7 appeared to hang on
+        # "Confirming the WatchLog connection" while it was really running my own code.
+        self.agent_start = (result or {}).get("agent_start") or {}
         self.progress_label.setText("Running final acceptance checks…")
         from status_controller import StatusController
         ctrl = StatusController()

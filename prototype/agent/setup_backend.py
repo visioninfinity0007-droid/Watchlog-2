@@ -706,11 +706,13 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
 
     runner = _run
     if runner is None:
-        import subprocess
+        # SHARED hardened runner. The obvious subprocess.run(capture_output=True,
+        # timeout=...) does NOT bound anything when the child leaves a survivor holding
+        # the pipe -- that is what hung the 0.4.7 wizard on step 06 from right here.
+        import proc_util
 
-        def runner(cmd, timeout):  # pragma: no cover - real subprocess path
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
 
     powershell = (Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
                   / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
@@ -842,6 +844,16 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except Exception as exc:
         raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
+    # START THE BACKGROUND AGENT HERE (0.4.8), on the worker thread, at the earliest
+    # point it can possibly work: enrollment, the encrypted credential and a proven
+    # heartbeat are all done, which is everything the agent needs. Doing it later --
+    # in the GUI callback -- meant a wedge anywhere after this left the site enrolled,
+    # heartbeated once, and offline forever, AND it froze the window so the label never
+    # repainted. Result is LOGGED: a silent fail-open layer is one nobody can debug.
+    progress("Starting WatchLog in the background…")
+    agent_start = ensure_background_agent()
+    core.log(f"background agent start: {agent_start.get('detail')}")
+
     # PC-free resilience: ask the recorder to report on its own, so this site keeps
     # sending even when this PC is off. Fail-open — never blocks a good install.
     push = provision_recorder_push(cloud, state, recorder, public, username, password,
@@ -851,6 +863,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     return {
         "site_id": state["site_id"],
         "recorder_push": push,
+        "agent_start": agent_start,
         "camera_count": len(mapping or recorder["channels"]),
         "vendor": recorder["vendor"],
         "model": recorder["model"],
