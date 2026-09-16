@@ -123,6 +123,11 @@ try {
   $pushUrl = $PushBridgeUrl
   if (-not $pushUrl) { $pushUrl = $env:WATCHLOG_PUSH_BRIDGE_URL }
   if (-not $pushUrl) { $pushUrl = $cfg["PUSH_BRIDGE_URL"] }
+  # NORMALISE to a string. $env:X and a missing hashtable key both return $null, not "",
+  # and in PowerShell '' -ne $null is TRUE -- so the exact-equality gate below compared an
+  # empty staged value against $null and threw "'' != ''". Coerce once, here.
+  if ($null -eq $pushUrl) { $pushUrl = "" }
+  $pushUrl = ([string]$pushUrl).Trim()
   if ($pushUrl -and $pushUrl -notmatch '^https://') {
     throw "PushBridgeUrl is not an https URL: '$pushUrl' (argument-binding leak?)"
   }
@@ -174,8 +179,10 @@ push_bridge_url = $pushUrl
   }
   # Same exact-equality gate the other keys get - a parameter shift must not be able to
   # bake a different push destination than we supplied.
-  if ($stagedMap['push_bridge_url'] -ne $pushUrl) {
-    throw "staged push_bridge_url '$($stagedMap['push_bridge_url'])' != intended '$pushUrl'"
+  $stagedPush = ""
+  if ($stagedMap.ContainsKey('push_bridge_url')) { $stagedPush = ([string]$stagedMap['push_bridge_url']).Trim() }
+  if ($stagedPush -ne $pushUrl) {
+    throw "staged push_bridge_url '$stagedPush' != intended '$pushUrl'"
   }
   if ($pushUrl) {
     Write-Host "PC-free push bridge baked in: $pushUrl" -ForegroundColor Green

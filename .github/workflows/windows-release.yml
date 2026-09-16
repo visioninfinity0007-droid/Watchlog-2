@@ -32,6 +32,10 @@ jobs:
       SUPABASE_URL: ${{ vars.WATCHLOG_SUPABASE_URL }}
       SUPABASE_PUBLISHABLE_KEY: ${{ vars.WATCHLOG_SUPABASE_PUBLISHABLE_KEY }}
       PUBLISHER_URL: ${{ inputs.publisher_url || vars.WATCHLOG_PUBLISHER_URL }}
+      # PC-free ("recorder push") destination. Optional: when the variable is unset the
+      # build simply ships without PC-free reporting, which is what every release before
+      # 0.4.11 did silently.
+      WATCHLOG_PUSH_BRIDGE_URL: ${{ vars.WATCHLOG_PUSH_BRIDGE_URL }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
       # Tag pushes (v*) are always production: they must hard-fail without valid
@@ -77,6 +81,9 @@ jobs:
             SupabasePublishableKey = $env:SUPABASE_PUBLISHABLE_KEY
           }
           if ($env:PUBLISHER_URL) { $releaseArgs['PublisherUrl'] = $env:PUBLISHER_URL }
+          if ($env:WATCHLOG_PUSH_BRIDGE_URL) {
+            $releaseArgs['PushBridgeUrl'] = $env:WATCHLOG_PUSH_BRIDGE_URL
+          }
 
           $pfx = $null
           try {
