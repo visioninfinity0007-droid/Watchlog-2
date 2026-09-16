@@ -29,7 +29,7 @@ BUILD = (REPO / "tools" / "build_windows_release.ps1").read_text(encoding="utf-8
 GUI = (ROOT / "agent" / "setup_gui.py").read_text(encoding="utf-8")
 BACKEND = (ROOT / "agent" / "setup_backend.py").read_text(encoding="utf-8")
 MIGRATION = (ROOT / "supabase" / "migrations"
-             / "0109_recorder_push_agent_semantics.sql").read_text(encoding="utf-8")
+             / "0110_recorder_push_agent_semantics.sql").read_text(encoding="utf-8")
 
 
 class PushBridgeUrlReachesTheInstallerTests(unittest.TestCase):

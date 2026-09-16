@@ -1,5 +1,8 @@
 -- =====================================================================
--- Recorder-push agent semantics (0.4.10).
+-- Recorder-push agent semantics (0.4.11).
+--
+-- NOTE: numbered 0110, not 0109. A concurrent session landed 0109_ai_mode_chain.sql
+-- on main first; two files claiming the same ordinal would break the chain.
 --
 -- 0013/0108 model a PC-free site as a VIRTUAL AGENT: a normal `agents` row with
 -- device_driver = 'recorder-push', deliberately so that health, events, snapshots
