@@ -2143,8 +2143,15 @@ def main() -> None:
             mapping = cloud.call("wl_sync_cameras", p_agent_id=state["agent_id"],
                                  p_agent_key=state["agent_key"],
                                  p_cameras=channels)
-            log(f"cameras synced: {len(mapping)} channels")
-        except RuntimeError as e:
+            log(f"cameras synced: {len(mapping or [])} channels")
+        # BOOT SAFETY: catch the TRANSPORT failure too, not just CloudError(RuntimeError).
+        # The -AtStartup trigger fires before the network stack is ready. The NVR is on the
+        # same LAN so the recorder probe above SUCCEEDS, then this first cloud call raises
+        # requests.ConnectionError (an OSError, NOT a RuntimeError) and used to escape
+        # uncaught -- killing the agent before it ever reached its resilient run loop, and
+        # taking the launcher's restart loop down with it. The run loop below retries
+        # forever, so a startup sync failure must only WARN.
+        except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"WARNING: camera sync failed: {str(e).splitlines()[0][:160]}")
 
     # Report what analytics the recorder supports, so the portal can show
@@ -2155,7 +2162,7 @@ def main() -> None:
             cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
                        p_agent_key=state["agent_key"], p_capabilities=capabilities)
             log(f"analytics reported: {len(capabilities['channels'])} channel(s)")
-        except RuntimeError as e:
+        except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
 
     cmd_run(cfg, state, cloud, once=args.once, device=device, channels=channels)

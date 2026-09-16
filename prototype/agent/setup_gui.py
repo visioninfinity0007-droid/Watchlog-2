@@ -639,6 +639,14 @@ class SetupWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event: QCloseEvent):
+        # The window X / Alt+F4 does NOT go through cancel(), so it kept the exit_code=1
+        # default even on a fully connected site. NSIS treats non-zero as a failed install
+        # and Aborts, skipping WriteUninstaller and the Add/Remove Programs keys -- which is
+        # exactly what left a customer with a working, reporting site that Windows did not
+        # know was installed. Apply the same rule here: a connected site is a successful
+        # install however the window was closed.
+        if getattr(self, "site_connected", False) and self.exit_code != 0:
+            self.exit_code = 0
         event.accept()
 
 

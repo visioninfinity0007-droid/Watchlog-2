@@ -492,7 +492,11 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
     section["supabase_publishable_key"] = public["supabase_publishable_key"]
     section["enrollment_code"] = enrollment_code.strip()
     section["nvr_url"] = recorder["url"]
-    section["nvr_driver"] = "auto"
+    # Persist the driver that was just PROVEN against this exact recorder, not "auto".
+    # Writing "auto" threw that away and made every later probe (the agent at boot, the
+    # acceptance suite) re-walk the vendor list -- trying Hikvision paths against a Dahua
+    # box, costing time and producing confusing failures on a recorder we had identified.
+    section["nvr_driver"] = recorder.get("driver") or "auto"
     # The recorder credential (username + password) is stored atomically in the
     # encrypted Secrets store, never in this INI.
     section["nvr_password_protected"] = "dpapi-secrets"
@@ -926,7 +930,11 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         return max(0.0, min(cap, optional_deadline - time.monotonic()))
 
     progress("Starting WatchLog in the background…")
-    agent_start = ensure_background_agent(timeout=_remaining(90) or 5)
+    # NOT optional work, and NOT drawn from the optional budget. 0.4.9 gave registration
+    # whatever was LEFT of the 120s, so a slow recorder probe could hand it a fraction of a
+    # second and it was taskkill'd mid-registration -- the one step that makes the site
+    # survive a reboot. It gets its own guaranteed floor.
+    agent_start = ensure_background_agent(timeout=max(60.0, _remaining(90)))
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 
