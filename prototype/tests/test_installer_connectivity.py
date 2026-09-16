@@ -97,29 +97,54 @@ class EnsureBackgroundAgentTests(unittest.TestCase):
 
 
 class ConnectBeforeVerifyTests(unittest.TestCase):
-    """The ordering guarantee itself, read off the wizard source.
+    """The ordering guarantee itself, read off the source.
 
-    This is deliberately a source-level assertion: the behaviour it protects is an
-    ORDER between two calls, and getting it backwards silently returns us to a
-    fleet of sites that enrol once and never report again.
+    Deliberately source-level: the behaviour is an ORDER between calls, and getting it
+    backwards silently returns us to a fleet of sites that enrol once and never report.
+
+    0.4.8 MOVED this. 0.4.7 started the agent in the GUI callback finalize_ok, which was
+    wrong twice over: it ran AFTER finalize_install (so a wedge in there skipped it
+    entirely), and it ran on the GUI thread (so it froze the window mid-repaint and the
+    label still read "Confirming the WatchLog connection" while our own code was running).
+    It now runs inside finalize_install, on the worker thread.
     """
 
-    SRC = (ROOT / "agent" / "setup_gui.py").read_text(encoding="utf-8")
+    BACKEND = (ROOT / "agent" / "setup_backend.py").read_text(encoding="utf-8")
+    GUI = (ROOT / "agent" / "setup_gui.py").read_text(encoding="utf-8")
 
-    def test_the_agent_is_started_before_acceptance_runs(self):
-        start = self.SRC.find("ensure_background_agent")
-        accept = self.SRC.find("run_acceptance")
-        self.assertNotEqual(-1, start, "the wizard never starts the background agent")
-        self.assertNotEqual(-1, accept)
-        self.assertLess(start, accept,
-                        "acceptance runs before the agent is started — a wedged or "
-                        "abandoned verification would leave the site permanently offline")
+    def _finalize_body(self) -> str:
+        body = self.BACKEND[self.BACKEND.find("def finalize_install("):]
+        cut = body.find(chr(10) + "def ", 1)
+        return body[:cut] if cut != -1 else body
 
-    def test_starting_the_agent_is_not_conditional_on_acceptance_passing(self):
-        window = self.SRC[self.SRC.find("def finalize_ok"):self.SRC.find("def acceptance_done")]
-        self.assertIn("ensure_background_agent", window,
-                      "the agent must be started in finalize_ok, where enrollment is "
-                      "already proven — not gated behind the acceptance verdict")
+    def test_the_agent_is_started_inside_finalize_install(self):
+        self.assertIn("ensure_background_agent()", self._finalize_body(),
+                      "connectivity must not depend on any later step completing")
+
+    def test_it_is_started_on_the_worker_thread_not_the_gui_thread(self):
+        self.assertNotIn("backend.ensure_background_agent()", self.GUI,
+                         "blocking the GUI thread freezes the window; finalize_install "
+                         "already starts the agent on the worker thread")
+
+    def test_it_runs_after_the_heartbeat_proves_the_site_but_before_optional_work(self):
+        body = self._finalize_body()
+        beat = body.find("core.heartbeat(")
+        start = body.find("ensure_background_agent()")
+        push = body.find("provision_recorder_push(")
+        self.assertNotEqual(-1, beat)
+        self.assertLess(beat, start, "start the agent only once the site is proven reachable")
+        self.assertLess(start, push, "start the agent before any optional recorder work")
+
+    def test_the_outcome_is_logged(self):
+        """A silent fail-open layer is one nobody can debug — 0.4.7 shipped exactly that."""
+        body = self._finalize_body()
+        window = body[body.find("ensure_background_agent()"):][:400]
+        self.assertIn("core.log", window,
+                      "the registration result must reach setup.log")
+
+    def test_the_result_is_reported_to_the_caller(self):
+        self.assertIn('"agent_start"', self.BACKEND,
+                      "finalize_install must surface whether the agent actually started")
 
 
 if __name__ == "__main__":
