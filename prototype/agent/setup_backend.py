@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import platform
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -673,6 +674,57 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
             "if it persists, contact WatchLog support.")
     _setup_log(f"camera sync ok site={identity.get('site_id')} cameras={len(wanted)} (site total {len(mapping)})")
     return mapping
+
+
+def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
+                            _run=None) -> dict:
+    """Register and START the background agent as soon as the site is genuinely connected.
+
+    WHY THIS EXISTS (0.4.7). The NSIS installer runs the setup wizard under ExecWait and
+    only registers the background task AFTERWARDS. So anything that stops the wizard from
+    exiting -- a wedged probe, a customer closing the window, a crash -- means
+    register-service.ps1 never runs, the scheduled task is never created, and the site
+    enrols, heartbeats exactly once from setup, and is then offline forever. That is
+    precisely what the field showed: agents at 0.4.1/0.4.5/0.4.6 each last seen 3-20
+    seconds after enrolling, while 0.4.3 -- whose wizard completed -- ran for three days.
+
+    Connectivity must not depend on a later, slower, failure-prone verification step. Once
+    enrollment and the recorder credential exist, the site can and should start reporting.
+    Acceptance is a REPORT, not a gate on whether the agent runs.
+
+    Safe to call twice: register-service.ps1 uses Register-ScheduledTask -Force, and the
+    installer still runs it again afterwards.
+
+    Fail-open and never raises -- returns {"started": bool, "detail": str}.
+    """
+    if os.name != "nt":
+        return {"started": False, "detail": "background registration is Windows-only"}
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    script = base / "register-service.ps1"
+    if not script.exists():
+        return {"started": False, "detail": f"register-service.ps1 not found beside {base}"}
+
+    runner = _run
+    if runner is None:
+        import subprocess
+
+        def runner(cmd, timeout):  # pragma: no cover - real subprocess path
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    powershell = (Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
+                  / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    cmd = [str(powershell),
+           "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+           "-File", str(script), "-InstallDir", str(base)]
+    try:
+        code, out = runner(cmd, timeout)
+    except Exception as exc:  # noqa: BLE001 — never block a connected site
+        return {"started": False, "detail": f"could not start background agent ({type(exc).__name__})"}
+    if code == 0:
+        return {"started": True, "detail": "background agent registered and started"}
+    return {"started": False,
+            "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
 
 
 def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
