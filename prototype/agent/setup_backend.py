@@ -85,6 +85,10 @@ def read_public_defaults(config_path: Path) -> dict:
         "nvr_username": (credential_store.stored_nvr_username()
                          or section.get("nvr_username", "") or "admin"),
         "site_type": section.get("site_type", "custom"),
+        # PC-free reporting: where the recorder should POST its own alarms.
+        # Absent -> provisioning skips quietly and the agent reports as usual.
+        "push_bridge_url": (os.environ.get("WATCHLOG_PUSH_BRIDGE_URL")
+                            or section.get("push_bridge_url", "")),
     }
 
 
@@ -491,6 +495,8 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
     # encrypted Secrets store, never in this INI.
     section["nvr_password_protected"] = "dpapi-secrets"
     section["site_type"] = site_type
+    if public.get("push_bridge_url"):
+        section["push_bridge_url"] = str(public["push_bridge_url"]).rstrip("/")
     section["camera_profiles_json"] = json.dumps(profiles, separators=(",", ":"))
     _write_ini(config_path, ini)
 
@@ -669,6 +675,59 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
     return mapping
 
 
+def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
+                            username: str, password: str,
+                            progress: Callable[[str], None] | None = None,
+                            _build=None) -> dict:
+    """Point the RECORDER itself at WatchLog, so the site keeps reporting with no PC.
+
+    This is the 0013 "PC-free" path, wired into setup. The wizard is the only thing
+    that is ever on the recorder's LAN holding recorder credentials, so it is the
+    right place to do this. Afterwards the recorder POSTs its own alarms to the push
+    bridge and the site survives this PC being shut down, uninstalled or rebuilt.
+
+    FAIL-OPEN BY DESIGN. Push is a resilience bonus layered on top of a working
+    agent install; a recorder that cannot do it is normal and common. Nothing here
+    may raise, and nothing here may make an otherwise-good install look failed.
+
+    Returns {"configured": bool, "verified": bool, "detail": str}. ``verified`` is
+    only true when the recorder CONFIRMED the config on read-back -- a site that
+    believes it is covered and is not would be worse than no push at all.
+    """
+    progress = progress or (lambda _message: None)
+    base = (public.get("push_bridge_url")
+            or os.environ.get("WATCHLOG_PUSH_BRIDGE_URL") or "").strip().rstrip("/")
+    if not base:
+        return {"configured": False, "verified": False,
+                "detail": "no push bridge configured in this build"}
+
+    try:
+        progress("Setting up PC-free reporting on the recorder…")
+        issued = cloud.call("wl_agent_issue_push_token",
+                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+        token = (issued or {}).get("token") if isinstance(issued, dict) else None
+        if not token:
+            return {"configured": False, "verified": False,
+                    "detail": "WatchLog did not issue a push token"}
+
+        build_fn = _build or build
+        driver = build_fn(recorder["driver"], recorder["url"], username.strip(), password,
+                          RECORDER_PROBE_TIMEOUT)
+        configure = getattr(driver, "configure_push", None)
+        if configure is None:
+            return {"configured": False, "verified": False,
+                    "detail": f"{recorder.get('vendor') or 'this recorder'} does not support "
+                              "recorder-push; the site agent will report instead"}
+
+        out = configure(f"{base}/push/{token}") or {}
+        return {"configured": bool(out.get("applied")),
+                "verified": bool(out.get("verified")),
+                "detail": str(out.get("detail") or "")}
+    except Exception as exc:  # noqa: BLE001 — resilience bonus, never a setup failure
+        return {"configured": False, "verified": False,
+                "detail": f"could not configure recorder push ({type(exc).__name__})"}
+
+
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
                      profiles: list[dict], progress: Callable[[str], None] | None = None,
@@ -731,9 +790,15 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except Exception as exc:
         raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
+    # PC-free resilience: ask the recorder to report on its own, so this site keeps
+    # sending even when this PC is off. Fail-open — never blocks a good install.
+    push = provision_recorder_push(cloud, state, recorder, public, username, password,
+                                   progress=progress)
+
     _clear_consumed_code(config_path)
     return {
         "site_id": state["site_id"],
+        "recorder_push": push,
         "camera_count": len(mapping or recorder["channels"]),
         "vendor": recorder["vendor"],
         "model": recorder["model"],

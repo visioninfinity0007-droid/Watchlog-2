@@ -336,6 +336,68 @@ class DahuaDriver(NvrDriver):
         for p in parts:
             self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
 
+    def configure_push(self, url: str) -> dict:
+        """
+        Point this recorder's alarm notifications at `url` (the WatchLog push
+        bridge, with the site token in the path). This is the "PC-free /
+        recorder-push" setup: afterwards the XVR/NVR POSTs every alarm to us on
+        its own, with no agent running on site.
+
+        UNVALIDATED against real hardware, exactly like the Hikvision twin. Dahua
+        exposes this as the "Alarm Server"/alarm-centre config, and the key names
+        differ across firmware families and OEM rebadges. Written so the path is
+        complete and testable, not because it is trusted yet.
+
+        Unlike a blind setConfig, this READS THE CONFIG BACK and reports whether
+        it actually stuck. A recorder that silently ignores the write must not
+        leave us believing push is configured -- a site that thinks it is covered
+        and is not is worse than one we know needs an agent.
+
+        Returns {"applied": bool, "verified": bool, "detail": str}. Never raises
+        for an unsupported recorder; that is a normal, expected answer here.
+        """
+        import urllib.parse as _u
+        u = _u.urlparse(url)
+        host = u.hostname or ""
+        port = u.port or (443 if u.scheme == "https" else 80)
+        path = u.path or "/"
+        if not host:
+            return {"applied": False, "verified": False, "detail": "no host in push url"}
+
+        params = [
+            "AlarmServer.Enable=true",
+            f"AlarmServer.Address={_u.quote(host, safe='')}",
+            f"AlarmServer.Port={int(port)}",
+            "AlarmServer.Protocol=HTTP",
+            f"AlarmServer.UrlPath={_u.quote(path, safe='')}",
+        ]
+        try:
+            self._get("/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(params))
+        except NvrAuthFailed:
+            raise
+        except DriverError as e:
+            return {"applied": False, "verified": False,
+                    "detail": f"recorder rejected alarm-server config: {str(e)[:120]}"}
+
+        # Read back. The recorder is the source of truth, not our request.
+        try:
+            kv = _parse_kv(self._get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=AlarmServer"))
+        except DriverError as e:
+            return {"applied": True, "verified": False,
+                    "detail": f"config written but could not be read back: {str(e)[:120]}"}
+
+        got_host = kv.get("table.AlarmServer.Address") or kv.get("AlarmServer.Address") or ""
+        got_on = str(kv.get("table.AlarmServer.Enable")
+                     or kv.get("AlarmServer.Enable") or "").lower() == "true"
+        if got_on and got_host == host:
+            return {"applied": True, "verified": True,
+                    "detail": f"recorder will POST alarms to {host}:{port}{path}"}
+        return {"applied": True, "verified": False,
+                "detail": ("recorder did not retain the alarm-server config "
+                           f"(enable={got_on!r} address={got_host!r}); this model likely "
+                           "needs an on-site agent")}
+
     def get_clock(self) -> dict:
         """Recorder clock/timezone/DST/NTP, read-only (global.cgi + Locales + NTP config)."""
         def _cfg(name):
