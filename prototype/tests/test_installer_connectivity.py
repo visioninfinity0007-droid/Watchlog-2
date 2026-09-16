@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -146,6 +147,62 @@ class ConnectBeforeVerifyTests(unittest.TestCase):
         self.assertIn('"agent_start"', self.BACKEND,
                       "finalize_install must surface whether the agent actually started")
 
+
+
+class ConfirmBackgroundAgentTests(unittest.TestCase):
+    """"Task Running" is not "site reporting". Three releases shipped a green screen while
+    the site went silent seconds later, because setup only ever proved its OWN heartbeat."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.log = self.tmp / "agent.log"
+
+    def test_a_fresh_heartbeat_confirms(self):
+        self.log.write_text("==== agent starting ====\nheartbeat ok\n", encoding="utf-8")
+        out = sb.confirm_background_agent(timeout=5, since_offset=0, log_path=self.log,
+                                          _sleep=lambda _s: None)
+        self.assertTrue(out["confirmed"])
+
+    def test_an_OLD_heartbeat_does_not_confirm(self):
+        """The heartbeat setup itself sent must not be mistaken for the background agent."""
+        old = "heartbeat ok\n"
+        self.log.write_text(old, encoding="utf-8")
+        out = sb.confirm_background_agent(timeout=2, since_offset=len(old),
+                                          log_path=self.log, _sleep=lambda _s: None)
+        self.assertFalse(out["confirmed"],
+                         "only a beat written AFTER we started the task counts")
+
+    def test_silence_times_out_honestly(self):
+        self.log.write_text("==== agent starting ====\n", encoding="utf-8")
+        out = sb.confirm_background_agent(timeout=2, since_offset=0, log_path=self.log,
+                                          _sleep=lambda _s: None)
+        self.assertFalse(out["confirmed"])
+        self.assertIn("did not report", out["detail"])
+
+    def test_a_missing_log_is_not_an_error(self):
+        out = sb.confirm_background_agent(timeout=2, since_offset=0,
+                                          log_path=self.tmp / "nope.log",
+                                          _sleep=lambda _s: None)
+        self.assertFalse(out["confirmed"])
+
+    def test_it_is_bounded(self):
+        started = time.monotonic()
+        sb.confirm_background_agent(timeout=1, since_offset=0, log_path=self.log,
+                                    _sleep=lambda _s: None)
+        self.assertLess(time.monotonic() - started, 30, "confirmation must be bounded")
+
+
+class ReadyScreenTellsTheTruthTests(unittest.TestCase):
+    GUI = (ROOT / "agent" / "setup_gui.py").read_text(encoding="utf-8")
+
+    def test_the_ready_screen_reports_background_state(self):
+        self.assertIn("_background_line", self.GUI,
+                      "the green screen must say whether the BACKGROUND agent is reporting")
+
+    def test_an_unconfirmed_agent_is_not_presented_as_fine(self):
+        body = self.GUI[self.GUI.find("def _background_line"):][:900]
+        self.assertIn("NOT running", body)
+        self.assertIn("has not reported yet", body)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

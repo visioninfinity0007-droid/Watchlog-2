@@ -556,6 +556,22 @@ class SetupWindow(QMainWindow):
         self.run_worker(lambda progress=None: ctrl.run_acceptance(progress=progress), (),
                         self.acceptance_done, "Running final acceptance checks…")
 
+    def _background_line(self) -> str:
+        """Say plainly whether the BACKGROUND agent is reporting.
+
+        Three releases showed a green screen while the site went silent seconds later,
+        because setup only ever proved its OWN heartbeat. If the background agent has not
+        reported, the customer must be told here rather than discovering it as an offline
+        site later."""
+        info = getattr(self, "agent_start", None) or {}
+        if info.get("confirmed"):
+            return "✓ WatchLog is running in the background and reporting"
+        if info.get("started"):
+            return ("! WatchLog started in the background but has not reported yet — "
+                    "check Site Status in a few minutes")
+        return ("! WatchLog is NOT running in the background yet — this site will not "
+                "report until that is fixed")
+
     def acceptance_done(self, acc):
         result = self.final_result or {}
         self.progress_bar.setRange(0, 1)
