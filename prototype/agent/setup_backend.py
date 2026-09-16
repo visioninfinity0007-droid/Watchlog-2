@@ -100,7 +100,50 @@ def migrate_legacy_credentials(config_path: Path) -> bool:
     the actual work lives in credential_store so the agent and the --migrate-only
     installer path share one authoritative implementation. Returns True if a
     credential was migrated."""
-    return credential_store.migrate_legacy_if_needed(config_path)
+    migrated = credential_store.migrate_legacy_if_needed(config_path)
+    merge_public_defaults(config_path)
+    return migrated
+
+
+def merge_public_defaults(config_path: Path, defaults_path: Path | None = None) -> list:
+    """Add public keys the build knows about but an EXISTING watchlog.ini predates.
+
+    NSIS writes watchlog.defaults.ini only when there is no watchlog.ini
+    (watchlog.nsi:124-125), which correctly preserves a site's recorder settings on
+    upgrade -- but also means an already-installed site can NEVER receive a new public
+    key. push_bridge_url is the live example: baking it into the build fixes new installs
+    and does nothing whatsoever for the existing fleet, which is the fleet that matters.
+
+    Merge semantics are deliberately narrow and safe: a key is copied ONLY when it is
+    present in the shipped defaults AND absent or empty in the existing ini. Nothing the
+    operator or setup has already written is ever overwritten. Returns the keys added.
+    """
+    added: list = []
+    try:
+        src = Path(defaults_path) if defaults_path else (config_path.parent / "watchlog.defaults.ini")
+        if not src.exists() or not config_path.exists():
+            return added
+        defaults = configparser.ConfigParser()
+        defaults.read(src, encoding="utf-8-sig")
+        current = configparser.ConfigParser()
+        current.read(config_path, encoding="utf-8-sig")
+        if not defaults.has_section("watchlog"):
+            return added
+        if not current.has_section("watchlog"):
+            current.add_section("watchlog")
+        for key, value in defaults.items("watchlog"):
+            # Never resurrect a consumed one-time code, and never touch recorder settings.
+            if key in ("enrollment_code", "nvr_url", "nvr_username", "nvr_driver",
+                       "nvr_password_protected"):
+                continue
+            if str(value or "").strip() and not str(current["watchlog"].get(key, "") or "").strip():
+                current["watchlog"][key] = value
+                added.append(key)
+        if added:
+            _write_ini(config_path, current)
+    except Exception:  # noqa: BLE001 - a config merge may never fail an upgrade
+        return added
+    return added
 
 
 def _write_ini(path: Path, ini: configparser.ConfigParser) -> None:
@@ -942,6 +985,11 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     if _remaining(1) > 0:
         push = provision_recorder_push(cloud, state, recorder, public, username, password,
                                        progress=progress)
+
+    # The field outcome of PC-free reporting was computed and then thrown away -- never
+    # logged, never shown. That is the second reason nobody noticed the bridge was dead.
+    core.log(f"recorder push: configured={push.get('configured')} "
+             f"verified={push.get('verified')} {push.get('detail')}")
 
     cleared = _clear_consumed_code(config_path)
     core.log(f"post-connect phase done in "

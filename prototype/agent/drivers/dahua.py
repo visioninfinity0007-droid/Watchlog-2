@@ -364,20 +364,41 @@ class DahuaDriver(NvrDriver):
         if not host:
             return {"applied": False, "verified": False, "detail": "no host in push url"}
 
-        params = [
-            "AlarmServer.Enable=true",
-            f"AlarmServer.Address={_u.quote(host, safe='')}",
-            f"AlarmServer.Port={int(port)}",
-            "AlarmServer.Protocol=HTTP",
-            f"AlarmServer.UrlPath={_u.quote(path, safe='')}",
+        # Protocol must follow the SCHEME. Hardcoding HTTP while computing port 443 told
+        # the recorder to open a PLAINTEXT connection to a TLS port: every alarm would be
+        # dropped by the TLS handshake, and the read-back could not catch it because it
+        # only checked Enable+Address.
+        scheme = "HTTPS" if u.scheme == "https" else "HTTP"
+        # REQUIRED keys fail the call; OPTIONAL ones may legitimately not exist on entry
+        # -level firmware. Issue them ONE PER REQUEST like every other setter in this
+        # driver (set_smd, set_time_config): Dahua's configManager rejects an ENTIRE
+        # setConfig request when any single key is unknown, so batching all five meant one
+        # unsupported key silently discarded the whole configuration.
+        required = [
+            ("AlarmServer.Enable", "true"),
+            ("AlarmServer.Address", _u.quote(host, safe="")),
+            ("AlarmServer.Port", str(int(port))),
         ]
+        optional = [
+            ("AlarmServer.Protocol", scheme),
+            ("AlarmServer.UrlPath", _u.quote(path, safe="")),
+        ]
+        skipped = []
         try:
-            self._get("/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(params))
+            for key, value in required:
+                self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{key}={value}")
         except NvrAuthFailed:
             raise
         except DriverError as e:
             return {"applied": False, "verified": False,
                     "detail": f"recorder rejected alarm-server config: {str(e)[:120]}"}
+        for key, value in optional:
+            try:
+                self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{key}={value}")
+            except NvrAuthFailed:
+                raise
+            except DriverError:
+                skipped.append(key.split(".")[-1])
 
         # Read back. The recorder is the source of truth, not our request.
         try:
@@ -390,9 +411,18 @@ class DahuaDriver(NvrDriver):
         got_host = kv.get("table.AlarmServer.Address") or kv.get("AlarmServer.Address") or ""
         got_on = str(kv.get("table.AlarmServer.Enable")
                      or kv.get("AlarmServer.Enable") or "").lower() == "true"
+        got_proto = str(kv.get("table.AlarmServer.Protocol")
+                        or kv.get("AlarmServer.Protocol") or "").upper()
         if got_on and got_host == host:
+            # A recorder that kept HTTP for an https bridge would fail every alarm at the
+            # TLS handshake, so that is NOT a verified push.
+            if got_proto and got_proto != scheme:
+                return {"applied": True, "verified": False,
+                        "detail": (f"recorder kept Protocol={got_proto} but the bridge is "
+                                   f"{scheme}; alarms would not be delivered")}
+            note = f" (firmware ignored: {', '.join(skipped)})" if skipped else ""
             return {"applied": True, "verified": True,
-                    "detail": f"recorder will POST alarms to {host}:{port}{path}"}
+                    "detail": f"recorder will POST alarms to {host}:{port}{path}{note}"}
         return {"applied": True, "verified": False,
                 "detail": ("recorder did not retain the alarm-server config "
                            f"(enable={got_on!r} address={got_host!r}); this model likely "

@@ -140,7 +140,7 @@ class HikvisionDriver(NvrDriver):
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r
 
-    def configure_push(self, url: str, host_id: int = 1) -> None:
+    def configure_push(self, url: str, host_id: int = 1) -> dict:
         """
         Point this recorder's alarm notifications at `url` (the WatchLog
         push bridge, with the site token in the path). This is the "PC-free
@@ -172,7 +172,31 @@ class HikvisionDriver(NvrDriver):
             f'<ipAddress>{host}</ipAddress><portNo>{port}</portNo>'
             '<httpAuthenticationMethod>none</httpAuthenticationMethod>'
             '</HttpHostNotification>')
-        self._put(f"/ISAPI/Event/notification/httpHosts/{host_id}", body)
+        # MUST return the same {applied, verified, detail} contract the Dahua driver
+        # returns. Returning None made provision_recorder_push read `(out or {}).get(...)`
+        # as all-False, so a Hikvision push that actually worked was always reported as
+        # failed -- and the customer told to expect no PC-free reporting.
+        try:
+            self._put(f"/ISAPI/Event/notification/httpHosts/{host_id}", body)
+        except DriverError as e:
+            return {"applied": False, "verified": False,
+                    "detail": f"recorder rejected httpHosts config: {str(e)[:120]}"}
+
+        # Read back: the recorder is the source of truth, not our request.
+        try:
+            root = self._xml(f"/ISAPI/Event/notification/httpHosts/{host_id}")
+        except Exception:  # noqa: BLE001 - written but unverifiable
+            return {"applied": True, "verified": False,
+                    "detail": "config written but could not be read back"}
+        got_host = (_text(root, "ipAddress") or "").strip()
+        got_url = (_text(root, "url") or "").strip()
+        if got_host == host and (not got_url or got_url == path):
+            return {"applied": True, "verified": True,
+                    "detail": f"recorder will POST alarms to {host}:{port}{path}"}
+        return {"applied": True, "verified": False,
+                "detail": ("recorder did not retain the httpHosts config "
+                           f"(ipAddress={got_host!r} url={got_url!r}); this model likely "
+                           "needs an on-site agent")}
 
     # -- interface ------------------------------------------------------
 

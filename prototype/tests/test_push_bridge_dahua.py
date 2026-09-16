@@ -184,3 +184,63 @@ class DiagnosticTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class LivenessChatterTests(unittest.TestCase):
+    """0.4.11 — recorder keep-alives are not alarms, but they ARE proof of life.
+
+    A Dahua recorder cannot be made to emit a periodic heartbeat, so a PC-free site with
+    a quiet night writes nothing and WatchLog cannot tell "quiet" from "unplugged". The
+    bridge used to DROP the chatter that firmware does send, throwing away the only
+    liveness signal available between alarms. It is now recorded as liveness only -- it
+    must never become an event."""
+
+    def test_keepalive_chatter_is_recognised_as_liveness(self):
+        for code in ("Heartbeat", "KeepAlive", "TimeChange", "NTPAdjustTime"):
+            body = f"Code={code};action=Start;index=0".encode()
+            self.assertTrue(pb.is_liveness_chatter(body, "text/plain"), code)
+            # and it must still NOT parse as an event
+            self.assertIsNone(pb.parse_dahua(body, "text/plain"), code)
+
+    def test_a_real_alarm_is_not_treated_as_mere_liveness(self):
+        body = b"Code=VideoMotion;action=Start;index=0"
+        self.assertFalse(pb.is_liveness_chatter(body, "text/plain"),
+                         "a real alarm must take the event path, not the liveness path")
+
+    def test_unrelated_junk_is_not_liveness(self):
+        for junk in (b"", b"hello world", b"<html>login</html>", b'{"ok":true}'):
+            self.assertFalse(pb.is_liveness_chatter(junk, "text/plain"), junk)
+
+    def test_liveness_calls_the_liveness_rpc_not_the_ingest_rpc(self):
+        """It must never insert an event from a keep-alive."""
+        seen = {}
+
+        def fake_rpc(fn, payload):
+            seen["fn"] = fn
+            return True, "ok"
+
+        original = pb._rpc
+        pb._rpc = fake_rpc
+        try:
+            pb.liveness("tok123")
+        finally:
+            pb._rpc = original
+        self.assertEqual("wl_push_liveness", seen["fn"])
+
+
+class RouteMatchingTests(unittest.TestCase):
+    """The route regex matched the QUERY STRING, so firmware posting
+    /push/<token>?action=alarm was 404'd and every alarm silently rejected."""
+
+    def test_a_query_string_does_not_break_the_route(self):
+        import re
+        for target in ("/push/abc123", "/push/abc123/", "/push/abc123?action=alarm",
+                       "/push/abc123?action=alarm&channel=0"):
+            route = target.split("?", 1)[0]
+            self.assertIsNotNone(re.match(r"/push/([A-Za-z0-9]+)/?$", route), target)
+
+    def test_the_handler_strips_the_query_before_matching(self):
+        src = (ROOT / "bridge" / "push_bridge.py").read_text(encoding="utf-8")
+        body = src[src.find("def do_POST"):][:600]
+        self.assertIn('self.path.split("?", 1)[0]', body,
+                      "BaseHTTPRequestHandler.path includes the query string")

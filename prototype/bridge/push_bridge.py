@@ -227,6 +227,20 @@ def parse_any(body: bytes, content_type: str):
     return None, None
 
 
+def is_liveness_chatter(body: bytes, content_type: str) -> bool:
+    """True for recorder keep-alive traffic: real, authenticated, but not an alarm."""
+    text_bytes, _jpeg = _split_multipart(body, content_type)
+    raw = text_bytes if text_bytes is not None else body
+    try:
+        text = raw.decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return False
+    lowered = text.lower()
+    if "code=" not in lowered and '"code"' not in lowered:
+        return False
+    return any(code in lowered for code in DAHUA_NON_EVENTS)
+
+
 def describe_unparsed(body: bytes, content_type: str, limit: int = 400) -> str:
     """A bounded, log-safe description of a push we could not parse.
 
@@ -287,13 +301,28 @@ def _parse_ts(raw):
     return datetime.now(timezone.utc).isoformat()
 
 
+def liveness(token: str) -> tuple:
+    """Record that the recorder is alive WITHOUT inventing an event.
+
+    Recorder chatter (Heartbeat/KeepAlive/TimeChange) is not an alarm and must never be
+    stored as one -- but it does prove the recorder is powered, configured and able to
+    reach us. Dropping it silently, as the bridge used to, threw away the only liveness
+    signal a PC-free site can produce between alarms.
+    """
+    return _rpc("wl_push_liveness", {"p_token": token})
+
+
 def push(token: str, events: list) -> tuple:
     """Call wl_ingest_push. Returns (ok, detail)."""
+    return _rpc("wl_ingest_push", {"p_token": token, "p_events": events})
+
+
+def _rpc(fn: str, payload: dict) -> tuple:
     if not (SUPABASE_URL and SUPABASE_KEY):
         return False, "SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY not set"
-    data = json.dumps({"p_token": token, "p_events": events}).encode()
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        f"{SUPABASE_URL}/rest/v1/rpc/wl_ingest_push", data=data, method="POST",
+        f"{SUPABASE_URL}/rest/v1/rpc/{fn}", data=data, method="POST",
         headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
                  "Content-Type": "application/json"})
     try:
@@ -314,14 +343,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(b"WatchLog push bridge: OK")
 
     def do_POST(self):
-        m = re.match(r"/push/([A-Za-z0-9]+)/?$", self.path)
+        # BaseHTTPRequestHandler.path carries the full request target INCLUDING the query
+        # string. Dahua firmware that posts to `/push/<token>?action=alarm&channel=0` was
+        # therefore 404'd and every alarm silently rejected. Match on the path only.
+        route = self.path.split("?", 1)[0]
+        m = re.match(r"/push/([A-Za-z0-9]+)/?$", route)
         if not m:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b""
+            self.log_message("unrecognised ROUTE %s %s", route[:60],
+                             describe_unparsed(body, self.headers.get("Content-Type", "")))
             self.send_response(404); self.end_headers(); return
         token = m.group(1)
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
         ctype = self.headers.get("Content-Type", "")
         vendor, ev = parse_any(body, ctype)
+        if ev is None and is_liveness_chatter(body, ctype):
+            # Not an alarm, but proof the recorder is alive and can reach us. Record the
+            # liveness and nothing else -- never invent an event from a keep-alive.
+            ok, detail = liveness(token)
+            self.log_message("liveness -> %s", detail[:80])
+            self.send_response(200 if ok else 502); self.end_headers(); return
         if ev is None:
             # Not a recognisable alarm (keep-alive, a Stop, or a format we do not
             # confidently understand). Answer OK so the recorder does not retry

@@ -15,6 +15,7 @@ param(
   [string]$PublisherUrl = "",
   [string]$SupabaseUrl = "",
   [string]$SupabasePublishableKey = "",
+  [string]$PushBridgeUrl = "",
   [switch]$Lean,
   [switch]$Production,
   [string]$SignPfx = "",
@@ -116,6 +117,16 @@ try {
   $supaUrl = $SupabaseUrl
   if (-not $supaUrl) { $supaUrl = $env:SUPABASE_URL }
   if (-not $supaUrl) { $supaUrl = $cfg["SUPABASE_URL"] }
+  # PC-free ("recorder push") destination. Absent from every build until 0.4.10, which is
+  # why provision_recorder_push returned "no push bridge configured in this build" on its
+  # first line in EVERY installer ever shipped and the whole 0013/0108 path was dead code.
+  $pushUrl = $PushBridgeUrl
+  if (-not $pushUrl) { $pushUrl = $env:WATCHLOG_PUSH_BRIDGE_URL }
+  if (-not $pushUrl) { $pushUrl = $cfg["PUSH_BRIDGE_URL"] }
+  if ($pushUrl -and $pushUrl -notmatch '^https://') {
+    throw "PushBridgeUrl is not an https URL: '$pushUrl' (argument-binding leak?)"
+  }
+
   $pubKey = $SupabasePublishableKey
   if (-not $pubKey) { $pubKey = $env:SUPABASE_PUBLISHABLE_KEY }
   if (-not $pubKey) { $pubKey = $cfg["SUPABASE_PUBLISHABLE_KEY"] }
@@ -138,6 +149,7 @@ supabase_url = $supaUrl
 supabase_publishable_key = $pubKey
 enrollment_code = $Code
 nvr_driver = auto
+push_bridge_url = $pushUrl
 "@ | Set-Content -Path $defaultsPath -Encoding UTF8
 
   # Parse the STAGED file back and assert EXACT equality with the intended
@@ -160,7 +172,17 @@ nvr_driver = auto
   if ($stagedMap['supabase_url'] -notmatch '^https://') {
     throw "staged supabase_url is not https: '$($stagedMap['supabase_url'])'"
   }
-  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code." -ForegroundColor Green
+  # Same exact-equality gate the other keys get - a parameter shift must not be able to
+  # bake a different push destination than we supplied.
+  if ($stagedMap['push_bridge_url'] -ne $pushUrl) {
+    throw "staged push_bridge_url '$($stagedMap['push_bridge_url'])' != intended '$pushUrl'"
+  }
+  if ($pushUrl) {
+    Write-Host "PC-free push bridge baked in: $pushUrl" -ForegroundColor Green
+  } else {
+    Write-Host "NOTE: no PushBridgeUrl supplied - PC-free reporting will be unavailable in this build." -ForegroundColor Yellow
+  }
+  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code / push_bridge_url." -ForegroundColor Green
 
   # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"

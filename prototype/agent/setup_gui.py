@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # A PyInstaller --windowed process has no console streams. Existing recorder
@@ -19,11 +20,20 @@ from pathlib import Path
 # letting a diagnostic print crash the GUI.
 _LOG_HANDLE = None
 if os.name == "nt":
-    log_dir = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    _LOG_HANDLE = (log_dir / "setup.log").open("a", encoding="utf-8", buffering=1)
-    sys.stdout = _LOG_HANDLE
-    sys.stderr = _LOG_HANDLE
+    # Guarded: this runs at IMPORT, before any handler exists. A locked or unwritable
+    # setup.log (Defender, a support-bundle read, a full disk) would raise here and kill a
+    # --windowed build with NO window and no message -- the customer sees the installer do
+    # nothing at all. Fall back to temp, then to leaving stdio alone.
+    for _candidate in (Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog",
+                       Path(tempfile.gettempdir())):
+        try:
+            _candidate.mkdir(parents=True, exist_ok=True)
+            _LOG_HANDLE = (_candidate / "setup.log").open("a", encoding="utf-8", buffering=1)
+            sys.stdout = _LOG_HANDLE
+            sys.stderr = _LOG_HANDLE
+            break
+        except Exception:  # noqa: BLE001 - logging may never prevent setup from running
+            _LOG_HANDLE = None
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
@@ -411,6 +421,11 @@ class SetupWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
             self.retry_btn.show()
+            # Retry was the ONLY control here, so a technician whose setup failed had no
+            # way to export a support bundle and no way out except killing the window --
+            # which then aborted the NSIS install. Mirror the acceptance-failure page.
+            self.incomplete_bundle_btn.show()
+            self.incomplete_exit_btn.show()
         else:
             QMessageBox.warning(self, "WatchLog Setup", message)
 
@@ -438,7 +453,17 @@ class SetupWindow(QMainWindow):
             item.setData(Qt.UserRole, row["ip"])
             self.recorder_list.addItem(item)
         recorder_word = "recorder" if len(rows) == 1 else "recorders"
-        self.status.setText(f"Found {len(rows)} possible {recorder_word}.")
+        found = f"Found {len(rows)} possible {recorder_word}."
+        if len(rows) > 1:
+            # WatchLog monitors exactly ONE recorder per installation: the agent holds a
+            # single nvr_url, and cameras are unique per (site_id, channel), so pointing a
+            # second recorder at the same site SILENTLY overwrites the first one's camera
+            # rows and stops monitoring it. A technician who picks one here and leaves on a
+            # green screen would believe a 2-recorder site was fully covered. Say it.
+            found += (" WatchLog monitors ONE recorder per installation - pick the one this"
+                      " PC should monitor. A second recorder needs its own WatchLog site and"
+                      " its own PC.")
+        self.status.setText(found)
 
     def recorder_selected(self):
         items = self.recorder_list.selectedItems()
@@ -558,6 +583,16 @@ class SetupWindow(QMainWindow):
         self.run_worker(lambda progress=None: ctrl.run_acceptance(progress=progress), (),
                         self.acceptance_done, "Running final acceptance checks…")
 
+    def _push_line(self) -> str:
+        """PC-free reporting status. Only claims active when the RECORDER confirmed the
+        config on read-back; anything else states what actually happened."""
+        info = (getattr(self, "final_result", None) or {}).get("recorder_push") or {}
+        if info.get("verified"):
+            return "✓ PC-free reporting active (the recorder reports even if this PC is off)"
+        if info.get("configured"):
+            return f"! PC-free reporting not confirmed by the recorder — {info.get('detail', '')}"
+        return "· PC-free reporting not enabled (this PC does the reporting)"
+
     def _background_line(self) -> str:
         """Say plainly whether the BACKGROUND service is running.
 
@@ -583,7 +618,9 @@ class SetupWindow(QMainWindow):
         if acc.get("ready", False):
             base = (f"✓ Recorder verified\n✓ WatchLog site linked\n"
                     f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
-                    f"✓ Recorder credential encrypted on this PC\n\n"
+                    f"✓ Recorder credential encrypted on this PC\n"
+                    f"{self._background_line()}\n"
+                    f"{self._push_line()}\n\n"
                     f"{result.get('vendor', '')} {result.get('model', '')}")
             if acc.get("warnings"):
                 base += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in acc["warnings"])
