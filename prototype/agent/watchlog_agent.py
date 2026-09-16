@@ -1103,7 +1103,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         spool_factory = _spool_factory
     archive_fn = _archive or dahua_archive.prove_recorder_archive
     live_seconds = int(live_seconds if live_seconds is not None
-                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 20))
+                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 10))
     state = _state if _state is not None else load_state(cfg.state_path)
 
     print(f"watchlog-agent {AGENT_VERSION} — post-install acceptance self-test\n")
@@ -1225,19 +1225,39 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
             return "blocked", "a plaintext recorder password is present in watchlog.ini (must live only in the encrypted store)"
         return "pass", "no plaintext recorder password on disk"
 
+    # ORDER MATTERS (0.4.6). Every REQUIRED check runs first, so the Ready/Blocked verdict is
+    # decided from fast local+cloud probes in a few seconds. The three slow probes are all soft --
+    # they can only ever add a warning, never block -- so they must not stand between the customer
+    # and their answer. Dependencies are preserved: archive and live still run after the recorder
+    # is open and cameras are enumerated.
+    #
+    # Every check carries its own "budget" in seconds. A wedged probe is the thing that left 0.4.5
+    # spinning on "Running final acceptance checks", so no probe is allowed to run unbounded:
+    # a hard check over budget is BLOCKED (fail closed), a soft one only warns.
     checks = [
-        {"key": "config", "label": "Configuration present", "hard": True, "run": _config},
-        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True, "run": _identity},
-        {"key": "runtime", "label": "Runtime version + build identity", "hard": False, "run": _runtime},
-        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True, "run": _cloud},
-        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder},
-        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras},
+        {"key": "config", "label": "Configuration present", "hard": True, "run": _config,
+         "budget": 10},
+        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True,
+         "run": _identity, "budget": 10},
+        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True,
+         "run": _cloud, "budget": 25},
+        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder,
+         "budget": 25},
+        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras,
+         "budget": 30},
+        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool,
+         "budget": 20},
+        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True,
+         "run": _security, "budget": 10},
+        # --- soft from here: informational only, can never block Ready ---
+        {"key": "runtime", "label": "Runtime version + build identity", "hard": False,
+         "run": _runtime, "budget": 15},
         {"key": "archive", "label": "Recorded footage retrievable (outage recovery)",
-         "hard": False, "run": _archive_check},
-        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live},
-        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai},
-        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool},
-        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True, "run": _security},
+         "hard": False, "run": _archive_check, "budget": 25},
+        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live,
+         "budget": live_seconds + 10},
+        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai,
+         "budget": 30},
     ]
 
     report = acceptance.run_checks(checks, log=print)
