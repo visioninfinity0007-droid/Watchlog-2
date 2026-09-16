@@ -729,6 +729,50 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
 
 
+def confirm_background_agent(timeout: float = 75.0, since_offset: int | None = None,
+                             log_path: Path | None = None, _sleep=None) -> dict:
+    """Wait (bounded) for the BACKGROUND agent to prove itself by heartbeating.
+
+    "Scheduled task is Running" is not the same as "the site is reporting". The task can
+    be Running while the agent crashes on startup, and that is indistinguishable from
+    success at the moment setup finishes -- which is exactly how three releases shipped
+    believing a site was connected when it had gone silent seconds after enrolling.
+
+    run-agent.ps1 appends the agent's own stdout to the WatchLog agent.log in ProgramData,
+    the agent logs "heartbeat ok" on every successful beat. So watching for a NEW one
+    after we started the task is a true end-to-end proof: the background process is alive,
+    holds a usable identity, and is reaching WatchLog.
+
+    Bounded and fail-open: never raises, and a timeout is reported honestly rather than
+    treated as success.
+    """
+    path = Path(log_path) if log_path else (programdata_dir() / "agent.log")
+    sleep = _sleep or time.sleep
+    start = since_offset if since_offset is not None else _log_size(path)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if path.exists():
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(start)
+                    fresh = handle.read()
+                if "heartbeat ok" in fresh:
+                    return {"confirmed": True,
+                            "detail": "background agent is running and reporting to WatchLog"}
+        except OSError:
+            pass
+        sleep(2)
+    return {"confirmed": False,
+            "detail": f"the background agent did not report within {int(timeout)}s"}
+
+
+def _log_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
                             username: str, password: str,
                             progress: Callable[[str], None] | None = None,
@@ -851,8 +895,15 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # heartbeated once, and offline forever, AND it froze the window so the label never
     # repainted. Result is LOGGED: a silent fail-open layer is one nobody can debug.
     progress("Starting WatchLog in the background…")
+    log_before = _log_size(programdata_dir() / "agent.log")
     agent_start = ensure_background_agent()
     core.log(f"background agent start: {agent_start.get('detail')}")
+    # "Task Running" is not "site reporting". Wait for the BACKGROUND agent to actually
+    # heartbeat before we let the wizard claim success.
+    if agent_start.get("started"):
+        progress("Waiting for WatchLog to report in…")
+        agent_start["confirmed"] = confirm_background_agent(since_offset=log_before).get("confirmed", False)
+        core.log(f"background agent confirmed: {agent_start['confirmed']}")
 
     # PC-free resilience: ask the recorder to report on its own, so this site keeps
     # sending even when this PC is off. Fail-open — never blocks a good install.
