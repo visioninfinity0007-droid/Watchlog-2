@@ -48,7 +48,25 @@ class PushBridgeUrlReachesTheInstallerTests(unittest.TestCase):
     def test_it_gets_the_same_exact_equality_gate_as_the_other_public_keys(self):
         """The anti-config-corruption gate exists so a parameter shift cannot bake a
         different value than we supplied. A new key without it is a hole."""
-        self.assertIn("$stagedMap['push_bridge_url'] -ne $pushUrl", BUILD)
+        self.assertIn("$stagedPush -ne $pushUrl", BUILD)
+        self.assertIn("staged push_bridge_url", BUILD, "the gate must still throw by name")
+
+    def test_the_gate_compares_like_with_like(self):
+        """It first failed with "staged push_bridge_url '' != intended ''" -- both empty,
+        but not the same KIND of empty: $env:X and a missing hashtable key return $null,
+        and in PowerShell '' -ne $null is TRUE. Normalise both sides or the gate rejects a
+        perfectly correct build."""
+        self.assertIn("if ($null -eq $pushUrl) { $pushUrl = \"\" }", BUILD)
+        self.assertIn("ContainsKey('push_bridge_url')", BUILD)
+
+    def test_the_release_workflow_actually_passes_the_value(self):
+        """Baking the key into the build script does nothing if no caller supplies it --
+        that is exactly how recorder-push came to be shipped-but-never-wired."""
+        wf = (REPO / ".github" / "workflows" / "windows-release.yml").read_text(encoding="utf-8")
+        self.assertIn("WATCHLOG_PUSH_BRIDGE_URL", wf)
+        self.assertIn("$releaseArgs['PushBridgeUrl']", wf,
+                      "must bind BY NAME: array splatting once shifted -SupabaseUrl into "
+                      "-Code and baked an invalid backend URL into a customer release")
 
     def test_a_non_https_bridge_is_refused_at_build_time(self):
         self.assertIn("PushBridgeUrl is not an https URL", BUILD)
