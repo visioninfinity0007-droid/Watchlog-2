@@ -26,7 +26,7 @@ class BuildMetadata(unittest.TestCase):
             importlib.reload(wl_version)
             self.assertEqual(wl_version.BUILD_SHA, "abc1234def567890")
             self.assertEqual(wl_version.BUILD_CHANNEL, "pilot")
-            self.assertEqual(wl_version.version_string(), "0.4.8+abc1234")   # short SHA in the string
+            self.assertEqual(wl_version.version_string(), "0.4.9+abc1234")   # short SHA in the string
             md = wl_version.build_metadata()
             self.assertEqual(md["build_sha"], "abc1234def567890")
             self.assertEqual(md["channel"], "pilot")
@@ -44,17 +44,17 @@ class BuildMetadata(unittest.TestCase):
             importlib.reload(wl_version)
             # env is used only when no baked build_info is present on the path
             if wl_version.BUILD_SHA == "envsha0099":
-                self.assertTrue(wl_version.version_string().startswith("0.4.8+envsha0"))
+                self.assertTrue(wl_version.version_string().startswith("0.4.9+envsha0"))
         finally:
             del os.environ["WATCHLOG_BUILD_SHA"]
             importlib.reload(wl_version)
 
     def test_version_and_metadata_shape(self):
         importlib.reload(wl_version)
-        self.assertEqual(wl_version.VERSION, "0.4.8")
+        self.assertEqual(wl_version.VERSION, "0.4.9")
         md = wl_version.build_metadata()
         self.assertEqual(set(md), {"version", "build_sha", "channel", "version_string"})
-        self.assertTrue(md["version_string"].startswith("0.4.8"))
+        self.assertTrue(md["version_string"].startswith("0.4.9"))
         self.assertEqual(md["channel"] or "production", md["channel"] or "production")
 
     def test_build_exe_stamps_build_info(self):

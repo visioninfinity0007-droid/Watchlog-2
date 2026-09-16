@@ -25,7 +25,15 @@ if ((Test-Path $log) -and (Get-Item $log).Length -gt 5000000) {
 
 while ($true) {
   Add-Content -Path $log -Value "`r`n==== agent starting $(Get-Date -Format o) ===="
-  & $agent *>> $log
+  # Stream, do not redirect. PowerShell's `*>> $log` does not put a long-running
+  # process's output on disk promptly, so agent.log sat stale for hours -- useless for
+  # support, and it made 0.4.8's setup-time check report a healthy agent as failed.
+  # The agent already flushes every line (print(..., flush=True)); this writes each one
+  # through as it arrives.
+  & $agent 2>&1 | ForEach-Object {
+    $writer = [System.IO.StreamWriter]::new($log, $true)
+    try { $writer.WriteLine([string]$_); $writer.Flush() } finally { $writer.Dispose() }
+  }
   $code = $LASTEXITCODE
   Add-Content -Path $log -Value "==== agent exited ($code); restarting in 15s $(Get-Date -Format o) ===="
   Start-Sleep -Seconds 15

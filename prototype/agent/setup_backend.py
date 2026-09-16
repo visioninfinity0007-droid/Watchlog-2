@@ -158,6 +158,7 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
+POST_CONNECT_BUDGET_SECONDS = 120   # total for ALL optional post-connection work
 RECORDER_PROBE_TIMEOUT = 5          # seconds per driver probe
 RECORDER_DEADLINE = 18             # seconds hard cap for the whole login test
 
@@ -502,12 +503,36 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
     _write_ini(config_path, ini)
 
 
-def _clear_consumed_code(config_path: Path) -> None:
-    ini = configparser.ConfigParser()
-    ini.read(config_path, encoding="utf-8-sig")
-    if ini.has_section("watchlog"):
+def _clear_consumed_code(config_path: Path) -> bool:
+    """Blank the consumed enrollment code. MUST NOT be able to fail the install.
+
+    0.4.9: the background agent is now started BEFORE this runs, and it holds
+    watchlog.ini open. On Windows os.replace() onto a file another process has open
+    raises PermissionError, so the atomic write used here could turn a perfectly good,
+    already-connected install into a failure. A stale code in the ini is harmless -- it
+    is single-use and the server has already consumed it -- so this is best-effort:
+    retry briefly, fall back to an in-place rewrite, and give up quietly rather than
+    take down a working site.
+    """
+    try:
+        ini = configparser.ConfigParser()
+        ini.read(config_path, encoding="utf-8-sig")
+        if not ini.has_section("watchlog"):
+            return True
         ini["watchlog"]["enrollment_code"] = ""
-        _write_ini(config_path, ini)
+        for attempt in range(3):
+            try:
+                _write_ini(config_path, ini)
+                return True
+            except OSError:
+                time.sleep(0.5 * (attempt + 1))
+        # Last resort: rewrite in place (no rename), which does not need the
+        # destination to be unopened by other processes.
+        with config_path.open("w", encoding="utf-8", newline=chr(10)) as handle:
+            ini.write(handle)
+        return True
+    except Exception:  # noqa: BLE001 — a cosmetic tidy-up may never fail an install
+        return False
 
 
 class AgentSyncError(ValueError):
@@ -729,22 +754,18 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
 
 
-def confirm_background_agent(timeout: float = 75.0, since_offset: int | None = None,
+def confirm_background_agent(timeout: float = 20.0, since_offset: int | None = None,
                              log_path: Path | None = None, _sleep=None) -> dict:
-    """Wait (bounded) for the BACKGROUND agent to prove itself by heartbeating.
+    """Best-effort: has the background agent written a heartbeat since we started it?
 
-    "Scheduled task is Running" is not the same as "the site is reporting". The task can
-    be Running while the agent crashes on startup, and that is indistinguishable from
-    success at the moment setup finishes -- which is exactly how three releases shipped
-    believing a site was connected when it had gone silent seconds after enrolling.
+    NOT ON THE CRITICAL PATH, deliberately. 0.4.8 blocked setup for 75s waiting on this
+    and then reported a HEALTHY agent as failed, because run-agent.ps1 captured the agent
+    through a PowerShell redirection that does not reach disk promptly. The agent was
+    heartbeating to the cloud the whole time; only the local file was stale.
 
-    run-agent.ps1 appends the agent's own stdout to the WatchLog agent.log in ProgramData,
-    the agent logs "heartbeat ok" on every successful beat. So watching for a NEW one
-    after we started the task is a true end-to-end proof: the background process is alive,
-    holds a usable identity, and is reaching WatchLog.
-
-    Bounded and fail-open: never raises, and a timeout is reported honestly rather than
-    treated as success.
+    0.4.9 fixes that redirection so the log streams, which makes this signal meaningful
+    again -- but it stays advisory. Whether a site reports is proven by the scheduled task
+    running, and ultimately by the cloud, never by the presence of a local log line.
     """
     path = Path(log_path) if log_path else (programdata_dir() / "agent.log")
     sleep = _sleep or time.sleep
@@ -755,15 +776,15 @@ def confirm_background_agent(timeout: float = 75.0, since_offset: int | None = N
             if path.exists():
                 with path.open("r", encoding="utf-8", errors="replace") as handle:
                     handle.seek(start)
-                    fresh = handle.read()
-                if "heartbeat ok" in fresh:
-                    return {"confirmed": True,
-                            "detail": "background agent is running and reporting to WatchLog"}
+                    if "heartbeat ok" in handle.read():
+                        return {"confirmed": True,
+                                "detail": "background agent is reporting to WatchLog"}
         except OSError:
             pass
         sleep(2)
     return {"confirmed": False,
-            "detail": f"the background agent did not report within {int(timeout)}s"}
+            "detail": f"no background heartbeat seen locally within {int(timeout)}s "
+                      "(not conclusive -- the agent may still be reporting)"}
 
 
 def _log_size(path: Path) -> int:
@@ -888,33 +909,41 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except Exception as exc:
         raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
-    # START THE BACKGROUND AGENT HERE (0.4.8), on the worker thread, at the earliest
-    # point it can possibly work: enrollment, the encrypted credential and a proven
-    # heartbeat are all done, which is everything the agent needs. Doing it later --
-    # in the GUI callback -- meant a wedge anywhere after this left the site enrolled,
-    # heartbeated once, and offline forever, AND it froze the window so the label never
-    # repainted. Result is LOGGED: a silent fail-open layer is one nobody can debug.
+    # =================================================================
+    # THE SITE IS NOW CONNECTED: enrolled, credential stored, heartbeat proven.
+    # EVERYTHING BELOW IS OPTIONAL and runs under ONE hard deadline.
+    #
+    # Four separate hangs shipped in this stretch of code (0.4.5 acceptance, 0.4.7
+    # pipe deadlock, 0.4.7 GUI thread, 0.4.9 ini lock). Fixing them one at a time
+    # was not working, because the real defect is the SHAPE: optional post-connection
+    # work was able to pin the wizard forever. So the budget is now structural --
+    # whatever is unfinished when it expires is simply reported as unfinished, and
+    # setup always reaches a final screen.
+    # =================================================================
+    optional_deadline = time.monotonic() + POST_CONNECT_BUDGET_SECONDS
+
+    def _remaining(cap: float) -> float:
+        return max(0.0, min(cap, optional_deadline - time.monotonic()))
+
     progress("Starting WatchLog in the background…")
-    log_before = _log_size(programdata_dir() / "agent.log")
-    agent_start = ensure_background_agent()
+    agent_start = ensure_background_agent(timeout=_remaining(90) or 5)
     core.log(f"background agent start: {agent_start.get('detail')}")
-    # "Task Running" is not "site reporting". Wait for the BACKGROUND agent to actually
-    # heartbeat before we let the wizard claim success.
-    if agent_start.get("started"):
-        progress("Waiting for WatchLog to report in…")
-        agent_start["confirmed"] = confirm_background_agent(since_offset=log_before).get("confirmed", False)
-        core.log(f"background agent confirmed: {agent_start['confirmed']}")
+    connected = bool(agent_start.get("started"))
 
-    # PC-free resilience: ask the recorder to report on its own, so this site keeps
-    # sending even when this PC is off. Fail-open — never blocks a good install.
-    push = provision_recorder_push(cloud, state, recorder, public, username, password,
-                                   progress=progress)
+    push = {"configured": False, "verified": False, "detail": "skipped (time budget)"}
+    if _remaining(1) > 0:
+        push = provision_recorder_push(cloud, state, recorder, public, username, password,
+                                       progress=progress)
 
-    _clear_consumed_code(config_path)
+    cleared = _clear_consumed_code(config_path)
+    core.log(f"post-connect phase done in "
+             f"{POST_CONNECT_BUDGET_SECONDS - max(0.0, optional_deadline - time.monotonic()):.0f}s "
+             f"(agent_started={connected} code_cleared={cleared})")
     return {
         "site_id": state["site_id"],
         "recorder_push": push,
         "agent_start": agent_start,
+        "connected": connected,
         "camera_count": len(mapping or recorder["channels"]),
         "vendor": recorder["vendor"],
         "model": recorder["model"],

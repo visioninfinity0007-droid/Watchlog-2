@@ -148,9 +148,9 @@ class NoOneRewritesTheBrokenVersionTests(unittest.TestCase):
         backend = (self.AGENT / "setup_backend.py").read_text(encoding="utf-8")
         body = backend[backend.find("def finalize_install("):]
         body = body[:body.find("\ndef ", 1)] if "\ndef " in body[1:] else body
-        self.assertIn("ensure_background_agent()", body,
+        self.assertIn("ensure_background_agent(", body,
                       "connectivity must not depend on any later step completing")
-        self.assertLess(body.find("ensure_background_agent()"),
+        self.assertLess(body.find("ensure_background_agent("),
                         body.find("provision_recorder_push("),
                         "start the agent before the optional recorder-push step")
 
