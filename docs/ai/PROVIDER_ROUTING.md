@@ -9,7 +9,9 @@ mode/provider/model change **takes effect with no redeployment**.
 
 Customers see only **WatchLog Instant / Thinking / Hive**. Each mode resolves, at request time, to a
 provider + model via `wl_ai_resolve_mode` (service-role only). Provider/model names are never shown to a
-customer. Modes are configured in `/admin/ai` — see [ADMIN_CONFIGURATION](ADMIN_CONFIGURATION.md).
+customer. Modes are configured in `/admin/ai` — see [ADMIN_CONFIGURATION](ADMIN_CONFIGURATION.md). The third layer is
+set with its own audited RPC (`wl_ai_mode_set_tertiary`) so an existing 9-argument `wl_ai_mode_set` save
+can never silently clear it.
 
 ## Decision order (per request)
 
@@ -17,15 +19,19 @@ customer. Modes are configured in `/admin/ai` — see [ADMIN_CONFIGURATION](ADMI
    from verified data with **no LLM call, no egress, and no evidence access**. (`route = no_model`.)
 2. **Evidence** (model route only) — for an evidence-intent prompt, `retrieveEvidence` runs two-stage
    scoped retrieval (see [PRIVACY_AND_RETENTION](PRIVACY_AND_RETENTION.md)). A NO_MODEL query never reaches this.
-3. **Resolve mode → candidates** — `buildCandidates` produces `[primary, fallback]` from the DB, plus a
-   legacy env-provider bridge **only** when the mode is entirely unconfigured (never masking a broken config).
+3. **Resolve mode → candidates** — `buildCandidates` produces `[primary, fallback, tertiary]` from the DB
+   (the tertiary layer is optional, added in `0109`), plus a legacy env-provider bridge **only** when the
+   mode is entirely unconfigured (never masking a broken config). A layer's position buys it no extra
+   permission: every candidate faces the same egress gate.
 4. **Fail closed** — a structurally invalid resolved provider (missing endpoint/model/type) is dropped, not
    guessed; if the configured primary is invalid the outcome is `config_invalid`.
 5. **Egress gate (after resolution)** — `egressAllowed(cfg, siteAllowsExternal, modeExternalAllowed)`. A
    LOCAL provider is always allowed; an EXTERNAL provider requires **both** the site to permit external
    processing (`wl_ai_site_egress`, tenant-owned, local-only by default) **and** the mode to permit egress.
    An admin-configured cloud model can never override a local-only site.
-6. **Try primary, then fallback** — first candidate that passes egress and returns valid output wins.
+6. **Try each layer in order** — primary, then fallback, then tertiary; the first candidate that passes
+   egress and returns valid output wins. A non-primary win is audited as `ai_fallback`, with
+   `provider_name`/`candidates_tried` identifying which layer actually answered.
 7. **Guided fallback (the floor)** — if all candidates are blocked or fail, return the verified-data
    `guided_fallback` (evidence-grounded when the question was an evidence query). Never a fabricated answer.
 
