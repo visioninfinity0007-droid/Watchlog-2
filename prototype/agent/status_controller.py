@@ -15,7 +15,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 
@@ -24,9 +27,10 @@ def _programdata_watchlog() -> Path:
 
 
 class StatusController:
-    def __init__(self, *, run_agent=None, agent_cmd=None, timeout: int = 90,
+    def __init__(self, *, run_agent=None, agent_cmd=None, timeout: int = 240,
                  log_dir=None):
         self._run = run_agent or self._default_runner
+        self._streams_output = run_agent is None      # only the built-in runner tails a log
         self._agent_cmd = list(agent_cmd) if agent_cmd else self._resolve_agent_cmd()
         self._timeout = timeout
         self._log_dir = Path(log_dir) if log_dir else _programdata_watchlog()
@@ -42,11 +46,94 @@ class StatusController:
                 return [str(exe)]
         return [sys.executable, str(Path(__file__).resolve().parent / "watchlog_agent.py")]
 
-    def _default_runner(self, args, timeout=None):  # pragma: no cover - real subprocess path
-        import subprocess
-        proc = subprocess.run(self._agent_cmd + list(args), capture_output=True, text=True,
-                              timeout=timeout or self._timeout)
-        return proc.returncode, (proc.stdout or "")
+    @staticmethod
+    def _kill_tree(proc) -> None:
+        """Kill the agent AND everything it spawned.
+
+        watchlog-agent.exe is a PyInstaller --onefile build, so the process we launch is only a
+        bootloader that re-execs the real Python child. Killing the bootloader alone leaves that
+        child running and holding our output handles.
+        """
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                               capture_output=True, timeout=20)
+            else:
+                import signal
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:  # noqa: BLE001 — best effort; the direct kill below still runs
+            pass
+        for finish in (proc.kill, lambda: proc.wait(timeout=10)):
+            try:
+                finish()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _default_runner(self, args, timeout=None, on_output=None):  # pragma: no cover - real subprocess
+        """Run the agent CLI with a deadline we can actually enforce.
+
+        0.4.6: this used to be ``subprocess.run(capture_output=True, timeout=...)``. On timeout
+        CPython kills the process it started and then calls ``communicate()`` A SECOND TIME WITH NO
+        TIMEOUT to drain the pipes — and because --onefile leaves a surviving grandchild holding the
+        write end, that drain waited on the SURVIVOR, not on our deadline (measured: a 3s deadline
+        returned after 25.6s against a 25s survivor). A probe wedged indefinitely thus pinned the
+        installer indefinitely and the fail-closed path below never ran. Writing to a FILE instead
+        of a pipe removes the deadlock, and the tree kill removes the surviving writer.
+        """
+        limit = timeout or self._timeout
+        deadline = time.monotonic() + limit
+        # NOT TemporaryDirectory(): if a survivor still holds the log open, its cleanup raises
+        # WinError 32 and we would trade a hang for a crash. Cleanup here is best-effort.
+        workdir = tempfile.mkdtemp(prefix="watchlog-agent-run-")
+        try:
+            sink_path = Path(workdir) / "agent-output.txt"
+            with sink_path.open("w", encoding="utf-8", errors="replace") as sink:
+                kwargs = {}
+                if os.name == "nt":
+                    kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                else:
+                    kwargs["start_new_session"] = True
+                proc = subprocess.Popen(self._agent_cmd + list(args), stdout=sink,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                        **kwargs)
+                seen = 0
+                while True:
+                    try:
+                        code = proc.wait(timeout=0.4)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if on_output is not None:
+                        seen = self._emit_new_lines(sink_path, seen, on_output)
+                    if time.monotonic() >= deadline:
+                        self._kill_tree(proc)
+                        code = -1
+                        break
+            text = ""
+            try:
+                text = sink_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        return code, text
+
+    @staticmethod
+    def _emit_new_lines(path: Path, seen: int, on_output) -> int:
+        """Report whole lines the agent has written since last poll (live installer progress)."""
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return seen
+        lines = text.splitlines()
+        for line in lines[seen:]:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("ACCEPTANCE_JSON"):
+                try:
+                    on_output(stripped)
+                except Exception:  # noqa: BLE001 — a UI callback must never break the run
+                    pass
+        return len(lines)
 
     @staticmethod
     def _tagged(stdout: str, tag: str):
@@ -88,13 +175,16 @@ class StatusController:
     # --- actions ------------------------------------------------------------
     CANNOT_VERIFY = "SETUP INCOMPLETE — WATCHLOG COULD NOT VERIFY THIS INSTALLATION"
 
-    def run_acceptance(self) -> dict:
+    def run_acceptance(self, *, progress=None) -> dict:
         """FAIL CLOSED (P1.1): only a REAL, valid acceptance report may produce a Ready verdict.
         A command that could not launch, timed out, returned no report, returned a malformed
         report, or raised is treated as 'could not verify' and BLOCKS Ready — never a green pass.
         """
         try:
-            rc, out = self._run(["--accept"])
+            if progress is not None and self._streams_output:
+                rc, out = self._run(["--accept"], on_output=progress)
+            else:
+                rc, out = self._run(["--accept"])
         except Exception:  # noqa: BLE001 — launch failure / timeout / any exception -> cannot verify
             return {"exit": -1, "ready": False, "verified": False, "verdict": self.CANNOT_VERIFY,
                     "failed": [], "warnings": [], "report": None}

@@ -387,10 +387,17 @@ class SetupWindow(QMainWindow):
     def run_worker(self, fn, args, on_success, busy_message: str, **kwargs):
         self.set_busy(True, busy_message)
         worker = Worker(fn, *args, **kwargs)
-        worker.signals.progress.connect(self.status.setText)
+        worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(lambda result: self._worker_ok(on_success, result))
         worker.signals.failed.connect(self._worker_error)
         self.pool.start(worker)
+
+    def _on_progress(self, message: str):
+        """Surface live worker progress. The Connecting page has its own label, so mirror it there
+        as well — an indeterminate bar with no changing text is indistinguishable from a hang."""
+        self.status.setText(message)
+        if self.stack.currentIndex() == 5:
+            self.progress_label.setText(message)
 
     def _worker_ok(self, callback, result):
         self.set_busy(False)
@@ -541,8 +548,8 @@ class SetupWindow(QMainWindow):
         self.progress_label.setText("Running final acceptance checks…")
         from status_controller import StatusController
         ctrl = StatusController()
-        self.run_worker(lambda progress=None: ctrl.run_acceptance(), (), self.acceptance_done,
-                        "Running final acceptance checks…")
+        self.run_worker(lambda progress=None: ctrl.run_acceptance(progress=progress), (),
+                        self.acceptance_done, "Running final acceptance checks…")
 
     def acceptance_done(self, acc):
         result = self.final_result or {}

@@ -172,8 +172,11 @@ class CmdAccept(unittest.TestCase):
         self.assertIn("RESULT: ACCEPTED", out)
         self.assertTrue(report["ready"])
         keys = [c["key"] for c in report["checks"]]
-        self.assertEqual(keys, ["config", "identity", "runtime", "cloud", "recorder",
-                                "cameras", "archive", "live", "ai", "spool", "security"])
+        # 0.4.6 ORDER: every REQUIRED check first so Ready is decided in seconds, then the three
+        # slow soft probes (archive/live/ai) which can only ever add a warning. Same eleven checks
+        # as before — only the order changed. See test_acceptance_hang_regression for the invariant.
+        self.assertEqual(keys, ["config", "identity", "cloud", "recorder", "cameras",
+                                "spool", "security", "runtime", "archive", "live", "ai"])
 
     def test_plaintext_recorder_password_blocks(self):
         code, out, report = _run_accept(_ini_text="[watchlog]\nnvr_password = Sup3rSecret!\n")
