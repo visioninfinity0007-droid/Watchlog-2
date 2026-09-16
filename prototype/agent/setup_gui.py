@@ -118,6 +118,7 @@ class SetupWindow(QMainWindow):
         self.public = backend.read_public_defaults(config_path)
         self.pool = QThreadPool.globalInstance()
         self.exit_code = 1
+        self.site_connected = False   # set once the agent is registered + running
         self.recorder_address = self.public.get("nvr_url", "")
         self.recorder_user = self.public.get("nvr_username", "admin")
         self.recorder_password = ""
@@ -550,6 +551,7 @@ class SetupWindow(QMainWindow):
         # freezes the window mid-repaint -- which is exactly why 0.4.7 appeared to hang on
         # "Confirming the WatchLog connection" while it was really running my own code.
         self.agent_start = (result or {}).get("agent_start") or {}
+        self.site_connected = bool((result or {}).get("connected"))
         self.progress_label.setText("Running final acceptance checks…")
         from status_controller import StatusController
         ctrl = StatusController()
@@ -557,18 +559,16 @@ class SetupWindow(QMainWindow):
                         self.acceptance_done, "Running final acceptance checks…")
 
     def _background_line(self) -> str:
-        """Say plainly whether the BACKGROUND agent is reporting.
+        """Say plainly whether the BACKGROUND service is running.
 
-        Three releases showed a green screen while the site went silent seconds later,
-        because setup only ever proved its OWN heartbeat. If the background agent has not
-        reported, the customer must be told here rather than discovering it as an offline
-        site later."""
+        Only claims what was actually verified: register-service.ps1 throws unless the
+        scheduled task reaches Running, so "started" is a real check, not an assumption.
+        It deliberately does NOT claim the site is "reporting" -- the local agent log is
+        written through a PowerShell redirection that does not reach disk promptly, and
+        0.4.8 wrongly reported failure by trusting it."""
         info = getattr(self, "agent_start", None) or {}
-        if info.get("confirmed"):
-            return "✓ WatchLog is running in the background and reporting"
         if info.get("started"):
-            return ("! WatchLog started in the background but has not reported yet — "
-                    "check Site Status in a few minutes")
+            return "✓ WatchLog is running in the background (starts automatically at boot)"
         return ("! WatchLog is NOT running in the background yet — this site will not "
                 "report until that is fixed")
 
@@ -630,7 +630,12 @@ class SetupWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply != QMessageBox.Yes:
                 return
-        self.exit_code = 1
+        # A CONNECTED site is a SUCCESSFUL install, even if the customer closes the
+        # window during verification. Exiting non-zero makes NSIS abort and skip the
+        # uninstaller + Add/Remove Programs entries, leaving a working site that Windows
+        # does not know is installed. Verification status belongs on the screen, not in
+        # the installer's exit code.
+        self.exit_code = 0 if getattr(self, "site_connected", False) else 1
         self.close()
 
     def closeEvent(self, event: QCloseEvent):

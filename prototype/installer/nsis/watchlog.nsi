@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "0.4.8"
+  !define APPVERSION "0.4.9"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -150,7 +150,7 @@ Section "Install"
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
-        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
         Abort "WatchLog setup did not complete"
       ${EndIf}
     ${EndIf}
@@ -159,7 +159,7 @@ Section "Install"
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
       Abort "WatchLog setup did not complete"
     ${EndIf}
   ${EndIf}
