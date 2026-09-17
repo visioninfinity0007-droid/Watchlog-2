@@ -844,21 +844,21 @@ def _log_size(path: Path) -> int:
 def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
                             username: str, password: str,
                             progress: Callable[[str], None] | None = None,
-                            _build=None) -> dict:
-    """Point the RECORDER itself at WatchLog, so the site keeps reporting with no PC.
+                            timeout: float = 90.0, _run=None) -> dict:
+    """Point the RECORDER at WatchLog, so the site keeps reporting with no PC running.
 
-    This is the 0013 "PC-free" path, wired into setup. The wizard is the only thing
-    that is ever on the recorder's LAN holding recorder credentials, so it is the
-    right place to do this. Afterwards the recorder POSTs its own alarms to the push
-    bridge and the site survives this PC being shut down, uninstalled or rebuilt.
+    RUNS OUT OF PROCESS (5.0). 0.4.11 did this inline and the very first time the feature
+    was enabled on real hardware it took the whole installer down with a native crash --
+    "WatchLog Setup has stopped working" -- mid-way through configuring the recorder. A
+    resilience BONUS must never be able to kill the thing that installs it, and a
+    try/except cannot catch a native crash. Delegating to `watchlog-agent.exe
+    --configure-push` makes that structural: a crash, a hang, or a recorder that wedges
+    mid-request is contained in a child process and the wizard just reads an exit code.
 
-    FAIL-OPEN BY DESIGN. Push is a resilience bonus layered on top of a working
-    agent install; a recorder that cannot do it is normal and common. Nothing here
-    may raise, and nothing here may make an otherwise-good install look failed.
+    It is also why the recorder still gets configured when the wizard dies: the same
+    command runs from the background agent with no installer present.
 
-    Returns {"configured": bool, "verified": bool, "detail": str}. ``verified`` is
-    only true when the recorder CONFIRMED the config on read-back -- a site that
-    believes it is covered and is not would be worse than no push at all.
+    Never raises. Returns {"configured", "verified", "detail"}.
     """
     progress = progress or (lambda _message: None)
     base = (public.get("push_bridge_url")
@@ -867,31 +867,33 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
         return {"configured": False, "verified": False,
                 "detail": "no push bridge configured in this build"}
 
+    progress("Setting up PC-free reporting on the recorder…")
     try:
-        progress("Setting up PC-free reporting on the recorder…")
-        issued = cloud.call("wl_agent_issue_push_token",
-                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
-        token = (issued or {}).get("token") if isinstance(issued, dict) else None
-        if not token:
-            return {"configured": False, "verified": False,
-                    "detail": "WatchLog did not issue a push token"}
-
-        build_fn = _build or build
-        driver = build_fn(recorder["driver"], recorder["url"], username.strip(), password,
-                          RECORDER_PROBE_TIMEOUT)
-        configure = getattr(driver, "configure_push", None)
-        if configure is None:
-            return {"configured": False, "verified": False,
-                    "detail": f"{recorder.get('vendor') or 'this recorder'} does not support "
-                              "recorder-push; the site agent will report instead"}
-
-        out = configure(f"{base}/push/{token}") or {}
-        return {"configured": bool(out.get("applied")),
-                "verified": bool(out.get("verified")),
-                "detail": str(out.get("detail") or "")}
-    except Exception as exc:  # noqa: BLE001 — resilience bonus, never a setup failure
+        if _run is not None:
+            code, out = _run()
+        else:
+            import proc_util
+            exe = Path(sys.executable).resolve().parent / "watchlog-agent.exe"
+            cmd = ([str(exe)] if exe.exists()
+                   else [sys.executable, str(Path(__file__).resolve().parent / "watchlog_agent.py")])
+            code, out = proc_util.run_bounded(cmd + ["--configure-push"], timeout)
+    except Exception as exc:  # noqa: BLE001 - the launcher itself must not fail setup
         return {"configured": False, "verified": False,
-                "detail": f"could not configure recorder push ({type(exc).__name__})"}
+                "detail": f"could not run recorder push setup ({type(exc).__name__})"}
+
+    for line in (out or "").splitlines():
+        if line.startswith("PUSH_JSON "):
+            try:
+                parsed = json.loads(line[len("PUSH_JSON "):])
+                return {"configured": bool(parsed.get("configured")),
+                        "verified": bool(parsed.get("verified")),
+                        "detail": str(parsed.get("detail") or "")}
+            except Exception:  # noqa: BLE001
+                break
+    # No report: the child crashed, was killed at the deadline, or printed nothing. That
+    # is a failed BONUS, never a failed install.
+    return {"configured": False, "verified": False,
+            "detail": f"recorder push setup did not report back (exit {code})"}
 
 
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,

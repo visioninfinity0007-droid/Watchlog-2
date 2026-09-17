@@ -13,6 +13,9 @@ back off the recorder and reports verified=False when the unit ignored the write
 
 from __future__ import annotations
 
+import io
+import json
+import contextlib
 import sys
 import unittest
 from pathlib import Path
@@ -136,18 +139,35 @@ class DahuaConfigurePushTests(unittest.TestCase):
 
 
 
-class ProvisionDuringInstallTests(unittest.TestCase):
-    """Setup wires the recorder to report on its own. It is a bonus layer, so the
-    one thing it must never do is turn a good install into a failed one."""
+class ConfigurePushCommandTests(unittest.TestCase):
+    """5.0: this logic MOVED from setup_backend into the agent's --configure-push command,
+    which the wizard now runs as a CHILD PROCESS. The coverage moves with it.
+
+    Why it moved: 0.4.11 configured the recorder inline and, the first time the feature
+    was enabled on real hardware, a native crash inside it killed the whole installer.
+    A try/except cannot catch that; only process isolation can. Containment itself is
+    covered in test_recorder_push_live.OutOfProcessContainmentTests."""
 
     def setUp(self):
         sys.path.insert(0, str(ROOT / "agent"))
-        import setup_backend as sb
-        self.sb = sb
-        self.state = {"agent_id": "a-1", "agent_key": "k-1", "site_id": "s-1"}
-        self.recorder = {"driver": "dahua", "url": "http://10.0.0.5", "vendor": "Dahua",
-                         "model": "DH-XVR1B08-I"}
-        self.public = {"push_bridge_url": "https://push.example.io"}
+        import watchlog_agent as wa
+        self.wa = wa
+        self.cfg = type("Cfg", (), {
+            "push_bridge_url": "https://push.example.io",
+            "state_path": Path("nope.json"),
+            "supabase_url": "https://x", "publishable_key": "k"})()
+        self.state = {"agent_id": "a-1", "agent_key": "k-1"}
+
+    def _run(self, **kw):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self.wa.cmd_configure_push(self.cfg, **kw)
+        out = buf.getvalue()
+        payload = {}
+        for line in out.splitlines():
+            if line.startswith("PUSH_JSON "):
+                payload = json.loads(line[len("PUSH_JSON "):])
+        return rc, payload
 
     def _cloud(self, token="tok123", raises=None):
         outer = self
@@ -161,80 +181,90 @@ class ProvisionDuringInstallTests(unittest.TestCase):
         return Cloud()
 
     def _driver(self, result):
-        class Drv:
-            def __init__(self):
-                self.url = None
+        outer = self
 
-            def configure_push(inner, url):
-                inner.url = url
-                self.push_url = url
+        class Drv:
+            def configure_push(self, url):
+                outer.push_url = url
                 return result
         return Drv()
 
     def test_verified_push_is_reported(self):
-        drv = self._driver({"applied": True, "verified": True, "detail": "ok"})
-        out = self.sb.provision_recorder_push(
-            self._cloud(), self.state, self.recorder, self.public, "u", "p",
-            _build=lambda *a, **k: drv)
+        rc, out = self._run(_state=self.state, _cloud_factory=lambda: self._cloud(),
+                            _open_driver=lambda c: self._driver(
+                                {"applied": True, "verified": True, "detail": "ok"}))
+        self.assertEqual(0, rc)
         self.assertTrue(out["configured"])
         self.assertTrue(out["verified"])
         self.assertEqual("https://push.example.io/push/tok123", self.push_url)
 
     def test_token_is_requested_for_this_agent_only(self):
-        drv = self._driver({"applied": True, "verified": True, "detail": ""})
-        self.sb.provision_recorder_push(self._cloud(), self.state, self.recorder,
-                                        self.public, "u", "p", _build=lambda *a, **k: drv)
+        self._run(_state=self.state, _cloud_factory=lambda: self._cloud(),
+                  _open_driver=lambda c: self._driver({"applied": True, "verified": True}))
         fn, kw = self.called
         self.assertEqual("wl_agent_issue_push_token", fn)
         self.assertEqual("a-1", kw["p_agent_id"])
         self.assertNotIn("p_site_id", kw, "there must be no site to tamper with")
 
-    def test_unsupported_recorder_is_a_normal_answer_not_a_failure(self):
-        class NoPush:
-            pass
-        out = self.sb.provision_recorder_push(
-            self._cloud(), self.state, self.recorder, self.public, "u", "p",
-            _build=lambda *a, **k: NoPush())
-        self.assertFalse(out["configured"])
-        self.assertIn("agent", out["detail"].lower())
-
     def test_a_recorder_that_ignored_the_config_is_not_reported_verified(self):
-        drv = self._driver({"applied": True, "verified": False, "detail": "did not retain"})
-        out = self.sb.provision_recorder_push(
-            self._cloud(), self.state, self.recorder, self.public, "u", "p",
-            _build=lambda *a, **k: drv)
+        rc, out = self._run(_state=self.state, _cloud_factory=lambda: self._cloud(),
+                            _open_driver=lambda c: self._driver(
+                                {"applied": True, "verified": False, "detail": "did not retain"}))
+        self.assertNotEqual(0, rc, "an unverified push must not exit success")
         self.assertTrue(out["configured"])
         self.assertFalse(out["verified"])
 
-    def test_cloud_failure_cannot_break_the_install(self):
-        out = self.sb.provision_recorder_push(
-            self._cloud(raises=RuntimeError("network down")), self.state, self.recorder,
-            self.public, "u", "p", _build=lambda *a, **k: self._driver({}))
+    def test_unsupported_recorder_is_a_normal_answer_not_a_failure(self):
+        class NoPush:
+            pass
+        rc, out = self._run(_state=self.state, _cloud_factory=lambda: self._cloud(),
+                            _open_driver=lambda c: NoPush())
         self.assertFalse(out["configured"])
-        self.assertFalse(out["verified"])
-
-    def test_driver_explosion_cannot_break_the_install(self):
-        def boom(*a, **k):
-            raise OSError("recorder vanished")
-        out = self.sb.provision_recorder_push(
-            self._cloud(), self.state, self.recorder, self.public, "u", "p", _build=boom)
-        self.assertFalse(out["configured"])
-
-    def test_build_without_a_push_bridge_configured_skips_quietly(self):
-        out = self.sb.provision_recorder_push(
-            self._cloud(), self.state, self.recorder, {}, "u", "p",
-            _build=lambda *a, **k: self._driver({"applied": True, "verified": True}))
-        self.assertFalse(out["configured"])
-        self.assertIn("no push bridge", out["detail"])
+        self.assertIn("does not support", out["detail"])
 
     def test_missing_token_is_not_treated_as_success(self):
         class Cloud:
             def call(self, fn, **kw):
                 return {"ok": True}
-        out = self.sb.provision_recorder_push(
-            Cloud(), self.state, self.recorder, self.public, "u", "p",
-            _build=lambda *a, **k: self._driver({"applied": True, "verified": True}))
+        rc, out = self._run(_state=self.state, _cloud_factory=lambda: Cloud(),
+                            _open_driver=lambda c: self._driver({"applied": True}))
         self.assertFalse(out["configured"])
+        self.assertIn("did not issue", out["detail"])
+
+    def test_cloud_failure_is_reported_never_raised(self):
+        rc, out = self._run(_state=self.state,
+                            _cloud_factory=lambda: self._cloud(raises=RuntimeError("down")),
+                            _open_driver=lambda c: self._driver({"applied": True}))
+        self.assertFalse(out["configured"])
+
+    def test_driver_explosion_is_reported_never_raised(self):
+        def boom(_cfg):
+            raise OSError("recorder vanished")
+        rc, out = self._run(_state=self.state, _cloud_factory=lambda: self._cloud(),
+                            _open_driver=boom)
+        self.assertFalse(out["configured"])
+
+    def test_an_unenrolled_site_is_refused(self):
+        rc, out = self._run(_state=None)
+        self.assertFalse(out["configured"])
+        self.assertIn("not enrolled", out["detail"])
+
+    def test_no_push_bridge_configured_skips_quietly(self):
+        self.cfg.push_bridge_url = ""
+        rc, out = self._run(_state=self.state)
+        self.assertFalse(out["configured"])
+        self.assertIn("no push bridge", out["detail"])
+
+    def test_it_always_emits_a_machine_readable_line(self):
+        """The parent reads PUSH_JSON. Every exit path must print one, or a perfectly
+        good install reports 'did not report back'."""
+        for kwargs in ({"_state": None},
+                       {"_state": self.state, "_cloud_factory": lambda: self._cloud(),
+                        "_open_driver": lambda c: self._driver({"applied": True, "verified": True})}):
+            _rc, out = self._run(**kwargs)
+            self.assertIsInstance(out, dict)
+            self.assertIn("detail", out)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
