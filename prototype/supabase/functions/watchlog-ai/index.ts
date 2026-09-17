@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { coerceModelResult, UNREADABLE_ANSWER } from "./model_result.ts";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
@@ -29,8 +30,16 @@ SAFETY
 SETUP
 When setup is incomplete, act like a concise setup engineer. Use the recorded onboarding state, business context, exact recorder capability profile, deterministic advisor, and cameras. Ask only the next useful question. Do not claim a step is complete unless WATCHLOG_CONTEXT says it is complete.
 
+WRITING STYLE
+The "answer" is read by a security or office manager, not an engineer, in a chat bubble.
+- Lead with the direct answer in one short sentence. Put the detail after it.
+- Keep it to at most three short paragraphs, or a short bulleted list where you are listing things.
+- Plain sentences. No JSON, no code blocks, no tables, no field names like device_ts or health_state, no internal IDs.
+- Put structured detail in "cards"; never restate a card as a block of text.
+- Say times the way a person would ("just after 2am", "yesterday evening"), and name cameras as the site named them.
+
 OUTPUT
-Return JSON only:
+Return JSON only. No markdown fence, and no text before or after the object:
 {
   "answer":"natural-language response",
   "cards":[{"type":"health|coverage|recorder|cameras|capabilities|setup|incident|report|approval","title":"...","data":{}}],
@@ -312,9 +321,16 @@ async function routeChat(opts: {
     try {
       const out = await buildProvider(cand.cfg).chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cand.cfg.maxOutput });
       if (!out.text) throw new Error("provider_empty_response");
-      let parsed: Json;
-      try { parsed = sanitizeResult({ ...JSON.parse(String(out.text)), mode: "ai" }); }
-      catch { parsed = sanitizeResult({ answer: String(out.text), mode: "ai" }); }
+      // NEVER `catch { answer: raw }`. A fenced, prefixed or truncated envelope used to
+      // land in the customer's chat verbatim as `{"answer":"Overnight ...","cards":[...`.
+      // coerceModelResult recovers in stages and, failing everything, returns a plain
+      // sentence rather than JSON.
+      const coerced = coerceModelResult(String(out.text));
+      // Nothing recoverable: treat it as a failed candidate. The next provider, or failing
+      // that WatchLog's deterministic guided fallback, gives the customer a real answer
+      // instead of an apology.
+      if (coerced.answer === UNREADABLE_ANSWER) throw new Error("model_result_unreadable");
+      const parsed: Json = sanitizeResult({ ...coerced, mode: "ai" });
       return { result: parsed, audit: {
         mode, route: cand.isFallback ? "ai_fallback" : "ai_primary",
         provider_id: cand.cfg.id, provider_name: cand.cfg.name, model: cand.cfg.model,
