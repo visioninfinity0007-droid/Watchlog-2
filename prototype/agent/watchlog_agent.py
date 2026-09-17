@@ -167,6 +167,9 @@ class Config:
         self.nvr_username = get("nvr_username") or ""
         self.nvr_password = get("nvr_password") or ""
         self.nvr_driver = (get("nvr_driver") or "auto").strip().lower()
+        # PC-free ("recorder push") destination, baked in by the build. Empty = the
+        # feature is unavailable in this build and every push path no-ops.
+        self.push_bridge_url = (get("push_bridge_url") or "").strip().rstrip("/")
         self._ini_path = ini_path
         # Production: the recorder credential lives in the encrypted split store
         # and is self-decrypted here, so every launch context resolves it the
@@ -1075,6 +1078,69 @@ def cmd_selftest() -> int:
     return 2
 
 
+def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
+                       _open_driver=None) -> int:
+    """Point the RECORDER at WatchLog so the site reports with no PC running.
+
+    RUNS AS ITS OWN PROCESS, deliberately. The setup wizard used to do this inline, and
+    in 0.4.11 it took the whole installer down with a native crash the moment the feature
+    was first enabled on real hardware. Recorder-push is a resilience BONUS layered on a
+    working agent install -- it must never be able to kill the thing that installs it. As
+    a separate process, any failure here (Python exception, native crash, hang, a recorder
+    that wedges mid-request) is contained: the parent sees an exit code and moves on.
+
+    It also means the recorder still gets configured even when the wizard dies, because
+    the background agent can run this on its own schedule with no installer present.
+
+    Prints a single machine-readable PUSH_JSON line. Exit 0 = the recorder confirmed it.
+    """
+    result = {"configured": False, "verified": False, "detail": ""}
+    try:
+        base = (cfg.push_bridge_url or "").strip().rstrip("/")
+        if not base:
+            result["detail"] = "no push bridge configured in this build"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        state = _state if _state is not None else load_state(cfg.state_path)
+        if not state or not state.get("agent_id") or not state.get("agent_key"):
+            result["detail"] = "this site is not enrolled yet"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
+        issued = cloud.call("wl_agent_issue_push_token",
+                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+        token = (issued or {}).get("token") if isinstance(issued, dict) else None
+        if not token:
+            result["detail"] = "WatchLog did not issue a push token"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        driver = (_open_driver or open_driver)(cfg)
+        configure = getattr(driver, "configure_push", None)
+        if configure is None:
+            result["detail"] = "this recorder model does not support recorder-push"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        out = configure(f"{base}/push/{token}") or {}
+        result = {"configured": bool(out.get("applied")),
+                  "verified": bool(out.get("verified")),
+                  "detail": str(out.get("detail") or "")}
+        print("PUSH_JSON " + json.dumps(result), flush=True)
+        log(f"recorder push: configured={result['configured']} "
+            f"verified={result['verified']} {result['detail']}")
+        return 0 if result["verified"] else 2
+    except Exception as exc:  # noqa: BLE001 - a bonus layer never fails loudly
+        result["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+        try:
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return 2
+
+
 def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
                _heartbeat=None, _spool_factory=None, _archive=None, _detector=None,
                _ini_text=None, live_seconds: int | None = None) -> int:
@@ -1968,6 +2034,8 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true",
                     help="prove the on-site AI false-alarm filter is packaged "
                          "and working in this build; needs no config")
+    ap.add_argument("--configure-push", action="store_true",
+                    help="point the recorder at the WatchLog push bridge (PC-free reporting)")
     ap.add_argument("--accept", action="store_true",
                     help="run the post-install acceptance self-test (identity, cloud, "
                          "recorder, cameras, archive, live events, spool) and exit")
@@ -2024,6 +2092,9 @@ def main() -> None:
     # Post-install acceptance runs against the config as-is and must never launch the
     # setup wizard — an unconfigured site should report a 'blocked' config check, not
     # be walked through setup.
+    if args.configure_push:
+        raise SystemExit(cmd_configure_push(cfg))
+
     if args.accept:
         raise SystemExit(cmd_accept(cfg))
 
