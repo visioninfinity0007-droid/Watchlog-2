@@ -8,7 +8,7 @@ import styles from "./reports.module.css";
 import useReport from "./use-report";
 
 const VIEWS=[["yesterday","Yesterday"],["daily","Today"],["monthly","30 days"],["executive","Executive"]];
-function dateLabel(v){if(!v)return"Yesterday";const d=new Date(`${v}T12:00:00`);return d.toLocaleDateString([], {weekday:"long",month:"long",day:"numeric",year:"numeric"})}
+function dateLabel(v){if(!v)return"Yesterday";const d=new Date(`${v}T12:00:00`);return d.toLocaleDateString("en-PK", {weekday:"long",day:"numeric",month:"long",year:"numeric"})}
 function severityClass(v){return v==="critical"?styles.dotCritical:v==="attention"?styles.dotAttention:v==="none"||v==="clear"?styles.dotGood:""}
 
 function InsightCards({items=[]}){
