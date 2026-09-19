@@ -43,6 +43,8 @@ export default function AiModelsAdmin() {
       md[m.mode] = {
         primary_provider_id: m.primary_provider_id || "", primary_model: m.primary_model || "",
         fallback_provider_id: m.fallback_provider_id || "", fallback_model: m.fallback_model || "",
+        tertiary_provider_id: m.tertiary_provider_id || "", tertiary_model: m.tertiary_model || "",
+        vision_provider_id: m.vision_provider_id || "", vision_model: m.vision_model || "",
         external_egress_allowed: !!m.external_egress_allowed,
       };
     });
@@ -119,14 +121,20 @@ export default function AiModelsAdmin() {
   async function saveMode(mode) {
     const d = modeDraft[mode] || {};
     setBusy(true); setError(""); setNote("");
-    const { error } = await supabase().rpc("wl_ai_mode_set", {
+    const main = await supabase().rpc("wl_ai_mode_set", {
       p_mode: mode,
       p_primary_provider_id: d.primary_provider_id || null, p_primary_model: (d.primary_model || "").trim() || null,
       p_fallback_provider_id: d.fallback_provider_id || null, p_fallback_model: (d.fallback_model || "").trim() || null,
-      p_vision_provider_id: null, p_vision_model: null,
-      p_external_egress_allowed: !!d.external_egress_allowed, p_reason: `set ${mode} routing`,
+      p_vision_provider_id: d.vision_provider_id || null, p_vision_model: (d.vision_model || "").trim() || null,
+      p_external_egress_allowed: !!d.external_egress_allowed, p_reason: "set "+mode+" routing",
     });
-    if (error) setError(say(error)); else { setNote(`${MODE_LABEL[mode]} routing saved.`); await load(); }
+    if (main.error) { setError(say(main.error)); setBusy(false); return; }
+    const tertiary = await supabase().rpc("wl_ai_mode_set_tertiary", {
+      p_mode: mode, p_provider_id: d.tertiary_provider_id || null,
+      p_model: (d.tertiary_model || "").trim() || null, p_reason: "set "+mode+" tertiary routing",
+    });
+    if (tertiary.error) setError(say(tertiary.error));
+    else { setNote(MODE_LABEL[mode]+" routing saved."); await load(); }
     setBusy(false);
   }
 
@@ -220,6 +228,23 @@ export default function AiModelsAdmin() {
             </label>
             <label style={{ fontSize: 12 }}>Fallback model
               <input value={d.fallback_model || ""} onChange={(e) => setMode(mode, "fallback_model", e.target.value)} placeholder="optional" />
+            </label>
+            <label style={{ fontSize: 12 }}>Tertiary provider
+              <select value={d.tertiary_provider_id || ""} onChange={(e) => setMode(mode, "tertiary_provider_id", e.target.value)}>
+                <option value="">— none —</option>{providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 12 }}>Tertiary model
+              <input value={d.tertiary_model || ""} onChange={(e) => setMode(mode, "tertiary_model", e.target.value)} placeholder="optional" />
+            </label>
+            <label style={{ fontSize: 12 }}>Image provider
+              <select value={d.vision_provider_id || ""} onChange={(e) => setMode(mode, "vision_provider_id", e.target.value)}>
+                <option value="">— image analysis disabled —</option>
+                {providers.filter((p) => p.supports?.vision || (p.models || []).some((m) => m.supports?.vision)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 12 }}>Image model
+              <input value={d.vision_model || ""} onChange={(e) => setMode(mode, "vision_model", e.target.value)} placeholder="vision-capable model id" />
             </label>
           </div>
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12 }}>
