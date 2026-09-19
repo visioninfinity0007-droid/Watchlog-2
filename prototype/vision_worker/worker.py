@@ -30,6 +30,11 @@ AUTO_PULL = os.getenv("VISION_AUTO_PULL", "true").lower() in ("1", "true", "yes"
 ANALYSIS_VERSION = "snapshot-vision-v1"
 SUMMARY_VERSION = "visual-day-v1"
 PORT = int(os.getenv("PORT", "8640"))
+MEDIA_ENDPOINT = os.getenv("MEDIA_ENDPOINT", "http://minio:9000").rstrip("/")
+MEDIA_ACCESS_KEY = os.environ["WATCHLOG_MEDIA_ACCESS_KEY"]
+MEDIA_SECRET_KEY = os.environ["WATCHLOG_MEDIA_SECRET_KEY"]
+MEDIA_BUCKET = os.getenv("WATCHLOG_MEDIA_BUCKET", "watchlog-cctv")
+MEDIA_RETENTION_DAYS = max(1, int(os.getenv("WATCHLOG_MEDIA_RETENTION_DAYS", "30")))
 
 session = requests.Session()
 session.headers.update({
@@ -37,6 +42,14 @@ session.headers.update({
     "Authorization": f"Bearer {SERVICE_KEY}",
     "Content-Type": "application/json",
 })
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=MEDIA_ENDPOINT,
+    aws_access_key_id=MEDIA_ACCESS_KEY,
+    aws_secret_access_key=MEDIA_SECRET_KEY,
+    region_name="us-east-1",
+)
 
 state = {
     "ready": False,
@@ -142,6 +155,86 @@ DAY_SCHEMA = {
 }
 
 
+def ensure_media_store() -> bool:
+    try:
+        try:
+            s3.head_bucket(Bucket=MEDIA_BUCKET)
+        except Exception:
+            s3.create_bucket(Bucket=MEDIA_BUCKET)
+        # MinIO supports the S3 lifecycle API. Keep the media mirror bounded.
+        try:
+            s3.put_bucket_lifecycle_configuration(
+                Bucket=MEDIA_BUCKET,
+                LifecycleConfiguration={
+                    "Rules": [{
+                        "ID": "watchlog-cctv-retention",
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "Expiration": {"Days": MEDIA_RETENTION_DAYS},
+                    }]
+                },
+            )
+        except Exception as exc:
+            log(f"media retention policy warning: {type(exc).__name__}")
+        return True
+    except Exception as exc:
+        state["last_error"] = f"media store unavailable: {type(exc).__name__}"
+        log(state["last_error"])
+        return False
+
+
+def media_key(job: dict) -> str:
+    tz = job.get("timezone") or "Asia/Karachi"
+    dt = datetime.fromisoformat(str(job["captured_at"]).replace("Z", "+00:00")).astimezone(ZoneInfo(tz))
+    ext = "png" if "png" in str(job.get("content_type") or "").lower() else "jpg"
+    channel = str(job.get("channel") or "unknown").replace("/", "_")
+    return f"{job['tenant_id']}/{job['site_id']}/{dt:%Y/%m/%d}/ch-{channel}/{job['event_id']}.{ext}"
+
+
+def load_and_mirror_image(job: dict) -> str:
+    existing_key = job.get("media_key")
+    if existing_key:
+        obj = s3.get_object(Bucket=job.get("media_bucket") or MEDIA_BUCKET, Key=existing_key)
+        raw = obj["Body"].read()
+        digest = hashlib.sha256(raw).hexdigest()
+        expected = str(job.get("media_sha256") or "")
+        if expected and digest != expected:
+            raise RuntimeError("private media integrity check failed")
+        return base64.b64encode(raw).decode("ascii")
+
+    b64 = job.get("image_b64")
+    if not b64:
+        raise RuntimeError("snapshot bytes unavailable")
+    raw = base64.b64decode(b64, validate=True)
+    key = media_key(job)
+    digest = hashlib.sha256(raw).hexdigest()
+    s3.put_object(
+        Bucket=MEDIA_BUCKET,
+        Key=key,
+        Body=io.BytesIO(raw),
+        ContentLength=len(raw),
+        ContentType=job.get("content_type") or "image/jpeg",
+        Metadata={
+            "sha256": digest,
+            "site-id": str(job.get("site_id") or ""),
+            "event-id": str(job.get("event_id") or ""),
+        },
+    )
+    rpc("wl_vision_mark_media", {
+        "p_event_id": int(job["event_id"]),
+        "p_bucket": MEDIA_BUCKET,
+        "p_key": key,
+        "p_sha256": digest,
+        "p_bytes": len(raw),
+    }, timeout=30)
+    job["media_bucket"] = MEDIA_BUCKET
+    job["media_key"] = key
+    job["media_sha256"] = digest
+    job["media_bytes"] = len(raw)
+    job["image_b64"] = None
+    return base64.b64encode(raw).decode("ascii")
+
+
 def ensure_model() -> bool:
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=8)
@@ -204,8 +297,9 @@ Keep summary and activity concise and factual.
 Clothing descriptors are allowed only to help correlate adjacent CCTV frames.
 If the image is too poor to support a conclusion, say so through quality.
 """.strip()
+    image_b64 = load_and_mirror_image(job)
     result = ollama_chat([
-        {"role": "user", "content": prompt, "images": [job["image_b64"]]}
+        {"role": "user", "content": prompt, "images": [image_b64]}
     ], SNAPSHOT_SCHEMA)
 
     # Application-level normalization: do not allow negative/absurd counts.
@@ -346,6 +440,8 @@ def serve_health():
 
 def main():
     threading.Thread(target=serve_health, daemon=True).start()
+    while not ensure_media_store():
+        time.sleep(20)
     while not ensure_model():
         time.sleep(20)
     state["ready"] = True
