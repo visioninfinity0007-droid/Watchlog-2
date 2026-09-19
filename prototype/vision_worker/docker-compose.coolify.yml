@@ -1,4 +1,16 @@
 services:
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${WATCHLOG_MEDIA_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${WATCHLOG_MEDIA_SECRET_KEY}
+    volumes:
+      - watchlog_media:/data
+    networks:
+      - watchlog_vision
+
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -20,11 +32,16 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      ollama:
-        condition: service_healthy
+      - minio
+      - ollama
     environment:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      MEDIA_ENDPOINT: http://minio:9000
+      WATCHLOG_MEDIA_ACCESS_KEY: ${WATCHLOG_MEDIA_ACCESS_KEY}
+      WATCHLOG_MEDIA_SECRET_KEY: ${WATCHLOG_MEDIA_SECRET_KEY}
+      WATCHLOG_MEDIA_BUCKET: ${WATCHLOG_MEDIA_BUCKET:-watchlog-cctv}
+      WATCHLOG_MEDIA_RETENTION_DAYS: ${WATCHLOG_MEDIA_RETENTION_DAYS:-30}
       OLLAMA_URL: http://ollama:11434
       VISION_MODEL: ${VISION_MODEL:-gemma3:4b}
       VISION_AUTO_PULL: ${VISION_AUTO_PULL:-true}
@@ -35,6 +52,7 @@ services:
       - watchlog_vision
 
 volumes:
+  watchlog_media:
   watchlog_ollama:
 
 networks:
