@@ -29,7 +29,7 @@ export type AiMode = "instant" | "thinking" | "hive";
 export type RouteKind = "no_model" | "ai_primary" | "ai_fallback" | "guided_fallback";
 export type EgressDecision = "local" | "external" | "blocked_local_only" | "n/a";
 export type RouteOutcome =
-  | "ok" | "deterministic" | "no_provider_configured" | "config_invalid"
+  | "ok" | "deterministic" | "customer_boundary" | "no_provider_configured" | "config_invalid"
   | "egress_blocked" | "all_providers_failed" | "router_error";
 
 // The audit envelope — everything the platform admin / eval needs, and nothing the browser gets.
@@ -243,10 +243,15 @@ export function buildCandidates(resolvedMode: any, envCfg: ProviderConfig | null
   const modeExternalAllowed = !!resolvedMode?.external_egress_allowed;
   const primary = dbProviderToConfig(resolvedMode?.primary);
   const fallback = dbProviderToConfig(resolvedMode?.fallback);
+  // Optional third layer (0109). Every free provider tier is rate-capped, so two layers is one
+  // outage away from the deterministic floor. A tertiary is tried last and is subject to the
+  // SAME egress gate as the others — depth in the chain never buys a provider extra permission.
+  const tertiary = dbProviderToConfig(resolvedMode?.tertiary);
   // primaryInvalid: the mode names a primary provider but it did not resolve to a valid config.
   const primaryInvalid = !!(resolvedMode?.configured) && resolvedMode?.primary != null && primary === null;
   if (primary) candidates.push({ cfg: primary, isFallback: false, compat: false });
   if (fallback) candidates.push({ cfg: fallback, isFallback: true, compat: false });
+  if (tertiary) candidates.push({ cfg: tertiary, isFallback: true, compat: false });
   // Legacy env bridge ONLY when the mode is entirely unconfigured, so it never masks a broken DB config.
   if (candidates.length === 0 && !resolvedMode?.configured && envCfg) {
     candidates.push({ cfg: envCfg, isFallback: false, compat: true });

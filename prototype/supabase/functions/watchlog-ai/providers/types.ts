@@ -26,7 +26,10 @@ export interface ProviderConfig {
   maxOutput?: number;
 }
 
-export interface ChatMessage { role: "system" | "user" | "assistant"; content: string; }
+export type ChatTextPart = { type: "text"; text: string };
+export type ChatImagePart = { type: "image_url"; image_url: { url: string } };
+export type ChatContent = string | Array<ChatTextPart | ChatImagePart>;
+export interface ChatMessage { role: "system" | "user" | "assistant"; content: ChatContent; }
 
 export interface ChatOptions {
   model?: string;             // override provider default (mode routing)
