@@ -23,6 +23,7 @@ def main():
         "wl_vision_day_for_worker",
         "wl_vision_save_day_summary",
         "wl_my_visual_day",
+        "wl_vision_mark_media",
         "service role required",
         "operational_snapshot",
     ]:
@@ -31,6 +32,9 @@ def main():
 
     for token in [
         "gemma3:4b",
+        "boto3",
+        "load_and_mirror_image",
+        "wl_vision_mark_media",
         "images",
         "SNAPSHOT_SCHEMA",
         "DAY_SCHEMA",
@@ -42,7 +46,7 @@ def main():
         if token not in worker:
             problems.append(f"vision worker missing: {token}")
 
-    for token in ["ollama/ollama", "watchlog_ollama", "SUPABASE_SERVICE_ROLE_KEY", "VISION_MODEL"]:
+    for token in ["minio/minio", "watchlog_media", "ollama/ollama", "watchlog_ollama", "SUPABASE_SERVICE_ROLE_KEY", "WATCHLOG_MEDIA_ACCESS_KEY", "WATCHLOG_MEDIA_SECRET_KEY", "VISION_MODEL"]:
         if token not in compose:
             problems.append(f"Coolify vision compose missing: {token}")
 
