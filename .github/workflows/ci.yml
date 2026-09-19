@@ -39,6 +39,8 @@ jobs:
         run: python tools/secret_scan.py
       - name: Migration lint
         run: python tools/lint_migrations.py
+      - name: WatchLog AI multimodal + admin conversation contract
+        run: python prototype/tests/test_ai_multimodal_contract.py
       - name: Health Foundation schema/authz contract (Phase A)
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)
