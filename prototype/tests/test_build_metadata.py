@@ -26,7 +26,12 @@ class BuildMetadata(unittest.TestCase):
             importlib.reload(wl_version)
             self.assertEqual(wl_version.BUILD_SHA, "abc1234def567890")
             self.assertEqual(wl_version.BUILD_CHANNEL, "pilot")
-            self.assertEqual(wl_version.version_string(), "5.0.0+abc1234")   # short SHA in the string
+            # Derive from the single source of truth. Hardcoding the literal made this
+            # test fail on every release bump, which pressures whoever bumps it to edit
+            # a test rather than ship -- and the whole point of wl_version.VERSION is
+            # that the number lives in exactly one place.
+            self.assertEqual(wl_version.version_string(),
+                             f"{wl_version.VERSION}+abc1234")   # short SHA in the string
             md = wl_version.build_metadata()
             self.assertEqual(md["build_sha"], "abc1234def567890")
             self.assertEqual(md["channel"], "pilot")
@@ -44,18 +49,25 @@ class BuildMetadata(unittest.TestCase):
             importlib.reload(wl_version)
             # env is used only when no baked build_info is present on the path
             if wl_version.BUILD_SHA == "envsha0099":
-                self.assertTrue(wl_version.version_string().startswith("5.0.0+envsha0"))
+                self.assertTrue(wl_version.version_string().startswith(
+                    f"{wl_version.VERSION}+envsha0"))
         finally:
             del os.environ["WATCHLOG_BUILD_SHA"]
             importlib.reload(wl_version)
 
     def test_version_and_metadata_shape(self):
         importlib.reload(wl_version)
-        self.assertEqual(wl_version.VERSION, "5.0.0")
+        # Assert the SHAPE, not the number. Pinning the literal broke this test on every
+        # release bump for no benefit. The shape is what actually matters downstream:
+        # NSIS derives ProductVersion from it, and updater.parse_version has to read it.
+        self.assertRegex(wl_version.VERSION, r"^\d+\.\d+\.\d+$",
+                         "VERSION drives the NSIS ProductVersion and the updater's "
+                         "version comparison; it must stay plain semver")
         md = wl_version.build_metadata()
         self.assertEqual(set(md), {"version", "build_sha", "channel", "version_string"})
-        self.assertTrue(md["version_string"].startswith("5.0.0"))
-        self.assertEqual(md["channel"] or "production", md["channel"] or "production")
+        self.assertEqual(md["version"], wl_version.VERSION)
+        self.assertTrue(md["version_string"].startswith(wl_version.VERSION))
+        self.assertIsInstance(md["channel"] or "production", str)
 
     def test_build_exe_stamps_build_info(self):
         # Guard: the freezer must generate + bundle build_info.py.
