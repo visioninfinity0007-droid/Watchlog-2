@@ -581,13 +581,32 @@ async function routeChat(opts: {
     } catch { /* try the next configured candidate */ }
   }
 
-  // All candidates were blocked or failed -> verified-data guided fallback (the floor), grounded on
-  // the loaded evidence when the question was an evidence query.
+  // All candidates were blocked or failed -> verified-data guided fallback (the floor).
+  // For an image turn, never silently drop the image and answer as if it had been analysed.
+  if (hasImages) {
+    const blocked = tried === 0 && anyBlocked;
+    return { result: sanitizeResult({
+      answer: blocked
+        ? "I received your image, but this site's privacy setting does not allow it to be sent to the configured image-analysis service. I can still help with the site's WatchLog activity, incidents and monitoring status."
+        : "I received your image, but I could not analyse it just now. Please retry the image, or ask me to check the site's recorded activity and incidents while image analysis recovers.",
+      cards: [],
+      suggestions: blocked ? ["Check site activity", "Show current incidents", "Check monitoring status"] : ["Retry image analysis", "Check site activity", "Show current incidents"],
+      proposed_actions: [],
+      mode: "guided_fallback",
+    }), audit: {
+      mode, route: "guided_fallback",
+      provider_id: last?.id ?? null, provider_name: last?.name ?? null, model: last?.model ?? null,
+      used_fallback: false, egress: blocked ? "blocked_local_only" : "n/a",
+      latency_ms: 0, candidates_tried: tried, tool_calls: [...evToolCalls, "customer_image"],
+      outcome: blocked ? "egress_blocked" : "all_providers_failed",
+    } };
+  }
+
   return { result: sanitizeResult(fallback(prompt, context, toolsEv)), audit: {
     mode, route: "guided_fallback",
     provider_id: last?.id ?? null, provider_name: last?.name ?? null, model: last?.model ?? null,
     used_fallback: false, egress: anyBlocked && tried === 0 ? "blocked_local_only" : "n/a",
-    latency_ms: 0, candidates_tried: tried, tool_calls: hasImages ? [...evToolCalls, "customer_image"] : evToolCalls,
+    latency_ms: 0, candidates_tried: tried, tool_calls: evToolCalls,
     outcome: tried === 0 && anyBlocked ? "egress_blocked" : "all_providers_failed",
   } };
 }

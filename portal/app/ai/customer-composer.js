@@ -7,13 +7,14 @@ export default function CustomerComposer({chat,styles}){
         <button type="button" aria-label={"Remove "+a.name} onClick={()=>chat.removeAttachment(a.id)}>×</button>
       </div>)}
     </div>}
-    <div className={styles.composer}>
+    <div className={styles.composer+" watchlogComposer"}>
       <label className={styles.attachButton} title="Attach image" aria-label="Attach image">
         <span>+</span>
         <input type="file" accept="image/jpeg,image/png,image/webp" multiple
           onChange={e=>{chat.addAttachments(e.target.files);e.target.value=""}} />
       </label>
       <textarea
+        className="watchlogComposerInput"
         ref={chat.inputRef}
         rows={1}
         value={chat.draft}
@@ -26,6 +27,6 @@ export default function CustomerComposer({chat,styles}){
         disabled={(!chat.draft.trim()&&!chat.attachments.length)||chat.busy}
         onClick={()=>chat.send()}>↑</button>
     </div>
-    <small>WatchLog can make mistakes. Check important information.</small>
+    <small className="watchlogComposerDisclaimer">WatchLog can make mistakes. Check important information.</small>
   </footer>
 }
