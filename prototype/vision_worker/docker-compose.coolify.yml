@@ -1,0 +1,42 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - watchlog_ollama:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: "30m"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    networks:
+      - watchlog_vision
+
+  vision-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      OLLAMA_URL: http://ollama:11434
+      VISION_MODEL: ${VISION_MODEL:-gemma3:4b}
+      VISION_AUTO_PULL: ${VISION_AUTO_PULL:-true}
+      VISION_BATCH_SIZE: ${VISION_BATCH_SIZE:-4}
+      VISION_POLL_SECONDS: ${VISION_POLL_SECONDS:-5}
+      PORT: "8640"
+    networks:
+      - watchlog_vision
+
+volumes:
+  watchlog_ollama:
+
+networks:
+  watchlog_vision:
+    driver: bridge
