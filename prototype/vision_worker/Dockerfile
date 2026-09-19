@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir "requests>=2.32"
+RUN pip install --no-cache-dir "requests>=2.32" "boto3>=1.35"
 COPY worker.py /app/worker.py
 ENV PORT=8640 PYTHONUNBUFFERED=1
 EXPOSE 8640
