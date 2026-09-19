@@ -29,7 +29,7 @@ export type AiMode = "instant" | "thinking" | "hive";
 export type RouteKind = "no_model" | "ai_primary" | "ai_fallback" | "guided_fallback";
 export type EgressDecision = "local" | "external" | "blocked_local_only" | "n/a";
 export type RouteOutcome =
-  | "ok" | "deterministic" | "no_provider_configured" | "config_invalid"
+  | "ok" | "deterministic" | "customer_boundary" | "no_provider_configured" | "config_invalid"
   | "egress_blocked" | "all_providers_failed" | "router_error";
 
 // The audit envelope — everything the platform admin / eval needs, and nothing the browser gets.
