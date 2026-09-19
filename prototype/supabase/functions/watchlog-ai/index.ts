@@ -235,7 +235,7 @@ async function rpcOptional(sb: any, name: string, args: Json) {
 async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const p = prompt.toLowerCase(), tz = ctx?.site?.timezone || "UTC";
   const today = dateInZone(tz), yesterday = dateInZone(tz, -1);
-  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, frozen_report: null, analytics: null };
+  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
   const overnight = /overnight|last night|yesterday/.test(p);
   if (overnight || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
@@ -244,6 +244,11 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
       yesterday: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: yesterday }),
       today: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today }),
     } : await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today });
+  }
+  const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief/.test(p);
+  if (visualIntent) {
+    const visualDate = /yesterday|last night|overnight/.test(p) ? yesterday : today;
+    out.visual_day = await rpcOptional(sb, "wl_my_visual_day", { p_site_id: siteId, p_date: visualDate });
   }
   if (/report|management brief|daily brief|pdf|executive summary/.test(p)) {
     out.frozen_report = await rpcOptional(sb, "wl_my_report_snapshot", { p_site_id: siteId, p_date: overnight ? yesterday : today });
@@ -254,6 +259,51 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   }
   return out;
 }
+function visualDayFallback(tools: Json) {
+  const v = tools?.visual_day;
+  if (!v?.ok || !v.data) return null;
+  const d = v.data || {}, s = d.summary || {};
+  const owner = String(s.owner_summary || "").trim();
+  if (!owner) {
+    const total = Number(d.snapshots_total || 0), done = Number(d.snapshots_analyzed || 0);
+    if (!total) return null;
+    return {
+      answer: done
+        ? `I’ve visually reviewed ${done} of ${total} available snapshots for that day. The full owner summary will be ready once the remaining snapshots are reviewed.`
+        : "The visual review for that day has not completed yet.",
+      cards: [],
+      suggestions: ["Were there any serious incidents?", "Show me the Armory activity", "What time was the office active?"],
+      proposed_actions: [],
+      mode: "guided_fallback",
+    };
+  }
+  const notable = Array.isArray(s.notable) ? s.notable.slice(0,4) : [];
+  const restricted = Array.isArray(s.restricted_area) ? s.restricted_area.slice(0,5) : [];
+  return {
+    answer: owner,
+    cards: [{
+      type: "report",
+      title: "Visual review",
+      data: {
+        date: d.date,
+        status: d.status,
+        snapshots_reviewed: d.snapshots_analyzed,
+        snapshots_total: d.snapshots_total,
+        first_activity: s.first_activity || null,
+        last_activity: s.last_activity || null,
+        overall: s.overall || null,
+        areas: Array.isArray(s.areas) ? s.areas.slice(0,8) : [],
+        restricted_area: restricted,
+        notable,
+        limitations: Array.isArray(s.limitations) ? s.limitations.slice(0,5) : [],
+      }
+    }],
+    suggestions: ["Were there any serious incidents?", "Show me the Armory activity", "Summarize staff presence"],
+    proposed_actions: [],
+    mode: "guided_fallback",
+  };
+}
+
 function dailyFallback(tools: Json) {
   const daily = tools?.daily_intelligence;
   if (!daily) return null;
@@ -287,6 +337,8 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
     return { answer: next ? `The next setup step is ${String(next.label || next.key).toLowerCase()}.` : "The main setup is complete. I can help you fine-tune the cameras, monitoring and reports for this site.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
   }
+  const visual = visualDayFallback(tools);
+  if (visual && /overnight|last night|yesterday|what happened|today|incident|activity|people|visitor|staff|opening|closing|restricted|armory|dwell/.test(p)) return visual;
   const daily = dailyFallback(tools);
   if (daily && /overnight|last night|yesterday|what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) return daily;
   if (/report|management brief|daily brief|pdf|executive summary/.test(p)) {
