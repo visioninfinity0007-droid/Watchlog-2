@@ -65,6 +65,26 @@ def log(msg: str) -> None:
     print(f"[vision-worker] {msg}", flush=True)
 
 
+def heartbeat(worker_state: str | None = None) -> None:
+    try:
+        rpc("wl_vision_worker_heartbeat", {
+            "p_worker_id": WORKER_ID,
+            "p_state": worker_state or ("ready" if state["ready"] else "starting"),
+            "p_model": VISION_MODEL,
+            "p_media_backend": "coolify_private_minio",
+            "p_processed": int(state["processed"]),
+            "p_failed": int(state["failed"]),
+            "p_last_success_at": state["last_success_at"],
+            "p_detail": {
+                "model_ready": bool(state["model_ready"]),
+                "last_error": state["last_error"],
+                "batch_size": BATCH_SIZE,
+            },
+        }, timeout=15)
+    except Exception as exc:
+        log(f"heartbeat warning: {type(exc).__name__}")
+
+
 def rpc(name: str, payload: dict, timeout: int = 60):
     r = session.post(f"{SUPABASE_URL}/rest/v1/rpc/{name}", json=payload, timeout=timeout)
     if not r.ok:
@@ -440,21 +460,32 @@ def serve_health():
 
 def main():
     threading.Thread(target=serve_health, daemon=True).start()
+    heartbeat("starting")
     while not ensure_media_store():
+        heartbeat("media_unavailable")
         time.sleep(20)
     while not ensure_model():
+        heartbeat("model_unavailable")
         time.sleep(20)
     state["ready"] = True
+    heartbeat("ready")
     log(f"ready — model={VISION_MODEL}, batch={BATCH_SIZE}")
+    last_heartbeat = 0.0
     while True:
         try:
+            now = time.monotonic()
+            if now - last_heartbeat >= 30:
+                heartbeat("ready")
+                last_heartbeat = now
             n = process_batch()
             if n == 0:
                 time.sleep(POLL_SECONDS)
         except KeyboardInterrupt:
+            heartbeat("stopping")
             return
         except Exception as exc:
             state["last_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+            heartbeat("error")
             log(f"loop error: {state['last_error']}")
             time.sleep(max(POLL_SECONDS, 10))
 
