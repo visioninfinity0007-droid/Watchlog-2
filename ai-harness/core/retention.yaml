@@ -1,0 +1,56 @@
+# WatchLog evidence retention policy — DESCRIPTIVE MIRROR of the runtime authority.
+#
+# SINGLE SOURCE OF TRUTH: migration `0107_ai_evidence_workspace.sql`. This file documents what 0107
+# ENFORCES; it does not itself enforce anything and must never drift from 0107. If 0107 changes, change
+# this file in the same commit.
+#
+# Enforcement: `wl_evidence_enforce_retention()` (SECURITY DEFINER, service-role, hourly pg_cron) deletes
+# expired rows per class, writes `evidence_deletion_audit` (which SURVIVES the raw evidence), and drains
+# the previously-orphaned `operations_incident_evidence` pruner (0058). TTLs are SERVER-SET at write time
+# (`wl_ai_evidence_put`) from the class and have NO update path — a model or tenant can never extend them.
+version: 2
+schema: retention_policy.v2
+authority:
+  migration: 0107_ai_evidence_workspace.sql
+  table: public.ai_evidence
+  ttl_function: wl_ai_evidence_ttl(evidence_class)
+  enforcer: wl_evidence_enforce_retention
+  audit_table: evidence_deletion_audit
+
+# The exact classes + TTLs 0107 enforces (see wl_ai_evidence_ttl).
+tiers:
+  operational_snapshot:
+    what: "Operational/database event stills for review/health/daily intelligence."
+    ttl: 7 days
+    enforced_by: wl_evidence_enforce_retention
+  harness_snapshot:
+    what: "Snapshots/frames retained for AI harness evidence bundles."
+    ttl: 30 days
+    enforced_by: wl_evidence_enforce_retention
+  incident_video:
+    what: "Temporary incident clip copied on-demand from the NVR for an authorized window (48-72h ceiling)."
+    ttl: 72 hours
+    enforced_by: wl_evidence_enforce_retention
+  finding:
+    what: "Derived structured records (incidents, coverage, reports — no raw pixels)."
+    ttl: none_here
+    note: "No TTL in the evidence workspace; retained separately under WatchLog data policy in their own tables."
+
+controls:
+  raw_visual_evidence:
+    tenant_isolated: true            # wl_assert_my_site inside every evidence RPC
+    site_scoped: true
+    encrypted_at_rest: true          # app-level pgcrypto (pgp_sym_encrypt) with a Supabase Vault key
+                                     #   (wl_ai_evidence_key, fail-closed when Vault present), atop Supabase disk encryption
+    public_bucket_access: false      # bytea in Postgres; two-stage RPCs only (index has NO bytes; bundle decrypts)
+    authorization: server_side_only  # wl_my_tenant() / wl_assert_my_site — never the model
+    egress: local_only_by_default    # wl_ai_site_egress (0106); external only if the site opts in AND the mode allows
+    deletion: automatic_idempotent   # hourly cron; retry-safe
+    deletion_audited: true
+
+audit:
+  table: evidence_deletion_audit
+  written_by: [wl_evidence_enforce_retention]
+  fields: [evidence_class, tenant_id, site_id, deleted_count, oldest_captured, newest_captured, reason, run_at]
+  survives_raw_deletion: true
+  redaction: "never store image bytes or credentials in the audit."

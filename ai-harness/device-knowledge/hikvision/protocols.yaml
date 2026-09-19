@@ -1,0 +1,103 @@
+# WatchLog device-knowledge - vendor protocol surface (GENERATED).
+# capability -> {read_method, write_method, safety_class}. Safety: read | safe_write | high_risk | prohibited | na.
+# 'UNKNOWN' write_method = the capability is supported on some models but the exact write path is not documented.
+manufacturer: Hikvision
+protocol_families:
+- ISAPI (Intelligent Security API)
+- SDK
+- ONVIF (Profile S/G)
+evidence_note: 'ISAPI resources/tokens are OFFICIAL_DOCUMENTED from Hikvision developer guides, but the
+  accessible guides are camera-oriented and one is secondary-hosted (research gaps: NVR-specific ISAPI
+  guide not obtained). WatchLog Hikvision support is CODE-only - nothing here is field-verified. The exact
+  per-detector Smart WRITE sub-path (e.g. /ISAPI/Smart/LineDetection/<ID>) is UNKNOWN and marked so.'
+snapshot_note: snapshot.cgi (Dahua) / /ISAPI/Streaming/channels/<ID>/picture (Hikvision) returns the recorder's
+  LOW snapshot-encode resolution, often CIF 352x288. Full resolution requires a main-stream RTSP keyframe
+  (subtype=0). Field-confirmed on the client Dahua XVR (FIELD-AKSS-001). A video-loss channel returns
+  a black placeholder, so a snapshot alone must never be used to prove liveness.
+surface:
+  human_vehicle_classification:
+    read_method: ISAPI /ISAPI/Smart, /ISAPI/System/Video/inputs/channels/<ID>/VCAResource (GET); MD2.0
+      human/vehicle
+    write_method: ISAPI /ISAPI/Smart (PUT) - MD2.0 write sub-path UNKNOWN in obtained guides
+    safety_class: safe_write
+  line_crossing:
+    read_method: ISAPI /ISAPI/Smart (GET/capabilities); behavior token lineDetection
+    write_method: ISAPI /ISAPI/Smart/LineDetection/<ID> (PUT) - exact sub-path UNKNOWN (not in obtained
+      guides)
+    safety_class: safe_write
+  intrusion:
+    read_method: ISAPI /ISAPI/Smart; behavior token fieldDetection
+    write_method: ISAPI /ISAPI/Smart/FieldDetection/<ID> (PUT) - exact sub-path UNKNOWN
+    safety_class: safe_write
+  region_entrance:
+    read_method: ISAPI behavior token regionEntrance (camera-side)
+    write_method: na
+    safety_class: na
+  region_exiting:
+    read_method: ISAPI behavior token regionExiting (camera-side)
+    write_method: na
+    safety_class: na
+  loitering:
+    read_method: ISAPI behavior token loitering (camera-side)
+    write_method: na
+    safety_class: na
+  parking:
+    read_method: ISAPI behavior token parking (camera-side)
+    write_method: na
+    safety_class: na
+  face_detection:
+    read_method: ISAPI token faceSnap (capture)
+    write_method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  face_recognition:
+    read_method: ISAPI tokens faceContrast / faceRecognition
+    write_method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  object_attribute_extraction:
+    read_method: 'ISAPI /ISAPI/Smart (recorder engine: video structuralization)'
+    write_method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  high_altitude_object_detection:
+    read_method: 'ISAPI /ISAPI/Smart (recorder engine: throwing-objects)'
+    write_method: ISAPI Smart write sub-path UNKNOWN
+    safety_class: safe_write
+  anpr_lpr:
+    read_method: ISAPI (plate/vehicle attrs via camera)
+    write_method: na
+    safety_class: na
+  people_counting:
+    read_method: ISAPI /ISAPI/System/Video/inputs/channels/counting/collection (camera)
+    write_method: na
+    safety_class: na
+  heatmap:
+    read_method: ISAPI /ISAPI/System/Video/inputs/channels/heatMap/collection (camera)
+    write_method: na
+    safety_class: na
+  video_loss:
+    read_method: ISAPI event type videoLoss via /ISAPI/Event/notification/alertStream
+    write_method: na
+    safety_class: read
+  tamper:
+    read_method: ISAPI event types tamperDetection / shelteralarm via alertStream
+    write_method: na
+    safety_class: read
+  time_ntp_config:
+    read_method: ISAPI /ISAPI/System/time, /time/localTime, /time/timeZone (GET)
+    write_method: ISAPI /ISAPI/System/time (PUT) + /ISAPI/System/time/ntpServers
+    safety_class: safe_write
+  channel_title:
+    read_method: ISAPI /ISAPI/System/Video/inputs/channels/<ID>/overlays/channelNameOverlay (GET)
+    write_method: ISAPI /ISAPI/System/Video/inputs/channels/<ID>/overlays/channelNameOverlay (PUT)
+    safety_class: safe_write
+  snapshot:
+    read_method: ISAPI /ISAPI/Streaming/channels/<ID>/picture
+    write_method: na
+    safety_class: read
+  storage_health:
+    read_method: ISAPI /ISAPI/ContentMgmt/Storage/hdd
+    write_method: na
+    safety_class: read
+  event_stream:
+    read_method: ISAPI /ISAPI/Event/notification/alertStream + /ISAPI/Streaming/channels/<ID>/metadata
+    write_method: na
+    safety_class: read

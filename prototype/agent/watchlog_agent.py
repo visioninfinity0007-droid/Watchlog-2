@@ -192,6 +192,9 @@ class Config:
         self.state_path = Path(get("state_file") or (state_dir / "agent_state.json"))
         self.spool_path = Path(get("spool_file")
                                or (self.state_path.parent / "spool.sqlite"))
+        # Buffer cap — sized per deployment (Edge boxes can buffer a longer outage). 0/unset
+        # keeps the Spool default; the value is a row count, not bytes.
+        self.spool_max_rows = int(get("spool_max_rows") or 0)
         # Durable LOCAL health store (increment 5) — separate from the event spool.
         self.health_store_path = Path(get("health_store_file")
                                       or (self.state_path.parent / "health.sqlite"))
@@ -201,6 +204,37 @@ class Config:
         self.health_batch = int(get("health_batch") or HEALTH_BATCH)
         self.health_concurrency = int(get("health_concurrency") or HEALTH_CONCURRENCY)
         self.upload_seconds = int(get("upload_seconds") or UPLOAD_SECONDS)
+        # Site Control command plane (H6), read-only executor. OFF by default: a new
+        # capability is never auto-enabled on a live site — enable per-site in the ini.
+        self.site_control_enabled = str(get("site_control") or "false").strip().lower() == "true"
+        self.site_control_seconds = int(get("site_control_seconds") or 15)
+        # Automatic NVR outage recovery (0.4.4 §1/§2). READ-ONLY archive backfill of missed
+        # intervals; ON by default (it never writes to the recorder, always yields to live
+        # monitoring, and is throttled). Disable per-site with recovery_enabled = false.
+        self.recovery_enabled = str(get("recovery_enabled") or "true").strip().lower() == "true"
+        self.recovery_seconds = int(get("recovery_seconds") or 300)
+        self.recovery_chunk_seconds = int(get("recovery_chunk_seconds") or 3600)
+        self.recovery_throttle_seconds = float(get("recovery_throttle_seconds") or 2.0)
+        self.recovery_threshold_seconds = int(get("recovery_threshold_seconds") or 180)
+        self.recovery_live_backlog = int(get("recovery_live_backlog") or 500)
+        self.last_live_path = Path(get("last_live_file") or (self.state_path.parent / "last_live.json"))
+        # Deep recovery (§1): also run the on-site detector over recovered FOOTAGE (not just
+        # recorder-native event replay). Bounded per chunk; degrades honestly when no frame/codec.
+        self.recovery_ai_enabled = str(get("recovery_ai_enabled") or "true").strip().lower() == "true"
+        self.recovery_ai_max_frames = int(get("recovery_ai_max_frames") or 40)
+        # In-app updates (0.4.4 §13/§14). Check-for-updates is READ-ONLY and never auto-applies.
+        # update_public_key authenticates the signed release manifest; with no key configured an
+        # update is refused (trust nothing) unless update_require_signature is explicitly false.
+        self.update_url = (get("update_url") or "").strip()
+        self.update_channel = (get("update_channel") or "production").strip().lower()
+        self.update_public_key = (get("update_public_key") or "").strip()
+        self.update_require_signature = str(get("update_require_signature") or "true").strip().lower() == "true"
+        # Camera configuration persisted at setup (channel/name/purpose/monitored) — the LOCAL source
+        # of the monitored-vs-unused classification the Site Status panel renders.
+        try:
+            self.camera_profiles = json.loads(get("camera_profiles_json") or "[]") or []
+        except Exception:  # noqa: BLE001 — a corrupt cache must never crash the agent
+            self.camera_profiles = []
 
     def load_recorder_credential(self) -> None:
         """(Re)load the recorder credential from the encrypted split store so
@@ -912,14 +946,64 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
 
 
 def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
-                  stop: threading.Event) -> None:
+                  stop: threading.Event, resume_evt: "threading.Event | None" = None) -> None:
     """Run the health cycle on its OWN thread so a probe stall can never delay heartbeat or
-    event upload. Jittered interval so a fleet does not probe in lockstep."""
+    event upload. Jittered interval so a fleet does not probe in lockstep. When the main loop
+    signals a resume (site PC woke from sleep), reconcile IMMEDIATELY instead of waiting a full
+    interval — so a camera that failed while the PC was asleep is caught right away (the H2
+    recorder-state reconciliation runs inside health_cycle)."""
     stop.wait(min(10, cfg.health_seconds))              # let enrollment/sync settle first
     while not stop.is_set():
         health_cycle(cloud, state, cfg, holder)
         jitter = random.uniform(0, max(1.0, cfg.health_seconds * 0.2))
-        stop.wait(cfg.health_seconds + jitter)
+        if resume_evt is not None:
+            if resume_evt.wait(cfg.health_seconds + jitter):
+                resume_evt.clear()                      # woke early for resume reconciliation
+        else:
+            stop.wait(cfg.health_seconds + jitter)
+
+
+def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
+    """Site Control (H6): poll for a queued READ command, run it against the recorder via the
+    LOCAL driver, and return the structured result. OFF unless cfg.site_control_enabled — a new
+    capability is never auto-enabled on a live site. Strictly read-only: site_control.execute_read
+    implements only read actions. Outbound-only and agent-authenticated; the recorder credential
+    never leaves this process, and a failure here can never disturb events/heartbeat/health."""
+    if not cfg.site_control_enabled:
+        return
+    import site_control
+    stop.wait(min(8, cfg.site_control_seconds))         # let enrollment/sync settle first
+    while not stop.is_set():
+        busy = False
+        try:
+            claimed = cloud.call("wl_agent_claim_command",
+                                 p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+            cmd = (claimed or {}).get("command")
+            if cmd:
+                busy = True
+                action = cmd.get("action")
+                is_write = action in site_control.WRITE_ACTIONS
+                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+                try:
+                    res = (site_control.execute_write(driver, action, cmd.get("params"))
+                           if is_write else
+                           site_control.execute_read(driver, action, cmd.get("params")))
+                finally:
+                    try:
+                        driver.close()
+                    except Exception:                    # noqa: BLE001
+                        pass
+                # Writes carry before/after/verified (transactional audit); reads carry 'data'.
+                cloud.call("wl_agent_complete_command",
+                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                           p_command_id=cmd["id"],
+                           p_status=("succeeded" if res.get("ok") else "failed"),
+                           p_result=(res if is_write else res.get("data")),
+                           p_error=res.get("error"))
+        except Exception as e:                           # noqa: BLE001 — Site Control never disturbs the agent
+            log(f"site control: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        if not busy:
+            stop.wait(cfg.site_control_seconds)          # idle poll; drain promptly when busy
 
 
 # --- commands ----------------------------------------------------------
@@ -989,6 +1073,592 @@ def cmd_selftest() -> int:
         return 0
     print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
     return 2
+
+
+def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
+               _heartbeat=None, _spool_factory=None, _archive=None, _detector=None,
+               _ini_text=None, live_seconds: int | None = None) -> int:
+    """0.4.4 §10 — post-install acceptance self-test.
+
+    Exercises the REAL runtime chain on THIS site — configuration, local identity, cloud auth,
+    recorder reachability, camera enumeration, retrievable archive (so the outage-recovery
+    promise is real), the live-event path and a healthy local spool — and prints an honest
+    ACCEPTED / BLOCKED report plus a machine-readable ``ACCEPTANCE_JSON`` line for the installer.
+
+    Read-only: it changes no recorder setting and enables no runtime feature (operations/site
+    control stay OFF). Exit 0 = accepted, 2 = blocked. Dependencies are injectable so the whole
+    flow is testable with no cloud, recorder or spool.
+    """
+    import acceptance
+    import dahua_archive
+    from types import SimpleNamespace
+
+    open_driver_fn = _open_driver or open_driver
+    heartbeat_fn = _heartbeat or heartbeat
+    cloud_factory = _cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key))
+    if _spool_factory is None:
+        from spool import Spool
+        spool_factory = lambda: Spool(cfg.spool_path, cfg.spool_max_rows)   # noqa: E731
+    else:
+        spool_factory = _spool_factory
+    archive_fn = _archive or dahua_archive.prove_recorder_archive
+    live_seconds = int(live_seconds if live_seconds is not None
+                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 20))
+    state = _state if _state is not None else load_state(cfg.state_path)
+
+    print(f"watchlog-agent {AGENT_VERSION} — post-install acceptance self-test\n")
+    holder: dict = {}
+
+    def _config():
+        missing = [name for name, value in (("recorder address", cfg.nvr_url),
+                                            ("WatchLog URL", cfg.supabase_url),
+                                            ("WatchLog key", cfg.publishable_key)) if not value]
+        return ("blocked", "missing " + ", ".join(missing)) if missing else ("pass", cfg.nvr_url)
+
+    def _identity():
+        if not state or not state.get("agent_id") or not state.get("agent_key"):
+            return "blocked", "this site is not enrolled yet"
+        return "pass", f"agent {state['agent_id']}"
+
+    def _cloud():
+        if not state:
+            return "blocked", "no local identity to authenticate"
+        device = SimpleNamespace(vendor=None, model=None, driver=cfg.nvr_driver)
+        heartbeat_fn(cloud_factory(), state, device)
+        return "pass", "cloud authenticated this agent"
+
+    def _recorder():
+        driver, info = open_driver_fn(cfg)
+        holder["driver"], holder["info"] = driver, info
+        return "pass", (f"{info.vendor} {info.model or ''}".strip() or "recorder reachable")
+
+    def _cameras():
+        driver = holder.get("driver")
+        if driver is None:
+            return "blocked", "recorder was not reachable"
+        chans = driver.list_channels()
+        holder["channels"] = chans
+        return ("pass", f"{len(chans)} camera(s)") if chans else ("blocked", "no camera channels found")
+
+    def _archive_check():
+        driver = holder.get("driver")
+        chans = holder.get("channels") or []
+        if driver is None or not chans:
+            return "warn", "recorder/cameras unavailable to check the archive"
+        try:
+            dahua_archive.install()
+        except Exception:  # noqa: BLE001 — a driver without the impl reports 'unsupported' honestly
+            pass
+        channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        proof = archive_fn(driver, channel)
+        status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
+        return status, (proof or {}).get("detail")
+
+    def _live():
+        driver = holder.get("driver")
+        if driver is None:
+            return "blocked", "recorder was not reachable"
+        stop = threading.Event()
+        timer = threading.Timer(live_seconds, stop.set)
+        timer.start()
+        seen = 0
+        try:
+            for _ev in driver.stream_events(stop):
+                seen += 1
+                break
+        finally:
+            stop.set()
+            timer.cancel()
+        if seen:
+            return "pass", f"live events flowing (seen within {live_seconds}s)"
+        return "warn", f"no live events during a {live_seconds}s check (a quiet site is normal)"
+
+    def _spool():
+        sp = spool_factory()
+        try:
+            queued = sp.count()
+        finally:
+            try:
+                sp.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return "pass", f"local spool healthy ({queued} queued)"
+
+    def _ai():
+        # Same packaged AI as live/recovery: prove the false-alarm filter runs and discards a blank
+        # frame. Fail-open by design, so a missing runtime/model WARNS (not blocks) — but a
+        # production build should pass.
+        det = _detector if _detector is not None else (vision.build(cfg, log=lambda *a: None)
+                                                       if getattr(cfg, "detect", True) else None)
+        if det is None or not getattr(det, "available", True):
+            return "warn", "AI false-alarm filter not packaged (every event will be kept)"
+        try:
+            import io as _io
+            from PIL import Image
+            buf = _io.BytesIO()
+            Image.new("RGB", (320, 240), (120, 120, 120)).save(buf, "JPEG")
+            keep, _dets = det.classify_event(buf.getvalue())
+        except Exception as exc:  # noqa: BLE001
+            return "warn", f"AI self-test could not run ({type(exc).__name__})"
+        return ("pass", "AI packaged; blank frame discarded") if keep is False else \
+               ("warn", "AI loaded but did not discard a blank frame")
+
+    def _runtime():
+        import wl_version
+        meta = wl_version.build_metadata()
+        if not meta.get("build_sha"):
+            return "warn", f"agent {meta.get('version')} (build SHA not stamped — not a release build)"
+        return "pass", f"agent {meta.get('version_string')}"
+
+    def _security():
+        text = _ini_text
+        if text is None:
+            try:
+                p = base_dir() / "watchlog.ini"
+                text = p.read_text(encoding="utf-8-sig", errors="replace") if p.exists() else ""
+            except Exception:  # noqa: BLE001
+                text = ""
+        import re as _re
+        m = _re.search(r"(?im)^\s*nvr_password\s*=\s*(.+?)\s*$", text or "")
+        val = (m.group(1).strip() if m else "")
+        if val and val.upper() != "REPLACE_ME":
+            return "blocked", "a plaintext recorder password is present in watchlog.ini (must live only in the encrypted store)"
+        return "pass", "no plaintext recorder password on disk"
+
+    checks = [
+        {"key": "config", "label": "Configuration present", "hard": True, "run": _config},
+        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True, "run": _identity},
+        {"key": "runtime", "label": "Runtime version + build identity", "hard": False, "run": _runtime},
+        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True, "run": _cloud},
+        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder},
+        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras},
+        {"key": "archive", "label": "Recorded footage retrievable (outage recovery)",
+         "hard": False, "run": _archive_check},
+        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live},
+        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai},
+        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool},
+        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True, "run": _security},
+    ]
+
+    report = acceptance.run_checks(checks, log=print)
+    stats = report["summary"]
+    print()
+    if report["ready"]:
+        print(f"RESULT: ACCEPTED ({stats['passed']} passed, {stats['warned']} warning(s))")
+    else:
+        print(f"RESULT: BLOCKED ({stats['hard_failures']} required check(s) not passing)")
+    # Single machine-readable line for the installer status panel — contains no secrets.
+    print("ACCEPTANCE_JSON " + json.dumps(report, separators=(",", ":")))
+
+    driver = holder.get("driver")
+    if driver is not None:
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return 0 if report["ready"] else 2
+
+
+def cmd_support_bundle(cfg: Config, *, dest_dir=None, _section=None, _state=None,
+                       _setup_log=None, _spool_count=None) -> int:
+    """0.4.4 §18 — export a NON-SECRET support bundle (.zip) for WatchLog support.
+
+    Contains build identity, redacted operational config, non-secret identity (UUIDs), local
+    counts and a redacted setup.log tail. NEVER contains the recorder password/username, agent
+    key, enrollment code or any decrypted secret — support_bundle assembles config by allowlist
+    and screens every line. Exit 0 on success.
+    """
+    import configparser as _cp
+    import support_bundle
+    import wl_version
+
+    # Read the raw config section fresh so the allowlist sees EVERY key actually on disk
+    # (including any secret-shaped ones) and drops all but the safe operational settings.
+    if _section is not None:
+        section = _section
+    else:
+        section = {}
+        ini_path = base_dir() / "watchlog.ini"
+        if ini_path.exists():
+            ini = _cp.ConfigParser()
+            try:
+                ini.read(ini_path, encoding="utf-8-sig")
+                if ini.has_section("watchlog"):
+                    section = dict(ini.items("watchlog"))
+            except _cp.Error:
+                section = {}
+
+    state = _state if _state is not None else (load_state(cfg.state_path) or {})
+
+    if _setup_log is not None:
+        setup_log = _setup_log
+    else:
+        setup_log = ""
+        try:
+            from setup_backend import programdata_dir
+            log_path = programdata_dir() / "setup.log"
+            if log_path.exists():
+                setup_log = log_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            setup_log = ""
+
+    if _spool_count is not None:
+        spool_count = _spool_count
+    else:
+        spool_count = None
+        try:
+            from spool import Spool
+            if cfg.spool_path.exists():
+                sp = Spool(cfg.spool_path, cfg.spool_max_rows)
+                try:
+                    spool_count = sp.count()
+                finally:
+                    sp.close()
+        except Exception:  # noqa: BLE001
+            spool_count = None
+
+    files = support_bundle.collect(section, state=state, setup_log=setup_log,
+                                   build_meta=wl_version.build_metadata(), spool_count=spool_count)
+    dest = Path(dest_dir) if dest_dir else Path.cwd()
+    path = support_bundle.write_zip(dest, files)
+    print(f"support bundle written: {path}")
+    print("contents (no secrets): " + ", ".join(files.keys()))
+    return 0
+
+
+def cmd_check_update(cfg: Config, *, _fetch=None) -> int:
+    """0.4.4 §13/§36 — check for updates (READ-ONLY).
+
+    Fetches the signed release manifest for THIS site's channel over HTTPS, verifies its Ed25519
+    signature, and reports whether an update is available. It NEVER downloads or installs anything
+    — the transactional apply (via wl-upgrade.ps1) is a separate, deliberate step. Exit 0 =
+    up-to-date or update-available, 2 = blocked (untrusted / too-old / unknown-channel), 1 = error.
+    """
+    import json as _json
+    import updater
+    import wl_version
+
+    current = wl_version.version_string()
+    print(f"watchlog-agent {AGENT_VERSION} — check for updates (channel: {cfg.update_channel})")
+    if not cfg.update_url:
+        print("update channel not configured (set update_url in watchlog.ini)")
+        return 1
+    if not cfg.update_url.lower().startswith("https://"):
+        print("refusing to fetch the update manifest over a non-HTTPS URL")
+        return 1
+
+    fetch = _fetch or (lambda url: requests.get(url, timeout=20).text)
+    try:
+        manifest = updater.parse_manifest(fetch(cfg.update_url))
+    except Exception as exc:  # noqa: BLE001 — network/parse failure is an honest error, not a crash
+        print(f"could not fetch or parse the update manifest: {type(exc).__name__}")
+        return 1
+
+    signature_state = updater.verify_manifest_signature(manifest, cfg.update_public_key)
+    plan = updater.plan_update(manifest, current, cfg.update_channel,
+                              signature_state=signature_state,
+                              require_signature=cfg.update_require_signature)
+    action = plan.get("action")
+    if action == "up-to-date":
+        print(f"up to date ({current} on {cfg.update_channel})")
+    elif action == "update":
+        print(f"update available: {current} -> {plan['target']} on {cfg.update_channel}")
+        if plan.get("notes"):
+            print(f"  notes: {plan['notes']}")
+    else:
+        print(f"update blocked: {plan.get('reason')} (channel {cfg.update_channel})")
+    print("UPDATE_JSON " + _json.dumps(plan, separators=(",", ":")))
+    return 0 if action in ("up-to-date", "update") else 2
+
+
+def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
+    """0.4.4 §13/§36 — APPLY an update transactionally (auto-rollback).
+
+    Fetches + verifies the signed manifest; if a newer signed release exists for this channel,
+    downloads the package, verifies its SHA-256 + size, and hands it to the transactional
+    wl-upgrade sequence (preflight -> stage -> verify-version -> register -> commit), rolling back
+    on ANY failure. Identity/config/secrets are preserved (only the binary is swapped). Exit 0 =
+    updated or already up-to-date, 2 = blocked/refused/rolled-back, 1 = error.
+    """
+    import json as _json
+    import platform as _platform
+    import shutil
+    import subprocess
+    import tempfile
+    import updater
+    import wl_version
+
+    current = wl_version.version_string()
+    print(f"watchlog-agent {AGENT_VERSION} — update (channel: {cfg.update_channel})")
+    if not cfg.update_url or not cfg.update_url.lower().startswith("https://"):
+        print("update channel not configured over HTTPS (set update_url in watchlog.ini)")
+        return 1
+
+    fetch = _fetch or (lambda url: requests.get(url, timeout=20).text)
+    try:
+        manifest = updater.parse_manifest(fetch(cfg.update_url))
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not fetch or parse the update manifest: {type(exc).__name__}")
+        return 1
+
+    signature_state = updater.verify_manifest_signature(manifest, cfg.update_public_key)
+    plan = updater.plan_update(manifest, current, cfg.update_channel,
+                              signature_state=signature_state,
+                              require_signature=cfg.update_require_signature)
+    if plan.get("action") == "up-to-date":
+        print(f"already up to date ({current})")
+        return 0
+    if plan.get("action") != "update":
+        print(f"update blocked: {plan.get('reason')}")
+        return 2
+    print(f"update available: {current} -> {plan['target']}; applying transactionally…")
+
+    apply_fn = _apply or updater.apply_update
+    install_dir = str(base_dir())
+    if _apply is None and _platform.system() != "Windows":
+        # The dangerous binary swap only runs on the installed Windows appliance.
+        print("apply is only available on the installed Windows appliance; use --check-update here")
+        return 2
+
+    def _download(url):
+        resp = requests.get(url, timeout=180, stream=True)
+        resp.raise_for_status()
+        fd, path = tempfile.mkstemp(suffix=".pkg")
+        total = 0
+        cap = 512 * 1024 * 1024                       # bounded: never stream an unbounded package
+        with os.fdopen(fd, "wb") as out:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > cap:
+                    raise RuntimeError("update package exceeds the size cap")
+                out.write(chunk)
+        return path
+
+    def _run_stage(stage, expected_version=None):
+        script = base_dir() / "wl-upgrade.ps1"
+        args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+                "-Stage", stage, "-InstallDir", install_dir]
+        if expected_version:
+            args += ["-ExpectedVersion", expected_version]
+        return subprocess.run(args, capture_output=True).returncode
+
+    def _stage_binary(pkg, dest_dir):
+        shutil.copy2(pkg, str(Path(dest_dir) / "watchlog-agent.exe"))
+        return True
+
+    def _register():
+        script = base_dir() / "register-service.ps1"
+        return subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-File", str(script)], capture_output=True).returncode == 0
+
+    result = apply_fn(plan["target"], plan["url"], plan["sha256"], install_dir=install_dir,
+                      size=plan.get("size"), download=_download, run_stage=_run_stage,
+                      stage_binary=_stage_binary, register=_register, log=print)
+    print("UPDATE_APPLY_JSON " + _json.dumps(result, separators=(",", ":")))
+    if result.get("ok"):
+        return 0
+    return 2 if result.get("rolled_back") else 1
+
+
+def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
+                    _heartbeat=None, _spool_factory=None, _archive=None, _retention=None,
+                    _now=None) -> int:
+    """0.4.4 P1 — emit the WatchLog Site Status document (STATUS_JSON) for the status panel.
+
+    Local appliance view: agent identity/version/spool, recorder reachability + archive capability,
+    cameras (with the monitored-vs-unused classification from local config), an archive/recovery
+    verdict, and honest 'not available' storage. Read-only; every probe is guarded and injected, so
+    the whole thing is testable with no recorder/cloud. Exit 0 always (a status read never fails).
+    """
+    import json as _json
+    import site_status as ss
+    import wl_version
+    from types import SimpleNamespace
+
+    now = _now or now_utc()
+    state = _state if _state is not None else (load_state(cfg.state_path) or {})
+
+    # --- agent ---
+    spool_backlog = 0
+    try:
+        if _spool_factory is not None:
+            sp = _spool_factory()
+        else:
+            from spool import Spool
+            sp = Spool(cfg.spool_path, cfg.spool_max_rows)
+        try:
+            spool_backlog = sp.count()
+        finally:
+            try:
+                sp.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        spool_backlog = 0
+
+    cloud_ok = None
+    if state.get("agent_id"):
+        try:
+            cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
+            (_heartbeat or heartbeat)(cloud, state, SimpleNamespace(vendor=None, model=None,
+                                                                    driver=cfg.nvr_driver))
+            cloud_ok = True
+        except Exception:  # noqa: BLE001
+            cloud_ok = False
+
+    agent = ss.agent_view(build_meta=wl_version.build_metadata(), channel=cfg.update_channel,
+                          state=state, running=None, last_heartbeat=None, cloud_ok=cloud_ok,
+                          spool_backlog=spool_backlog, recovery_backlog=0)
+
+    # --- recorder + cameras + archive (one driver open, all guarded) ---
+    driver = info = None
+    try:
+        driver, info = (_open_driver or open_driver)(cfg)
+    except Exception:  # noqa: BLE001 — recorder unreachable is an honest state, not a crash
+        driver = info = None
+
+    capability = None
+    channels = []
+    if driver is not None:
+        try:
+            capability = driver.historical_capability() if hasattr(driver, "historical_capability") else None
+        except Exception:  # noqa: BLE001
+            capability = None
+        try:
+            channels = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+        except Exception:  # noqa: BLE001
+            channels = []
+
+    recorder = ss.recorder_view(
+        reachable=driver is not None, auth_ok=(driver is not None or None),
+        info={"vendor": getattr(info, "vendor", None), "model": getattr(info, "model", None),
+              "driver": getattr(driver, "name", None)} if info is not None else None,
+        capability=capability)
+
+    # monitored-vs-unused classification from local config (falls back to all-monitored)
+    configured = {}
+    names = {}
+    for prof in (cfg.camera_profiles or []):
+        ch = str(prof.get("channel"))
+        if not ch:
+            continue
+        names[ch] = prof.get("name") or None
+        configured[ch] = bool(prof.get("monitored", prof.get("analytics_enabled", True)))
+    merged = [{"channel": c["channel"], "name": names.get(c["channel"]) or c["name"]} for c in channels] \
+        or [{"channel": ch, "name": names.get(ch) or f"Camera {ch}"} for ch in configured]
+    camera = ss.camera_view(merged, configured=configured or None, health=None)
+
+    archive_status = None
+    if driver is not None and merged:
+        try:
+            import dahua_archive
+            try:
+                dahua_archive.install()
+            except Exception:  # noqa: BLE001
+                pass
+            proof = (_archive or dahua_archive.prove_recorder_archive)(driver, merged[0]["channel"])
+            archive_status = (proof or {}).get("status")
+        except Exception:  # noqa: BLE001
+            archive_status = None
+    archive = ss.archive_view(proof_status=archive_status, last_proof_at=iso(now),
+                              recovery_backlog=0)
+
+    recording = ss.recording_view(camera["cameras"], recording=None)
+
+    # Retention depth (P7): bounded, best-effort. Off by default so the panel refresh stays fast;
+    # WATCHLOG_STATUS_RETENTION=1 (or a dedicated deep recheck) enables the archive-boundary probe.
+    ret = _retention
+    if ret is None and driver is not None and merged and \
+            os.environ.get("WATCHLOG_STATUS_RETENTION", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            import retention as _retmod
+            ret = _retmod.estimate_retention(driver, merged[0]["channel"], now=now)
+        except Exception:  # noqa: BLE001
+            ret = None
+    if ret and ret.get("status") in ("measured", "at_least"):
+        storage = ss.storage_view({"retention_days": ret.get("retention_days"),
+                                   "oldest_recording": ret.get("oldest_recording")})
+    else:
+        storage = ss.storage_view(None)              # honest 'Not available on this recorder'
+
+    if driver is not None:
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    snap = ss.build_snapshot(agent=agent, recorder=recorder, camera=camera, recording=recording,
+                             archive=archive, storage=storage, generated_at=iso(now))
+    print("STATUS_JSON " + _json.dumps(snap, separators=(",", ":")))
+    return 0
+
+
+def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _inspect=None,
+                             _now=None) -> int:
+    """0.4.4 P1.5 — run a FRESH archive proof NOW (never cached) and classify honestly:
+    ARCHIVE VERIFIED / ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED / ARCHIVE EMPTY /
+    ARCHIVE UNSUPPORTED / ARCHIVE FAILED. Emits ARCHIVE_JSON with safe media diagnostics
+    (size + magic + decoder + result — never image contents or secrets). Exit 0 always.
+    """
+    import json as _json
+    import dahua_archive
+    import recovery_ai
+
+    now = _now or now_utc()
+    out = {"schema": "watchlog.archive_recheck.v1", "state": "ARCHIVE FAILED",
+           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": ""}
+    driver = None
+    try:
+        driver, _info = (_open_driver or open_driver)(cfg)
+    except Exception:  # noqa: BLE001
+        driver = None
+    if driver is None:
+        out["detail"] = "recorder not reachable"
+        print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
+        return 0
+    try:
+        dahua_archive.install()
+    except Exception:  # noqa: BLE001
+        pass
+
+    channel = "1"
+    for prof in (getattr(cfg, "camera_profiles", None) or []):
+        if prof.get("monitored", True) and prof.get("channel"):
+            channel = str(prof["channel"])
+            break
+    out["channel"] = channel
+
+    try:
+        proof = (_archive or dahua_archive.prove_recorder_archive)(driver, channel) or {}
+        status = proof.get("status")
+    except Exception:  # noqa: BLE001
+        proof, status = {}, "error"
+
+    if status == "verified":
+        sample = proof.get("sample") or []
+        ts = (sample[0].get("start") if sample and isinstance(sample[0], dict) else None) or iso(now)
+        try:
+            frame, diag = (_inspect or recovery_ai.inspect_and_decode)(driver, channel, ts)
+        except Exception:  # noqa: BLE001
+            frame, diag = None, {}
+        out["diagnostics"] = diag or {}
+        out["frame_decoded"] = bool(frame)
+        out["state"] = "ARCHIVE VERIFIED" if frame else "ARCHIVE AVAILABLE — FRAME DECODE UNVERIFIED"
+    elif status == "empty":
+        out["state"] = "ARCHIVE EMPTY"
+    elif status == "unsupported":
+        out["state"] = "ARCHIVE UNSUPPORTED"
+    else:
+        out["state"] = "ARCHIVE FAILED"
+
+    try:
+        driver.close()
+    except Exception:  # noqa: BLE001
+        pass
+    print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
+    return 0
 
 
 def cmd_probe(cfg: Config) -> None:
@@ -1072,12 +1742,76 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
+                    spool, channels=None) -> None:
+    """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
+    yields the missed interval, reported as a PENDING recovery interval. Then it claims pending
+    intervals and backfills each from the recorder archive in bounded, resumable, idempotent
+    chunks (read-only; recovered events carry recorder_archive provenance). LIVE monitoring always
+    has priority (yields when the live spool has a backlog) and it is throttled. OFF only if
+    recovery_enabled=false. A failure here can never disturb events/heartbeat/health."""
+    if not cfg.recovery_enabled:
+        return
+    import recovery as rec
+    stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
+    cams = [str(c.channel) for c in (channels or [])] or None
+
+    # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
+    # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
+    # event replay only — never a crash, never fabricated intelligence.
+    detector = None
+    if cfg.recovery_ai_enabled:
+        try:
+            detector = vision.build(cfg, log)
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: detector unavailable ({type(e).__name__}); event-replay only")
+
+    # Startup outage detection: a last-live from a previous run older than the threshold is an outage.
+    try:
+        last_live = rec.read_last_live(cfg.last_live_path)
+        outage = rec.detect_outage(last_live, now_utc(), cfg.recovery_threshold_seconds)
+        if outage:
+            cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
+                       p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
+                       p_ended_at=iso(outage[1]), p_cameras=[])
+            log(f"recovery: detected outage {iso(outage[0])}..{iso(outage[1])}; opened recovery candidate")
+    except Exception as e:                               # noqa: BLE001
+        log(f"recovery: startup detect skipped: {type(e).__name__}")
+
+    while not stop.is_set():
+        try:
+            driver, _info = open_driver(cfg)
+            try:
+                import dahua_archive
+                dahua_archive.install()                  # ensure the historical iface on the driver
+            except Exception:                            # noqa: BLE001
+                pass
+            try:
+                runner = rec.RecoveryRunner(
+                    cloud, state["agent_id"], state["agent_key"], driver,
+                    lambda ev: spool.add(ev),
+                    chunk_seconds=cfg.recovery_chunk_seconds,
+                    throttle_seconds=cfg.recovery_throttle_seconds,
+                    live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
+                    detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                    log=log)
+                runner.run_once(limit=1)
+            finally:
+                try:
+                    driver.close()
+                except Exception:                        # noqa: BLE001
+                    pass
+        except Exception as e:                           # noqa: BLE001 — recovery never disturbs the agent
+            log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        stop.wait(cfg.recovery_seconds)
+
+
 def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
             device=None, channels=None) -> None:
     from spool import Spool
     import camera_health
 
-    spool = Spool(cfg.spool_path)
+    spool = Spool(cfg.spool_path, cfg.spool_max_rows)
     log(f"spool: {cfg.spool_path} ({spool.count()} queued)")
 
     # Shared holder so the collector (native faults) and the health worker (probes) drive the
@@ -1114,18 +1848,41 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                               daemon=True, name="collector")
     worker.start()
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
-    health = threading.Thread(target=health_worker, args=(cfg, state, cloud, holder, stop),
+    import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
+    resume_evt = threading.Event()
+    cov = coverage.CoverageMonitor(loop_period=1.0)
+    health = threading.Thread(target=health_worker,
+                              args=(cfg, state, cloud, holder, stop, resume_evt),
                               daemon=True, name="health")
     health.start()
+    # Site Control read plane (H6). Thread exits immediately unless enabled in the ini.
+    sitectl = threading.Thread(target=command_worker, args=(cfg, state, cloud, stop),
+                               daemon=True, name="sitecontrol")
+    sitectl.start()
+    # Automatic NVR outage recovery (§1/§2). Read-only; yields to live; OFF only if disabled in ini.
+    recov = threading.Thread(target=recovery_worker, args=(cfg, state, cloud, stop, spool, channels),
+                             daemon=True, name="recovery")
+    recov.start()
 
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
         f"{cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, outbound only. "
         f"Ctrl-C to stop.")
 
     next_up = next_beat = 0.0
+    last_wall = time.time()
     try:
         while True:
             clock = time.monotonic()
+            now_wall = time.time()
+            # Suspend/resume detection: a big wall-clock jump across the ~1 s loop means the
+            # site PC was asleep/hibernated/stalled and WatchLog was NOT observing the site.
+            gap = cov.tick(last_wall, now_wall)
+            last_wall = now_wall
+            if gap is not None:
+                log(f"resume: site not observed for ~{int(gap.ended_at - gap.started_at)}s "
+                    f"(site PC sleep/suspend); reconciling recorder health now")
+                resume_evt.set()                        # immediate health reconciliation
+            cov.report_pending(cloud, state)            # best-effort; retries while cloud down
             if clock >= next_up:
                 next_up = clock + cfg.upload_seconds
                 try:
@@ -1140,12 +1897,23 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as e:
                     log(f"ERROR: heartbeat failed, will retry: "
                         f"{str(e).splitlines()[0][:200]}")
+                # Persist the last-live marker on the heartbeat cadence: the Agent is alive and
+                # observing now, so the NEXT startup can detect an outage as (this time -> restart).
+                if cfg.recovery_enabled:
+                    try:
+                        import recovery as _rec
+                        _rec.persist_last_live(cfg.last_live_path, now_utc())
+                    except Exception:                    # noqa: BLE001
+                        pass
             time.sleep(1)
     except KeyboardInterrupt:
         log("stopping...")
         stop.set()
+        resume_evt.set()                                # wake the health thread so it can exit
         worker.join(timeout=5)
         health.join(timeout=5)
+        sitectl.join(timeout=5)
+        recov.join(timeout=5)
         spool.close()
         if holder.get("store"):
             try:
@@ -1180,6 +1948,19 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true",
                     help="prove the on-site AI false-alarm filter is packaged "
                          "and working in this build; needs no config")
+    ap.add_argument("--accept", action="store_true",
+                    help="run the post-install acceptance self-test (identity, cloud, "
+                         "recorder, cameras, archive, live events, spool) and exit")
+    ap.add_argument("--support-bundle", action="store_true",
+                    help="export a non-secret diagnostic support bundle (.zip) and exit")
+    ap.add_argument("--check-update", action="store_true",
+                    help="check the signed release manifest for a newer version (read-only) and exit")
+    ap.add_argument("--update", action="store_true",
+                    help="apply an available signed update transactionally (auto-rollback) and exit")
+    ap.add_argument("--status-json", action="store_true",
+                    help="print the machine-readable Site Status document (for the status panel) and exit")
+    ap.add_argument("--recheck-archive-json", action="store_true",
+                    help="run a fresh archive proof now (with media-decode diagnostics) and exit")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1220,6 +2001,27 @@ def main() -> None:
 
     cfg = Config()
 
+    # Post-install acceptance runs against the config as-is and must never launch the
+    # setup wizard — an unconfigured site should report a 'blocked' config check, not
+    # be walked through setup.
+    if args.accept:
+        raise SystemExit(cmd_accept(cfg))
+
+    if args.support_bundle:
+        raise SystemExit(cmd_support_bundle(cfg))
+
+    if args.check_update:
+        raise SystemExit(cmd_check_update(cfg))
+
+    if args.update:
+        raise SystemExit(cmd_update(cfg))
+
+    if args.status_json:
+        raise SystemExit(cmd_status_json(cfg))
+
+    if args.recheck_archive_json:
+        raise SystemExit(cmd_recheck_archive_json(cfg))
+
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time
     # should be walked through setup, not shown an error about a missing
@@ -1259,7 +2061,7 @@ def main() -> None:
             log(f"          enrolled_at={state.get('enrolled_at')}")
         if cfg.spool_path.exists():
             from spool import Spool
-            sp = Spool(cfg.spool_path)
+            sp = Spool(cfg.spool_path, cfg.spool_max_rows)
             log(f"spool     {sp.count()} events queued at {cfg.spool_path}")
             sp.close()
         return

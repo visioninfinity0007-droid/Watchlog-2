@@ -53,10 +53,13 @@ def check():
     assert "WatchLog daily report preview" in REPORTS
     assert "This preview intentionally shows no sample counts." in REPORTS
 
-    # One canonical daily-report composition path includes Analytics intelligence.
+    # One canonical daily-report composition path: security-event chapter + office brief (0060)
+    # + Analytics intelligence, in that order, for both plain text and HTML.
     assert "def _compose_security" in DAILY_REPORT
-    assert "return analytics_reporting.compose(_compose_security, report)" in DAILY_REPORT
-    assert "return analytics_reporting.render_html(_render_base_html, report, portal_url)" in DAILY_REPORT
+    assert "office_reporting.compose_append(security, report)" in DAILY_REPORT
+    assert "analytics_reporting.intelligence_lines(report)" in DAILY_REPORT
+    assert "analytics_reporting.render_html(_render_base_html, report, portal_url)" in DAILY_REPORT
+    assert "office_reporting.insert_html(rendered, report)" in DAILY_REPORT
     assert "monkey-patch" in REPORT_SERVICE.lower() and "does not monkey-patch" in REPORT_SERVICE.lower()
     assert "analytics_reporting" not in REPORT_SERVICE.replace("does not monkey-patch", "")
 

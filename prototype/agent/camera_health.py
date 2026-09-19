@@ -143,6 +143,14 @@ class CameraHealthMonitor:
         enumerated = bool(chans.get("enumerated"))
         reported = {str(c["channel"]) for c in chans.get("reported", [])}
         disabled = {str(c["channel"]) for c in chans.get("reported", []) if not c.get("enabled", True)}
+        # Authoritative present-tense recorder faults (increment: startup/reconnect reconciliation).
+        # A channel the recorder currently reports in VideoLoss is OFFLINE now — even if it was lost
+        # before this process started (no event transition) and even if its snapshot returns the
+        # recorder's black placeholder JPEG (which the liveness probe would misread as live). Only
+        # trusted when the driver could actually query current state (supported); otherwise empty.
+        cf = chans.get("current_faults") or {}
+        current_loss = ({str(c) for c in (cf.get("video_loss") or [])}
+                        if cf.get("supported") else set())
 
         # ---- upper layer down: every camera UNKNOWN, no probing (rule 1) ----
         if nvr is not Nvr.OK:
@@ -170,6 +178,12 @@ class CameraHealthMonitor:
                 return self._report_locked()
 
             for c in self.channels:
+                if c in current_loss:
+                    # Recorder says this channel is in video loss right now: authoritative OFFLINE,
+                    # independent of the round-robin probe (which the placeholder frame fools).
+                    self.machines[c].observe(now, inventory=inv[c], nvr=Nvr.OK,
+                                             native_video_loss=True)
+                    continue
                 pr = results.get(c)
                 probe = None
                 if pr is not None:

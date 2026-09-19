@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AGENT = ROOT / "prototype" / "agent"
 sys.path.insert(0, str(AGENT))
 
+from dahua_archive import _parse_device_clock, _parse_items  # noqa: E402
 from drivers.native_recorder import NativeDahuaDriver, NativeHikvisionDriver  # noqa: E402
 
 
@@ -46,19 +47,40 @@ def test_packaged_collector_prefers_native_ai():
     src = (AGENT / "native_event_collector.py").read_text(encoding="utf-8")
     assert 'native_ai = bool((ev.payload or {}).get("native_ai"))' in src
     native_block = src.split("if native_ai:", 1)[1].split("elif detector", 1)[0]
-    assert "classify_event" not in native_block
     assert "recorder-native AI" in native_block
+    assert "continue" not in native_block
+    assert "native_verification" in native_block and "is_verifiable" in native_block
     assert "classify_event(raw)" in src
 
 
-def test_dahua_clip_is_on_demand_and_bounded():
-    src = (AGENT / "drivers" / "native_recorder.py").read_text(encoding="utf-8")
+def test_dahua_clip_is_search_before_download_zero_based_and_bounded():
+    src = (AGENT / "dahua_archive.py").read_text(encoding="utf-8")
     compact = src.replace(" ", "")
+    assert "/cgi-bin/mediaFileFind.cgi" in src
+    assert '"action":"findFile"' in compact
+    assert '"action":"findNextFile"' in compact
     assert "/cgi-bin/loadfile.cgi" in src
     assert '"action":"startLoad"' in compact
-    assert "CLIP_MAX_BYTES=32*1024*1024" in compact
+    assert "int(str(channel))-1" in compact
+    assert "MAX_CLIP_BYTES=32*1024*1024" in compact
     assert "getCurrentTime" in src
-    assert "continuous" in src.lower()
+    assert "find_recordings(driver, channel, start, end, max_items=1)" in src
+
+
+def test_dahua_archive_response_parsers_are_strict():
+    clock = _parse_device_clock("result=2026-09-12 17:01:02\r\n")
+    assert (clock.year, clock.month, clock.day, clock.hour, clock.minute, clock.second) == (
+        2026, 9, 12, 17, 1, 2)
+    rows = _parse_items(
+        "found=1\r\n"
+        "items[0].Channel=0\r\n"
+        "items[0].StartTime=2026-09-12 16:58:00\r\n"
+        "items[0].EndTime=2026-09-12 17:03:00\r\n"
+        "items[0].FilePath=/mnt/sda/record.dav\r\n"
+    )
+    assert len(rows) == 1
+    assert rows[0]["Channel"] == "0"
+    assert rows[0]["FilePath"].endswith("record.dav")
 
 
 def test_clip_migrations_are_fail_closed_short_lived_and_physically_pruned():
@@ -86,7 +108,6 @@ def test_clip_migrations_are_fail_closed_short_lived_and_physically_pruned():
     assert "watchlog-prune-incident-clips" in hardened
     assert "cron.schedule" in hardened
     assert "wl_prune_incident_clips(24)" in hardened
-    # Claim ownership is resolved before failure-path media deletion.
     assert hardened.index("select * into v_request") < hardened.index("delete from public.incident_clip_chunks")
 
 
@@ -98,9 +119,11 @@ def test_portal_footage_download_fails_closed_on_integrity():
     assert "if(digest!==clip.sha256)" in src
 
 
-def test_release_entrypoint_activates_both_policies():
+def test_release_entrypoint_activates_all_production_policies():
     src = (AGENT / "release_agent.py").read_text(encoding="utf-8")
     assert "app.core.collector = native_event_collector.collector" in src
+    assert "dahua_archive.install()" in src
+    assert "NativeDahuaDriver.get_clip = dahua_archive.get_clip" in src
     assert "incident_evidence.wrap_cmd_run" in src
     assert 'if explicit_setup:' in src
     assert "_setup_validation_complete" in src

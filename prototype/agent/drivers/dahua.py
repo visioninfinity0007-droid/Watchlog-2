@@ -274,6 +274,127 @@ class DahuaDriver(NvrDriver):
             return {"supported": False, "channels": {}}
         return {"supported": True, "channels": out}
 
+    # -- focused reads + SAFE writes (Site Control managed tier; field-proven on DH-XVR1B08-I) --
+
+    def get_channel_title(self, channel) -> "str | None":
+        ch = int(str(channel)) - 1
+        try:
+            kv = _parse_kv(self._get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle"))
+        except DriverError:
+            return None
+        return kv.get(f"table.ChannelTitle[{ch}].Name")
+
+    def set_channel_title(self, channel, name) -> None:
+        import urllib.parse
+        ch = int(str(channel)) - 1
+        self._get("/cgi-bin/configManager.cgi?action=setConfig&"
+                  f"ChannelTitle[{ch}].Name={urllib.parse.quote(str(name), safe='')}")
+
+    def get_smd(self, channel) -> dict:
+        ch = int(str(channel)) - 1
+        kv = _parse_kv(self._get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"))
+        def b(key):
+            v = kv.get(f"table.SmartMotionDetect[{ch}].{key}")
+            return None if v is None else (str(v).lower() == "true")
+        return {"enable": b("Enable"),
+                "human": b("ObjectTypes.Human"),
+                "vehicle": b("ObjectTypes.Vehicle"),
+                "sensitivity": kv.get(f"table.SmartMotionDetect[{ch}].Sensitivity")}
+
+    def set_smd(self, channel, human=None, vehicle=None, sensitivity=None, enable=None) -> None:
+        ch = int(str(channel)) - 1
+        def tf(v):
+            return "true" if v else "false"
+        parts = []
+        if enable is not None:
+            parts.append(f"SmartMotionDetect[{ch}].Enable={tf(enable)}")
+        if human is not None:
+            parts.append(f"SmartMotionDetect[{ch}].ObjectTypes.Human={tf(human)}")
+        if vehicle is not None:
+            parts.append(f"SmartMotionDetect[{ch}].ObjectTypes.Vehicle={tf(vehicle)}")
+        if sensitivity is not None:
+            parts.append(f"SmartMotionDetect[{ch}].Sensitivity={sensitivity}")
+        for p in parts:
+            self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
+
+    def set_time_config(self, dst_enabled=None, ntp_enabled=None,
+                        ntp_server=None, timezone_index=None) -> None:
+        import urllib.parse
+        def tf(v):
+            return "true" if v else "false"
+        parts = []
+        if dst_enabled is not None:
+            parts.append(f"Locales.DSTEnable={tf(dst_enabled)}")
+        if ntp_enabled is not None:
+            parts.append(f"NTP.Enable={tf(ntp_enabled)}")
+        if ntp_server:
+            parts.append(f"NTP.Address={urllib.parse.quote(str(ntp_server), safe='')}")
+        if timezone_index is not None:
+            parts.append(f"NTP.TimeZone={int(timezone_index)}")
+        for p in parts:
+            self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
+
+    def get_clock(self) -> dict:
+        """Recorder clock/timezone/DST/NTP, read-only (global.cgi + Locales + NTP config)."""
+        def _cfg(name):
+            try:
+                return _parse_kv(self._get(
+                    f"/cgi-bin/configManager.cgi?action=getConfig&name={name}"))
+            except DriverError:
+                return {}
+        out: dict = {"supported": True, "current_time": None, "timezone": None,
+                     "dst_enabled": None, "ntp_enabled": None, "ntp_server": None}
+        try:
+            ct = _parse_kv(self._get("/cgi-bin/global.cgi?action=getCurrentTime"))
+            out["current_time"] = ct.get("result") or ct.get("time")
+        except DriverError:
+            pass
+        loc = _cfg("Locales")
+        if loc.get("table.Locales.DSTEnable") is not None:
+            out["dst_enabled"] = str(loc.get("table.Locales.DSTEnable")).lower() == "true"
+        ntp = _cfg("NTP")
+        if ntp.get("table.NTP.Enable") is not None:
+            out["ntp_enabled"] = str(ntp.get("table.NTP.Enable")).lower() == "true"
+        out["ntp_server"] = ntp.get("table.NTP.Address")
+        out["timezone"] = ntp.get("table.NTP.TimeZoneDesc")
+        return out
+
+    def current_faults(self) -> dict:
+        """Current VideoLoss / VideoBlind channels from the recorder's live event INDEX.
+
+        eventManager.cgi?action=getEventIndexes&code=VideoLoss returns the channels that are in
+        that state *right now* (`channels[0]=4` -> 0-based index 4 -> channel "5"), unlike the
+        event STREAM which only emits on a transition. This is what lets the first health cycle
+        after startup/reconnect/resume see a camera that was already lost. A snapshot cannot be
+        trusted for this: a video-loss channel still returns the recorder's black placeholder
+        JPEG, which has a valid header and reads as 'live'.
+
+        Read-only, digest-authenticated, outbound-only. Fail-safe: if a query errors we report
+        supported=False rather than an empty (falsely-clean) fault set.
+        """
+        def _indexes(code):
+            try:
+                kv = _parse_kv(self._get(
+                    f"/cgi-bin/eventManager.cgi?action=getEventIndexes&code={code}"))
+            except DriverError:
+                return None                       # could not query -> unknown, not "none"
+            chans = []
+            for key, val in kv.items():
+                # channels[0]=4  (0-based index) -> channel "5"
+                if key.startswith("channels[") and str(val).strip().lstrip("-").isdigit():
+                    n = int(str(val).strip())
+                    if n >= 0:
+                        chans.append(str(n + 1))
+            return sorted(set(chans), key=int)
+
+        vl = _indexes("VideoLoss")
+        vb = _indexes("VideoBlind")
+        if vl is None and vb is None:
+            return {"supported": False, "video_loss": [], "video_blind": []}
+        return {"supported": True, "video_loss": vl or [], "video_blind": vb or []}
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         Dahua still image. The CGI is 1-based here, unlike the event

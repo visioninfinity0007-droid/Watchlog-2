@@ -3,9 +3,11 @@
 ; Copy to watchlog.ini and fill in. Place it beside watchlog_agent.py,
 ; or beside watchlog-agent.exe once frozen.
 ;
-; SECRETS GATE: watchlog.ini holds the NVR password and a one-time
-; enrollment code. It is gitignored. Never commit it, never paste its
-; contents into chat or a log.
+; SECRETS GATE: you enter the recorder password here for FIRST-RUN ONLY.
+; Setup migrates it into the machine's encrypted DPAPI store and it should NOT
+; remain in this file afterward (the --accept security check fails if it does).
+; The one-time enrollment code is consumed on first run. This file is gitignored;
+; never commit it, never paste its contents into chat or a log.
 ;
 ; Every setting can also be supplied as an environment variable named
 ; WATCHLOG_<KEY_IN_UPPERCASE>, which takes precedence over this file.
@@ -27,8 +29,10 @@ supabase_publishable_key = sb_publishable_REPLACE_ME
 enrollment_code = WL-PROTO-DEV-0001
 
 ; --- the recorder on the local LAN -----------------------------------
-; The installer types their own NVR details here. These credentials never
-; leave the site: only event metadata is sent upward.
+; The installer types their own NVR details here for first-run. These credentials
+; never leave the site (only event metadata is sent upward), and the password is
+; moved into the encrypted DPAPI store by setup — leave nvr_password = REPLACE_ME
+; here once setup has run; it is not read from this file after migration.
 nvr_url      = http://192.168.1.108
 nvr_username = admin
 nvr_password = REPLACE_ME
@@ -61,6 +65,34 @@ nvr_driver = auto
 ; detect_model      = yolov8n.pt      ; downloaded on first run if absent
 ; detect_confidence = 0.35            ; below this, an object is a guess
 ; detect_classes    = person,car,motorcycle   ; the scope covers these three
+
+; --- automatic NVR outage recovery (0.4.4) ---------------------------
+; After a monitoring gap, WatchLog reconnects, detects the exact missed
+; interval, and — READ ONLY — backfills recoverable intelligence from the
+; recorder's own archive. It never writes to the recorder, always yields to
+; live monitoring, and is bandwidth/CPU throttled. On by default; recovered
+; coverage is reported separately from live coverage, never blended.
+; recovery_enabled           = true
+; recovery_seconds           = 300     ; how often to look for intervals to recover
+; recovery_chunk_seconds     = 3600    ; bounded work per pass (resumable via checkpoints)
+; recovery_throttle_seconds  = 2.0     ; pause between chunks (be gentle on the recorder)
+; recovery_threshold_seconds = 180     ; a gap longer than this counts as an outage
+
+; --- in-app updates (0.4.4) ------------------------------------------
+; `watchlog-agent --check-update` fetches a SIGNED release manifest over HTTPS
+; for this site's channel and reports whether a newer version is available. It
+; is READ ONLY and never installs anything. With no update_public_key set an
+; update is refused, because the manifest cannot be trusted.
+; update_url               = https://YOUR-HOST/watchlog/manifest.json
+; update_channel           = production   ; internal | pilot | beta | production
+; update_public_key        =              ; base64 Ed25519 release-signing public key
+; update_require_signature = true
+
+; --- diagnostics (change nothing; safe to run any time) --------------
+;   watchlog-agent --probe           identify the recorder on the LAN
+;   watchlog-agent --accept          post-install acceptance self-test
+;   watchlog-agent --check-update    check for a newer signed release (read-only)
+;   watchlog-agent --support-bundle  export a non-secret diagnostics .zip for support
 
 ; --- optional --------------------------------------------------------
 ; state_dir         = C:\ProgramData\WatchLog

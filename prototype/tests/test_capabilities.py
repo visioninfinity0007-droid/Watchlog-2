@@ -147,9 +147,14 @@ def t_native_collector_policy():
     src = (ROOT / "agent" / "native_event_collector.py").read_text(encoding="utf-8")
     assert 'native_ai = bool((ev.payload or {}).get("native_ai"))' in src
     native_block = src.split("if native_ai:", 1)[1].split("elif detector", 1)[0]
-    assert "classify_event" not in native_block
+    # A native smart event is NEVER re-gated: it is never dropped in this branch (no
+    # false-alarm `continue`). Item-8 secondary verification may attach a state to a
+    # person/vehicle classification, but it is is_verifiable-gated (geometry/temporal
+    # events are never second-guessed from one still) and never gates the event.
+    assert "continue" not in native_block
+    assert "native_verification" in native_block and "is_verifiable" in native_block
     assert "classify_event(raw)" in src
-    return "native smart events bypass duplicate inference; generic events keep local filter"
+    return "native smart events are never re-gated; verification only annotates person/vehicle"
 
 
 @case("incident footage transport is on-demand, bounded and fail-closed")

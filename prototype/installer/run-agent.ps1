@@ -1,10 +1,12 @@
 <#
   WatchLog background launcher.
 
-  Runs as SYSTEM from Task Scheduler. The recorder credential is stored as an
-  ACL-restricted plaintext env file in ProgramData (watchlog.env) and is read
-  by the Site Agent itself, so this launcher performs NO decryption and holds
-  no secret. It only rotates the log and keeps the agent running.
+  Runs as SYSTEM from Task Scheduler. The recorder credential lives in the
+  machine-scoped DPAPI-encrypted split store (%ProgramData%\WatchLog\Secrets\
+  nvr_credential.dpapi) and is self-decrypted by the Site Agent itself, so this
+  launcher performs NO decryption and holds no secret. It only rotates the log
+  and keeps the agent running. (Pre-0.3.4 plaintext credentials are migrated into
+  the encrypted store on upgrade and then removed — never read at runtime.)
 #>
 param([string]$InstallDir = "$env:ProgramFiles\WatchLog")
 

@@ -244,6 +244,72 @@ class NvrDriver:
         """
         return {"supported": False, "channels": {}}
 
+    def get_clock(self) -> dict:
+        """Recorder clock / timezone / DST / NTP, read-only, from the vendor time API.
+
+        Returns {'supported': bool, 'current_time': str|None, 'timezone': str|None,
+        'dst_enabled': bool|None, 'ntp_enabled': bool|None, 'ntp_server': str|None}. A driver
+        that cannot read the clock reports supported=False — it never fabricates a time.
+        """
+        return {"supported": False}
+
+    # -- focused reads + SAFE writes (Site Control managed tier). A driver that has not
+    #    field-proven a write MUST NOT implement it — the default refuses so the
+    #    transactional executor reports 'unsupported' rather than a silent no-op. --
+
+    def get_channel_title(self, channel) -> "str | None":
+        return None
+
+    def set_channel_title(self, channel, name) -> None:
+        raise DriverError("channel title write not supported on this driver")
+
+    def get_smd(self, channel) -> dict:
+        return {}
+
+    def set_smd(self, channel, **kwargs) -> None:
+        raise DriverError("SMD write not supported on this driver")
+
+    def set_time_config(self, **kwargs) -> None:
+        raise DriverError("time config write not supported on this driver")
+
+    def current_faults(self) -> dict:
+        """Current, PRESENT-TENSE recorder fault state, read-only, from an active vendor API.
+
+        Distinct from stream_events(), which only fires on a TRANSITION: this answers "which
+        channels are in video loss / tamper RIGHT NOW", so an outage that began before the agent
+        started (or before a reconnect/resume) is still seen without waiting for a fresh event.
+
+        Returns {'supported': bool, 'video_loss': [channel...], 'video_blind': [channel...]}.
+        A driver that cannot query current state MUST report supported=False and empty lists — it
+        must never fabricate "no faults", because that would turn an unverifiable camera green.
+        Channels are 1-based strings, matching list_channels().
+        """
+        return {"supported": False, "video_loss": [], "video_blind": []}
+
+    # -- Historical backfill (recovered intelligence). Vendor-neutral, bounded, cursored. A
+    #    driver that has not VALIDATED archive retrieval against real hardware MUST leave these
+    #    at the 'unsupported' default — recovered data is second-class and must never be
+    #    fabricated. Recovered events are tagged by the backfill runtime, never treated as live.
+    def historical_capability(self) -> dict:
+        """{'events': 'supported'|'unsupported'|'unknown', 'snapshots': ..., 'segments': ...}.
+        Default: honestly unsupported on every axis."""
+        return {"events": "unsupported", "snapshots": "unsupported", "segments": "unsupported"}
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit: int = 500) -> dict:
+        """A bounded, cursored page of recorded events in [start, end).
+        Returns {'status': supported|unsupported|unknown, 'events': [...], 'next_cursor': str|None}.
+        Each event dict carries at least ts, type (and device_event_id when the recorder offers one)."""
+        return {"status": "unsupported", "events": [], "next_cursor": None}
+
+    def get_historical_snapshot(self, channel, ts) -> dict:
+        """A recorded still nearest `ts`. {'status': ..., 'frame_b64': str|None, 'actual_ts': ...}."""
+        return {"status": "unsupported", "frame_b64": None}
+
+    def get_recorded_segment(self, channel, start, end) -> dict:
+        """A recorded clip for [start, end). {'status': ..., 'bytes': bytes|None}. Unimplemented
+        until validated on real hardware (see get_clip)."""
+        return {"status": "unsupported", "bytes": None}
+
     def close(self) -> None:
         pass
 

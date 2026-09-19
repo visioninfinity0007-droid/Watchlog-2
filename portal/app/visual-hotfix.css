@@ -1,0 +1,47 @@
+/* Final customer-facing visual QA fixes. Keep these after product-polish.css. */
+
+html,body{overflow-x:hidden}
+.shell{grid-template-columns:272px minmax(0,1fr)!important;overflow-x:hidden}
+.productRail{overflow-x:hidden!important;scrollbar-width:none}
+.productRail::-webkit-scrollbar{display:none}
+.productRail *{box-sizing:border-box;min-width:0}
+.productRailSites,.productRailRecent,.productRailNav,.productRailSubnav{overflow-x:hidden}
+
+/* Recent conversations belong to the rail flow; do not create a cramped nested scroller. */
+.productRailRecent{max-height:none!important;overflow:visible!important;padding-right:0}
+.productRailConversation{width:100%;max-width:100%;overflow:hidden;padding-top:9px!important;padding-bottom:9px!important}
+.productRailConversation span{display:-webkit-box;width:100%;max-width:100%;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal!important;text-overflow:ellipsis;line-height:1.35}
+.productRailConversation small{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.productRailNav{scrollbar-width:none}
+.productRailNav::-webkit-scrollbar{display:none}
+.productRailAsk{width:100%;box-sizing:border-box;text-decoration:none!important}
+.productRailAsk:hover{text-decoration:none!important}
+
+/* One clean AI composer surface: no inner textarea box or browser focus artifact. */
+.watchlogComposerDisclaimer{display:block;max-width:820px;margin:0 auto 8px;text-align:center;color:#8c95a2;font-size:11px;line-height:1.35;font-weight:450}
+.watchlogComposer{max-width:820px!important;border:1px solid #dfe3e8!important;box-shadow:0 6px 24px rgba(16,24,40,.07),0 1px 2px rgba(16,24,40,.03)!important}
+.watchlogComposer:focus-within{border-color:#c6d3ea!important;box-shadow:0 0 0 2px rgba(23,72,211,.045),0 7px 26px rgba(16,24,40,.075)!important}
+.shell .watchlogComposerInput,.shell .watchlogComposerInput:focus,.shell .watchlogComposerInput:focus-visible{flex:1!important;min-width:0!important;width:100%!important;margin:0!important;padding:10px 2px!important;border:0!important;border-radius:0!important;outline:0!important;box-shadow:none!important;background:transparent!important;appearance:none!important;resize:none!important;line-height:1.45!important;caret-color:#1748d3!important;overflow-x:hidden!important}
+.watchlogComposerInput::-webkit-scrollbar{width:0;height:0}
+
+/* The desktop site/report context remains available, but can be minimized. */
+.watchlogContextCollapsed{grid-template-columns:minmax(0,1fr) 54px!important}
+.watchlogContextRailCollapsed{padding:10px 7px!important;overflow:hidden!important}
+.watchlogContextHead{display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:10px!important}
+.watchlogContextRailCollapsed .watchlogContextHead{justify-content:center!important;align-items:center!important;padding:0!important;margin:0!important;border-bottom:0!important}
+.watchlogContextToggle{display:inline-flex!important;align-items:center!important;justify-content:center!important;flex:0 0 34px!important;width:34px!important;height:34px!important;min-width:34px!important;min-height:34px!important;padding:0!important;margin:0!important;border:1px solid #dfe3e8!important;border-radius:9px!important;background:#fff!important;color:#596473!important;box-shadow:none!important;font-size:16px!important;line-height:1!important;cursor:pointer}
+.watchlogContextToggle:hover{background:#f5f7fa!important;border-color:#cfd6df!important;color:#1748d3!important}
+
+/* Avoid nested legacy scrollbars inside customer cards/lists. */
+.shell .panel,.shell [class*="portal_card"],.shell [class*="portal_featureCard"]{min-width:0}
+.shell table{max-width:100%}
+
+@media(max-width:900px) and (min-width:761px){
+  .shell{grid-template-columns:238px minmax(0,1fr)!important}
+}
+@media(max-width:760px){
+  .shell{display:block!important}
+  .productRail{overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:none}
+  .productRail::-webkit-scrollbar{display:none}
+  .watchlogComposerDisclaimer{font-size:10px;margin-bottom:6px;padding:0 8px}
+}

@@ -22,6 +22,7 @@ def main():
     store = text("prototype/agent/credential_store.py")
     agent = text("prototype/agent/watchlog_agent.py")
     launcher = text("prototype/installer/run-agent.ps1")
+    register = text("prototype/installer/register-service.ps1")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
     upgrade = text("prototype/installer/nsis/wl-upgrade.ps1")
     readme = text("prototype/installer/READ ME FIRST.txt")
@@ -94,6 +95,24 @@ def main():
         "upgrade PRESERVES identity + secrets (no state/Secrets deletion during install)":
             ("RMDir /r" not in nsis.split('Section "Uninstall"')[0]
              and 'Delete "${DATAROOT}' not in nsis.split('Section "Uninstall"')[0]),
+
+        # ---- install/startup path regression (the "cannot find Program Files" meeting class) ----
+        "launcher builds the agent path space-safely (Join-Path, not string concat)":
+            'Join-Path $InstallDir "watchlog-agent.exe"' in launcher,
+        "launcher invokes the agent via the call operator (quotes a spaced path)":
+            "& $agent" in launcher,
+        "launcher fails loudly on a missing agent binary (no false success)":
+            "Test-Path $agent" in launcher and 'throw "WatchLog Site Agent is missing"' in launcher,
+        "scheduled task runs AtStartup (reboot recovery)":
+            "New-ScheduledTaskTrigger -AtStartup" in register,
+        "scheduled task passes runner + InstallDir QUOTED (Program Files spaces)":
+            '`"$runner`"' in register and '`"$InstallDir`"' in register,
+        "scheduled task auto-restarts the agent (RestartCount)":
+            "-RestartCount" in register,
+        "registration verifies the task reaches Running (no false success)":
+            'ne "Running"' in register and "throw" in register,
+        "installer keeps the site PC awake on AC (H3 coverage) via power policy":
+            "standby-timeout-ac 0" in register,
     }
 
     failed = [name for name, ok in checks.items() if not ok]

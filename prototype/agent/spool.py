@@ -32,8 +32,11 @@ create table if not exists spool (
 
 
 class Spool:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, max_rows: int = MAX_ROWS) -> None:
         self.path = path
+        # Buffer cap is per-instance so an Edge box with more storage can buffer a longer
+        # outage than a shared desktop (Edge sizing, not a hardcoded desktop assumption).
+        self.max_rows = int(max_rows) if max_rows else MAX_ROWS
         path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self.db = sqlite3.connect(path, check_same_thread=False,
@@ -69,12 +72,12 @@ class Spool:
                 ids)
 
     def trim(self) -> int:
-        """Drop the oldest rows past MAX_ROWS. Returns how many were dropped."""
+        """Drop the oldest rows past the configured cap. Returns how many were dropped."""
         with self._lock:
             n = self.db.execute("select count(*) from spool").fetchone()[0]
-            if n <= MAX_ROWS:
+            if n <= self.max_rows:
                 return 0
-            excess = n - MAX_ROWS
+            excess = n - self.max_rows
             self.db.execute(
                 "delete from spool where id in "
                 "(select id from spool order by id limit ?)", (excess,))

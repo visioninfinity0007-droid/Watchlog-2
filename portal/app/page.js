@@ -11,9 +11,9 @@ async function accountState(sb) {
   throw error;
 }
 
-// Entry point. Authorization remains server-enforced by the RPC/RLS layer.
+// AI-first entry point. Authorization remains server-enforced by RPC/RLS.
 export default function Home() {
-  const [note, setNote] = useState("Checking your account...");
+  const [note, setNote] = useState("Opening WatchLog...");
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +40,7 @@ export default function Home() {
       const { data: tenant, error } = await sb.rpc("wl_my_tenant");
       if (cancelled) return;
       if (error) { setNote("WatchLog could not verify your account. Please try again."); return; }
-      location.replace(tenant ? "/dashboard/" : "/onboarding/");
+      location.replace(tenant ? "/ai/" : "/onboarding/");
     })();
     return () => { cancelled = true; };
   }, []);

@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Agent identity + camera enrollment tests
@@ -39,6 +39,8 @@ jobs:
         run: python tools/secret_scan.py
       - name: Migration lint
         run: python tools/lint_migrations.py
+      - name: WatchLog AI multimodal + admin conversation contract
+        run: python prototype/tests/test_ai_multimodal_contract.py
       - name: Health Foundation schema/authz contract (Phase A)
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)
@@ -107,6 +109,36 @@ jobs:
         run: python prototype/tests/test_analytics_portal_contract.py
       - name: Portal + installer alignment contract
         run: python prototype/tests/test_portal_alignment_contract.py
+      - name: Intelligence agent + reporting units (native-verify, config-drift, offline-spool, PDF, WhatsApp)
+        run: python -m pytest prototype/tests/test_native_verification.py prototype/tests/test_config_drift.py prototype/tests/test_spool_offline.py prototype/tests/test_intelligence_pdf.py prototype/tests/test_intelligence_whatsapp.py -q
+      - name: Backfill + advisor + monthly units (backfill, AI site-config skill, monthly render)
+        run: python -m pytest prototype/tests/test_backfill.py prototype/tests/test_site_config_advisor.py prototype/tests/test_intelligence_monthly.py -q
+      - name: Canonical report unification + operational PDF (one dataset -> portal/WhatsApp/PDF, real PDF)
+        run: python -m pytest prototype/tests/test_intelligence_report.py -q
+      - name: 0.4.4 release-defect regressions (Dahua archive response-close, build-SHA stamping)
+        run: python -m pytest prototype/tests/test_dahua_archive_close.py prototype/tests/test_build_metadata.py -q
+      - name: Automatic outage recovery — detection, bounded/resumable/idempotent backfill, footage AI, wiring
+        run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py -q
+      - name: Setup archive proof — recorder actually retains retrievable footage (verified/empty/unsupported/unknown)
+        run: python -m pytest prototype/tests/test_archive_proof_setup.py -q
+      - name: Post-install acceptance self-test — end-to-end site chain, hard/soft gating, no secret leak
+        run: python -m pytest prototype/tests/test_acceptance_selftest.py -q
+      - name: Site Status model — honest classification (unused≠failure), NA storage, status-json wiring
+        run: python -m pytest prototype/tests/test_site_status.py -q
+      - name: Site Status controller — panel action bindings drive the agent CLI (accept/update/rollback/bundle)
+        run: python -m pytest prototype/tests/test_status_controller.py -q
+      - name: Retention depth — bounded archive-boundary probe (measured/at_least/empty/unsupported)
+        run: python -m pytest prototype/tests/test_retention.py -q
+      - name: Camera Monitor/Ignore merge — setup config folds into the sync payload
+        run: python -m pytest prototype/tests/test_camera_config.py -q
+      - name: Support bundle — non-secret diagnostic export (allowlist redaction, no secret leak)
+        run: python -m pytest prototype/tests/test_support_bundle.py -q
+      - name: In-app update engine — signed manifest (Ed25519), channels, version + SHA-256 integrity gating
+        run: python -m pytest prototype/tests/test_updater.py -q
+      - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
+        run: python prototype/tests/test_report_pipeline_contract.py
+      - name: Site Control portal capability-aware UX contract
+        run: python prototype/tests/test_site_control_portal_contract.py
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
@@ -117,6 +149,8 @@ jobs:
         run: python prototype/tests/test_capabilities.py
       - name: Vendor capability matrix contract (honest — no fabricated capability)
         run: python prototype/tests/test_vendor_capability_matrix.py
+      - name: AI device-knowledge registry — normalized, source-linked, evidence-graded; FIELD_VERIFIED guarded
+        run: python prototype/tests/test_device_knowledge_validator.py
       - name: Email template tests
         run: python prototype/tests/test_email_template.py
       - name: ONNX inference test (skips if model absent)
@@ -268,9 +302,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install psycopg + psql client
+      - name: Install psycopg + PDF + psql client
         run: |
-          python -m pip install --quiet "psycopg[binary]"
+          python -m pip install --quiet "psycopg[binary]" xhtml2pdf
           sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
       - name: Supabase-shim prelude (roles, auth schema, auth.uid) on the disposable Postgres
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f prototype/supabase/ci_prelude.sql
@@ -298,6 +332,62 @@ jobs:
         run: python prototype/tests/e2e_incident_evidence_pg.py
       - name: Runtime capability + Operations gate integration — default-OFF safety + capability advertisement (0059)
         run: python prototype/tests/e2e_runtime_capability_pg.py
+      - name: Intelligence pipeline integration — Activity/Episode/Incident grouping + per-site promotion + provenance (0065)
+        run: python prototype/tests/e2e_intelligence_pg.py
+      - name: Canonical daily-intelligence dataset integration — one dataset for portal/PDF/WhatsApp + tenant guard (0067)
+        run: python prototype/tests/e2e_daily_intelligence_pg.py
+      - name: Alert engine integration — dedup + severity threshold + atomic claim (0068)
+        run: python prototype/tests/e2e_alert_engine_pg.py
+      - name: Monthly rollup integration — month aggregate over the intelligence layers (0069)
+        run: python prototype/tests/e2e_monthly_rollup_pg.py
+      - name: Recorder capability KB integration — 18-model resolver verdicts, honest unknown (0066)
+        run: python prototype/tests/e2e_capability_kb_pg.py
+      - name: Journeys integration — multi-camera movement paths + provenance + idempotency (0070)
+        run: python prototype/tests/e2e_journeys_pg.py
+      - name: Intelligence RPC tenant-isolation integration — daily/monthly/journeys/policies (0067-0071)
+        run: python prototype/tests/e2e_intelligence_authz_pg.py
+      - name: Onboarding + business context integration (0072)
+        run: python prototype/tests/e2e_onboarding_pg.py
+      - name: Visitor/staff inference integration — multi-factor, ambiguous + overlapping (0073)
+        run: python prototype/tests/e2e_entity_inference_pg.py
+      - name: Daily intelligence v2 integration — sustained opening/closing, generic after-hours/restricted (0074)
+        run: python prototype/tests/e2e_daily_intelligence_v2_pg.py
+      - name: Health->incident->alert delivery chain integration — dedup/recovery/retry (0075)
+        run: python prototype/tests/e2e_alert_delivery_pg.py
+      - name: Report calibration integration — reviewer feedback + config tuning (0076)
+        run: python prototype/tests/e2e_calibration_pg.py
+      - name: Offline sync idempotency integration — server half of the resilience cycle
+        run: python prototype/tests/e2e_offline_sync_pg.py
+      - name: Recorder capability KB batch 3 already covered; demo/acceptance preflight integration (0078)
+        run: python prototype/tests/e2e_preflight_pg.py
+      - name: Daily-intelligence WhatsApp delivery pipeline integration — idempotency + retry (item 8)
+        run: python prototype/tests/e2e_intelligence_delivery_pg.py
+      - name: Site/recorder diagnosis integration — capability-aware, tenant-guarded (0079)
+        run: python prototype/tests/e2e_site_diagnosis_pg.py
+      - name: Journeys v2 integration — topology gating, concurrency separation, confidence (0080)
+        run: python prototype/tests/e2e_journeys_v2_pg.py
+      - name: Opening/closing state machine integration — sessions, fallback, after-hours truth (0081)
+        run: python prototype/tests/e2e_day_state_pg.py
+      - name: Daily intelligence v3 integration — state machine + honest after-hours folded in (0081)
+        run: python prototype/tests/e2e_daily_intelligence_v3_pg.py
+      - name: Visitor/staff inference v2 integration — journey confidence + coverage + calibration (0082)
+        run: python prototype/tests/e2e_entity_inference_v2_pg.py
+      - name: Report snapshot integration — generate once, freeze, immune to later change (0083)
+        run: python prototype/tests/e2e_report_snapshot_pg.py
+      - name: Delivery outbox integration — provider idempotency + crash-edge reclaim (0084)
+        run: python prototype/tests/e2e_delivery_outbox_pg.py
+      - name: Outage recovery + three coverage classes integration — LIVE/RECOVERED/UNVERIFIED (0098)
+        run: python prototype/tests/e2e_recovery_coverage_pg.py
+      - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
+        run: python prototype/tests/e2e_recovery_ingest_pg.py
+      - name: Camera config — wl_sync_cameras honors setup Monitor/Ignore (is_configured), re-sync safe (0100)
+        run: python prototype/tests/e2e_camera_config_pg.py
+      - name: AI providers — owner-gated config + Vault-guarded keys + service-role-only key resolver (0105)
+        run: python prototype/tests/e2e_ai_providers_pg.py
+      - name: AI routing — per-site egress policy (local-only default) + service/admin-only route audit (0106)
+        run: python prototype/tests/e2e_ai_routing_pg.py
+      - name: AI evidence workspace — scoped two-stage retrieval, encrypted-at-rest, TTL retention + deletion audit (0107)
+        run: python prototype/tests/e2e_ai_evidence_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
@@ -335,3 +425,17 @@ jobs:
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f prototype/supabase/ci_prelude.sql
       - name: Production-order simulation (0042-0048 baseline -> 0040/0041 -> incident lifecycle -> health smoke)
         run: bash prototype/tests/prod_order_integration.sh
+
+  edge-ai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Router policy unit tests (fail-closed config, egress gate, NO_MODEL, candidate ordering)
+        working-directory: prototype/supabase/functions/watchlog-ai
+        run: deno test providers/router_test.ts
+      - name: Type-check the WatchLog AI edge function (provider router + secure config)
+        working-directory: prototype/supabase/functions/watchlog-ai
+        run: deno check index.ts

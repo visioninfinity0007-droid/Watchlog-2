@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
+import dahua_archive
 import discover
 import watchlog_agent as core
 import wsdiscovery
@@ -378,6 +379,51 @@ def test_recorder(address: str, username: str, password: str,
     raise ValueError(_CUSTOMER_ERROR.get(last_class, _CUSTOMER_ERROR["connect"]))
 
 
+def verify_recorder_archive(url: str, driver_name: str, username: str, password: str,
+                            channels, *, now=None, window_seconds: int = dahua_archive.ARCHIVE_PROOF_WINDOW,
+                            _build=None, _install=None) -> dict:
+    """0.4.4 §6 — setup-time archive PROOF wrapper.
+
+    ``test_recorder`` already proved identity + credentials + channels; this reuses the proven
+    ``url``/``driver_name`` to build ONE driver, installs the validated archive implementation,
+    and proves retrievable recorded footage on the first channel via
+    :func:`dahua_archive.prove_recorder_archive`. Bounded, read-only, and NEVER raises — an
+    archive check must never block or crash a setup that otherwise succeeded.
+    """
+    build_fn = _build or build
+    install_fn = _install or dahua_archive.install
+    channel = None
+    for cam in (channels or []):
+        channel = cam.get("channel") if isinstance(cam, dict) else getattr(cam, "channel", None)
+        if channel:
+            break
+    if not channel:
+        return {"status": "unknown", "channel": None, "segments_found": 0, "sample": [],
+                "window_seconds": int(window_seconds),
+                "detail": "No camera channel was available to check the archive."}
+
+    try:
+        install_fn()                 # idempotent: patches the driver class with the archive impl
+    except Exception:  # noqa: BLE001 — a driver without this impl degrades to 'unsupported' below
+        pass
+
+    driver = None
+    try:
+        driver = build_fn(driver_name, url, username.strip(), password, RECORDER_PROBE_TIMEOUT)
+        return dahua_archive.prove_recorder_archive(driver, channel, now=now,
+                                                    window_seconds=window_seconds)
+    except Exception:  # noqa: BLE001 — never let the archive proof crash setup
+        return {"status": "unknown", "channel": str(channel), "segments_found": 0, "sample": [],
+                "window_seconds": int(window_seconds),
+                "detail": "The recorder archive could not be checked during setup."}
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def suggest_purpose(camera_name: str, site_type: str) -> str:
     name = (camera_name or "").lower()
     heuristics = [
@@ -534,6 +580,25 @@ def _classify_camera_sync(exc) -> AgentSyncError:
         "WatchLog linked this site but could not add the cameras. Please try again; if it persists, contact WatchLog support.")
 
 
+def merge_camera_config(channels: list, profiles: list) -> list:
+    """Merge the operator's Monitor/Ignore + name choices (0.4.4 P4) into the wl_sync_cameras
+    payload: is_configured = the channel's monitored flag. A discovered channel with no explicit
+    profile stays monitored (the operator saw it in discovery); a channel the operator marked Ignore
+    becomes is_configured=false and never generates a false health warning. Pure/testable."""
+    by_ch = {str(p.get("channel", "")).strip(): p for p in (profiles or [])
+             if str(p.get("channel", "")).strip()}
+    out = []
+    for c in (channels or []):
+        ch = str(c.get("channel", "")).strip()
+        if not ch:
+            continue
+        prof = by_ch.get(ch, {})
+        out.append({"channel": ch,
+                    "name": (prof.get("name") or c.get("name") or ""),
+                    "is_configured": bool(prof.get("monitored", True))})
+    return out
+
+
 def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str], None] | None = None) -> dict:
     """Idempotently reconcile the discovered channels into WatchLog (server-side
     ON CONFLICT (site_id, channel) DO UPDATE). Never reports success on failure; every
@@ -601,7 +666,9 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     state = establish_identity(cloud, state_path, enrollment_code, device, progress)
 
     progress("Adding cameras to this WatchLog site…")
-    mapping = sync_cameras(cloud, state, recorder["channels"], progress)
+    # Honor the operator's Monitor/Ignore + name choices so monitored cameras are configured
+    # immediately and ignored channels never raise a false health warning (0.4.4 P4).
+    mapping = sync_cameras(cloud, state, merge_camera_config(recorder["channels"], profiles), progress)
 
     capabilities = recorder.get("capabilities")
     if capabilities and capabilities.get("channels"):
