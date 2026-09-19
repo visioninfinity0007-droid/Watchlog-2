@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Callable
 
 import dahua_archive
+import netscan
 import discover
 import watchlog_agent as core
 import wsdiscovery
@@ -155,15 +156,57 @@ def _write_ini(path: Path, ini: configparser.ConfigParser) -> None:
 
 
 def discover_recorders(progress: Callable[[str], None] | None = None) -> list[dict]:
+    """Find recorder candidates across EVERY active LAN, and say so in the support log.
+
+    FIELD FAILURE THIS ADDRESSES (HASCO Steel, 2026-09-19). A Windows PC at
+    192.168.18.190 could browse its Hikvision NVR at http://192.168.18.184/ and had the
+    NVR in its ARP cache, yet Setup reported no recorder and gave support nothing to go
+    on -- because both halves of this function ended in `except Exception: pass`. A
+    silent installer is not diagnosable from a customer site.
+
+    Nothing here logs a credential: wsdiscovery and the sweep only ever see addresses
+    and ports, and _redact() covers any message that could carry more.
+    """
     progress = progress or (lambda _message: None)
     results: dict[str, dict] = {}
+    started = time.monotonic()
+    _setup_log("discovery: starting recorder discovery")
+
+    interfaces = []
+    try:
+        interfaces = netscan.enumerate_interfaces()
+        for iface in interfaces:
+            _setup_log(f"discovery: interface {iface.name or 'adapter'} "
+                       f"{iface.ip}/{iface.prefix} network={iface.network}")
+        if not interfaces:
+            _setup_log("discovery: no usable IPv4 adapter was found")
+    except Exception as exc:                                        # noqa: BLE001
+        _setup_log(f"discovery: interface enumeration failed: {_redact(str(exc), None)}")
+
     progress("Looking for compatible CCTV devices…")
     try:
-        for item in wsdiscovery.discover(log=lambda _m: None):
-            label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
-            results[item.ip] = {"ip": item.ip, "label": label or "Compatible recorder", "source": "ONVIF"}
-    except Exception:
-        pass
+        # wsdiscovery probes every local interface itself and survives a failure on any
+        # one of them. Its per-interface diagnostics used to be thrown away.
+        found = wsdiscovery.discover(log=lambda m: _setup_log(f"discovery: onvif {m.strip()}"))
+        _setup_log(f"discovery: ONVIF returned {len(found)} device(s)")
+        for item in found:
+            label = " ".join(x for x in (getattr(item, "name", ""),
+                                         getattr(item, "hardware", "")) if x)
+            results[item.ip] = {"ip": item.ip, "label": label or "Compatible recorder",
+                                "source": "ONVIF"}
+    except Exception as exc:                                        # noqa: BLE001
+        # ONVIF is commonly switched off on a recorder. It is the FIRST attempt, never
+        # the only one, so a failure here must not stop the TCP scan below.
+        _setup_log(f"discovery: ONVIF discovery failed: {_redact(str(exc), None)}")
+
+    progress("Checking local CCTV devices…")
+    known: list[str] = []
+    try:
+        known = netscan.neighbours()
+        _setup_log(f"discovery: {len(known)} host(s) already known to this PC "
+                   f"(ARP/neighbour cache)")
+    except Exception as exc:                                        # noqa: BLE001
+        _setup_log(f"discovery: neighbour lookup failed: {_redact(str(exc), None)}")
 
     progress("Checking the local network for CCTV recorders…")
     try:
@@ -171,7 +214,9 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
         # hardcoded list that had drifted out of sync (it accepted 81/88/443/8081 that
         # the sweep never probed), which hid HTTPS-only and alt-web-port recorders.
         candidate_ports = set(discover.SWEEP_PORTS)
-        for ip, ports in discover.sweep(None, log=lambda _m: None):
+        hits = discover.sweep(None, log=lambda m: _setup_log(f"discovery: scan {m.strip()}"))
+        _setup_log(f"discovery: {len(hits)} host(s) answered a recorder port")
+        for ip, ports in hits:
             ports = sorted(ports)
             if not any(port in candidate_ports for port in ports):
                 continue
@@ -182,12 +227,33 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
                 hint = "Hikvision-family recorder candidate"
             elif 34567 in ports:
                 hint = "Unsupported Xiongmai-family device"
-            results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
-            results[ip]["ports"] = ports
-            results[ip]["vendor_hint"] = _vendor_hint_from_ports(ports)
-    except Exception:
-        pass
-    return sorted(results.values(), key=lambda row: row["ip"])
+            row = results.get(ip)
+            if row is None:
+                row = {"ip": ip, "label": hint, "source": "Network scan"}
+                results[ip] = row
+            else:
+                # The SAME recorder can arrive from ONVIF, the neighbour cache and the
+                # scan. Merge rather than let whichever arrived first freeze the record:
+                # a bare ONVIF hit must still gain its ports and vendor hint, and a
+                # generic label must still be upgraded by a specific one.
+                row["source"] = f"{row.get('source', 'ONVIF')} + Network scan"
+                if hint != "Recorder candidate" and row.get("label") in (
+                        None, "", "Compatible recorder", "Recorder candidate"):
+                    row["label"] = hint
+            row["ports"] = sorted(set(row.get("ports") or []) | set(ports))
+            row["vendor_hint"] = _vendor_hint_from_ports(row["ports"])
+    except Exception as exc:                                        # noqa: BLE001
+        _setup_log(f"discovery: network scan failed: {_redact(str(exc), None)}")
+
+    rows = sorted(results.values(), key=lambda row: row["ip"])
+    for row in rows:
+        _setup_log(f"discovery: candidate {row['ip']} ports={row.get('ports') or []} "
+                   f"hint={row.get('vendor_hint') or 'unknown'} source={row.get('source')}")
+    _setup_log(f"discovery: finished with {len(rows)} candidate(s) "
+               f"in {time.monotonic() - started:.1f}s")
+    progress(f"Found {len(rows)} possible recorder{'' if len(rows) == 1 else 's'}."
+             if rows else "No recorder was found automatically.")
+    return rows
 
 
 # --- Step 04 recorder login: fast, deterministic, port/vendor-aware ---------

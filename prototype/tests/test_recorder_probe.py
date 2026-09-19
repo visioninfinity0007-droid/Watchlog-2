@@ -138,7 +138,13 @@ class DiscoveryBlindSpotTests(unittest.TestCase):
                 return MagicMock()
             raise OSError("filtered")
 
-        with patch.object(discover, "_sweep_bases", return_value=(["10.0.0"], ["10.0.0.5"])), \
+        # The automatic path now plans targets from netscan (all adapters, real
+        # prefixes) rather than one derived /24 base, so the seam to pin is the
+        # interface enumeration. The behaviour asserted below is unchanged.
+        import netscan
+        with patch.object(netscan, "enumerate_interfaces",
+                          return_value=[netscan.Interface("10.0.0.5", 24, "test")]), \
+             patch.object(netscan, "neighbours", return_value=[]), \
              patch("socket.create_connection", side_effect=fake_conn):
             hits = discover.sweep(log=lambda *_a: None)
         self.assertEqual([("10.0.0.7", [443])], hits)

@@ -16,6 +16,7 @@ Outbound TCP connects only. Nothing is sent beyond an HTTP GET /.
 from __future__ import annotations
 
 import ipaddress
+import netscan
 import re
 import socket
 import ssl
@@ -177,6 +178,9 @@ SWEEP_RETRY_PORTS = [80, 443, 37777, 8000]
 # Concurrency absorbs the wider port list so wall-clock stays in the same few seconds.
 SWEEP_WORKERS = 768
 MAX_AUTO_SUBNETS = 8
+# Any of these answering is enough to offer a host as a recorder candidate. A
+# Hikvision reachable only on port 80 is still a recorder (see sweep_report).
+WEB_PORTS_SET = {80, 443, 8000, 8080, 8443, 81, 88, 8081}
 
 
 def _usable_ipv4(value: str | None) -> str | None:
@@ -329,15 +333,33 @@ def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
     each distinct active local /24 so a Wi-Fi + CCTV-Ethernet PC cannot hide the
     recorder merely because Windows routes internet traffic over Wi-Fi.
     """
-    bases, addresses = _sweep_bases(subnet)
-    if not bases:
-        log("  could not work out this PC's network; enter the recorder IP manually")
-        return []
-
-    if addresses:
-        log(f"  this PC has local IPv4: {', '.join(addresses)}")
-    log("  sweeping " + ", ".join(f"{base}.1-254" for base in bases) + " on ports "
-        + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
+    if subnet:
+        bases, addresses = _sweep_bases(subnet)
+        if not bases:
+            log("  could not work out this PC's network; enter the recorder IP manually")
+            return []
+        all_hosts = [f"{bases[0]}.{h}" for h in range(1, 255)]
+        log(f"  sweeping {bases[0]}.1-254 on ports "
+            + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
+    else:
+        # Every active adapter, at its REAL prefix, plus whatever the OS already
+        # knows about. Assuming /24 off one Internet-facing adapter is what let a
+        # Hikvision at 192.168.18.184 stay invisible to a PC at 192.168.18.190.
+        interfaces = netscan.enumerate_interfaces()
+        if not interfaces:
+            log("  could not work out this PC's network; enter the recorder IP manually")
+            return []
+        known = netscan.neighbours()
+        all_hosts, notes = netscan.scan_targets(interfaces, extra=known)
+        for iface in interfaces:
+            log(f"  interface {iface.name or 'adapter'}: {iface.ip}/{iface.prefix}"
+                f" -> {iface.network}")
+        if known:
+            log(f"  {len(known)} host(s) already known to this PC will be probed first")
+        for note in notes:
+            log(f"  NOTE: {note}")
+        log(f"  sweeping {len(all_hosts)} address(es) on ports "
+            + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
 
     def probe(args):
         ip, port, budget = args
@@ -347,7 +369,6 @@ def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
         except Exception:                                # noqa: BLE001
             return None
 
-    all_hosts = [f"{base}.{h}" for base in bases for h in range(1, 255)]
     found: dict[str, set[int]] = {}
 
     def run(targets):
@@ -390,11 +411,20 @@ def sweep_report(hits: list[tuple[str, list[int]]], log=print) -> None:
             guess = "Dahua-family recorder"
         elif 34567 in ports:
             guess = "Xiongmai recorder - NOT SUPPORTED"
+        elif 8000 in ports:
+            guess = "Hikvision-family recorder"
         elif 554 in ports:
             guess = "something streaming video (camera or recorder)"
-        elif ports == [80]:
-            guess = "web device - could be the router"
-        if 37777 in ports or 34567 in ports or 554 in ports:
+        elif WEB_PORTS_SET & set(ports):
+            guess = "web device - could be a recorder or the router"
+        # A recorder must NOT have to expose a native SDK port to be offered.
+        # FIELD FAILURE (HASCO Steel): a Hikvision NVR answered only on port 80 --
+        # ONVIF disabled, 8000 and 554 closed -- so it fell through to "could be the
+        # router" and was dropped. The customer could open http://192.168.18.184/ in
+        # a browser while Setup insisted nothing was there. A web port is enough to
+        # be a CANDIDATE; the login step identifies it properly.
+        if (37777 in ports or 34567 in ports or 554 in ports
+                or WEB_PORTS_SET & set(ports)):
             candidates.append((ip, ports, guess))
         log(f"  {ip:<18} {', '.join(str(p) for p in ports):<17} {guess}")
 
