@@ -198,3 +198,35 @@ class DiagnosticAgreesWithSetup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+# ------------------------------------------------------------- TEST 10: manual IP
+class ManualIpEntryIsIndependent(unittest.TestCase):
+    """A customer who types the recorder's address must never be blocked because
+    automatic discovery came back empty. That was HASCO's only working route."""
+
+    def test_a_manually_entered_host_is_probed_directly(self):
+        # _probe_web_ports is the live network step; the point is that the login
+        # plan is built from the host the customer typed, not from a scan result.
+        attempts, error = sb.plan_recorder_probes(NVR, [80], None)
+        self.assertIsNone(error)
+        self.assertTrue(attempts, "a manually entered recorder must be probed")
+        self.assertTrue(any(NVR in url for _driver, url in attempts))
+
+    def test_port_80_alone_is_enough_to_attempt_a_login(self):
+        attempts, error = sb.plan_recorder_probes(NVR, [80], "hikvision")
+        self.assertIsNone(error)
+        self.assertEqual("hikvision-isapi", attempts[0][0],
+                         "the Hikvision driver must lead for a Hikvision hint")
+        self.assertIn(f"http://{NVR}", attempts[0][1])
+
+    def test_an_unreachable_host_is_reported_honestly(self):
+        attempts, error = sb.plan_recorder_probes(NVR, [], None)
+        self.assertEqual([], attempts)
+        self.assertEqual("network", error)
+
+    def test_a_dahua_sdk_only_host_says_the_web_service_is_off(self):
+        attempts, error = sb.plan_recorder_probes(NVR, [37777], None)
+        self.assertEqual([], attempts)
+        self.assertEqual("web_unreachable", error,
+                         "telling the customer to enable HTTP is actionable")
