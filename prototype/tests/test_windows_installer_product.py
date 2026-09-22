@@ -35,6 +35,15 @@ def main():
         "GUI build is windowed": '"--windowed"' in build_ui,
         "GUI covers recorder discovery": "discover_recorders" in gui and "test_recorder" in gui,
         "GUI performs real finalization": "finalize_install" in gui,
+        "discovery auto-selects a real recorder candidate":
+            "self.recorder_list.setCurrentRow(0)" in gui and "current.setSelected(True)" in gui,
+        "Continue falls back to the highlighted recorder":
+            "current = self.recorder_list.currentItem()" in gui
+            and 'address = str(current.data(Qt.UserRole) or "").strip()' in gui,
+        "optional recorder integration is field-bounded":
+            "timeout: float = 20.0" in backend
+            and "push_timeout = _remaining(20)" in backend
+            and "timeout=push_timeout" in backend,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,

@@ -880,7 +880,7 @@ def _log_size(path: Path) -> int:
 def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
                             username: str, password: str,
                             progress: Callable[[str], None] | None = None,
-                            timeout: float = 90.0, _run=None) -> dict:
+                            timeout: float = 20.0, _run=None) -> dict:
     """Point the RECORDER at WatchLog, so the site keeps reporting with no PC running.
 
     RUNS OUT OF PROCESS (5.0). 0.4.11 did this inline and the very first time the feature
@@ -903,7 +903,7 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
         return {"configured": False, "verified": False,
                 "detail": "no push bridge configured in this build"}
 
-    progress("Setting up PC-free reporting on the recorder…")
+    progress("Finishing optional recorder integration…")
     try:
         if _run is not None:
             code, out = _run()
@@ -1020,9 +1020,14 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     connected = bool(agent_start.get("started"))
 
     push = {"configured": False, "verified": False, "detail": "skipped (time budget)"}
-    if _remaining(1) > 0:
+    # Build 37 showed that this optional resilience layer could leave an installer
+    # staring at the Connecting screen long after enrollment + the background agent
+    # were already proven. It gets a short bounded chance and can never hold setup
+    # for the former 90-second child timeout.
+    push_timeout = _remaining(20)
+    if push_timeout >= 3:
         push = provision_recorder_push(cloud, state, recorder, public, username, password,
-                                       progress=progress)
+                                       progress=progress, timeout=push_timeout)
 
     # The field outcome of PC-free reporting was computed and then thrown away -- never
     # logged, never shown. That is the second reason nobody noticed the bridge was dead.

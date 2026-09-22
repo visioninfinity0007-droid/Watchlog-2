@@ -1,5 +1,17 @@
 # WatchLog
 
+> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-22**
+>
+> Build **37** is the frozen authoritative field baseline for the current Windows
+> Site Connector. It was built from this repository, branch
+> `build/site-connector-v5-watchlog2`, source commit
+> `cffd32a47c70fc1141efef7e30315a5c4c844c57`, by successful Windows Release
+> run **#37** (`35695121845`). New installer work must be a descendant of that
+> commit in **Watchlog-2**. Do not reconstruct installer changes from the
+> `Alkalid-security/Watchlog` main repository. See
+> `docs/release/BUILD37_AUTHORITY.md`.
+
+
 Turns an existing DVR/NVR into a monitored, reportable system — without
 opening a single inbound port on the client's network.
 

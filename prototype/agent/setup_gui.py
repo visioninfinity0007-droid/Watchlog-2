@@ -445,6 +445,16 @@ class SetupWindow(QMainWindow):
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, row["ip"])
             self.recorder_list.addItem(item)
+
+        # Field build 37 exposed a Qt selection mismatch: the first row could LOOK
+        # highlighted without itemSelectionChanged populating manual_ip. Make the
+        # first discovered recorder a real selection and mirror its address.
+        self.recorder_list.setCurrentRow(0)
+        current = self.recorder_list.currentItem()
+        if current:
+            current.setSelected(True)
+            self.manual_ip.setText(str(current.data(Qt.UserRole) or ""))
+
         recorder_word = "recorder" if len(rows) == 1 else "recorders"
         found = f"Found {len(rows)} possible {recorder_word}."
         if len(rows) > 1:
@@ -465,6 +475,14 @@ class SetupWindow(QMainWindow):
 
     def recorder_continue(self):
         address = self.manual_ip.text().strip()
+        if not address:
+            # Continue must follow what the installer visibly shows as selected,
+            # even if Qt did not emit itemSelectionChanged.
+            current = self.recorder_list.currentItem()
+            if current:
+                address = str(current.data(Qt.UserRole) or "").strip()
+                if address:
+                    self.manual_ip.setText(address)
         if not address:
             QMessageBox.warning(self, "WatchLog Setup", "Select a discovered recorder or enter its local IP address.")
             return
