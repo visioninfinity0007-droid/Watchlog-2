@@ -1,5 +1,17 @@
 # WatchLog
 
+> **IMPORTANT — WINDOWS INSTALLER SOURCE OF TRUTH**
+>
+> The current Windows installer lineage is **not built from this repository**.
+> The authoritative field baseline is WatchLog Windows **Build 37**, produced by
+> `visioninfinity0007-droid/Watchlog-2` from branch
+> `build/site-connector-v5-watchlog2`, source commit
+> `cffd32a47c70fc1141efef7e30315a5c4c844c57`, Windows Release run **#37**
+> (`35695121845`). Installer fixes must be made there and built forward from
+> that commit. Do not treat newer-looking installer files in this repo as the
+> shipped baseline. See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
+
+
 Turns an existing DVR/NVR into a monitored, reportable system — without
 opening a single inbound port on the client's network.
 
