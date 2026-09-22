@@ -41,8 +41,9 @@ def main():
             "current = self.recorder_list.currentItem()" in gui
             and 'address = str(current.data(Qt.UserRole) or "").strip()' in gui,
         "optional recorder integration is field-bounded":
-            "timeout: float = 20.0" in backend
-            and "push_timeout = _remaining(20)" in backend
+            "BACKGROUND_START_TIMEOUT_SECONDS = 30" in backend
+            and "PUSH_SETUP_TIMEOUT_SECONDS = 10" in backend
+            and "push_timeout = _remaining(PUSH_SETUP_TIMEOUT_SECONDS)" in backend
             and "timeout=push_timeout" in backend,
         "Recorder Continue is disabled while discovery worker is busy":
             "self.recorder_next.setEnabled(not busy)" in gui,
@@ -50,6 +51,13 @@ def main():
             '"--ui-selftest"' in gui and "def _run_ui_selftest" in gui,
         "single recorder is selected but multiple recorders are never silently auto-picked":
             "if len(rows) == 1:" in gui and "self.recorder_list.setCurrentRow(0)" in gui,
+        "Step 06 cannot re-gate an already connected site on full acceptance":
+            "acceptance is a POST-INSTALL diagnostic" in gui
+            and "self.go(6)" in gui
+            and "timeout_ms=30000" in gui,
+        "Hikvision login ignores proxy env and avoids pointless Basic retry after Digest rejection":
+            "self.s.trust_env = False" in text("prototype/agent/drivers/hikvision.py")
+            and '"digest" not in challenge' in text("prototype/agent/drivers/hikvision.py"),
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,

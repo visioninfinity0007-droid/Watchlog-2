@@ -17,6 +17,9 @@ on:
       - 'build/site-connector-v5-watchlog2'
     tags:
       - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
 
 permissions:
   contents: read

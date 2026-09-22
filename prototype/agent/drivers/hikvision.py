@@ -100,6 +100,14 @@ class HikvisionDriver(NvrDriver):
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
         self.s = requests.Session()
+        # Recorder traffic is LAN-local. Never inherit a corporate/system HTTP proxy:
+        # proxy auto-config can turn a 192.168.x.x login into a minute-long external
+        # timeout even though the recorder is directly reachable.
+        self.s.trust_env = False
+        # Hikvision commonly ships with a self-signed HTTPS certificate. The connection
+        # is still local and encrypted; certificate pinning is not available at setup.
+        if self.base_url.lower().startswith("https://"):
+            self.s.verify = False
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._last_emitted: dict[tuple[str, str], datetime] = {}
 
@@ -112,9 +120,14 @@ class HikvisionDriver(NvrDriver):
         except requests.RequestException as e:
             raise DriverError(f"{url}: {explain(e)}") from e
         if r.status_code == 401:
-            # A few OEM firmwares only do Basic.
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.get(url, timeout=self.timeout, **kw)
+            # HTTPDigestAuth already performed the Digest challenge/response. If the
+            # final 401 still advertises Digest, the credentials were rejected; doing
+            # another Basic request only doubles the field wait. Fall back to Basic
+            # only when the recorder actually advertises Basic without Digest.
+            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+            if "basic" in challenge and "digest" not in challenge:
+                self.s.auth = HTTPBasicAuth(self.username, self.password)
+                r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r
@@ -133,9 +146,11 @@ class HikvisionDriver(NvrDriver):
         except requests.RequestException as e:
             raise DriverError(f"{url}: {explain(e)}") from e
         if r.status_code == 401:
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
-                           headers={"Content-Type": "application/xml"})
+            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+            if "basic" in challenge and "digest" not in challenge:
+                self.s.auth = HTTPBasicAuth(self.username, self.password)
+                r = self.s.put(url, data=body.encode(), timeout=self.timeout,
+                               headers={"Content-Type": "application/xml"})
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r

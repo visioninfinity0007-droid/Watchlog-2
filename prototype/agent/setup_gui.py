@@ -13,6 +13,7 @@ import argparse
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # A PyInstaller --windowed process has no console streams. Existing recorder
@@ -35,7 +36,7 @@ if os.name == "nt":
         except Exception:  # noqa: BLE001 - logging may never prevent setup from running
             _LOG_HANDLE = None
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -137,6 +138,11 @@ class SetupWindow(QMainWindow):
         self._discovered = {}
         self.final_result = None
         self._busy = False
+        # Worker generation lets the UI abandon a timed-out recorder login safely.
+        # A late result from the abandoned thread is ignored instead of jumping pages
+        # minutes later after the technician has retried.
+        self._worker_seq = 0
+        self._active_worker = 0
 
         self.setWindowTitle("WatchLog Setup")
         self.setMinimumSize(900, 630)
@@ -291,6 +297,9 @@ class SetupWindow(QMainWindow):
         self.password_edit.setEchoMode(QLineEdit.Password)
         cl.addWidget(self.password_edit)
         cl.addWidget(label("Your recorder password is protected securely on this PC after setup succeeds.", "muted"))
+        self.login_error = label("", "muted")
+        self.login_error.setWordWrap(True)
+        cl.addWidget(self.login_error)
         l.addWidget(c)
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
@@ -395,13 +404,62 @@ class SetupWindow(QMainWindow):
         self.recorder_next.setEnabled(not busy)
         self.login_next.setEnabled(not busy)
 
-    def run_worker(self, fn, args, on_success, busy_message: str, **kwargs):
+    def run_worker(self, fn, args, on_success, busy_message: str,
+                   timeout_ms: int | None = None, timeout_message: str | None = None,
+                   **kwargs):
+        self._worker_seq += 1
+        token = self._worker_seq
+        self._active_worker = token
         self.set_busy(True, busy_message)
         worker = Worker(fn, *args, **kwargs)
-        worker.signals.progress.connect(self._on_progress)
-        worker.signals.finished.connect(lambda result: self._worker_ok(on_success, result))
-        worker.signals.failed.connect(self._worker_error)
+        worker.signals.progress.connect(
+            lambda message, t=token: self._on_progress_if_current(t, message))
+        worker.signals.finished.connect(
+            lambda result, t=token: self._worker_ok_if_current(t, on_success, result))
+        worker.signals.failed.connect(
+            lambda message, t=token: self._worker_error_if_current(t, message))
         self.pool.start(worker)
+        if timeout_ms:
+            QTimer.singleShot(
+                int(timeout_ms),
+                lambda t=token, m=timeout_message: self._worker_timeout(
+                    t, m or "This step took too long. Please try again.")
+            )
+
+    def _on_progress_if_current(self, token: int, message: str):
+        if token != self._active_worker:
+            return
+        self._on_progress(message)
+
+    def _worker_ok_if_current(self, token: int, callback, result):
+        if token != self._active_worker:
+            return
+        self._active_worker = 0
+        self.set_busy(False)
+        callback(result)
+
+    def _worker_error_if_current(self, token: int, message: str):
+        if token != self._active_worker:
+            return
+        self._active_worker = 0
+        self._worker_error(message)
+
+    def _worker_timeout(self, token: int, message: str):
+        if token != self._active_worker:
+            return
+        # We cannot safely kill an arbitrary Python thread, so abandon this generation
+        # at the UI boundary. Every recorder HTTP/socket operation is separately bounded;
+        # if that old worker returns later its token is stale and its signals are ignored.
+        self._active_worker = 0
+        self.set_busy(False)
+        if self.stack.currentIndex() == 3:
+            self.login_error.setText(message)
+            self.status.setText(message)
+        elif self.stack.currentIndex() == 5:
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self.connect_error.setText(message)
+            self.retry_btn.show()
 
     def _on_progress(self, message: str):
         """Surface live worker progress. The Connecting page has its own label, so mirror it there
@@ -410,10 +468,6 @@ class SetupWindow(QMainWindow):
         if self.stack.currentIndex() == 5:
             self.progress_label.setText(message)
 
-    def _worker_ok(self, callback, result):
-        self.set_busy(False)
-        callback(result)
-
     def _worker_error(self, message: str):
         self.set_busy(False)
         if self.stack.currentIndex() == 5:
@@ -421,11 +475,11 @@ class SetupWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
             self.retry_btn.show()
-            # Retry was the ONLY control here, so a technician whose setup failed had no
-            # way to export a support bundle and no way out except killing the window --
-            # which then aborted the NSIS install. Mirror the acceptance-failure page.
             self.incomplete_bundle_btn.show()
             self.incomplete_exit_btn.show()
+        elif self.stack.currentIndex() == 3:
+            self.login_error.setText(message)
+            self.status.setText(message)
         else:
             QMessageBox.warning(self, "WatchLog Setup", message)
 
@@ -515,9 +569,20 @@ class SetupWindow(QMainWindow):
         if not user or not password:
             QMessageBox.warning(self, "WatchLog Setup", "Enter the recorder username and password.")
             return
+        self.login_error.setText("")
         self.recorder_user, self.recorder_password = user, password
-        self.run_worker(backend.test_recorder, (address, user, password), self.connection_ok,
-                        "Testing the recorder connection…", hint=self.recorder_hint)
+        # The backend has per-request timeouts, but old NVR firmware / HTTP Digest
+        # stacks can still keep a Python worker alive far longer than a technician
+        # should ever stare at a disabled button. The UI owns the final UX deadline:
+        # after 30s it re-enables Test Connection and ignores any late worker result.
+        self.run_worker(
+            backend.test_recorder, (address, user, password), self.connection_ok,
+            "Testing the recorder connection…", hint=self.recorder_hint,
+            timeout_ms=30000,
+            timeout_message=("The recorder did not finish the login check within 30 seconds. "
+                             "Confirm the same username/password works in the recorder's web page, "
+                             "then try again.")
+        )
 
     def connection_ok(self, result):
         self.recorder_result = result
@@ -568,20 +633,47 @@ class SetupWindow(QMainWindow):
         self.status.setText("")
 
     def finalize_ok(self, result):
-        # Install is proven; now run the FULL acceptance suite before declaring Ready. The setup
-        # never shows a green Ready state after a hard acceptance failure (0.4.4 P8).
+        # finalize_install has already re-verified the recorder, encrypted the credential,
+        # enrolled/authenticated the site, synced cameras, sent a heartbeat and started the
+        # background agent. Those are the REQUIRED installation proofs.
+        #
+        # Build 39 field evidence showed the old design then launched the much broader
+        # --accept suite and kept the technician on Step 06 even though the connected site
+        # was already reporting. Closing the window succeeded because site_connected was
+        # already true. Therefore acceptance is a POST-INSTALL diagnostic, not an installer
+        # gate. Site Status can run it later without blocking installation.
         self.final_result = result
-        # The background agent was already started inside finalize_install, on the worker
-        # thread. It must NOT be started from here: this is the GUI thread, and blocking it
-        # freezes the window mid-repaint -- which is exactly why 0.4.7 appeared to hang on
-        # "Confirming the WatchLog connection" while it was really running my own code.
         self.agent_start = (result or {}).get("agent_start") or {}
         self.site_connected = bool((result or {}).get("connected"))
-        self.progress_label.setText("Running final acceptance checks…")
-        from status_controller import StatusController
-        ctrl = StatusController()
-        self.run_worker(lambda progress=None: ctrl.run_acceptance(progress=progress), (),
-                        self.acceptance_done, "Running final acceptance checks…")
+
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(1)
+
+        if not self.site_connected:
+            self.progress_label.setText("WatchLog could not start in the background.")
+            self.connect_error.setText(
+                "The recorder and WatchLog site were reached, but the background WatchLog "
+                "service did not start. Retry setup or export a support bundle."
+            )
+            self.retry_btn.setText("Retry")
+            self.retry_btn.show()
+            self.incomplete_status_btn.show()
+            self.incomplete_bundle_btn.show()
+            self.incomplete_exit_btn.show()
+            return
+
+        self.progress_label.setText("Connected.")
+        base = (
+            f"✓ Recorder verified\n"
+            f"✓ WatchLog site linked\n"
+            f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
+            f"✓ Recorder credential encrypted on this PC\n"
+            f"{self._background_line()}\n"
+            f"{self._push_line()}\n\n"
+            f"{result.get('vendor', '')} {result.get('model', '')}"
+        )
+        self.success_summary.setText(base)
+        self.go(6)
 
     def _push_line(self) -> str:
         """PC-free reporting status. Only claims active when the RECORDER confirmed the
@@ -746,6 +838,41 @@ def _run_ui_selftest() -> int:
             window.set_busy(False)
             if not window.recorder_next.isEnabled():
                 return 25
+
+            # A hung/slow Hikvision login may never leave the technician staring at
+            # a disabled Test Connection button. Exercise the real Qt watchdog path.
+            window.go(3)
+            window.login_error.setText("")
+            window.run_worker(
+                lambda progress=None: time.sleep(0.20), (), lambda _r: None,
+                "Testing the recorder connection…", timeout_ms=50,
+                timeout_message="login watchdog fired")
+            deadline = time.monotonic() + 0.15
+            while time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+            if not window.login_next.isEnabled() or "watchdog" not in window.login_error.text():
+                return 26
+            # Let the abandoned worker finish; its stale result must not move the UI.
+            time.sleep(0.10)
+            app.processEvents()
+            if window.stack.currentIndex() != 3:
+                return 27
+
+            # Recreate the Step 06 field outcome: core connection + background agent are
+            # already proven. finalize_ok must go straight to Ready and must not launch
+            # the long --accept diagnostic as another installer gate.
+            window.finalize_ok({
+                "connected": True,
+                "agent_start": {"started": True, "detail": "test"},
+                "recorder_push": {"configured": False, "verified": False, "detail": "test"},
+                "camera_count": 4,
+                "vendor": "Hikvision",
+                "model": "Test NVR",
+            })
+            app.processEvents()
+            if window.stack.currentIndex() != 6 or not window.site_connected:
+                return 28
             window.close()
             return 0
     finally:

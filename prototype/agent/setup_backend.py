@@ -223,9 +223,11 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-POST_CONNECT_BUDGET_SECONDS = 120   # total for ALL optional post-connection work
-RECORDER_PROBE_TIMEOUT = 5          # seconds per driver probe
-RECORDER_DEADLINE = 18             # seconds hard cap for the whole login test
+POST_CONNECT_BUDGET_SECONDS = 45    # total for optional post-connection work
+BACKGROUND_START_TIMEOUT_SECONDS = 30
+PUSH_SETUP_TIMEOUT_SECONDS = 10
+RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
+RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
 _WEB_PORTS = (80, 8080, 81, 82, 88, 8081, 8888, 443, 8443)
 _HIKVISION_SDK_PORTS = (8000,)
@@ -903,7 +905,7 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
         return {"configured": False, "verified": False,
                 "detail": "no push bridge configured in this build"}
 
-    progress("Finishing optional recorder integration (up to 20 seconds)…")
+    progress("Finishing optional recorder integration (up to 10 seconds)…")
     try:
         if _run is not None:
             code, out = _run()
@@ -1015,7 +1017,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # whatever was LEFT of the 120s, so a slow recorder probe could hand it a fraction of a
     # second and it was taskkill'd mid-registration -- the one step that makes the site
     # survive a reboot. It gets its own guaranteed floor.
-    agent_start = ensure_background_agent(timeout=max(60.0, _remaining(90)))
+    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 
@@ -1024,7 +1026,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # staring at the Connecting screen long after enrollment + the background agent
     # were already proven. It gets a short bounded chance and can never hold setup
     # for the former 90-second child timeout.
-    push_timeout = _remaining(20)
+    push_timeout = _remaining(PUSH_SETUP_TIMEOUT_SECONDS)
     if push_timeout >= 3:
         push = provision_recorder_push(cloud, state, recorder, public, username, password,
                                        progress=progress, timeout=push_timeout)
