@@ -44,6 +44,12 @@ def main():
             "timeout: float = 20.0" in backend
             and "push_timeout = _remaining(20)" in backend
             and "timeout=push_timeout" in backend,
+        "Recorder Continue is disabled while discovery worker is busy":
+            "self.recorder_next.setEnabled(not busy)" in gui,
+        "packaged UI exposes behavioral self-test":
+            '"--ui-selftest"' in gui and "def _run_ui_selftest" in gui,
+        "single recorder is selected but multiple recorders are never silently auto-picked":
+            "if len(rows) == 1:" in gui and "self.recorder_list.setCurrentRow(0)" in gui,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,

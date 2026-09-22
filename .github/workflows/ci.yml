@@ -198,6 +198,15 @@ jobs:
           powershell -ExecutionPolicy Bypass -File prototype\agent\build_setup_gui.ps1
           $exe = Get-Item prototype\dist\watchlog-setup-ui.exe
           if ($exe.Length -lt 5MB) { throw "setup UI is too small: $($exe.Length)" }
+      - name: Exercise packaged recorder-selection UI behavior
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $ui = (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path
+          $p = Start-Process -FilePath $ui -ArgumentList @('--ui-selftest') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "packaged UI self-test failed with exit $($p.ExitCode)" }
+          Write-Host "Packaged recorder-selection UI self-test passed."
       - name: Exercise DPAPI round trip and migration mode
         shell: powershell
         run: |

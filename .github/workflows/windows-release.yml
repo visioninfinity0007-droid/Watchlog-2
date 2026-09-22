@@ -127,6 +127,15 @@ jobs:
           }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
 
+          # UI REGRESSION PROOF: execute the actual frozen PySide6 EXE against the
+          # Build-37 failure shape and the discovery race.
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $uiSelf = Start-Process -FilePath $setupUi.FullName -ArgumentList @('--ui-selftest') -Wait -PassThru
+          if ($uiSelf.ExitCode -ne 0) {
+            throw "packaged setup UI recorder-selection self-test failed with exit $($uiSelf.ExitCode)"
+          }
+          Write-Host 'Packaged setup UI recorder-selection behavior PASSED.'
+
           # Prove the packaged Site Connector contains discovery/control/evidence
           # modules without requiring any customer network or local AI model.
           $agentSelftest = & $agent.FullName --connector-selftest 2>&1 | Out-String

@@ -56,3 +56,16 @@ A replacement installer is not "latest" merely because source was changed.
 The next authoritative baseline is established only after its Windows Release
 run completes successfully and the generated artifact identity is recorded
 here (or in a successor baseline ledger).
+
+
+## UI confirmation hardening
+
+A second audit of Build 37 confirmed the recorder-selection failure is a Qt/UI
+state problem and found an additional UI race: Recorder **Continue** remained
+enabled while asynchronous network discovery was still running.
+
+The successor now also disables Continue during discovery, maps direct row
+clicks to the address field, auto-selects only when exactly one recorder is
+found, and embeds a `--ui-selftest` in the frozen setup executable. CI and the
+Windows release workflow execute that **packaged EXE** self-test against the
+Build 37 visible-row/empty-field failure and the discovery race.

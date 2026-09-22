@@ -265,6 +265,9 @@ class SetupWindow(QMainWindow):
         self.recorder_list = QListWidget()
         self.recorder_list.setMinimumHeight(150)
         self.recorder_list.itemSelectionChanged.connect(self.recorder_selected)
+        # Direct mouse intent must populate the address even if Qt's selection/current
+        # bookkeeping arrives in a different order on a particular Windows/Qt build.
+        self.recorder_list.itemClicked.connect(self.recorder_item_clicked)
         cl.addWidget(self.recorder_list)
         cl.addWidget(label("OR ENTER THE LOCAL ADDRESS", "eyebrow"))
         self.manual_ip = QLineEdit(self.recorder_address)
@@ -386,6 +389,10 @@ class SetupWindow(QMainWindow):
         self._busy = busy
         self.status.setText(message)
         self.search_btn.setEnabled(not busy)
+        # Build 37 left Recorder/Continue enabled while discovery was still running.
+        # That allowed the operator to race the worker and validate an empty/stale
+        # address. Treat discovery as a real busy state in the UI.
+        self.recorder_next.setEnabled(not busy)
         self.login_next.setEnabled(not busy)
 
     def run_worker(self, fn, args, on_success, busy_message: str, **kwargs):
@@ -446,14 +453,16 @@ class SetupWindow(QMainWindow):
             item.setData(Qt.UserRole, row["ip"])
             self.recorder_list.addItem(item)
 
-        # Field build 37 exposed a Qt selection mismatch: the first row could LOOK
-        # highlighted without itemSelectionChanged populating manual_ip. Make the
-        # first discovered recorder a real selection and mirror its address.
-        self.recorder_list.setCurrentRow(0)
-        current = self.recorder_list.currentItem()
-        if current:
-            current.setSelected(True)
-            self.manual_ip.setText(str(current.data(Qt.UserRole) or ""))
+        # Field build 37 exposed a Qt selection mismatch: a single discovered row
+        # could LOOK highlighted without itemSelectionChanged populating manual_ip.
+        # For exactly one candidate, make it a real selection and mirror its address.
+        # With multiple candidates, do NOT silently choose the first recorder.
+        if len(rows) == 1:
+            self.recorder_list.setCurrentRow(0)
+            current = self.recorder_list.currentItem()
+            if current:
+                current.setSelected(True)
+                self.manual_ip.setText(str(current.data(Qt.UserRole) or ""))
 
         recorder_word = "recorder" if len(rows) == 1 else "recorders"
         found = f"Found {len(rows)} possible {recorder_word}."
@@ -471,7 +480,11 @@ class SetupWindow(QMainWindow):
     def recorder_selected(self):
         items = self.recorder_list.selectedItems()
         if items:
-            self.manual_ip.setText(items[0].data(Qt.UserRole))
+            self.manual_ip.setText(str(items[0].data(Qt.UserRole) or ""))
+
+    def recorder_item_clicked(self, item):
+        if item is not None:
+            self.manual_ip.setText(str(item.data(Qt.UserRole) or ""))
 
     def recorder_continue(self):
         address = self.manual_ip.text().strip()
@@ -694,6 +707,54 @@ def _emit_line(line: str) -> None:
         pass
 
 
+def _run_ui_selftest() -> int:
+    """Exercise the exact packaged Qt recorder-selection path with no network."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    old_pd = os.environ.get("PROGRAMDATA")
+    try:
+        with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
+            os.environ["PROGRAMDATA"] = td
+            window = SetupWindow(Path(td) / "watchlog.ini")
+            window.go(2)
+            window.show_recorders([{
+                "ip": "10.10.10.2",
+                "label": "Dahua-family recorder candidate",
+                "source": "Network fingerprint",
+                "ports": [80, 37777],
+                "vendor_hint": "dahua",
+            }])
+            app.processEvents()
+            current = window.recorder_list.currentItem()
+            if current is None or not current.isSelected():
+                return 21
+            if window.manual_ip.text().strip() != "10.10.10.2":
+                return 22
+
+            # Recreate Build 37: visible/current row but empty address field.
+            window.manual_ip.clear()
+            window.recorder_continue()
+            app.processEvents()
+            if window.recorder_address != "10.10.10.2" or window.stack.currentIndex() != 3:
+                return 23
+
+            # Recreate the asynchronous discovery race.
+            window.go(2)
+            window.set_busy(True, "Searching the local network…")
+            if window.recorder_next.isEnabled():
+                return 24
+            window.set_busy(False)
+            if not window.recorder_next.isEnabled():
+                return 25
+            window.close()
+            return 0
+    finally:
+        if old_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = old_pd
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
@@ -701,7 +762,10 @@ def main() -> int:
     parser.add_argument("--status", action="store_true",
                         help="open the WatchLog Site Status window instead of first-run setup")
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("--ui-selftest", action="store_true")
     args, _unknown = parser.parse_known_args()
+    if args.ui_selftest:
+        return _run_ui_selftest()
     if args.version:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0

@@ -903,7 +903,7 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
         return {"configured": False, "verified": False,
                 "detail": "no push bridge configured in this build"}
 
-    progress("Finishing optional recorder integration…")
+    progress("Finishing optional recorder integration (up to 20 seconds)…")
     try:
         if _run is not None:
             code, out = _run()
