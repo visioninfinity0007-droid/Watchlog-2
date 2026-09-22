@@ -25,13 +25,17 @@ concurrency:
 
 jobs:
   build-real-installer:
-    name: Build real AI-enabled WatchLog installer
+    name: Build WatchLog Site Connector installer
     runs-on: windows-latest
     timeout-minutes: 45
     env:
       SUPABASE_URL: ${{ vars.WATCHLOG_SUPABASE_URL }}
       SUPABASE_PUBLISHABLE_KEY: ${{ vars.WATCHLOG_SUPABASE_PUBLISHABLE_KEY }}
       PUBLISHER_URL: ${{ inputs.publisher_url || vars.WATCHLOG_PUBLISHER_URL }}
+      # PC-free ("recorder push") destination. Optional: when the variable is unset the
+      # build simply ships without PC-free reporting, which is what every release before
+      # 0.4.11 did silently.
+      WATCHLOG_PUSH_BRIDGE_URL: ${{ vars.WATCHLOG_PUSH_BRIDGE_URL }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
       # Tag pushes (v*) are always production: they must hard-fail without valid
@@ -77,6 +81,9 @@ jobs:
             SupabasePublishableKey = $env:SUPABASE_PUBLISHABLE_KEY
           }
           if ($env:PUBLISHER_URL) { $releaseArgs['PublisherUrl'] = $env:PUBLISHER_URL }
+          if ($env:WATCHLOG_PUSH_BRIDGE_URL) {
+            $releaseArgs['PushBridgeUrl'] = $env:WATCHLOG_PUSH_BRIDGE_URL
+          }
 
           $pfx = $null
           try {
@@ -98,7 +105,7 @@ jobs:
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }
           }
 
-      - name: Verify real payloads, setup UI, AI self-test and checksum
+      - name: Verify real payloads, setup UI, connector self-test and checksum
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -107,7 +114,7 @@ jobs:
           $setup = Get-Item '.\dist-installer\WatchLog-Setup.exe'
           $checksumPath = '.\dist-installer\WatchLog-Setup.exe.sha256'
 
-          if ($agent.Length -lt 5MB) {
+          if ($agent.Length -lt 1MB) {
             throw "watchlog-agent.exe is too small ($($agent.Length) bytes); refusing a stub/incomplete release."
           }
           if ($setupUi.Length -lt 5MB) {
@@ -118,10 +125,11 @@ jobs:
           }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
 
-          # Prove the packaged AI runtime/model, not just the Python source tree.
-          $agentSelftest = & $agent.FullName --selftest 2>&1 | Out-String
+          # Prove the packaged Site Connector contains discovery/control/evidence
+          # modules without requiring any customer network or local AI model.
+          $agentSelftest = & $agent.FullName --connector-selftest 2>&1 | Out-String
           Write-Host $agentSelftest
-          if ($LASTEXITCODE -ne 0) { throw "packaged agent self-test failed with exit $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "packaged connector self-test failed with exit $LASTEXITCODE" }
           # Single version source: the PACKAGED agent must report the build version
           # (0.3.3 shipped reporting 0.3.0 from analytics_agent's stale constant). Derive the
           # expected version from wl_version.py — never hardcode it here (that would itself become a

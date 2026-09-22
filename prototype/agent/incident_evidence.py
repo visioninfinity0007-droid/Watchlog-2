@@ -14,6 +14,8 @@ import threading
 import requests
 
 import watchlog_agent as core
+import connector_capabilities
+import connector_rediscovery
 from drivers import DriverError
 
 POLL_SECONDS = 15
@@ -135,6 +137,14 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     )
                     continue
                 _upload(cloud, state, request_id, data, driver.name)
+                connector_rediscovery.save_identity(
+                    cfg, info, getattr(driver, "base_url", cfg.nvr_url)
+                )
+                connector_capabilities.mark_proof(
+                    cfg,
+                    "operations_evidence_clip",
+                    {"driver": driver.name, "bytes": len(data)},
+                )
                 core.log(
                     f"incident footage: uploaded {len(data) // 1024} KB for request {request_id[:8]}"
                 )

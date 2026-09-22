@@ -214,6 +214,34 @@ def has_recording(driver: DahuaDriver, channel: str, start: datetime, end: datet
     return bool(find_recordings(driver, channel, start, end, max_items=1))
 
 
+def _download_exact_file(driver: DahuaDriver, file_path: str) -> bytes:
+    """Download one exact archive object returned by mediaFileFind.
+
+    Some Dahua/XVR firmware accepts archive export through RPC_Loadfile while
+    returning an empty body for the time-window loadfile.cgi request. The
+    FilePath is recorder-issued metadata from the authenticated archive search,
+    not caller input. Transfer remains bounded and the streamed response is
+    always closed.
+    """
+    path = str(file_path or "").strip()
+    if not path.startswith("/"):
+        raise DriverError("recorder archive result did not include a usable file path")
+
+    response = _request(
+        driver,
+        "/cgi-bin/RPC_Loadfile" + path,
+        stream=True,
+        timeout=max(driver.timeout, DOWNLOAD_TIMEOUT),
+    )
+    try:
+        return _read_bounded(response)
+    finally:
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES) -> bytes:
     chunks: list[bytes] = []
     total = 0
@@ -237,44 +265,80 @@ def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES) -> bytes:
 
 
 def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime) -> bytes | None:
-    """Retrieve a bounded recorder-native DAV clip for one requested window."""
+    """Retrieve a bounded recorder-native DAV clip for one requested window.
+
+    Dahua unfortunately uses different channel numbering across these APIs:
+    mediaFileFind uses the zero-based native index, while loadfile.cgi's
+    download-by-time ChannelNo is explicitly one-based. Keep those contracts
+    separate; reusing the search index here makes WatchLog channel 1 become
+    download channel 0, which can return an empty file on XVR firmware.
+    """
     try:
-        native_channel = int(str(channel)) - 1
+        download_channel = int(str(channel))
     except ValueError as error:
         raise DriverError(f"invalid camera channel: {channel}") from error
-    if native_channel < 0:
+    if download_channel <= 0:
         raise DriverError(f"invalid camera channel: {channel}")
 
     local_start, local_end = _localize_window(driver, start, end)
-    # Search first. This both proves the archive has media in the requested
-    # channel/window and prevents a download call for an empty period.
-    if not find_recordings(driver, channel, start, end, max_items=1):
+    # Search first. Besides proving that the requested channel/time has media,
+    # retain the exact recorder-issued FilePath as a firmware fallback.
+    recordings = find_recordings(driver, channel, start, end, max_items=1)
+    if not recordings:
         return None
-
-    response = _request(
-        driver,
-        "/cgi-bin/loadfile.cgi",
-        params={
-            "action": "startLoad",
-            "channel": native_channel,
-            "startTime": _fmt(local_start),
-            "endTime": _fmt(local_end),
-            "subtype": 0,
-        },
-        stream=True,
-        timeout=max(driver.timeout, DOWNLOAD_TIMEOUT),
-    )
-    # A streamed response holds the underlying connection open until it is fully
-    # consumed OR explicitly closed. _read_bounded may raise (empty / oversized /
-    # error-body) or return early, so the response is ALWAYS closed here — a leaked
-    # streamed connection would eventually exhaust the recorder's session pool.
+    exact_path = recordings[0].get("FilePath") or recordings[0].get("filepath")
+    exact_length = recordings[0].get("Length") or recordings[0].get("length")
     try:
+        exact_length = int(exact_length) if exact_length not in (None, "") else None
+    except (TypeError, ValueError):
+        exact_length = None
+
+    primary_error = None
+    response = None
+    try:
+        response = _request(
+            driver,
+            "/cgi-bin/loadfile.cgi",
+            params={
+                "action": "startLoad",
+                "channel": download_channel,
+                "startTime": _fmt(local_start),
+                "endTime": _fmt(local_end),
+                "subtype": 0,
+            },
+            stream=True,
+            timeout=max(driver.timeout, DOWNLOAD_TIMEOUT),
+        )
         return _read_bounded(response)
+    except (DriverError, requests.RequestException) as error:
+        # DH-XVR firmware variants have been observed to expose a valid archive
+        # FilePath while the time-window download returns no bytes. Try the exact
+        # authenticated archive object before declaring footage unavailable.
+        primary_error = error
     finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if exact_path and (exact_length is None or exact_length <= MAX_CLIP_BYTES):
         try:
-            response.close()
-        except Exception:  # noqa: BLE001 — close must never mask the real outcome
-            pass
+            return _download_exact_file(driver, exact_path)
+        except Exception as fallback_error:  # noqa: BLE001
+            raise DriverError(
+                "recorder archive exists but both bounded HTTP download methods failed"
+            ) from fallback_error
+
+    if exact_path and exact_length and exact_length > MAX_CLIP_BYTES:
+        raise DriverError(
+            "recorder time-window export failed and the matching archive file exceeds "
+            "the bounded evidence limit; recorded-stream extraction is required"
+        ) from primary_error
+
+    if primary_error is not None:
+        raise primary_error
+    raise DriverError("recorder archive exists but no downloadable path was returned")
 
 
 def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor=None, limit: int = 500) -> dict:
@@ -388,5 +452,5 @@ def install() -> None:
     DahuaDriver.historical_capability = lambda self: historical_capability(self)
 
 
-__all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
+__all__ = ["find_recordings", "has_recording", "get_clip", "_download_exact_file", "enumerate_historical_events",
            "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install"]
