@@ -51,7 +51,7 @@ import random
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -167,6 +167,9 @@ class Config:
         self.nvr_username = get("nvr_username") or ""
         self.nvr_password = get("nvr_password") or ""
         self.nvr_driver = (get("nvr_driver") or "auto").strip().lower()
+        # PC-free ("recorder push") destination, baked in by the build. Empty = the
+        # feature is unavailable in this build and every push path no-ops.
+        self.push_bridge_url = (get("push_bridge_url") or "").strip().rstrip("/")
         self._ini_path = ini_path
         # Production: the recorder credential lives in the encrypted split store
         # and is self-decrypted here, so every launch context resolves it the
@@ -988,6 +991,29 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
                     res = (site_control.execute_write(driver, action, cmd.get("params"))
                            if is_write else
                            site_control.execute_read(driver, action, cmd.get("params")))
+
+                    # A bounded clip probe is an explicit field proof. Promote clip
+                    # capability only after real bytes came back from THIS recorder.
+                    if (not is_write and action == "probe_clip_export"
+                            and res.get("ok")
+                            and (res.get("data") or {}).get("obtained")):
+                        try:
+                            import connector_capabilities
+                            import connector_rediscovery
+                            info = driver.probe()
+                            connector_rediscovery.save_identity(
+                                cfg, info, getattr(driver, "base_url", cfg.nvr_url)
+                            )
+                            connector_capabilities.mark_proof(
+                                cfg,
+                                "operations_evidence_clip",
+                                {
+                                    "driver": getattr(driver, "name", cfg.nvr_driver),
+                                    "bytes": int((res.get("data") or {}).get("bytes") or 0),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                 finally:
                     try:
                         driver.close()
@@ -1007,6 +1033,51 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
 
 
 # --- commands ----------------------------------------------------------
+
+
+def cmd_connector_selftest() -> int:
+    """Offline packaging check for the connectivity-first Site Connector.
+
+    This intentionally performs no LAN/cloud I/O. It proves the frozen build
+    contains the three recorder connection strategies plus the archive/control
+    modules needed by the connector. Hardware validation remains a separate
+    field test and is never implied by this check.
+    """
+    problems = []
+    required_drivers = ("dahua-cgi", "hikvision-isapi", "onvif")
+    for name in required_drivers:
+        if name not in DRIVERS:
+            problems.append(f"missing recorder driver: {name}")
+
+    try:
+        import dahua_archive as _archive
+        import recorder_probe as _probe
+        import site_control as _site_control
+        if not callable(getattr(discover, "sweep", None)):
+            problems.append("LAN sweep unavailable")
+        if not callable(getattr(wsdiscovery, "discover", None)):
+            problems.append("WS-Discovery unavailable")
+        if not callable(getattr(_archive, "find_recordings", None)):
+            problems.append("archive search unavailable")
+        if not callable(getattr(_archive, "get_clip", None)):
+            problems.append("clip extraction unavailable")
+        if not callable(getattr(_probe, "candidates", None)):
+            problems.append("recorder port fallback unavailable")
+        if not hasattr(_site_control, "execute_read"):
+            problems.append("site-control read plane unavailable")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"connector module load failed: {type(exc).__name__}")
+
+    print(f"watchlog-site-connector {AGENT_VERSION}")
+    print("drivers: " + ", ".join(required_drivers))
+    print("discovery: WS-Discovery + multi-NIC TCP/vendor fingerprint fallback")
+    print("local AI: disabled in production connector; server-side vision is authoritative")
+    if problems:
+        for problem in problems:
+            print("FAIL: " + problem)
+        return 1
+    print("RESULT: PASS")
+    return 0
 
 def cmd_selftest() -> int:
     """
@@ -1075,9 +1146,72 @@ def cmd_selftest() -> int:
     return 2
 
 
+def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
+                       _open_driver=None) -> int:
+    """Point the RECORDER at WatchLog so the site reports with no PC running.
+
+    RUNS AS ITS OWN PROCESS, deliberately. The setup wizard used to do this inline, and
+    in 0.4.11 it took the whole installer down with a native crash the moment the feature
+    was first enabled on real hardware. Recorder-push is a resilience BONUS layered on a
+    working agent install -- it must never be able to kill the thing that installs it. As
+    a separate process, any failure here (Python exception, native crash, hang, a recorder
+    that wedges mid-request) is contained: the parent sees an exit code and moves on.
+
+    It also means the recorder still gets configured even when the wizard dies, because
+    the background agent can run this on its own schedule with no installer present.
+
+    Prints a single machine-readable PUSH_JSON line. Exit 0 = the recorder confirmed it.
+    """
+    result = {"configured": False, "verified": False, "detail": ""}
+    try:
+        base = (cfg.push_bridge_url or "").strip().rstrip("/")
+        if not base:
+            result["detail"] = "no push bridge configured in this build"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        state = _state if _state is not None else load_state(cfg.state_path)
+        if not state or not state.get("agent_id") or not state.get("agent_key"):
+            result["detail"] = "this site is not enrolled yet"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
+        issued = cloud.call("wl_agent_issue_push_token",
+                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+        token = (issued or {}).get("token") if isinstance(issued, dict) else None
+        if not token:
+            result["detail"] = "WatchLog did not issue a push token"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        driver = (_open_driver or open_driver)(cfg)
+        configure = getattr(driver, "configure_push", None)
+        if configure is None:
+            result["detail"] = "this recorder model does not support recorder-push"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        out = configure(f"{base}/push/{token}") or {}
+        result = {"configured": bool(out.get("applied")),
+                  "verified": bool(out.get("verified")),
+                  "detail": str(out.get("detail") or "")}
+        print("PUSH_JSON " + json.dumps(result), flush=True)
+        log(f"recorder push: configured={result['configured']} "
+            f"verified={result['verified']} {result['detail']}")
+        return 0 if result["verified"] else 2
+    except Exception as exc:  # noqa: BLE001 - a bonus layer never fails loudly
+        result["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+        try:
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return 2
+
+
 def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
                _heartbeat=None, _spool_factory=None, _archive=None, _detector=None,
-               _ini_text=None, live_seconds: int | None = None) -> int:
+               _clip_probe=None, _ini_text=None, live_seconds: int | None = None) -> int:
     """0.4.4 §10 — post-install acceptance self-test.
 
     Exercises the REAL runtime chain on THIS site — configuration, local identity, cloud auth,
@@ -1103,7 +1237,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         spool_factory = _spool_factory
     archive_fn = _archive or dahua_archive.prove_recorder_archive
     live_seconds = int(live_seconds if live_seconds is not None
-                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 20))
+                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 10))
     state = _state if _state is not None else load_state(cfg.state_path)
 
     print(f"watchlog-agent {AGENT_VERSION} — post-install acceptance self-test\n")
@@ -1153,6 +1287,49 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         proof = archive_fn(driver, channel)
         status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
         return status, (proof or {}).get("detail")
+
+    def _clip_check():
+        """Connector release gate: prove actual bounded media bytes, not just archive search."""
+        driver = holder.get("driver")
+        chans = holder.get("channels") or []
+        if driver is None or not chans:
+            return "blocked", "recorder/cameras unavailable to prove evidence export"
+        channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        if not channel:
+            return "blocked", "no camera channel available for evidence proof"
+
+        try:
+            dahua_archive.install()
+        except Exception:  # noqa: BLE001
+            pass
+
+        if _clip_probe is not None:
+            data = _clip_probe(driver, channel)
+        else:
+            seconds = max(5, min(60, int(getattr(cfg, "connector_accept_clip_seconds", 10))))
+            end = now_utc() - timedelta(seconds=5)  # let the recorder flush the newest segment
+            start = end - timedelta(seconds=seconds)
+            data = driver.get_clip(str(channel), start, end)
+
+        if not data:
+            return "blocked", "recorder did not return evidence video bytes"
+
+        try:
+            import connector_capabilities
+            import connector_rediscovery
+            info = holder.get("info")
+            if info is not None:
+                connector_rediscovery.save_identity(
+                    cfg, info, getattr(driver, "base_url", cfg.nvr_url)
+                )
+            connector_capabilities.mark_proof(
+                cfg,
+                "operations_evidence_clip",
+                {"driver": getattr(driver, "name", cfg.nvr_driver), "bytes": len(data)},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return "pass", f"evidence video export proven ({len(data)} bytes)"
 
     def _live():
         driver = holder.get("driver")
@@ -1225,20 +1402,54 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
             return "blocked", "a plaintext recorder password is present in watchlog.ini (must live only in the encrypted store)"
         return "pass", "no plaintext recorder password on disk"
 
+    # ORDER MATTERS (0.4.6). Every REQUIRED check runs first, so the Ready/Blocked verdict is
+    # decided from fast local+cloud probes in a few seconds. The three slow probes are all soft --
+    # they can only ever add a warning, never block -- so they must not stand between the customer
+    # and their answer. Dependencies are preserved: archive and live still run after the recorder
+    # is open and cameras are enumerated.
+    #
+    # Every check carries its own "budget" in seconds. A wedged probe is the thing that left 0.4.5
+    # spinning on "Running final acceptance checks", so no probe is allowed to run unbounded:
+    # a hard check over budget is BLOCKED (fail closed), a soft one only warns.
+    connector_mode = bool(getattr(cfg, "connector_mode", False))
     checks = [
-        {"key": "config", "label": "Configuration present", "hard": True, "run": _config},
-        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True, "run": _identity},
-        {"key": "runtime", "label": "Runtime version + build identity", "hard": False, "run": _runtime},
-        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True, "run": _cloud},
-        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder},
-        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras},
-        {"key": "archive", "label": "Recorded footage retrievable (outage recovery)",
-         "hard": False, "run": _archive_check},
-        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live},
-        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai},
-        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool},
-        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True, "run": _security},
+        {"key": "config", "label": "Configuration present", "hard": True, "run": _config,
+         "budget": 10},
+        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True,
+         "run": _identity, "budget": 10},
+        {"key": "cloud", "label": "WatchLog cloud authenticates this connector", "hard": True,
+         "run": _cloud, "budget": 25},
+        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder,
+         "budget": 25},
+        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras,
+         "budget": 30},
+        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool,
+         "budget": 20},
+        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True,
+         "run": _security, "budget": 10},
     ]
+    if connector_mode and getattr(cfg, "connector_require_clip_acceptance", False):
+        checks.append(
+            {"key": "clip", "label": "Evidence video export proven", "hard": True,
+             "run": _clip_check, "budget": 75}
+        )
+
+    # Informational/soft checks: a quiet event stream or unstamped dev build must not
+    # block a functioning connector. Local WatchLog AI is intentionally absent in
+    # connector mode and is therefore not tested here.
+    checks.extend([
+        {"key": "runtime", "label": "Runtime version + build identity", "hard": False,
+         "run": _runtime, "budget": 15},
+        {"key": "archive", "label": "Recorded archive searchable (outage recovery)",
+         "hard": False, "run": _archive_check, "budget": 25},
+        {"key": "live", "label": "Recorder event stream", "hard": False, "run": _live,
+         "budget": live_seconds + 10},
+    ])
+    if not connector_mode:
+        checks.append(
+            {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False,
+             "run": _ai, "budget": 30}
+        )
 
     report = acceptance.run_checks(checks, log=print)
     stats = report["summary"]
@@ -1945,9 +2156,14 @@ def main() -> None:
     ap.add_argument("--scan", metavar="IP",
                     help="scan an address for a recorder and report what "
                          "answers; needs no config at all")
+    ap.add_argument("--connector-selftest", action="store_true",
+                    help="offline packaging check for recorder discovery/control/evidence; "
+                         "needs no config or network")
     ap.add_argument("--selftest", action="store_true",
                     help="prove the on-site AI false-alarm filter is packaged "
                          "and working in this build; needs no config")
+    ap.add_argument("--configure-push", action="store_true",
+                    help="point the recorder at the WatchLog push bridge (PC-free reporting)")
     ap.add_argument("--accept", action="store_true",
                     help="run the post-install acceptance self-test (identity, cloud, "
                          "recorder, cameras, archive, live events, spool) and exit")
@@ -1972,6 +2188,9 @@ def main() -> None:
         # binary still answers truthfully.
         print(AGENT_VERSION)
         return
+
+    if args.connector_selftest:
+        raise SystemExit(cmd_connector_selftest())
 
     if args.selftest:
         raise SystemExit(cmd_selftest())
@@ -2004,6 +2223,9 @@ def main() -> None:
     # Post-install acceptance runs against the config as-is and must never launch the
     # setup wizard — an unconfigured site should report a 'blocked' config check, not
     # be walked through setup.
+    if args.configure_push:
+        raise SystemExit(cmd_configure_push(cfg))
+
     if args.accept:
         raise SystemExit(cmd_accept(cfg))
 
@@ -2123,8 +2345,15 @@ def main() -> None:
             mapping = cloud.call("wl_sync_cameras", p_agent_id=state["agent_id"],
                                  p_agent_key=state["agent_key"],
                                  p_cameras=channels)
-            log(f"cameras synced: {len(mapping)} channels")
-        except RuntimeError as e:
+            log(f"cameras synced: {len(mapping or [])} channels")
+        # BOOT SAFETY: catch the TRANSPORT failure too, not just CloudError(RuntimeError).
+        # The -AtStartup trigger fires before the network stack is ready. The NVR is on the
+        # same LAN so the recorder probe above SUCCEEDS, then this first cloud call raises
+        # requests.ConnectionError (an OSError, NOT a RuntimeError) and used to escape
+        # uncaught -- killing the agent before it ever reached its resilient run loop, and
+        # taking the launcher's restart loop down with it. The run loop below retries
+        # forever, so a startup sync failure must only WARN.
+        except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"WARNING: camera sync failed: {str(e).splitlines()[0][:160]}")
 
     # Report what analytics the recorder supports, so the portal can show
@@ -2135,7 +2364,7 @@ def main() -> None:
             cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
                        p_agent_key=state["agent_key"], p_capabilities=capabilities)
             log(f"analytics reported: {len(capabilities['channels'])} channel(s)")
-        except RuntimeError as e:
+        except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
 
     cmd_run(cfg, state, cloud, once=args.once, device=device, channels=channels)

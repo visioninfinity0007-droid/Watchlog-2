@@ -15,7 +15,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 
@@ -24,9 +27,10 @@ def _programdata_watchlog() -> Path:
 
 
 class StatusController:
-    def __init__(self, *, run_agent=None, agent_cmd=None, timeout: int = 90,
+    def __init__(self, *, run_agent=None, agent_cmd=None, timeout: int = 240,
                  log_dir=None):
         self._run = run_agent or self._default_runner
+        self._streams_output = run_agent is None      # only the built-in runner tails a log
         self._agent_cmd = list(agent_cmd) if agent_cmd else self._resolve_agent_cmd()
         self._timeout = timeout
         self._log_dir = Path(log_dir) if log_dir else _programdata_watchlog()
@@ -42,11 +46,18 @@ class StatusController:
                 return [str(exe)]
         return [sys.executable, str(Path(__file__).resolve().parent / "watchlog_agent.py")]
 
-    def _default_runner(self, args, timeout=None):  # pragma: no cover - real subprocess path
-        import subprocess
-        proc = subprocess.run(self._agent_cmd + list(args), capture_output=True, text=True,
-                              timeout=timeout or self._timeout)
-        return proc.returncode, (proc.stdout or "")
+    def _default_runner(self, args, timeout=None, on_output=None):  # pragma: no cover
+        """Run the agent CLI with a deadline we can actually enforce.
+
+        The hardened implementation lives in proc_util.run_bounded and is shared with
+        setup_backend, because writing this twice is exactly how the 0.4.7 wizard hang
+        got reintroduced after 0.4.6 fixed it here.
+        """
+        import proc_util
+        return proc_util.run_bounded(self._agent_cmd + list(args),
+                                     timeout or self._timeout,
+                                     on_output=on_output,
+                                     skip_prefix="ACCEPTANCE_JSON")
 
     @staticmethod
     def _tagged(stdout: str, tag: str):
@@ -88,13 +99,16 @@ class StatusController:
     # --- actions ------------------------------------------------------------
     CANNOT_VERIFY = "SETUP INCOMPLETE — WATCHLOG COULD NOT VERIFY THIS INSTALLATION"
 
-    def run_acceptance(self) -> dict:
+    def run_acceptance(self, *, progress=None) -> dict:
         """FAIL CLOSED (P1.1): only a REAL, valid acceptance report may produce a Ready verdict.
         A command that could not launch, timed out, returned no report, returned a malformed
         report, or raised is treated as 'could not verify' and BLOCKS Ready — never a green pass.
         """
         try:
-            rc, out = self._run(["--accept"])
+            if progress is not None and self._streams_output:
+                rc, out = self._run(["--accept"], on_output=progress)
+            else:
+                rc, out = self._run(["--accept"])
         except Exception:  # noqa: BLE001 — launch failure / timeout / any exception -> cannot verify
             return {"exit": -1, "ready": False, "verified": False, "verdict": self.CANNOT_VERIFY,
                     "failed": [], "warnings": [], "report": None}

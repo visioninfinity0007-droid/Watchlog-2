@@ -1,7 +1,7 @@
 """Branded graphical first-run setup for WatchLog on Windows.
 
 Customer path:
-Welcome -> Site Code -> Find Recorder -> Recorder Login -> Camera Context ->
+Welcome -> Site Code -> Find Recorder -> Recorder Login -> Camera Check ->
 Connect -> Ready.
 
 All network/recorder work runs off the Qt UI thread. Detailed diagnostic output
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # A PyInstaller --windowed process has no console streams. Existing recorder
@@ -19,11 +20,20 @@ from pathlib import Path
 # letting a diagnostic print crash the GUI.
 _LOG_HANDLE = None
 if os.name == "nt":
-    log_dir = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    _LOG_HANDLE = (log_dir / "setup.log").open("a", encoding="utf-8", buffering=1)
-    sys.stdout = _LOG_HANDLE
-    sys.stderr = _LOG_HANDLE
+    # Guarded: this runs at IMPORT, before any handler exists. A locked or unwritable
+    # setup.log (Defender, a support-bundle read, a full disk) would raise here and kill a
+    # --windowed build with NO window and no message -- the customer sees the installer do
+    # nothing at all. Fall back to temp, then to leaving stdio alone.
+    for _candidate in (Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog",
+                       Path(tempfile.gettempdir())):
+        try:
+            _candidate.mkdir(parents=True, exist_ok=True)
+            _LOG_HANDLE = (_candidate / "setup.log").open("a", encoding="utf-8", buffering=1)
+            sys.stdout = _LOG_HANDLE
+            sys.stderr = _LOG_HANDLE
+            break
+        except Exception:  # noqa: BLE001 - logging may never prevent setup from running
+            _LOG_HANDLE = None
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
@@ -118,6 +128,7 @@ class SetupWindow(QMainWindow):
         self.public = backend.read_public_defaults(config_path)
         self.pool = QThreadPool.globalInstance()
         self.exit_code = 1
+        self.site_connected = False   # set once the agent is registered + running
         self.recorder_address = self.public.get("nvr_url", "")
         self.recorder_user = self.public.get("nvr_username", "admin")
         self.recorder_password = ""
@@ -281,28 +292,21 @@ class SetupWindow(QMainWindow):
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
 
-        # Cameras
-        page, l = self._page("Camera context", "Confirm what WatchLog found",
-            "Camera names come from the recorder. Purpose suggestions help Analytics Studio start with useful defaults and can be changed later.")
+        # Cameras — connectivity proof only. Naming/purpose/analytics belong in the portal.
+        page, l = self._page("Camera check", "Confirm the recorder channels",
+            "WatchLog has signed in to the recorder and read its camera inventory. Camera naming, purpose and analytics configuration are done later in the WatchLog portal.")
         c, cl = card_layout()
         self.recorder_summary = label("", "muted")
         cl.addWidget(self.recorder_summary)
-        site_row = QHBoxLayout()
-        site_row.addWidget(label("SITE TYPE", "eyebrow"))
-        self.site_type = QComboBox()
-        for key, text in backend.SITE_TYPES:
-            self.site_type.addItem(text, key)
-        self.site_type.currentIndexChanged.connect(self.refresh_purpose_suggestions)
-        site_row.addWidget(self.site_type, 1)
-        cl.addLayout(site_row)
-        self.camera_table = QTableWidget(0, 4)
-        self.camera_table.setHorizontalHeaderLabels(["Channel", "Camera name (editable)", "Monitor", "Purpose"])
+        self.camera_table = QTableWidget(0, 2)
+        self.camera_table.setHorizontalHeaderLabels(["Channel", "Recorder camera name"])
         self.camera_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.camera_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.camera_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.camera_table.setMinimumHeight(220)
         cl.addWidget(self.camera_table)
+        cl.addWidget(label(
+            "All discovered channels are connected by default. You can rename, ignore or assign camera purposes from the portal after setup.",
+            "muted"))
         l.addWidget(c)
         self._nav(l, 3, "Connect WatchLog", self.begin_finalize)
         self.stack.addWidget(page)
@@ -352,7 +356,7 @@ class SetupWindow(QMainWindow):
         c, cl = card_layout()
         self.success_summary = label("")
         cl.addWidget(self.success_summary)
-        cl.addWidget(label("You can now return to the WatchLog portal. WatchLog will keep Site Health and Analytics up to date automatically.", "muted"))
+        cl.addWidget(label("You can now return to the WatchLog portal. The Site Connector will keep the recorder connection, camera health, events and evidence services online automatically.", "muted"))
         l.addWidget(c)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -387,10 +391,17 @@ class SetupWindow(QMainWindow):
     def run_worker(self, fn, args, on_success, busy_message: str, **kwargs):
         self.set_busy(True, busy_message)
         worker = Worker(fn, *args, **kwargs)
-        worker.signals.progress.connect(self.status.setText)
+        worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(lambda result: self._worker_ok(on_success, result))
         worker.signals.failed.connect(self._worker_error)
         self.pool.start(worker)
+
+    def _on_progress(self, message: str):
+        """Surface live worker progress. The Connecting page has its own label, so mirror it there
+        as well — an indeterminate bar with no changing text is indistinguishable from a hang."""
+        self.status.setText(message)
+        if self.stack.currentIndex() == 5:
+            self.progress_label.setText(message)
 
     def _worker_ok(self, callback, result):
         self.set_busy(False)
@@ -403,6 +414,11 @@ class SetupWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
             self.retry_btn.show()
+            # Retry was the ONLY control here, so a technician whose setup failed had no
+            # way to export a support bundle and no way out except killing the window --
+            # which then aborted the NSIS install. Mirror the acceptance-failure page.
+            self.incomplete_bundle_btn.show()
+            self.incomplete_exit_btn.show()
         else:
             QMessageBox.warning(self, "WatchLog Setup", message)
 
@@ -430,7 +446,17 @@ class SetupWindow(QMainWindow):
             item.setData(Qt.UserRole, row["ip"])
             self.recorder_list.addItem(item)
         recorder_word = "recorder" if len(rows) == 1 else "recorders"
-        self.status.setText(f"Found {len(rows)} possible {recorder_word}.")
+        found = f"Found {len(rows)} possible {recorder_word}."
+        if len(rows) > 1:
+            # WatchLog monitors exactly ONE recorder per installation: the agent holds a
+            # single nvr_url, and cameras are unique per (site_id, channel), so pointing a
+            # second recorder at the same site SILENTLY overwrites the first one's camera
+            # rows and stops monitoring it. A technician who picks one here and leaves on a
+            # green screen would believe a 2-recorder site was fully covered. Say it.
+            found += (" WatchLog monitors ONE recorder per installation - pick the one this"
+                      " PC should monitor. A second recorder needs its own WatchLog site and"
+                      " its own PC.")
+        self.status.setText(found)
 
     def recorder_selected(self):
         items = self.recorder_list.selectedItems()
@@ -466,54 +492,30 @@ class SetupWindow(QMainWindow):
         self.recorder_result = result
         self.recorder_summary.setText(
             f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
-        site_default = self.public.get("site_type", "custom")
-        idx = self.site_type.findData(site_default)
-        self.site_type.setCurrentIndex(idx if idx >= 0 else self.site_type.findData("custom"))
         self.populate_cameras()
         self.go(4)
 
     def populate_cameras(self):
         channels = self.recorder_result["channels"] if self.recorder_result else []
         self.camera_table.setRowCount(len(channels))
-        site = self.site_type.currentData() or "custom"
         for row, camera in enumerate(channels):
-            ch = QTableWidgetItem(camera["channel"])
-            ch.setFlags(ch.flags() & ~Qt.ItemIsEditable)
-            name = QTableWidgetItem(camera["name"])           # EDITABLE: give this camera a useful name
-            self.camera_table.setItem(row, 0, ch)
-            self.camera_table.setItem(row, 1, name)
-            monitor = QComboBox()
-            monitor.addItem("Monitor", True)
-            monitor.addItem("Ignore / unused", False)
-            monitor.setCurrentIndex(0)                        # discovered cameras are monitored by default
-            self.camera_table.setCellWidget(row, 2, monitor)
-            combo = QComboBox()
-            for key, text in backend.PURPOSES:
-                combo.addItem(text, key)
-            suggested = backend.suggest_purpose(camera["name"], site)
-            idx = combo.findData(suggested)
-            combo.setCurrentIndex(max(0, idx))
-            self.camera_table.setCellWidget(row, 3, combo)
-
-    def refresh_purpose_suggestions(self):
-        if self.recorder_result:
-            self.populate_cameras()
+            channel_item = QTableWidgetItem(str(camera["channel"]))
+            channel_item.setFlags(channel_item.flags() & ~Qt.ItemIsEditable)
+            name_item = QTableWidgetItem(camera.get("name") or f"Camera {camera['channel']}")
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.camera_table.setItem(row, 0, channel_item)
+            self.camera_table.setItem(row, 1, name_item)
 
     def profiles(self):
-        rows = []
-        for row in range(self.camera_table.rowCount()):
-            monitor = self.camera_table.cellWidget(row, 2)
-            combo = self.camera_table.cellWidget(row, 3)
-            monitored = bool(monitor.currentData()) if monitor else True
-            rows.append({
-                "channel": self.camera_table.item(row, 0).text(),
-                "name": self.camera_table.item(row, 1).text().strip() or self.camera_table.item(row, 0).text(),
-                "purpose": combo.currentData() if combo else "custom",
-                "monitored": monitored,
-                # analytics only runs on monitored cameras; an ignored channel is not analysed
-                "analytics_enabled": monitored,
-            })
-        return rows
+        """Connectivity-first defaults; richer camera configuration belongs in portal."""
+        channels = self.recorder_result["channels"] if self.recorder_result else []
+        return [{
+            "channel": str(camera["channel"]),
+            "name": camera.get("name") or f"Camera {camera['channel']}",
+            "purpose": "custom",
+            "monitored": True,
+            "analytics_enabled": True,
+        } for camera in channels]
 
     def begin_finalize(self):
         if self._busy:
@@ -528,7 +530,7 @@ class SetupWindow(QMainWindow):
         public = dict(self.public)
         args = (self.config_path, public, self.code_edit.text().strip(), self.recorder_address,
                 self.recorder_user, self.recorder_password,
-                self.site_type.currentData() or "custom", self.profiles())
+                "custom", self.profiles())
         self.run_worker(backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
                         hint=self.recorder_hint)
         # On the connecting page use the page-local progress label too.
@@ -538,11 +540,41 @@ class SetupWindow(QMainWindow):
         # Install is proven; now run the FULL acceptance suite before declaring Ready. The setup
         # never shows a green Ready state after a hard acceptance failure (0.4.4 P8).
         self.final_result = result
+        # The background agent was already started inside finalize_install, on the worker
+        # thread. It must NOT be started from here: this is the GUI thread, and blocking it
+        # freezes the window mid-repaint -- which is exactly why 0.4.7 appeared to hang on
+        # "Confirming the WatchLog connection" while it was really running my own code.
+        self.agent_start = (result or {}).get("agent_start") or {}
+        self.site_connected = bool((result or {}).get("connected"))
         self.progress_label.setText("Running final acceptance checks…")
         from status_controller import StatusController
         ctrl = StatusController()
-        self.run_worker(lambda progress=None: ctrl.run_acceptance(), (), self.acceptance_done,
-                        "Running final acceptance checks…")
+        self.run_worker(lambda progress=None: ctrl.run_acceptance(progress=progress), (),
+                        self.acceptance_done, "Running final acceptance checks…")
+
+    def _push_line(self) -> str:
+        """PC-free reporting status. Only claims active when the RECORDER confirmed the
+        config on read-back; anything else states what actually happened."""
+        info = (getattr(self, "final_result", None) or {}).get("recorder_push") or {}
+        if info.get("verified"):
+            return "✓ PC-free reporting active (the recorder reports even if this PC is off)"
+        if info.get("configured"):
+            return f"! PC-free reporting not confirmed by the recorder — {info.get('detail', '')}"
+        return "· PC-free reporting not enabled (this PC does the reporting)"
+
+    def _background_line(self) -> str:
+        """Say plainly whether the BACKGROUND service is running.
+
+        Only claims what was actually verified: register-service.ps1 throws unless the
+        scheduled task reaches Running, so "started" is a real check, not an assumption.
+        It deliberately does NOT claim the site is "reporting" -- the local agent log is
+        written through a PowerShell redirection that does not reach disk promptly, and
+        0.4.8 wrongly reported failure by trusting it."""
+        info = getattr(self, "agent_start", None) or {}
+        if info.get("started"):
+            return "✓ WatchLog is running in the background (starts automatically at boot)"
+        return ("! WatchLog is NOT running in the background yet — this site will not "
+                "report until that is fixed")
 
     def acceptance_done(self, acc):
         result = self.final_result or {}
@@ -555,7 +587,9 @@ class SetupWindow(QMainWindow):
         if acc.get("ready", False):
             base = (f"✓ Recorder verified\n✓ WatchLog site linked\n"
                     f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
-                    f"✓ Recorder credential encrypted on this PC\n\n"
+                    f"✓ Recorder credential encrypted on this PC\n"
+                    f"{self._background_line()}\n"
+                    f"{self._push_line()}\n\n"
                     f"{result.get('vendor', '')} {result.get('model', '')}")
             if acc.get("warnings"):
                 base += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in acc["warnings"])
@@ -602,10 +636,23 @@ class SetupWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply != QMessageBox.Yes:
                 return
-        self.exit_code = 1
+        # A CONNECTED site is a SUCCESSFUL install, even if the customer closes the
+        # window during verification. Exiting non-zero makes NSIS abort and skip the
+        # uninstaller + Add/Remove Programs entries, leaving a working site that Windows
+        # does not know is installed. Verification status belongs on the screen, not in
+        # the installer's exit code.
+        self.exit_code = 0 if getattr(self, "site_connected", False) else 1
         self.close()
 
     def closeEvent(self, event: QCloseEvent):
+        # The window X / Alt+F4 does NOT go through cancel(), so it kept the exit_code=1
+        # default even on a fully connected site. NSIS treats non-zero as a failed install
+        # and Aborts, skipping WriteUninstaller and the Add/Remove Programs keys -- which is
+        # exactly what left a customer with a working, reporting site that Windows did not
+        # know was installed. Apply the same rule here: a connected site is a successful
+        # install however the window was closed.
+        if getattr(self, "site_connected", False) and self.exit_code != 0:
+            self.exit_code = 0
         event.accept()
 
 

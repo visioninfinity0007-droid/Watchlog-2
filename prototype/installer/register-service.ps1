@@ -26,16 +26,36 @@ try {
   powercfg /hibernate off
 } catch { Write-Host "  (power settings: $($_.Exception.Message))" }
 
+# Clear any prior instance, running or merely RECORDED as running. An unclean shutdown can
+# leave Task Scheduler believing an instance is still alive; combined with
+# -MultipleInstances IgnoreNew that would make the next -AtStartup trigger a silent no-op.
 $existing = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
-if ($existing -and $existing.State -eq "Running") {
-  Stop-ScheduledTask -TaskName $task -ErrorAction Stop
+if ($existing) {
+  try { Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue } catch { }
   Start-Sleep -Milliseconds 500
 }
+# And kill any orphaned agent left behind by a stopped task, so the new instance is not
+# refused and the exe is not locked.
+try {
+  Get-Process -Name "watchlog-agent" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+} catch { }
 
 $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$runner`" -InstallDir `"$InstallDir`""
 $action    = New-ScheduledTaskAction -Execute $powershell -Argument $arguments
-$trigger   = New-ScheduledTaskTrigger -AtStartup
+# TWO triggers, deliberately. -AtStartup alone means ANY death of the agent -- a crash, a
+# launcher abort, an instance Windows still believes is running after an unclean shutdown --
+# leaves the site dark until somebody reboots the PC. A CCTV site PC is exactly the machine
+# nobody visits. The repeating watchdog is a harmless no-op while the agent is healthy,
+# because -MultipleInstances IgnoreNew refuses a second instance.
+$boot      = New-ScheduledTaskTrigger -AtStartup
+# Give the network stack a moment; the agent tolerates a dead WAN now, but not racing it
+# every single boot is still cheaper than retrying.
+$boot.Delay = "PT30S"
+$watchdog  = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(1) `
+                -RepetitionInterval (New-TimeSpan -Minutes 5)
+$trigger   = @($boot, $watchdog)
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings  = New-ScheduledTaskSettingsSet `
                 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

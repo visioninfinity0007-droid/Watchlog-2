@@ -57,9 +57,17 @@ function Get-AgentProcesses {
   try {
     $want = (Resolve-Path -LiteralPath $AgentExe -ErrorAction SilentlyContinue).Path
     $procs = Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" -ErrorAction SilentlyContinue
-    return @($procs | Where-Object {
+    $mine = @($procs | Where-Object {
       $_.ExecutablePath -and ($want -eq $null -or ($_.ExecutablePath -ieq $want) -or ($_.ExecutablePath -like (Join-Path $InstallDir '*')))
     })
+    # A PyInstaller --onefile exe is ALWAYS two processes: the bootloader, and the real
+    # Python child it re-execs. Counting both made the commit guard below ("more than one
+    # ... duplicate runtime") fire on EVERY healthy install, so every upgrade rolled back.
+    # Count only leaf processes - a bootloader is the parent of another matched process.
+    $parents = @($mine | ForEach-Object { $_.ParentProcessId })
+    $leaves = @($mine | Where-Object { $parents -notcontains $_.ProcessId })
+    if ($leaves.Count -gt 0) { return $leaves }
+    return $mine
   } catch { return @() }
 }
 

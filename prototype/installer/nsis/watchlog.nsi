@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "0.4.4"
+  !define APPVERSION "5.0.0"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -123,6 +123,10 @@ Section "Install"
   ; receives public defaults only; the graphical setup writes recorder values.
   IfFileExists "$INSTDIR\watchlog.ini" +2 0
     File "/oname=watchlog.ini" "watchlog.defaults.ini"
+  ; Always stage the defaults alongside, so --migrate-only can merge public keys that an
+  ; EXISTING ini predates (push_bridge_url today). Without this an upgraded site can never
+  ; receive a new public setting -- and the upgraded fleet is the fleet that matters.
+  File "watchlog.defaults.ini"
 
   ; The AI model (yolov8n.onnx) is bundled inside watchlog-agent.exe (PyInstaller
   ; --add-data), so no separate model file is shipped. (Removed the vestigial
@@ -150,7 +154,7 @@ Section "Install"
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
-        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
         Abort "WatchLog setup did not complete"
       ${EndIf}
     ${EndIf}
@@ -159,7 +163,7 @@ Section "Install"
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
       Abort "WatchLog setup did not complete"
     ${EndIf}
   ${EndIf}
@@ -218,6 +222,13 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  ; schtasks /End kills the run-agent.ps1 LAUNCHER; the watchlog-agent.exe grandchild
+  ; survives it. Deleting a locked exe then silently fails and leaves a ghost agent
+  ; running against a site that has been uninstalled. wl-upgrade.ps1 -Stage preflight is
+  ; the already-proven primitive that stops the task AND the process and verifies the
+  ; binary is unlocked, so use it before touching any file.
+  IfFileExists "$INSTDIR\wl-upgrade.ps1" 0 +2
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
   ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
   ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
   Delete "${STARTMENU}\WatchLog Setup.lnk"
@@ -232,6 +243,10 @@ Section "Uninstall"
   Delete "$INSTDIR\watchlog.ini"
   Delete "$INSTDIR\setup.ico"
   Delete "$INSTDIR\yolov8n.onnx"  ; legacy: remove any externally-shipped model from older installs
+  ; Leftovers that kept $INSTDIR alive after every uninstall, so RMDir below always
+  ; failed and the folder (plus a stale rollback backup) survived forever.
+  Delete "$INSTDIR\wl-upgrade.ps1"
+  Delete "$INSTDIR\watchlog-agent.exe.wlbak"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
@@ -241,6 +256,18 @@ Section "Uninstall"
   ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
   ; because is_enrolled requires a decryptable key, which is now gone.
   RMDir /r "${DATAROOT}\Secrets"
+
+  ; IDENTITY-BOUND local state must go too. Keeping agent_state.json and the spool meant
+  ; a PC uninstalled at customer A and reinstalled at customer B DRAINED A's queued events
+  ; into B's site on first connect. Logs stay for support; identity and queued data do not.
+  Delete "${DATAROOT}\agent_state.json"
+  Delete "${DATAROOT}\spool.sqlite"
+  Delete "${DATAROOT}\spool.sqlite-wal"
+  Delete "${DATAROOT}\spool.sqlite-shm"
+  Delete "${DATAROOT}\health.sqlite"
+  Delete "${DATAROOT}\health.sqlite-wal"
+  Delete "${DATAROOT}\health.sqlite-shm"
+  Delete "${DATAROOT}\last_live.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
 SectionEnd

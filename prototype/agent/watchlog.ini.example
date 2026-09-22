@@ -46,25 +46,17 @@ nvr_password = REPLACE_ME
 ; Run `watchlog-agent.exe --probe` to see what it detects before enrolling.
 nvr_driver = auto
 
-; --- false-alarm filtering -------------------------------------------
-; Every event that carries a still is shown to YOLOv8n on THIS machine
-; before it is sent. If the frame holds no person, car or motorcycle it
-; is treated as a false alarm and discarded at the site — rain, headlights
-; on a wall, a cat, an IR lamp cutting in at dusk. Without this a single
-; recorder produces hundreds of events a night and the morning report is
-; unreadable.
+; --- intelligence boundary ------------------------------------------
+; Production Site Connector does NOT run WatchLog AI locally. Its job is
+; connectivity and evidence: recorder-native events, health, snapshots,
+; archive/clip retrieval and authorized control. WatchLog's private server-side
+; vision workers perform image analysis and higher-level intelligence.
 ;
-; No frame ever leaves the building for detection. Only stills attached to
-; events that already passed the filter are uploaded.
-;
-; If ultralytics is not installed, or the weights cannot load, the filter
-; disables itself and EVERY event is reported. It never fails closed —
-; a missed incident is invisible, an extra one is only noise.
-;
-; detect            = true
-; detect_model      = yolov8n.pt      ; downloaded on first run if absent
-; detect_confidence = 0.35            ; below this, an object is a guess
-; detect_classes    = person,car,motorcycle   ; the scope covers these three
+; Recorder-native SMD/IVS/smart-event labels are still forwarded because they
+; are emitted by the recorder itself. The connector never makes local WatchLog
+; inference a prerequisite for preserving an event.
+detect = false
+recovery_ai_enabled = false
 
 ; --- automatic NVR outage recovery (0.4.4) ---------------------------
 ; After a monitoring gap, WatchLog reconnects, detects the exact missed

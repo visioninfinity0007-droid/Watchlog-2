@@ -15,6 +15,9 @@ three truths (documented / implemented / observed) are never collapsed into one.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import hashlib
+
 from drivers.base import DriverError
 
 # READ actions available in P1. Writes are a separate, managed-tier plane (H6 safe-write).
@@ -22,6 +25,7 @@ READ_ACTIONS = (
     "get_recorder_identity", "get_channels", "get_clock_config",
     "get_video_loss_state", "get_analytics_config", "get_recording_status",
     "get_storage_status", "request_snapshot", "inspect_recorder",
+    "probe_archive", "probe_clip_export",
 )
 
 
@@ -65,6 +69,72 @@ def inspect(driver) -> dict:
     }
 
 
+def _parse_time(value) -> datetime:
+    dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise DriverError("evidence probe timestamps must include a timezone")
+    return dt.astimezone(timezone.utc)
+
+
+def _probe_window(params: dict, *, default_seconds: int, max_seconds: int) -> tuple[datetime, datetime]:
+    if params.get("start_at") and params.get("end_at"):
+        start = _parse_time(params["start_at"])
+        end = _parse_time(params["end_at"])
+    else:
+        seconds = int(params.get("window_seconds") or default_seconds)
+        seconds = max(5, min(max_seconds, seconds))
+        end = datetime.now(timezone.utc) - timedelta(seconds=10)
+        start = end - timedelta(seconds=seconds)
+    if end <= start:
+        raise DriverError("evidence probe end must be after start")
+    if (end - start).total_seconds() > max_seconds:
+        raise DriverError(f"evidence probe window exceeds {max_seconds} seconds")
+    return start, end
+
+
+def _probe_archive(driver, params: dict) -> dict:
+    channel = str(params.get("channel") or "1")
+    start, end = _probe_window(params, default_seconds=300, max_seconds=3600)
+    result = driver.enumerate_historical_events(channel, start, end, None, 20) or {}
+    events = result.get("events") or []
+    # Never return recorder-local file paths through Site Control.
+    sample = [{
+        "time": row.get("ts"),
+        "type": row.get("type"),
+        "channel": str(row.get("channel") or channel),
+    } for row in events[:5]]
+    return {
+        "channel": channel,
+        "status": str(result.get("status") or "unknown"),
+        "segments_found": len(events),
+        "start_at": start.isoformat(),
+        "end_at": end.isoformat(),
+        "sample": sample,
+    }
+
+
+def _probe_clip_export(driver, params: dict) -> dict:
+    channel = str(params.get("channel") or "1")
+    start, end = _probe_window(params, default_seconds=10, max_seconds=60)
+    data = driver.get_clip(channel, start, end)
+    if not data:
+        return {
+            "channel": channel,
+            "obtained": False,
+            "bytes": 0,
+            "start_at": start.isoformat(),
+            "end_at": end.isoformat(),
+        }
+    return {
+        "channel": channel,
+        "obtained": True,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "start_at": start.isoformat(),
+        "end_at": end.isoformat(),
+    }
+
+
 def execute_read(driver, action: str, params: "dict | None" = None) -> dict:
     """Run one READ action against the recorder via the driver. Never raises; a driver fault
     becomes {'ok': False, 'error': <sanitised>}. `params` carries e.g. the snapshot channel."""
@@ -90,6 +160,10 @@ def execute_read(driver, action: str, params: "dict | None" = None) -> dict:
             ch = str(params.get("channel") or "1")
             img = driver.get_snapshot(ch)
             data = {"channel": ch, "obtained": bool(img), "bytes": (len(img) if img else 0)}
+        elif action == "probe_archive":
+            data = _probe_archive(driver, params)
+        elif action == "probe_clip_export":
+            data = _probe_clip_export(driver, params)
         else:  # inspect_recorder
             data = inspect(driver)
         return {"action": action, "ok": True, "data": data}

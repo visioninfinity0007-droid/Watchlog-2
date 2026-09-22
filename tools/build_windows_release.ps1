@@ -7,7 +7,7 @@
 #   ...\build_windows_release.ps1 -SignPfx cert.pfx -SignPassword ****
 #
 # Authoritative path:
-#   AI Site Agent -> branded setup UI -> optional inner signing -> staged
+#   connectivity-first Site Connector -> branded setup UI -> optional inner signing -> staged
 #   public config -> NSIS -> optional installer signing -> FINAL SHA256.
 
 param(
@@ -15,6 +15,7 @@ param(
   [string]$PublisherUrl = "",
   [string]$SupabaseUrl = "",
   [string]$SupabasePublishableKey = "",
+  [string]$PushBridgeUrl = "",
   [switch]$Lean,
   [switch]$Production,
   [string]$SignPfx = "",
@@ -67,16 +68,15 @@ function Read-DotEnv([string]$Path) {
   return $values
 }
 
-# 1) Build the operational Site Agent. Production defaults to AI enabled.
+# 1) Build the connectivity-first Site Connector. AI runs server-side.
 $buildArgs = @()
-if (-not $Lean) { $buildArgs += "-WithAI" }
-Write-Host "Building WatchLog Site Agent..." -ForegroundColor Cyan
+Write-Host "Building WatchLog Site Connector..." -ForegroundColor Cyan
 & powershell -ExecutionPolicy Bypass -File "prototype\agent\build_exe.ps1" @buildArgs
-if ($LASTEXITCODE -ne 0) { throw "Site Agent build failed (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "Site Connector build failed (exit $LASTEXITCODE)" }
 $agentExe = Join-Path $root "prototype\dist\watchlog-agent.exe"
 if (-not (Test-Path $agentExe)) { throw "agent exe not built at $agentExe" }
 $agentBytes = (Get-Item $agentExe).Length
-$minimumAgentBytes = if ($Lean) { 1MB } else { 5MB }
+$minimumAgentBytes = 1MB
 if ($agentBytes -lt $minimumAgentBytes) {
   throw "agent executable is suspiciously small ($agentBytes bytes); refusing to package a stub/incomplete build"
 }
@@ -116,6 +116,21 @@ try {
   $supaUrl = $SupabaseUrl
   if (-not $supaUrl) { $supaUrl = $env:SUPABASE_URL }
   if (-not $supaUrl) { $supaUrl = $cfg["SUPABASE_URL"] }
+  # PC-free ("recorder push") destination. Absent from every build until 0.4.10, which is
+  # why provision_recorder_push returned "no push bridge configured in this build" on its
+  # first line in EVERY installer ever shipped and the whole 0013/0108 path was dead code.
+  $pushUrl = $PushBridgeUrl
+  if (-not $pushUrl) { $pushUrl = $env:WATCHLOG_PUSH_BRIDGE_URL }
+  if (-not $pushUrl) { $pushUrl = $cfg["PUSH_BRIDGE_URL"] }
+  # NORMALISE to a string. $env:X and a missing hashtable key both return $null, not "",
+  # and in PowerShell '' -ne $null is TRUE -- so the exact-equality gate below compared an
+  # empty staged value against $null and threw "'' != ''". Coerce once, here.
+  if ($null -eq $pushUrl) { $pushUrl = "" }
+  $pushUrl = ([string]$pushUrl).Trim()
+  if ($pushUrl -and $pushUrl -notmatch '^https://') {
+    throw "PushBridgeUrl is not an https URL: '$pushUrl' (argument-binding leak?)"
+  }
+
   $pubKey = $SupabasePublishableKey
   if (-not $pubKey) { $pubKey = $env:SUPABASE_PUBLISHABLE_KEY }
   if (-not $pubKey) { $pubKey = $cfg["SUPABASE_PUBLISHABLE_KEY"] }
@@ -138,6 +153,7 @@ supabase_url = $supaUrl
 supabase_publishable_key = $pubKey
 enrollment_code = $Code
 nvr_driver = auto
+push_bridge_url = $pushUrl
 "@ | Set-Content -Path $defaultsPath -Encoding UTF8
 
   # Parse the STAGED file back and assert EXACT equality with the intended
@@ -160,7 +176,19 @@ nvr_driver = auto
   if ($stagedMap['supabase_url'] -notmatch '^https://') {
     throw "staged supabase_url is not https: '$($stagedMap['supabase_url'])'"
   }
-  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code." -ForegroundColor Green
+  # Same exact-equality gate the other keys get - a parameter shift must not be able to
+  # bake a different push destination than we supplied.
+  $stagedPush = ""
+  if ($stagedMap.ContainsKey('push_bridge_url')) { $stagedPush = ([string]$stagedMap['push_bridge_url']).Trim() }
+  if ($stagedPush -ne $pushUrl) {
+    throw "staged push_bridge_url '$stagedPush' != intended '$pushUrl'"
+  }
+  if ($pushUrl) {
+    Write-Host "PC-free push bridge baked in: $pushUrl" -ForegroundColor Green
+  } else {
+    Write-Host "NOTE: no PushBridgeUrl supplied - PC-free reporting will be unavailable in this build." -ForegroundColor Yellow
+  }
+  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code / push_bridge_url." -ForegroundColor Green
 
   # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"
@@ -220,10 +248,10 @@ nvr_driver = auto
   $mb = [math]::Round($setupBytes / 1MB, 1)
   Write-Host ""
   Write-Host "Built $setup ($mb MB)" -ForegroundColor Green
-  Write-Host "  Site Agent $([math]::Round($agentBytes / 1MB, 1)) MB" -ForegroundColor Gray
+  Write-Host "  Site Connector $([math]::Round($agentBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  Setup UI $([math]::Round($setupUiBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  FINAL SHA256 $hash" -ForegroundColor Green
-  if ($SignPfx) { Write-Host "  Agent + setup UI + installer signatures verified." -ForegroundColor Green }
+  if ($SignPfx) { Write-Host "  Site Connector + setup UI + installer signatures verified." -ForegroundColor Green }
   else { Write-Host "  *** UNSIGNED TEST BUILD - not for production distribution (supply -SignPfx). ***" -ForegroundColor Yellow }
   if ($PublisherUrl) { Write-Host "  Publisher URL $PublisherUrl" -ForegroundColor Gray }
   else { Write-Host "  Publisher URL omitted (supply -PublisherUrl for production metadata)." -ForegroundColor Yellow }
