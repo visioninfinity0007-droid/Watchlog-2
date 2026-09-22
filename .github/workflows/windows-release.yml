@@ -13,6 +13,8 @@ on:
         type: boolean
         default: false
   push:
+    branches:
+      - 'build/site-connector-v5-watchlog2'
     tags:
       - 'v*'
 
@@ -40,7 +42,7 @@ jobs:
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
       # Tag pushes (v*) are always production: they must hard-fail without valid
       # signing (and a PublisherUrl). Manual dispatch honours the input.
-      PRODUCTION: ${{ github.event_name == 'push' || inputs.production }}
+      PRODUCTION: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.production }}
 
     steps:
       - uses: actions/checkout@v4
