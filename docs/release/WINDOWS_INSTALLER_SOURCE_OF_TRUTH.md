@@ -38,14 +38,26 @@ Build 37 exposed two field setup defects:
 Those corrections were applied **in Watchlog-2**, directly on the authoritative
 build branch as a descendant of Build 37:
 
-- successor source commit:
+- first successor source commit:
   `aaae5462f432ffe4fe3080ed97d05f3925dc1c38`
+- UI-confirmation successor commit:
+  `a635ef16b7b7f50bfec1bc65a7f255e92727a80c`
 - successor product version: `5.0.1`
-- Windows Release run **#38**: `35720403950`
+- authoritative candidate Windows Release run **#39**: `35721540889`
+- paired CI run **#146**: `35721540913`
 - status at the time this context was written: queued / building
 
-Build 37 remains the authoritative latest installer until Build 38 completes
-successfully and its generated artifact is recorded as the new baseline.
+The second audit confirmed the recorder-selection defect is a Qt/UI state issue
+and found an additional UI race: Recorder Continue remained enabled while
+asynchronous discovery was still running. The candidate now disables Continue
+during discovery, directly maps row clicks to the address field, only
+auto-selects when exactly one recorder is found, and embeds a
+`--ui-selftest` in the frozen setup executable. Both CI and the Windows
+release workflow execute this packaged UI self-test.
+
+Build 37 remains the authoritative latest installer until the successor release
+completes successfully and its generated artifact is recorded as the new
+baseline.
 
 ## Mandatory rule for future installer work
 
