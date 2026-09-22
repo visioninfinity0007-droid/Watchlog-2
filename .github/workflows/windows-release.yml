@@ -137,7 +137,7 @@ jobs:
           # expected version from wl_version.py — never hardcode it here (that would itself become a
           # second, drift-prone source, the very bug this check exists to catch).
           $wlVer = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          if ($agentSelftest -notmatch [regex]::Escape("watchlog-agent $wlVer")) {
+          if ($agentSelftest -notmatch [regex]::Escape("watchlog-site-connector $wlVer")) {
             throw "packaged agent reports the wrong version (expected $wlVer):`n$agentSelftest"
           }
 
