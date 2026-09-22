@@ -69,3 +69,21 @@ clicks to the address field, auto-selects only when exactly one recorder is
 found, and embeds a `--ui-selftest` in the frozen setup executable. CI and the
 Windows release workflow execute that **packaged EXE** self-test against the
 Build 37 visible-row/empty-field failure and the discovery race.
+
+
+## Successor baseline: Build 39
+
+Windows Release **#39** (run id `35721540889`) completed successfully from
+source commit `a635ef16b7b7f50bfec1bc65a7f255e92727a80c`.
+
+- Product version: `5.0.1`
+- Artifact: `WatchLog-Windows-39`
+- Artifact id: `10692431328`
+- Artifact size: `271640486` bytes
+- GitHub artifact digest:
+  `sha256:80435f10108c12bb5f36f31891382d65eaf469f068f2f71f5b06683ca8f9a36c`
+- Packaged recorder-selection UI self-test: **passed**
+- Windows release workflow: **passed**
+
+Build 39 now supersedes Build 37 as the authoritative latest Windows installer
+baseline for this lineage.
