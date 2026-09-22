@@ -55,9 +55,22 @@ auto-selects when exactly one recorder is found, and embeds a
 `--ui-selftest` in the frozen setup executable. Both CI and the Windows
 release workflow execute this packaged UI self-test.
 
-Build 37 remains the authoritative latest installer until the successor release
-completes successfully and its generated artifact is recorded as the new
-baseline.
+**Build 39 is now the authoritative latest Windows installer baseline.**
+
+- Product version: `5.0.1`
+- Authoritative repository: `visioninfinity0007-droid/Watchlog-2`
+- Branch: `build/site-connector-v5-watchlog2`
+- Source commit: `a635ef16b7b7f50bfec1bc65a7f255e92727a80c`
+- Windows Release run: **#39**, run id `35721540889`
+- Workflow conclusion: **success**
+- Artifact: `WatchLog-Windows-39`
+- Artifact id: `10692431328`
+- Artifact size: `271640486` bytes
+- GitHub artifact digest:
+  `sha256:80435f10108c12bb5f36f31891382d65eaf469f068f2f71f5b06683ca8f9a36c`
+- Packaged recorder-selection UI self-test: **passed**
+
+Build 39 supersedes Build 37 for all future installer diagnosis and build-forward work.
 
 ## Mandatory rule for future installer work
 
