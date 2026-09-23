@@ -109,6 +109,25 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual([], bases)
         self.assertEqual([], addresses)
 
+    def test_hikvision_isapi_deep_probe_auth_required(self):
+        with patch.object(
+            discover, "_http_probe",
+            return_value=(401, "App-webs/", 'realm DS-7608NI-K2', "")
+        ):
+            out = discover.probe_hikvision_isapi("192.168.15.108", [80, 554])
+        self.assertEqual("hikvision", out["vendor_hint"])
+        self.assertEqual("auth_required", out["state"])
+        self.assertEqual(80, out["port"])
+
+    def test_hikvision_isapi_deep_probe_unavailable(self):
+        with patch.object(
+            discover, "_http_probe",
+            return_value=(404, "App-webs/", None, "")
+        ):
+            out = discover.probe_hikvision_isapi("192.168.15.108", [80, 554])
+        self.assertEqual("hikvision", out["vendor_hint"])
+        self.assertEqual("unavailable", out["state"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

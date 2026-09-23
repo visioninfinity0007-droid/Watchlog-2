@@ -20,6 +20,7 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: read
