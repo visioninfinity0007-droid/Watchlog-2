@@ -78,3 +78,25 @@ This main WatchLog repository remains useful for product/database/portal work an
 may contain mirrored installer code, tests or historical release documents.
 Those copies are context, not release authority, unless a future release ledger
 explicitly re-establishes this repository as the source of a shipped installer.
+
+
+## Current authoritative baseline: Build 41
+
+Build 41 supersedes Build 39 as the current Windows installer baseline.
+
+- Product version: `5.0.2`
+- Authoritative repo: `visioninfinity0007-droid/Watchlog-2`
+- Branch: `build/site-connector-v5-watchlog2`
+- Source commit: `b0da326fb2d3ceb675c03ff4afc77a3b573d1d42`
+- Windows Release: **#41**, run id `35743559870`, conclusion **success**
+- Artifact: `WatchLog-Windows-41`, id `10702331062`
+- Artifact digest:
+  `sha256:9174a5e2fabf9e92b832a7d1090ee06779c2544c7813312937d1770b8398c9e7`
+- Step 06 success no longer waits on the full acceptance suite.
+- Recorder login UI is bounded by a 30-second watchdog.
+- Packaged setup UI / connector release gate passed.
+
+Do not claim customer Hikvision authentication is field-verified until the
+customer recorder accepts the supplied credentials in Build 41; the build proves
+the packaged flow and timeout behavior, not a specific recorder's firmware or
+credentials.
