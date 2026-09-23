@@ -185,6 +185,12 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 
             vendor_hint = (_vendor_hint_from_ports(ports)
                            or _vendor_hint_from_text(fp.get("vendor_guess")))
+            integration_state = None
+            if not vendor_hint and any(p in ports for p in _WEB_PORTS):
+                deep = discover.probe_hikvision_isapi(ip, ports)
+                if deep.get("vendor_hint") == "hikvision":
+                    vendor_hint = "hikvision"
+                    integration_state = deep.get("state")
             hint = "Recorder candidate"
             if vendor_hint == "dahua":
                 hint = "Dahua-family recorder candidate"
@@ -207,6 +213,9 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             row["ports"] = ports
             row["vendor_hint"] = vendor_hint
             row["rtsp"] = bool(fp.get("rtsp"))
+            if integration_state:
+                row["integration_state"] = integration_state
+                row["source"] = "Hikvision ISAPI probe"
     except Exception:
         pass
     return sorted(results.values(), key=lambda row: row["ip"])
@@ -241,6 +250,14 @@ _DRIVERS_BY_VENDOR = {
 
 _CUSTOMER_ERROR = {
     "wrong_credentials": "The recorder rejected that username or password.",
+    "hikvision_integration_auth":
+        "The Hikvision recorder answered, but its integration API rejected this login. "
+        "If the same login works in the normal browser page, enable ISAPI and set HTTP "
+        "Authentication to Digest (or Digest/Basic) in Hikvision System Service, then retry.",
+    "hikvision_integration_unavailable":
+        "This looks like a Hikvision recorder, but WatchLog could not reach an enabled ISAPI/ONVIF "
+        "integration service. Enable ISAPI in Hikvision System Service (or ONVIF Integration "
+        "Protocol) and restart the recorder if its settings require it, then retry.",
     "web_unreachable": "WatchLog found the recorder, but its web service is not reachable. "
                        "Check that the recorder's HTTP or HTTPS service is enabled.",
     "unsupported": "WatchLog found this recorder, but this model is not yet supported.",
@@ -407,6 +424,7 @@ def test_recorder(address: str, username: str, password: str,
 
     hint = hint or {}
     vendor_hint = hint.get("vendor_hint")
+    integration_state = hint.get("integration_state")
     open_ports = list(hint.get("ports") or [])
 
     if is_url:
@@ -455,6 +473,8 @@ def test_recorder(address: str, username: str, password: str,
         progress("Detected a compatible recorder.")
 
     last_class = "connect"
+    hikvision_auth_rejected = False
+    hikvision_api_unavailable = (vendor_hint == "hikvision" and integration_state == "unavailable")
     for driver_name, url in attempts:
         if time.monotonic() - started > RECORDER_DEADLINE:
             last_class = "timeout"
@@ -488,7 +508,20 @@ def test_recorder(address: str, username: str, password: str,
                        f"elapsed={time.monotonic() - attempt_started:.1f}s "
                        f"detail={_redact(str(exc), password)}")
             if cls == "wrong_credentials":
+                if driver_name == "hikvision-isapi":
+                    # A Hikvision browser login and its integration service are not the
+                    # same proof. Do not falsely tell the technician the password is wrong
+                    # after only the ISAPI attempt; try ONVIF too, then explain the exact
+                    # integration setting if neither API accepts the account.
+                    hikvision_auth_rejected = True
+                    last_class = cls
+                    continue
+                if driver_name == "onvif" and (vendor_hint == "hikvision" or hikvision_auth_rejected):
+                    last_class = cls
+                    continue
                 raise ValueError(_CUSTOMER_ERROR["wrong_credentials"]) from None
+            if driver_name == "hikvision-isapi" and cls == "unsupported" and vendor_hint == "hikvision":
+                hikvision_api_unavailable = True
             last_class = cls
         finally:
             if driver:
@@ -497,6 +530,11 @@ def test_recorder(address: str, username: str, password: str,
                 except Exception:
                     pass
 
+    if vendor_hint == "hikvision" or hikvision_auth_rejected:
+        if hikvision_auth_rejected:
+            raise ValueError(_CUSTOMER_ERROR["hikvision_integration_auth"])
+        if hikvision_api_unavailable:
+            raise ValueError(_CUSTOMER_ERROR["hikvision_integration_unavailable"])
     raise ValueError(_CUSTOMER_ERROR.get(last_class, _CUSTOMER_ERROR["connect"]))
 
 

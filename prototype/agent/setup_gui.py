@@ -123,9 +123,13 @@ def card_layout() -> tuple[QFrame, QVBoxLayout]:
 class SetupWindow(QMainWindow):
     STEPS = ["Welcome", "Site Code", "Recorder", "Login", "Cameras", "Connecting", "Ready"]
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, *, installer_child: bool = False):
         super().__init__()
         self.config_path = config_path
+        # NSIS waits synchronously for this process. A successful setup therefore
+        # MUST terminate itself; showing Ready forever leaves the parent installer
+        # apparently stuck even though WatchLog is already connected.
+        self.installer_child = bool(installer_child)
         self.public = backend.read_public_defaults(config_path)
         self.pool = QThreadPool.globalInstance()
         self.exit_code = 1
@@ -557,9 +561,17 @@ class SetupWindow(QMainWindow):
         row = self._discovered.get(address)
         self.recorder_hint = ({"ports": row.get("ports"),
                                "vendor_hint": row.get("vendor_hint"),
-                               "source": row.get("source")} if row else None)
+                               "source": row.get("source"),
+                               "integration_state": row.get("integration_state")} if row else None)
         detail = f"  ({row['label']})" if row and row.get("label") else ""
         self.selected_recorder.setText(f"Recorder: {address}{detail}")
+        self.login_error.setText("")
+        if row and row.get("vendor_hint") == "hikvision" and row.get("integration_state") == "unavailable":
+            self.login_error.setText(
+                "Hikvision recorder found, but its ISAPI integration service does not appear "
+                "available. If the normal browser login works, enable ISAPI under the recorder's "
+                "System Service / Integration settings, then retry."
+            )
         self.go(3)
 
     def test_connection(self):
@@ -674,6 +686,12 @@ class SetupWindow(QMainWindow):
         )
         self.success_summary.setText(base)
         self.go(6)
+        if self.installer_child:
+            # Give the technician a brief visual confirmation, then return exit 0
+            # to NSIS automatically. Standalone "WatchLog Setup" remains open and
+            # still uses the Finish button.
+            self.status.setText("Installation complete. Finishing automatically…")
+            QTimer.singleShot(1800, self.finish)
 
     def _push_line(self) -> str:
         """PC-free reporting status. Only claims active when the RECORDER confirmed the
@@ -799,15 +817,15 @@ def _emit_line(line: str) -> None:
         pass
 
 
-def _run_ui_selftest() -> int:
-    """Exercise the exact packaged Qt recorder-selection path with no network."""
+def _run_ui_selftest(*, installer_child: bool = False) -> int:
+    """Exercise the exact packaged Qt recorder-selection and installer lifecycle."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(sys.argv[:1])
     old_pd = os.environ.get("PROGRAMDATA")
     try:
         with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
             os.environ["PROGRAMDATA"] = td
-            window = SetupWindow(Path(td) / "watchlog.ini")
+            window = SetupWindow(Path(td) / "watchlog.ini", installer_child=installer_child)
             window.go(2)
             window.show_recorders([{
                 "ip": "10.10.10.2",
@@ -873,7 +891,16 @@ def _run_ui_selftest() -> int:
             app.processEvents()
             if window.stack.currentIndex() != 6 or not window.site_connected:
                 return 28
-            window.close()
+
+            if installer_child:
+                deadline = time.monotonic() + 3.5
+                while window.isVisible() and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                if window.isVisible() or window.exit_code != 0:
+                    return 29
+            else:
+                window.close()
             return 0
     finally:
         if old_pd is None:
@@ -890,9 +917,10 @@ def main() -> int:
                         help="open the WatchLog Site Status window instead of first-run setup")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--ui-selftest", action="store_true")
+    parser.add_argument("--installer-child", action="store_true")
     args, _unknown = parser.parse_known_args()
     if args.ui_selftest:
-        return _run_ui_selftest()
+        return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0
@@ -913,7 +941,7 @@ def main() -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("WatchLog Setup")
     app.setStyle("Fusion")
-    window = SetupWindow(config_path)
+    window = SetupWindow(config_path, installer_child=args.installer_child)
     window.show()
     app.exec()
     return window.exit_code

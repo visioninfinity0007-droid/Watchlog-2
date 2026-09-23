@@ -133,7 +133,10 @@ jobs:
           # UI REGRESSION PROOF: execute the actual frozen PySide6 EXE against the
           # Build-37 failure shape and the discovery race.
           $env:QT_QPA_PLATFORM = 'offscreen'
-          $uiSelf = Start-Process -FilePath $setupUi.FullName -ArgumentList @('--ui-selftest') -Wait -PassThru
+          $uiStarted = Get-Date
+          $uiSelf = Start-Process -FilePath $setupUi.FullName -ArgumentList @('--ui-selftest','--installer-child') -Wait -PassThru
+          $uiElapsed = ((Get-Date) - $uiStarted).TotalSeconds
+          if ($uiElapsed -gt 15) { throw "packaged setup UI lifecycle took $([math]::Round($uiElapsed,1))s; NSIS would appear stuck" }
           if ($uiSelf.ExitCode -ne 0) {
             throw "packaged setup UI recorder-selection self-test failed with exit $($uiSelf.ExitCode)"
           }

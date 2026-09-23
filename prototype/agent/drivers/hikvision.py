@@ -104,10 +104,10 @@ class HikvisionDriver(NvrDriver):
         # proxy auto-config can turn a 192.168.x.x login into a minute-long external
         # timeout even though the recorder is directly reachable.
         self.s.trust_env = False
-        # Hikvision commonly ships with a self-signed HTTPS certificate. The connection
-        # is still local and encrypted; certificate pinning is not available at setup.
-        if self.base_url.lower().startswith("https://"):
-            self.s.verify = False
+        # Hikvision commonly redirects HTTP -> HTTPS and ships a self-signed certificate.
+        # Disable CA verification for this LAN-only recorder session even when base_url
+        # starts as http://, otherwise a redirect can fail after the browser works fine.
+        self.s.verify = False
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._last_emitted: dict[tuple[str, str], datetime] = {}
 

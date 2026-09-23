@@ -84,8 +84,8 @@ def host_of(target: str) -> str:
     return t.split("/")[0].split(":")[0]
 
 
-def _http_probe(host: str, port: int, tls: bool) -> tuple:
-    """One GET / with no auth. Returns (status, server, title, snippet)."""
+def _http_probe(host: str, port: int, tls: bool, path: str = "/") -> tuple:
+    """One unauthenticated GET. Returns (status, server, title/auth realm, snippet)."""
     raw = b""
     try:
         sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
@@ -97,7 +97,8 @@ def _http_probe(host: str, port: int, tls: bool) -> tuple:
             ctx.verify_mode = ssl.CERT_NONE
             sock = ctx.wrap_socket(sock, server_hostname=host)
         sock.settimeout(READ_TIMEOUT)
-        sock.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\n"
+        target = path if path.startswith("/") else "/" + path
+        sock.sendall(f"GET {target} HTTP/1.1\r\nHost: {host}\r\n"
                      f"User-Agent: WatchLog-Discover\r\n"
                      f"Connection: close\r\n\r\n".encode())
         while len(raw) < 8192:
@@ -144,6 +145,34 @@ def _guess(*blobs) -> str | None:
         if rx.search(joined):
             return name
     return None
+
+
+def probe_hikvision_isapi(host: str, open_ports) -> dict:
+    """Read-only Hikvision integration probe with no credentials.
+
+    The normal web home page is often a generic JavaScript shell and may not contain
+    the word Hikvision. Querying the documented ISAPI identity path gives a much
+    stronger signal: DeviceInfo XML means active, while a Digest/Basic challenge with
+    a Hikvision-ish server/realm means active and awaiting credentials.
+    """
+    ports = [int(p) for p in (open_ports or [])]
+    for port in (80, 443, 8080, 8443, 81, 82, 88, 8081, 8888):
+        if port not in ports:
+            continue
+        tls = port in (443, 8443)
+        status, server, title, snippet = _http_probe(
+            host, port, tls, "/ISAPI/System/deviceInfo")
+        blob = " ".join(str(x or "") for x in (server, title, snippet))
+        vendor = _guess(blob)
+        device_xml = "deviceinfo" in (snippet or "").lower()
+        hik_clue = bool(vendor and "hikvision" in vendor.lower())
+        if status == 200 and device_xml:
+            return {"vendor_hint": "hikvision", "state": "active", "port": port}
+        if status in (401, 403) and hik_clue:
+            return {"vendor_hint": "hikvision", "state": "auth_required", "port": port}
+        if status in (404, 405, 501) and hik_clue:
+            return {"vendor_hint": "hikvision", "state": "unavailable", "port": port}
+    return {"vendor_hint": None, "state": "unknown", "port": None}
 
 
 def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:

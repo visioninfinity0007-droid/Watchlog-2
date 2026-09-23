@@ -194,3 +194,51 @@ def test_progress_sequence_and_error_copy():
     # bounded timeouts are sane
     assert backend.RECORDER_PROBE_TIMEOUT <= 8
     assert backend.RECORDER_DEADLINE <= 20
+
+
+# --- 11. Hikvision integration auth: do not mislabel browser password -------
+
+def test_hikvision_isapi_401_falls_back_to_onvif_before_failing():
+    out = run(
+        "192.168.1.20",
+        hint={"ports": [80, 554, 8000], "vendor_hint": "hikvision",
+              "integration_state": "auth_required"},
+        rules={
+            "hikvision-isapi": {"probe_error": "http://192.168.1.20/ISAPI/System/deviceInfo: HTTP 401 unauthorized"},
+            "onvif": {"vendor": "Hikvision", "channels": 8},
+        },
+    )
+    assert out["ok"]
+    assert out["result"]["driver"] == "onvif"
+    assert [name for name, _url in out["built"]][:2] == ["hikvision-isapi", "onvif"]
+
+
+def test_hikvision_browser_password_rejection_reports_integration_setting():
+    out = run(
+        "192.168.1.20",
+        hint={"ports": [80, 554, 8000], "vendor_hint": "hikvision",
+              "integration_state": "auth_required"},
+        rules={
+            "hikvision-isapi": {"probe_error": "HTTP 401 unauthorized"},
+            "onvif": {"probe_error": "HTTP 401 unauthorized"},
+        },
+    )
+    assert not out["ok"]
+    assert "integration API" in out["error"]
+    assert "ISAPI" in out["error"]
+    assert "browser" in out["error"]
+
+
+def test_hikvision_known_disabled_service_reports_service_not_password():
+    out = run(
+        "192.168.1.20",
+        hint={"ports": [80, 554], "vendor_hint": "hikvision",
+              "integration_state": "unavailable"},
+        rules={
+            "hikvision-isapi": {"probe_error": "HTTP 404 not found"},
+            "onvif": {"probe_error": "HTTP 404 not found"},
+        },
+    )
+    assert not out["ok"]
+    assert "integration service" in out["error"]
+    assert "Enable ISAPI" in out["error"]

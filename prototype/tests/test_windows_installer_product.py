@@ -55,6 +55,15 @@ def main():
             "acceptance is a POST-INSTALL diagnostic" in gui
             and "self.go(6)" in gui
             and "timeout_ms=30000" in gui,
+        "NSIS child setup auto-exits after Ready so ExecWait cannot strand installer":
+            '"--installer-child"' in gui
+            and "self.installer_child" in gui
+            and "QTimer.singleShot(1800, self.finish)" in gui
+            and '"--installer-child"' in nsis,
+        "Hikvision integration errors distinguish API auth from browser password":
+            "hikvision_integration_auth" in backend
+            and "hikvision_integration_unavailable" in backend
+            and "hikvision_auth_rejected" in backend,
         "Hikvision login ignores proxy env and avoids pointless Basic retry after Digest rejection":
             "self.s.trust_env = False" in text("prototype/agent/drivers/hikvision.py")
             and '"digest" not in challenge' in text("prototype/agent/drivers/hikvision.py"),

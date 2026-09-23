@@ -87,6 +87,8 @@ jobs:
         run: python prototype/tests/test_ops_runtime.py
       - name: Multi-agent lease client — fencing + fail-safe
         run: python prototype/tests/test_lease_client.py
+      - name: Recorder setup field regressions — login, vendor routing, Hikvision integration
+        run: python -m pytest prototype/tests/test_recorder_setup.py -q
       - name: Recorder connection hardening — ports/HTTPS/discovery/trust
         run: python prototype/tests/test_recorder_probe.py
       - name: Evidence action runtime — truthful unsupported
@@ -204,7 +206,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:QT_QPA_PLATFORM = "offscreen"
           $ui = (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path
-          $p = Start-Process -FilePath $ui -ArgumentList @('--ui-selftest') -Wait -PassThru
+          $p = Start-Process -FilePath $ui -ArgumentList @('--ui-selftest','--installer-child') -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "packaged UI self-test failed with exit $($p.ExitCode)" }
           Write-Host "Packaged recorder-selection UI self-test passed."
       - name: Exercise DPAPI round trip and migration mode
