@@ -1,14 +1,14 @@
 # WatchLog
 
-> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-22**
+> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-23**
 >
-> Build **37** is the frozen authoritative field baseline for the current Windows
-> Site Connector. It was built from this repository, branch
-> `build/site-connector-v5-watchlog2`, source commit
-> `cffd32a47c70fc1141efef7e30315a5c4c844c57`, by successful Windows Release
-> run **#37** (`35695121845`). New installer work must be a descendant of that
-> commit in **Watchlog-2**. Do not reconstruct installer changes from the
-> `Alkalid-security/Watchlog` main repository. See
+> The authoritative latest Windows Site Connector is **Build 46 / WatchLog 5.0.3**,
+> built from this repository on branch `build/site-connector-v5-watchlog2`,
+> source commit `e39cf1cc04c7ab52f115484b98f926b06cb85c71`, by successful
+> Windows Release **#46** (`35855322767`). Build 37 remains the frozen historical
+> lineage anchor, but future installer diagnosis/build-forward work starts from
+> Build 46 or a verified descendant in **Watchlog-2**. Do not reconstruct installer
+> changes from `Alkalid-security/Watchlog`. See
 > `docs/release/BUILD37_AUTHORITY.md`.
 
 

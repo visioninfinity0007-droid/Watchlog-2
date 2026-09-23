@@ -1,6 +1,6 @@
 # WatchLog Windows Build 37 — authoritative baseline
 
-**Status:** frozen source baseline for the latest field installer as of 2026-09-22.
+**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest field installer is Build 46 as of 2026-09-23.
 
 ## Canonical identity
 
@@ -87,3 +87,53 @@ source commit `a635ef16b7b7f50bfec1bc65a7f255e92727a80c`.
 
 Build 39 now supersedes Build 37 as the authoritative latest Windows installer
 baseline for this lineage.
+
+
+## Current authoritative baseline: Build 46
+
+Windows Release **#46** (run id `35855322767`) completed successfully from
+source commit `e39cf1cc04c7ab52f115484b98f926b06cb85c71`.
+
+- Product version: `5.0.3`
+- Artifact: `WatchLog-Windows-46`
+- Artifact id: `10747667489`
+- Artifact size: `271650885` bytes
+- GitHub artifact digest:
+  `sha256:f8d2be2f59a258d562e7cec51ca71d684073eb5c4fb9e8312ce588220bf58298`
+- Windows Release workflow: **passed**
+- Packaged setup-UI lifecycle/self-test: **passed**
+- Recorder field-regression gate: **passed**
+- Installer/NSIS contract: **passed**
+
+Build 46 supersedes Build 39 as the authoritative latest Windows installer
+baseline. Build 37 and Build 39 remain historical references only.
+
+### Field fixes promoted in Build 46
+
+Build 46 incorporates the fixes found from the subsequent Salman field runs:
+
+- the NSIS parent no longer waits indefinitely after the setup UI reaches
+  **WatchLog is ready**. When setup is launched by NSIS it enters
+  `--installer-child` mode, shows Ready briefly, exits with code 0
+  automatically, and lets NSIS continue to its Finish page;
+- Step 06 no longer runs the broad post-install acceptance suite as another
+  installation gate after the recorder/site/cameras/heartbeat/background agent
+  are already proven;
+- recorder-login UI has a hard 30-second watchdog, re-enables Test Connection,
+  and ignores stale late worker results;
+- RTSP-only candidates are re-identified after targeted web-port rescue, so a
+  Hikvision recorder is routed back through Hikvision/ONVIF handling instead of
+  generic vendor probing;
+- Hikvision browser login and Hikvision integration authentication are no longer
+  conflated. WatchLog probes the documented ISAPI identity service, falls back
+  to ONVIF when appropriate, and gives an explicit ISAPI/HTTP-authentication
+  action when the browser works but the integration API does not;
+- Hikvision LAN sessions ignore system HTTP proxies and tolerate the common
+  HTTP-to-self-signed-HTTPS redirect path;
+- the release gate executes the **frozen packaged UI** in installer-child mode
+  and fails if that lifecycle does not terminate; recorder field regressions
+  run before the unrelated backend contract that is currently red.
+
+Do not promote a later installer merely because a source commit or workflow
+exists. Record its successful Windows Release run and artifact identity here
+first.
