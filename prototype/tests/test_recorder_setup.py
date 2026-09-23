@@ -62,7 +62,7 @@ def make_build(rules, shared):
     return _build
 
 
-def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None):
+def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None, hik_probe=None):
     shared = {"built": []}
     progress = []
     scan = None
@@ -72,9 +72,14 @@ def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None):
         scan = lambda _host: results
     build = make_build(rules or {}, shared)
     try:
-        result = backend.test_recorder(address, "admin", "pass1234",
-                                       progress=progress.append, hint=hint,
-                                       _scan=scan, _build=build)
+        result = backend.test_recorder(
+            address, "admin", "pass1234",
+            progress=progress.append, hint=hint,
+            _scan=scan, _build=build,
+            _hik_probe=(hik_probe or (lambda _host, _ports: {
+                "vendor_hint": None, "state": "unknown", "port": None
+            })),
+        )
         return {"ok": True, "result": result, "built": shared["built"], "progress": progress}
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "built": shared["built"], "progress": progress}
