@@ -137,3 +137,28 @@ Build 46 incorporates the fixes found from the subsequent Salman field runs:
 Do not promote a later installer merely because a source commit or workflow
 exists. Record its successful Windows Release run and artifact identity here
 first.
+
+
+## Successor baseline: Build 41
+
+Windows Release **#41** (run id `35743559870`) completed successfully from
+source commit `b0da326fb2d3ceb675c03ff4afc77a3b573d1d42`.
+
+- Product version: `5.0.2`
+- Artifact: `WatchLog-Windows-41`
+- Artifact id: `10702331062`
+- Artifact size: `271641628` bytes
+- GitHub artifact digest:
+  `sha256:9174a5e2fabf9e92b832a7d1090ee06779c2544c7813312937d1770b8398c9e7`
+- Windows release workflow: **passed**
+- Packaged setup UI / connector self-test gate: **passed**
+- Step 06 no longer runs full acceptance as an installer-success gate.
+- Recorder login UI has a 30-second watchdog and ignores stale late worker results.
+- Hikvision local HTTP(S) sessions ignore proxy environment settings and do not
+  retry Basic auth after a Digest-auth rejection unless the recorder explicitly
+  advertises Basic.
+
+Build 41 supersedes Build 39 as the authoritative latest Windows installer
+baseline. Real Hikvision hardware login still requires field confirmation on the
+customer recorder; the release pipeline proves packaged behavior, not the
+customer's credentials/firmware response.
