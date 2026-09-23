@@ -826,6 +826,10 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
         with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
             os.environ["PROGRAMDATA"] = td
             window = SetupWindow(Path(td) / "watchlog.ini", installer_child=installer_child)
+            # Show the real window even on the offscreen Qt platform so the lifecycle
+            # assertion can prove that installer-child mode actually closes it.
+            window.show()
+            app.processEvents()
             window.go(2)
             window.show_recorders([{
                 "ip": "10.10.10.2",
@@ -894,10 +898,11 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
 
             if installer_child:
                 deadline = time.monotonic() + 3.5
-                while window.isVisible() and time.monotonic() < deadline:
+                while window.exit_code != 0 and time.monotonic() < deadline:
                     app.processEvents()
                     time.sleep(0.02)
-                if window.isVisible() or window.exit_code != 0:
+                app.processEvents()
+                if window.exit_code != 0 or window.isVisible():
                     return 29
             else:
                 window.close()
