@@ -242,3 +242,31 @@ def test_hikvision_known_disabled_service_reports_service_not_password():
     assert not out["ok"]
     assert "integration service" in out["error"]
     assert "Enable ISAPI" in out["error"]
+
+
+def test_rtsp_only_candidate_reidentified_as_hikvision_after_web_rescue():
+    shared = {"built": []}
+    progress = []
+    build = make_build({
+        "hikvision-isapi": {"probe_error": "HTTP 401 unauthorized"},
+        "onvif": {"probe_error": "HTTP 401 unauthorized"},
+        "dahua-cgi": {"vendor": "Dahua", "channels": 4},
+    }, shared)
+    try:
+        backend.test_recorder(
+            "192.168.15.108", "admin", "browser-password",
+            progress=progress.append,
+            hint={"ports": [554], "vendor_hint": None, "source": "Network scan"},
+            _build=build,
+            _probe=lambda _host: [80],
+            _hik_probe=lambda _host, _ports: {
+                "vendor_hint": "hikvision", "state": "auth_required", "port": 80
+            },
+        )
+        assert False, "expected integration-auth error"
+    except ValueError as exc:
+        msg = str(exc)
+    assert "integration API" in msg
+    assert "ISAPI" in msg
+    # The generic Dahua driver must never get a chance to overwrite the Hikvision diagnosis.
+    assert all(name != "dahua-cgi" for name, _url in shared["built"])

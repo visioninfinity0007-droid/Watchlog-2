@@ -403,7 +403,8 @@ def _setup_log(message: str) -> None:
 
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
-                  hint: dict | None = None, _scan=None, _build=None, _probe=None) -> dict:
+                  hint: dict | None = None, _scan=None, _build=None, _probe=None,
+                  _hik_probe=None) -> dict:
     """Prove recorder identity + credentials + channel list — fast and bounded.
 
     `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
@@ -414,6 +415,7 @@ def test_recorder(address: str, username: str, password: str,
     scan_fn = _scan or (lambda h: discover.scan(h, log=lambda _m: None))
     build_fn = _build or build
     probe_fn = _probe or _probe_web_ports
+    hik_probe_fn = _hik_probe or discover.probe_hikvision_isapi
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
 
@@ -456,6 +458,17 @@ def test_recorder(address: str, username: str, password: str,
             if rescued:
                 _setup_log(f"web-port rescue host={host} added={rescued}")
                 open_ports = sorted(set(open_ports) | set(rescued))
+
+        # Salman field path: discovery may initially see only RTSP, then the targeted
+        # rescue finds the web port. Re-identify AFTER rescue so Hikvision gets the
+        # Hikvision/ONVIF route and actionable integration diagnostics instead of the
+        # generic vendor loop.
+        if not vendor_hint and any(p in open_ports for p in _WEB_PORTS):
+            deep = hik_probe_fn(host, open_ports) or {}
+            if deep.get("vendor_hint") == "hikvision":
+                vendor_hint = "hikvision"
+                integration_state = deep.get("state") or integration_state
+
         attempts, hard_error = plan_recorder_probes(host, open_ports, vendor_hint)
 
     fam = vendor_hint or _vendor_hint_from_ports(open_ports)
@@ -476,6 +489,11 @@ def test_recorder(address: str, username: str, password: str,
     hikvision_auth_rejected = False
     hikvision_api_unavailable = (vendor_hint == "hikvision" and integration_state == "unavailable")
     for driver_name, url in attempts:
+        # If ISAPI itself issued an authentication rejection, this host is now a
+        # strong Hikvision candidate. Do not let a generic Dahua attempt overwrite
+        # that diagnosis with another 401 before we try the standards fallback.
+        if hikvision_auth_rejected and driver_name not in ("hikvision-isapi", "onvif"):
+            continue
         if time.monotonic() - started > RECORDER_DEADLINE:
             last_class = "timeout"
             break
