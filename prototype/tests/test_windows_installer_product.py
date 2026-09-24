@@ -84,8 +84,16 @@ def main():
         "Hikvision login ignores proxy env and avoids pointless Basic retry after Digest rejection":
             "self.s.trust_env = False" in hikvision
             and '"digest" not in challenge' in hikvision,
-        "Hikvision quiet alert stream does not churn sessions every 90 seconds":
-            "timeout=(self.timeout, 300)" in hikvision,
+        "Hikvision quiet sites deliver rotating stills on the live session":
+            "HIKVISION_STREAM_SLICE_SECONDS = 45" in hikvision
+            and 'event_type="visual_sample"' in hikvision
+            and '"source": "periodic_snapshot"' in hikvision,
+        "Hikvision health reuses fresh collector truth instead of competing sessions":
+            'cfg.nvr_driver == "hikvision-isapi"' in agent
+            and '"recorder_live_at"' in agent
+            and "collector_recent" in agent,
+        "Hikvision unvalidated recovery cannot compete with live recorder monitoring":
+            "Hikvision archive recovery disabled until hardware-validated" in agent,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,

@@ -897,17 +897,59 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     import camera_health
     import nvr_health
     driver = None
+    collector_recent = False
     try:
-        try:
-            if cfg.nvr_driver in ("auto", ""):
-                driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
-                                       cfg.nvr_password, log=lambda *a, **k: None)
-            else:
-                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
-            assessment = nvr_health.assess_nvr_health(driver)
-        except DriverError as e:
-            assessment = nvr_health.assess_from_error(e)   # still report the classified state
-            driver = None
+        # On Hikvision the live collector already owns an authenticated recorder
+        # session. Do not open a competing Digest session merely to prove the same
+        # thing again; the field DS-7608NI-Q1 started rejecting those extra sessions.
+        live_at = float(holder.get("recorder_live_at") or 0.0)
+        collector_recent = (
+            cfg.nvr_driver == "hikvision-isapi"
+            and live_at > 0.0
+            and time.monotonic() - live_at < 150.0
+        )
+        if collector_recent:
+            reported = []
+            for row in (getattr(cfg, "camera_profiles", None) or []):
+                ch = str(row.get("channel") or "").strip()
+                if ch:
+                    reported.append({
+                        "channel": ch,
+                        "name": row.get("name") or f"Camera {ch}",
+                        "enabled": bool(row.get("monitored", True)),
+                    })
+            if not reported:
+                mon0 = holder.get("monitor")
+                reported = [
+                    {"channel": str(ch), "name": f"Camera {ch}", "enabled": True}
+                    for ch in (getattr(mon0, "channels", None) or [])
+                ]
+            assessment = {
+                "nvr": {
+                    "reachable": True,
+                    "auth_ok": True,
+                    "state": "ok",
+                    "reason": "ok",
+                    "vendor": holder.get("recorder_vendor") or "Hikvision",
+                    "model": holder.get("recorder_model") or None,
+                },
+                "channels": {
+                    "enumerated": bool(reported),
+                    "reported": reported,
+                    "current_faults": {"supported": False},
+                },
+            }
+        else:
+            try:
+                if cfg.nvr_driver in ("auto", ""):
+                    driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
+                                           cfg.nvr_password, log=lambda *a, **k: None)
+                else:
+                    driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+                assessment = nvr_health.assess_nvr_health(driver)
+            except DriverError as e:
+                assessment = nvr_health.assess_from_error(e)
+                driver = None
 
         # --- NVR connectivity/auth + inventory (increment 3) ---
         try:
@@ -930,6 +972,15 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
         if mon is not None:
             if driver is not None:
                 probe = camera_health.make_probe_fn(driver)
+            elif collector_recent:
+                def probe(channel):
+                    seen = float((holder.get("snapshot_ok") or {}).get(str(channel)) or 0.0)
+                    fresh = seen > 0.0 and time.monotonic() - seen < 900.0
+                    return camera_health.ProbeResult(
+                        ok=fresh,
+                        upper=None,
+                        reason=("ok" if fresh else "probe_timeout"),
+                    )
             else:
                 probe = lambda _c: camera_health.ProbeResult(ok=False, upper="nvr_unreachable")
             cam = mon.run_cycle(lambda: assessment, probe)   # one assessment, bounded probing
@@ -1077,6 +1128,7 @@ def cmd_connector_selftest() -> int:
         import dahua_archive as _archive
         import recorder_probe as _probe
         import site_control as _site_control
+        from drivers import hikvision as _hikvision
         if not callable(getattr(discover, "sweep", None)):
             problems.append("LAN sweep unavailable")
         if not callable(getattr(wsdiscovery, "discover", None)):
@@ -1089,6 +1141,8 @@ def cmd_connector_selftest() -> int:
             problems.append("recorder port fallback unavailable")
         if not hasattr(_site_control, "execute_read"):
             problems.append("site-control read plane unavailable")
+        if getattr(_hikvision, "HIKVISION_STREAM_SLICE_SECONDS", None) != 45:
+            problems.append("Hikvision bounded visual sampling unavailable")
     except Exception as exc:  # noqa: BLE001
         problems.append(f"connector module load failed: {type(exc).__name__}")
 
@@ -1986,6 +2040,12 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     has priority (yields when the live spool has a backlog) and it is throttled. OFF only if
     recovery_enabled=false. A failure here can never disturb events/heartbeat/health."""
     if not cfg.recovery_enabled:
+        return
+    if cfg.nvr_driver == "hikvision-isapi":
+        # The current archive-recovery path is not hardware-validated on Hikvision and
+        # creates another authenticated recorder session beside alertStream. Keep it off
+        # until that path is proven; live alarms + rotating stills remain active.
+        log("recovery: Hikvision archive recovery disabled until hardware-validated")
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first

@@ -24,8 +24,10 @@ trusting it.
 
 from __future__ import annotations
 
+import base64
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Iterator
@@ -90,6 +92,14 @@ BURST_WINDOW_SECONDS = 30
 # A camera that will not produce a still must not stall the event loop.
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
+
+# Field DS-7608NI-Q1: setup/auth succeeded, but a permanently-open alertStream
+# plus independent health/recovery logins could make the recorder's small web
+# stack refuse later sessions. Slice the stream and capture ONE rotating still
+# between slices on the SAME session. Eight channels => about one proof image
+# per camera every six minutes, while native alarms continue to pass immediately.
+HIKVISION_STREAM_SLICE_SECONDS = 45
+HIKVISION_SAMPLE_MAX_BYTES = 2_000_000
 
 
 
@@ -323,48 +333,88 @@ class HikvisionDriver(NvrDriver):
         return None
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
-        """
-        Consume /ISAPI/Event/notification/alertStream.
+        """Consume native ISAPI alarms plus bounded rotating visual samples.
 
-        The device holds the connection open and writes a multipart body,
-        one XML document per alarm. It also emits keep-alive
-        videoloss/heartbeat frames, which are filtered out below.
+        A quiet recorder can legitimately emit no alarms for hours. WatchLog still needs
+        recorder-backed camera data, so each bounded alert-stream slice is followed by
+        ONE still from the next channel, using this same authenticated driver/session.
         """
         url = self.base_url + "/ISAPI/Event/notification/alertStream"
         try:
-            # Quiet Hikvision sites may send no alert bytes for minutes. A 90-second
-            # read timeout caused needless reconnect churn and extra Digest sessions on
-            # older NVRs, correlating with intermittent nvr_unreachable health. Keep a
-            # bounded connect timeout but allow a quiet stream five minutes before
-            # recycling it.
-            r = self.s.get(url, stream=True, timeout=(self.timeout, 300))
-        except requests.RequestException as e:
-            raise DriverError(f"alertStream: {e}") from e
-        if r.status_code >= 400:
-            raise DriverError(f"alertStream: HTTP {r.status_code}")
+            sample_channels = [str(c.channel) for c in self.list_channels() if c.channel]
+        except Exception:  # noqa: BLE001 — native events still work without sampling
+            sample_channels = []
+        sample_index = 0
 
-        buf = b""
-        try:
-            for chunk in r.iter_content(chunk_size=1024):
-                if stop.is_set():
-                    break
-                if not chunk:
-                    continue
-                buf += chunk
-                # Documents arrive back to back; split on the closing tag.
-                while b"</EventNotificationAlert>" in buf:
-                    doc, _, buf = buf.partition(b"</EventNotificationAlert>")
-                    start = doc.find(b"<EventNotificationAlert")
-                    if start < 0:
-                        continue
-                    raw = doc[start:] + b"</EventNotificationAlert>"
-                    ev = self._parse_alert(raw)
-                    if ev:
-                        yield ev
-                if len(buf) > 1_000_000:      # runaway guard
-                    buf = b""
-        finally:
-            r.close()
+        while not stop.is_set():
+            r = None
+            buf = b""
+            started = time.monotonic()
+            try:
+                r = self.s.get(
+                    url,
+                    stream=True,
+                    timeout=(self.timeout, HIKVISION_STREAM_SLICE_SECONDS),
+                )
+                if r.status_code >= 400:
+                    raise DriverError(f"alertStream: HTTP {r.status_code}")
+
+                try:
+                    for chunk in r.iter_content(chunk_size=1024):
+                        if stop.is_set():
+                            break
+                        if not chunk:
+                            continue
+                        buf += chunk
+                        while b"</EventNotificationAlert>" in buf:
+                            doc, _, buf = buf.partition(b"</EventNotificationAlert>")
+                            xml_start = doc.find(b"<EventNotificationAlert")
+                            if xml_start < 0:
+                                continue
+                            raw = doc[xml_start:] + b"</EventNotificationAlert>"
+                            ev = self._parse_alert(raw)
+                            if ev:
+                                yield ev
+                        if len(buf) > 1_000_000:
+                            buf = b""
+                        if time.monotonic() - started >= HIKVISION_STREAM_SLICE_SECONDS:
+                            break
+                except requests.RequestException as exc:
+                    low = str(exc).lower()
+                    if "read timed out" not in low and "read timeout" not in low:
+                        raise DriverError(f"alertStream: {exc}") from exc
+            except requests.RequestException as exc:
+                raise DriverError(f"alertStream: {exc}") from exc
+            finally:
+                if r is not None:
+                    r.close()
+
+            if stop.is_set():
+                break
+
+            if sample_channels:
+                channel = sample_channels[sample_index % len(sample_channels)]
+                sample_index += 1
+                try:
+                    raw = self.get_snapshot(channel)
+                except Exception:  # noqa: BLE001 — sampling never kills native monitoring
+                    raw = None
+                if raw and len(raw) <= HIKVISION_SAMPLE_MAX_BYTES:
+                    yield Event(
+                        channel=channel,
+                        event_type="visual_sample",
+                        device_ts=datetime.now(timezone.utc),
+                        device_event_id=(
+                            f"hikvision-sample-{channel}-"
+                            f"{int(time.time() // HIKVISION_STREAM_SLICE_SECONDS)}"
+                        ),
+                        payload={
+                            "vendor": "hikvision",
+                            "source": "periodic_snapshot",
+                            "sample": True,
+                        },
+                        snapshot_b64=base64.b64encode(raw).decode("ascii"),
+                    )
 
     # -- parsing --------------------------------------------------------
 

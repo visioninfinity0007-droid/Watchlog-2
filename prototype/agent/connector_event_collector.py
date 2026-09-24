@@ -52,6 +52,11 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 f"driver {driver.name}: {info.vendor} {info.model or ''} "
                 f"fw={info.firmware or '?'}".rstrip()
             )
+            if holder is not None:
+                holder["recorder_live_at"] = time.monotonic()
+                holder["recorder_vendor"] = info.vendor or ""
+                holder["recorder_model"] = info.model or ""
+                holder["recorder_driver"] = driver.name
             if not driver.verified_against_hardware:
                 core.log(
                     f"NOTE: driver '{driver.name}' is not field-verified for every "
@@ -63,8 +68,11 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 if stop.is_set():
                     break
 
+                if holder is not None:
+                    holder["recorder_live_at"] = time.monotonic()
+
                 raw = None
-                if cfg.snapshots and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
+                if cfg.snapshots and not ev.snapshot_b64 and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
                         last_shot[ev.channel] = clock
@@ -85,6 +93,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
                                 f"snapshot ch{ev.channel} discarded: "
                                 f"{len(raw) // 1024} KB exceeds cap"
                             )
+
+                if holder is not None and ev.snapshot_b64:
+                    holder.setdefault("snapshot_ok", {})[str(ev.channel)] = time.monotonic()
 
                 payload = ev.payload
                 if payload.get("native_ai"):
