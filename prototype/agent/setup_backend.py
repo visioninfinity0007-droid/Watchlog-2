@@ -232,9 +232,7 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-POST_CONNECT_BUDGET_SECONDS = 45    # total for optional post-connection work
-BACKGROUND_START_TIMEOUT_SECONDS = 30
-PUSH_SETUP_TIMEOUT_SECONDS = 10
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
 RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
 RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
@@ -1053,48 +1051,31 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
     # =================================================================
-    # THE SITE IS NOW CONNECTED: enrolled, credential stored, heartbeat proven.
-    # EVERYTHING BELOW IS OPTIONAL and runs under ONE hard deadline.
+    # CORE CONNECTION IS PROVEN ABOVE. From here the ONLY installer-critical
+    # operation is starting the real background connector and proving that the
+    # SYSTEM-launched agent itself reaches WatchLog.
     #
-    # Four separate hangs shipped in this stretch of code (0.4.5 acceptance, 0.4.7
-    # pipe deadlock, 0.4.7 GUI thread, 0.4.9 ini lock). Fixing them one at a time
-    # was not working, because the real defect is the SHAPE: optional post-connection
-    # work was able to pin the wizard forever. So the budget is now structural --
-    # whatever is unfinished when it expires is simply reported as unfinished, and
-    # setup always reaches a final screen.
+    # Build 41 field evidence proved that recorder-push, although labelled
+    # "optional", was still executed synchronously here and could strand Step 06
+    # after the site/cameras were already connected. Optional recorder-side
+    # integration is therefore NEVER run by first-run setup.
     # =================================================================
-    optional_deadline = time.monotonic() + POST_CONNECT_BUDGET_SECONDS
-
-    def _remaining(cap: float) -> float:
-        return max(0.0, min(cap, optional_deadline - time.monotonic()))
-
     progress("Starting WatchLog in the background…")
-    # NOT optional work, and NOT drawn from the optional budget. 0.4.9 gave registration
-    # whatever was LEFT of the 120s, so a slow recorder probe could hand it a fraction of a
-    # second and it was taskkill'd mid-registration -- the one step that makes the site
-    # survive a reboot. It gets its own guaranteed floor.
     agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 
-    push = {"configured": False, "verified": False, "detail": "skipped (time budget)"}
-    # Build 37 showed that this optional resilience layer could leave an installer
-    # staring at the Connecting screen long after enrollment + the background agent
-    # were already proven. It gets a short bounded chance and can never hold setup
-    # for the former 90-second child timeout.
-    push_timeout = _remaining(PUSH_SETUP_TIMEOUT_SECONDS)
-    if push_timeout >= 3:
-        push = provision_recorder_push(cloud, state, recorder, public, username, password,
-                                       progress=progress, timeout=push_timeout)
-
-    # The field outcome of PC-free reporting was computed and then thrown away -- never
-    # logged, never shown. That is the second reason nobody noticed the bridge was dead.
-    core.log(f"recorder push: configured={push.get('configured')} "
-             f"verified={push.get('verified')} {push.get('detail')}")
+    # Recorder-side push remains an explicit support/diagnostic command only.
+    # It is intentionally absent from the installer critical path until it has
+    # been field-verified across supported recorder firmware.
+    push = {
+        "configured": False,
+        "verified": False,
+        "detail": "not run during installation; background Site Connector is authoritative",
+    }
 
     cleared = _clear_consumed_code(config_path)
-    core.log(f"post-connect phase done in "
-             f"{POST_CONNECT_BUDGET_SECONDS - max(0.0, optional_deadline - time.monotonic()):.0f}s "
+    core.log(f"post-connect phase done "
              f"(agent_started={connected} code_cleared={cleared})")
     return {
         "site_id": state["site_id"],

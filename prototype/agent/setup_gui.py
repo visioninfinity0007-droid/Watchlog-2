@@ -680,8 +680,7 @@ class SetupWindow(QMainWindow):
             f"✓ WatchLog site linked\n"
             f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
             f"✓ Recorder credential encrypted on this PC\n"
-            f"{self._background_line()}\n"
-            f"{self._push_line()}\n\n"
+            f"{self._background_line()}\n\n"
             f"{result.get('vendor', '')} {result.get('model', '')}"
         )
         self.success_summary.setText(base)
@@ -693,29 +692,19 @@ class SetupWindow(QMainWindow):
             self.status.setText("Installation complete. Finishing automatically…")
             QTimer.singleShot(1800, self.finish)
 
-    def _push_line(self) -> str:
-        """PC-free reporting status. Only claims active when the RECORDER confirmed the
-        config on read-back; anything else states what actually happened."""
-        info = (getattr(self, "final_result", None) or {}).get("recorder_push") or {}
-        if info.get("verified"):
-            return "✓ PC-free reporting active (the recorder reports even if this PC is off)"
-        if info.get("configured"):
-            return f"! PC-free reporting not confirmed by the recorder — {info.get('detail', '')}"
-        return "· PC-free reporting not enabled (this PC does the reporting)"
-
     def _background_line(self) -> str:
-        """Say plainly whether the BACKGROUND service is running.
+        """State only what register-service actually proved.
 
-        Only claims what was actually verified: register-service.ps1 throws unless the
-        scheduled task reaches Running, so "started" is a real check, not an assumption.
-        It deliberately does NOT claim the site is "reporting" -- the local agent log is
-        written through a PowerShell redirection that does not reach disk promptly, and
-        0.4.8 wrongly reported failure by trusting it."""
+        A successful registration now requires BOTH the scheduled task to be Running
+        and a fresh background-agent cloud heartbeat marker created after that task
+        starts. This avoids the old false-positive where the PowerShell supervisor was
+        alive while watchlog-agent.exe repeatedly failed underneath it.
+        """
         info = getattr(self, "agent_start", None) or {}
         if info.get("started"):
-            return "✓ WatchLog is running in the background (starts automatically at boot)"
-        return ("! WatchLog is NOT running in the background yet — this site will not "
-                "report until that is fixed")
+            return "✓ WatchLog background connector started and reached WatchLog"
+        return ("! WatchLog background connector could not prove it is reporting — "
+                "retry setup or export a support bundle")
 
     def acceptance_done(self, acc):
         result = self.final_result or {}

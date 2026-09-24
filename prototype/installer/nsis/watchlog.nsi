@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.3"
+  !define APPVERSION "5.0.4"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -268,6 +268,7 @@ Section "Uninstall"
   Delete "${DATAROOT}\health.sqlite-wal"
   Delete "${DATAROOT}\health.sqlite-shm"
   Delete "${DATAROOT}\last_live.json"
+  Delete "${DATAROOT}\background-ready.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
 SectionEnd

@@ -680,6 +680,22 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
                p_device_vendor=device.vendor if device else None,
                p_device_model=device.model if device else None,
                p_device_driver=device.driver if device else None)
+    # Non-secret local proof used by register-service.ps1. The installer deletes
+    # any stale marker BEFORE starting the scheduled task, so a newly-created
+    # marker proves the actual background agent reached WatchLog in SYSTEM context.
+    try:
+        ready = default_state_dir() / "background-ready.json"
+        ready.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ready.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "agent_id": state.get("agent_id"),
+            "version": AGENT_VERSION,
+            "pid": os.getpid(),
+            "heartbeat_at": iso(now_utc()),
+        }, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, ready)
+    except Exception:  # noqa: BLE001 — readiness evidence can never break monitoring
+        pass
     log("heartbeat ok")
 
 
@@ -2297,21 +2313,20 @@ def main() -> None:
         f"{mask(cfg.publishable_key)}")
     cloud = Cloud(cfg.supabase_url, cfg.publishable_key)
 
-    # Identify the recorder ONCE and reuse the answer: enrollment, the
-    # camera sync and the heartbeat all want it, and probing four times
-    # on every start is noise on the wire and in the log.
-    device, channels, capabilities = None, [], None
+    # Identify the recorder ONCE and reuse the answer: enrollment, camera sync
+    # and the first heartbeat need only identity + channel inventory.
+    #
+    # Do NOT call driver.capabilities() here. On Hikvision that fans out into
+    # multiple ISAPI calls per channel and Build 41 could spend minutes doing
+    # optional enrichment before the live collector/heartbeat loop even started.
+    # Connectivity and event collection must start first; recorder capability
+    # enrichment is deliberately deferred out of this startup critical path.
+    device, channels = None, []
     try:
         driver, device = open_driver(cfg)
         try:
             channels = [{"channel": c.channel, "name": c.name}
                         for c in driver.list_channels()]
-            # Read analytics while the driver is open. Best-effort and
-            # read-only; never changes a setting on the device.
-            try:
-                capabilities = driver.capabilities()
-            except Exception:                    # noqa: BLE001
-                capabilities = None
         finally:
             driver.close()
     except (DriverError, SystemExit) as e:
@@ -2355,17 +2370,6 @@ def main() -> None:
         # forever, so a startup sync failure must only WARN.
         except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"WARNING: camera sync failed: {str(e).splitlines()[0][:160]}")
-
-    # Report what analytics the recorder supports, so the portal can show
-    # them. Captured above while the driver was open; a failure to upload
-    # must not stop the agent doing its actual job.
-    if capabilities and capabilities.get("channels"):
-        try:
-            cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
-                       p_agent_key=state["agent_key"], p_capabilities=capabilities)
-            log(f"analytics reported: {len(capabilities['channels'])} channel(s)")
-        except (RuntimeError, requests.RequestException, OSError) as e:
-            log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
 
     cmd_run(cfg, state, cloud, once=args.once, device=device, channels=channels)
 

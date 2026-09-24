@@ -332,7 +332,12 @@ class HikvisionDriver(NvrDriver):
         """
         url = self.base_url + "/ISAPI/Event/notification/alertStream"
         try:
-            r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
+            # Quiet Hikvision sites may send no alert bytes for minutes. A 90-second
+            # read timeout caused needless reconnect churn and extra Digest sessions on
+            # older NVRs, correlating with intermittent nvr_unreachable health. Keep a
+            # bounded connect timeout but allow a quiet stream five minutes before
+            # recycling it.
+            r = self.s.get(url, stream=True, timeout=(self.timeout, 300))
         except requests.RequestException as e:
             raise DriverError(f"alertStream: {e}") from e
         if r.status_code >= 400:

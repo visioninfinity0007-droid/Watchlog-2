@@ -64,6 +64,11 @@ $settings  = New-ScheduledTaskSettingsSet `
 
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null
+
+# Fresh proof only. setup_gui's foreground heartbeat may have written an older
+# marker, so delete it before starting the SYSTEM task.
+$ready = Join-Path $data "background-ready.json"
+Remove-Item -Force $ready -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName $task -ErrorAction Stop
 
 $deadline = (Get-Date).AddSeconds(10)
@@ -80,4 +85,15 @@ if ($state -ne "Running") {
   throw "WatchLog scheduled task did not reach Running state (state: $state)"
 }
 
-Write-Host "  WatchLog background Site Agent registered and started (state: $state)."
+# Task Scheduler can report Running while run-agent.ps1 is merely supervising a
+# child that is crashing/restarting. Require one fresh heartbeat marker from the
+# actual packaged agent before calling setup complete.
+$proofDeadline = (Get-Date).AddSeconds(25)
+while ((Get-Date) -lt $proofDeadline -and -not (Test-Path $ready)) {
+  Start-Sleep -Milliseconds 500
+}
+if (-not (Test-Path $ready)) {
+  throw "WatchLog background agent started but did not prove a cloud heartbeat within 25 seconds"
+}
+
+Write-Host "  WatchLog background Site Agent registered, started and heartbeat-proven (state: $state)."

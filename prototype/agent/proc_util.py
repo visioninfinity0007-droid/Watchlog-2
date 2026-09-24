@@ -36,13 +36,13 @@ def kill_tree(proc) -> None:
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=20)
+                           capture_output=True, timeout=5)
         else:
             import signal
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:  # noqa: BLE001 — best effort; the direct kill below still runs
         pass
-    for finish in (proc.kill, lambda: proc.wait(timeout=10)):
+    for finish in (proc.kill, lambda: proc.wait(timeout=3)):
         try:
             finish()
         except Exception:  # noqa: BLE001

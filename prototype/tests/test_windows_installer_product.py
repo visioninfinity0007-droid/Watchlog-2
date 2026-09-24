@@ -21,6 +21,7 @@ def main():
     secret = text("prototype/agent/windows_secret.py")
     store = text("prototype/agent/credential_store.py")
     agent = text("prototype/agent/watchlog_agent.py")
+    hikvision = text("prototype/agent/drivers/hikvision.py")
     launcher = text("prototype/installer/run-agent.ps1")
     register = text("prototype/installer/register-service.ps1")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
@@ -40,11 +41,14 @@ def main():
         "Continue falls back to the highlighted recorder":
             "current = self.recorder_list.currentItem()" in gui
             and 'address = str(current.data(Qt.UserRole) or "").strip()' in gui,
-        "optional recorder integration is field-bounded":
-            "BACKGROUND_START_TIMEOUT_SECONDS = 30" in backend
-            and "PUSH_SETUP_TIMEOUT_SECONDS = 10" in backend
-            and "push_timeout = _remaining(PUSH_SETUP_TIMEOUT_SECONDS)" in backend
-            and "timeout=push_timeout" in backend,
+        "optional recorder integration is never on installer critical path":
+            "provision_recorder_push(" not in backend.split("def finalize_install", 1)[1],
+        "background success requires a fresh real-agent cloud heartbeat":
+            "background-ready.json" in agent
+            and "background-ready.json" in register
+            and "did not prove a cloud heartbeat" in register,
+        "runtime starts live work before recorder capability enrichment":
+            "driver.capabilities()" not in agent.split("# Identify the recorder ONCE", 1)[1],
         "Recorder Continue is disabled while discovery worker is busy":
             "self.recorder_next.setEnabled(not busy)" in gui,
         "packaged UI exposes behavioral self-test":
@@ -65,8 +69,10 @@ def main():
             and "hikvision_integration_unavailable" in backend
             and "hikvision_auth_rejected" in backend,
         "Hikvision login ignores proxy env and avoids pointless Basic retry after Digest rejection":
-            "self.s.trust_env = False" in text("prototype/agent/drivers/hikvision.py")
-            and '"digest" not in challenge' in text("prototype/agent/drivers/hikvision.py"),
+            "self.s.trust_env = False" in hikvision
+            and '"digest" not in challenge' in hikvision,
+        "Hikvision quiet alert stream does not churn sessions every 90 seconds":
+            "timeout=(self.timeout, 300)" in hikvision,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,
@@ -141,8 +147,9 @@ def main():
             '`"$runner`"' in register and '`"$InstallDir`"' in register,
         "scheduled task auto-restarts the agent (RestartCount)":
             "-RestartCount" in register,
-        "registration verifies the task reaches Running (no false success)":
-            'ne "Running"' in register and "throw" in register,
+        "registration verifies task Running AND actual agent heartbeat (no false success)":
+            'ne "Running"' in register and "background-ready.json" in register
+            and "cloud heartbeat" in register and "throw" in register,
         "installer keeps the site PC awake on AC (H3 coverage) via power policy":
             "standby-timeout-ac 0" in register,
     }
