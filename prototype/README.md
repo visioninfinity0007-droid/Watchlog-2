@@ -3,14 +3,17 @@
 > **IMPORTANT — WINDOWS INSTALLER SOURCE OF TRUTH**
 >
 > The Windows installer lineage is **not built from this repository**. The
-> authoritative latest field baseline is **WatchLog 5.0.3 / Build 46**, produced
-> by `visioninfinity0007-droid/Watchlog-2` from branch
+> authoritative latest successful Windows candidate is **WatchLog 5.0.6 / Build 49**,
+> produced by `visioninfinity0007-droid/Watchlog-2` from branch
 > `build/site-connector-v5-watchlog2`, source commit
-> `e39cf1cc04c7ab52f115484b98f926b06cb85c71`, successful Windows Release
-> **#46** (`35855322767`). Installer fixes must be made there and built forward
-> from Build 46 or a verified descendant. Build 37 is the historical lineage
-> anchor only. Do not treat newer-looking installer files in this repo as the
-> shipped baseline. See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
+> `e9761cb32025c2c3dc596cfe13d7c2225c8a4aa0`, successful Windows Release
+> **#49** (run `36018778077`). Artifact: `WatchLog-Windows-49`
+> (id `10815424189`, digest
+> `sha256:fd8ef666c55333c68c4828bef1a84f023d80c0edb72cd9686c4d341215d6340d`).
+> Installer fixes must be made there and built forward from this successful source
+> or a verified descendant. Build 37 remains the frozen historical lineage anchor.
+> Do not treat newer-looking installer files in this repo as the shipped baseline.
+> See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
 
 
 Turns an existing DVR/NVR into a monitored, reportable system — without
