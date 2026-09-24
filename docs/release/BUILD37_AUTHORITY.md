@@ -1,6 +1,6 @@
 # WatchLog Windows Build 37 — authoritative baseline
 
-**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest field installer is Build 46 as of 2026-09-23.
+**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest field installer is **Build 50 / WatchLog 5.0.7** as of 2026-09-24.
 
 ## Canonical identity
 

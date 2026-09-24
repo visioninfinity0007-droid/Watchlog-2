@@ -1,15 +1,17 @@
 # WatchLog
 
-> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-23**
+> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-24**
 >
-> The authoritative latest Windows Site Connector is **Build 46 / WatchLog 5.0.3**,
+> The authoritative latest Windows Site Connector is **Build 50 / WatchLog 5.0.7**,
 > built from this repository on branch `build/site-connector-v5-watchlog2`,
-> source commit `e39cf1cc04c7ab52f115484b98f926b06cb85c71`, by successful
-> Windows Release **#46** (`35855322767`). Build 37 remains the frozen historical
-> lineage anchor, but future installer diagnosis/build-forward work starts from
-> Build 46 or a verified descendant in **Watchlog-2**. Do not reconstruct installer
-> changes from `Alkalid-security/Watchlog`. See
-> `docs/release/BUILD37_AUTHORITY.md`.
+> source commit `4d7533d7525b2cecffa47d566d277d92e7b30054`, by successful
+> Windows Release **#50** (`36038016858`). Artifact: `WatchLog-Windows-50`
+> (id `10825154761`, digest
+> `sha256:7260ed7c441ea5ac4afc3aa5d7986f9fd38b16d464669db8bf7e69ad19f6a932`).
+> Build 37 remains the frozen historical lineage anchor, but all future installer
+> diagnosis/build-forward work starts from Build 50 or a verified descendant in
+> **Watchlog-2**. Do not reconstruct installer changes from
+> `Alkalid-security/Watchlog`. See `docs/release/BUILD37_AUTHORITY.md`.
 
 
 Turns an existing DVR/NVR into a monitored, reportable system — without
