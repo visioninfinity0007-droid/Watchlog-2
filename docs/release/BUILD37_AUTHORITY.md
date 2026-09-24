@@ -162,3 +162,54 @@ Build 41 supersedes Build 39 as the authoritative latest Windows installer
 baseline. Real Hikvision hardware login still requires field confirmation on the
 customer recorder; the release pipeline proves packaged behavior, not the
 customer's credentials/firmware response.
+
+
+## Current authoritative baseline: Build 50
+
+Windows Release **#50** (run id `36038016858`) completed successfully from
+source commit `4d7533d7525b2cecffa47d566d277d92e7b30054`.
+
+- Product version: `5.0.7`
+- Artifact: `WatchLog-Windows-50`
+- Artifact id: `10825154761`
+- Artifact size: `66535907` bytes
+- GitHub artifact digest:
+  `sha256:7260ed7c441ea5ac4afc3aa5d7986f9fd38b16d464669db8bf7e69ad19f6a932`
+- `WatchLog-Setup.exe` SHA-256:
+  `DE6B681F306C2B795ADA85A4657D1480B2C92E90C2DBF87FF2F45D5467E7EE77`
+- `watchlog-agent.exe` SHA-256:
+  `553ADBB92B5ACA18F07DA2B72C999DDE3338EAE56541A2BAD569774B9A9FF21D`
+- `watchlog-setup-ui.exe` SHA-256:
+  `436CDCCAB0AD90A2C80F6BE7C2976A0AF9A96ED8573A60882241CDC284DC20FA`
+- Windows release workflow: **passed**
+- Packaged setup UI lifecycle/self-test: **passed**
+- Packaged connector self-test: **passed**
+- Python compile and recorder field-regression tests: **passed**
+
+Build 50 supersedes Build 49 as the authoritative latest Windows installer
+baseline.
+
+### Why Build 50 exists
+
+The Build 41/49 field evidence showed that a Hikvision site could authenticate
+during setup and heartbeat to WatchLog while the long-running recorder data path
+later became unreachable or produced no events. Build 50 changes the runtime
+rather than merely changing the installer verdict:
+
+- Hikvision native alert monitoring is divided into bounded 45-second slices.
+  Between slices the SAME authenticated driver/session captures one rotating
+  camera still, avoiding a second concurrent recorder login.
+- The rotating still is uploaded as a `visual_sample` event with its JPEG. The
+  normal snapshot trigger therefore queues it for the WatchLog server-side visual
+  review pipeline even when the recorder's native motion/smart-event stream is
+  quiet or disabled.
+- The health worker reuses fresh live-collector recorder truth instead of opening
+  another competing Hikvision Digest session. Per-camera health becomes positive
+  only after that camera has produced a real JPEG sample.
+- Unvalidated Hikvision archive recovery is disabled so it cannot create another
+  simultaneous recorder session beside live monitoring.
+- Build 49's recorder-backed readiness gate remains: Setup cannot report Ready
+  merely because the cloud heartbeat works.
+
+This is the first build in this lineage that directly addresses both sides of the
+field symptom: **installation readiness** and **continued Hikvision camera data**.
