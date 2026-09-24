@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.4"
+  !define APPVERSION "5.0.5"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -65,6 +65,9 @@ Section "Install"
 
   ; Detect an already-enrolled installation before replacing any binaries.
   StrCpy $6 "0"
+  ; $7 = Setup already started + heartbeat-proved the background connector.
+  ; When true, do NOT restart it a second time later in this same NSIS run.
+  StrCpy $7 "0"
   IfFileExists "$INSTDIR\watchlog.ini" 0 +3
   IfFileExists "${DATAROOT}\agent_state.json" 0 +2
     StrCpy $6 "1"
@@ -154,18 +157,22 @@ Section "Install"
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
-        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. Run the installer again when the recorder, site code and network are ready."
         Abort "WatchLog setup did not complete"
       ${EndIf}
+      ; Setup returns 0 only after register-service proved a fresh background heartbeat.
+      StrCpy $7 "1"
     ${EndIf}
   ${Else}
     DetailPrint "Opening WatchLog Setup..."
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. Run the installer again when the recorder, site code and network are ready."
       Abort "WatchLog setup did not complete"
     ${EndIf}
+    ; Setup itself already registered the SYSTEM task and proved a fresh heartbeat.
+    StrCpy $7 "1"
   ${EndIf}
 
   ; The recorder credential must exist before a background task can start.
@@ -174,20 +181,25 @@ Section "Install"
     Abort "Recorder credential missing"
   ${EndIf}
 
-  ; Register/update background startup only after customer setup (fresh) or
-  ; credential migration (upgrade) has completed successfully.
-  DetailPrint "Setting WatchLog to run securely in the background..."
-  ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\register-service.ps1" -InstallDir "$INSTDIR"' $1
-  DetailPrint "Background startup registration exited with code $1"
-  ${If} $1 != 0
-    ${If} $8 == "1"
-      DetailPrint "Registration failed; rolling back to the previous working WatchLog..."
-      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
-    ${Else}
-      ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
+  ; Register/update background startup only if Setup did NOT already do it.
+  ; Build 41 field evidence showed the duplicate restart could convert a successful
+  ; connected setup into an incomplete NSIS install on the second start.
+  ${If} $7 == "1"
+    DetailPrint "Background WatchLog was already heartbeat-proven by Setup; keeping that running instance."
+  ${Else}
+    DetailPrint "Setting WatchLog to run securely in the background..."
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\register-service.ps1" -InstallDir "$INSTDIR"' $1
+    DetailPrint "Background startup registration exited with code $1"
+    ${If} $1 != 0
+      ${If} $8 == "1"
+        DetailPrint "Registration failed; rolling back to the previous working WatchLog..."
+        ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      ${Else}
+        ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
+      ${EndIf}
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog connected the site, but automatic background startup could not be proven. Setup stopped so this is not mistaken for a complete installation."
+      Abort "WatchLog background startup registration failed"
     ${EndIf}
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog connected the site, but automatic background startup could not be proven. Setup stopped so this is not mistaken for a complete installation."
-    Abort "WatchLog background startup registration failed"
   ${EndIf}
 
   ; UPGRADE COMMIT: the task is registered + started; prove the EXACT new agent binary is actually

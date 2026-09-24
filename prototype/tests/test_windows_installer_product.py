@@ -64,6 +64,10 @@ def main():
             and "self.installer_child" in gui
             and "QTimer.singleShot(1800, self.finish)" in gui
             and '"--installer-child"' in nsis,
+        "NSIS never restarts a connector already heartbeat-proved by Setup":
+            'StrCpy $7 "1"' in nsis
+            and '${If} $7 == "1"' in nsis
+            and "already heartbeat-proven by Setup" in nsis,
         "Hikvision integration errors distinguish API auth from browser password":
             "hikvision_integration_auth" in backend
             and "hikvision_integration_unavailable" in backend
