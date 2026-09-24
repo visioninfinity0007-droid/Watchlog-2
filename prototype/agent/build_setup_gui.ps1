@@ -67,7 +67,11 @@ $args = @(
   "--hidden-import", "PySide6.QtCore",
   "--hidden-import", "PySide6.QtGui",
   "--hidden-import", "PySide6.QtWidgets",
-  "--collect-all", "PySide6",
+  # Do NOT --collect-all PySide6. That pulled QtWebEngine/3D/Charts/etc. into a
+  # simple Widgets app, inflated the one-file extraction payload and made the real
+  # packaged UI take ~17s just to launch/exit on the release runner. PyInstaller's
+  # Qt hooks already collect the plugins required by the explicitly imported
+  # QtCore/QtGui/QtWidgets modules below.
   "--exclude-module", "torch", "--exclude-module", "ultralytics",
   "--exclude-module", "matplotlib", "--exclude-module", "pandas",
   "--exclude-module", "scipy", "--exclude-module", "pytest",

@@ -511,6 +511,7 @@ def test_recorder(address: str, username: str, password: str,
                 "vendor": info.vendor or "Recorder",
                 "model": info.model or "Unknown model",
                 "firmware": info.firmware or "",
+                "serial": info.serial or "",
                 "driver": driver.name,
                 "verified_against_hardware": bool(driver.verified_against_hardware),
                 "channels": [{"channel": str(row.channel),
@@ -640,6 +641,33 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
         section["push_bridge_url"] = str(public["push_bridge_url"]).rstrip("/")
     section["camera_profiles_json"] = json.dumps(profiles, separators=(",", ":"))
     _write_ini(config_path, ini)
+
+
+def _seed_recorder_identity(config_path: Path, recorder: dict) -> None:
+    """Persist the proven recorder's NON-SECRET identity before the background task starts.
+
+    The production connector can then safely rediscover the same recorder after DHCP/IP
+    movement even if its very first background connection fails. Build 41 could otherwise
+    have a perfectly proven foreground setup but no recorder_identity.json, leaving the
+    background runtime unable to authenticate any rediscovery candidate.
+    """
+    try:
+        import connector_rediscovery
+        cfg = SimpleNamespace(
+            state_path=programdata_dir() / "agent_state.json",
+            nvr_driver=recorder.get("driver") or "auto",
+            nvr_url=recorder.get("url") or "",
+            _ini_path=config_path,
+        )
+        info = SimpleNamespace(
+            vendor=recorder.get("vendor") or "",
+            model=recorder.get("model") or "",
+            serial=recorder.get("serial") or "",
+            driver=recorder.get("driver") or "",
+        )
+        connector_rediscovery.save_identity(cfg, info, recorder.get("url") or "")
+    except Exception as exc:  # noqa: BLE001 — resilience metadata may never fail setup
+        _setup_log(f"recorder identity seed skipped ({type(exc).__name__})")
 
 
 def _clear_consumed_code(config_path: Path) -> bool:
@@ -1008,6 +1036,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except SecretError as exc:
         raise ValueError("Windows could not securely store the recorder credential on this PC.") from exc
     _write_proven_config(config_path, public, enrollment_code, recorder, username, site_type, profiles)
+    _seed_recorder_identity(config_path, recorder)
 
     progress("Connecting this site to WatchLog…")
     cloud = core.Cloud(public["supabase_url"].rstrip("/"), public["supabase_publishable_key"])

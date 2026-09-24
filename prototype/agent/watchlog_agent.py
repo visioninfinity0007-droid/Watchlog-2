@@ -680,22 +680,30 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
                p_device_vendor=device.vendor if device else None,
                p_device_model=device.model if device else None,
                p_device_driver=device.driver if device else None)
-    # Non-secret local proof used by register-service.ps1. The installer deletes
-    # any stale marker BEFORE starting the scheduled task, so a newly-created
-    # marker proves the actual background agent reached WatchLog in SYSTEM context.
-    try:
-        ready = default_state_dir() / "background-ready.json"
-        ready.parent.mkdir(parents=True, exist_ok=True)
-        tmp = ready.with_suffix(".tmp")
-        tmp.write_text(json.dumps({
-            "agent_id": state.get("agent_id"),
-            "version": AGENT_VERSION,
-            "pid": os.getpid(),
-            "heartbeat_at": iso(now_utc()),
-        }, separators=(",", ":")), encoding="utf-8")
-        os.replace(tmp, ready)
-    except Exception:  # noqa: BLE001 — readiness evidence can never break monitoring
-        pass
+    # Non-secret installer readiness proof. A cloud heartbeat by itself is NOT
+    # enough: Build 41 field evidence showed an agent could heartbeat forever while
+    # the Hikvision recorder was unreachable, leaving WatchLog with zero camera data.
+    # register-service.ps1 deletes any stale marker before starting the SYSTEM task,
+    # therefore write a fresh marker only when THIS background process also proved a
+    # real recorder identity during startup.
+    if device is not None:
+        try:
+            ready = default_state_dir() / "background-ready.json"
+            ready.parent.mkdir(parents=True, exist_ok=True)
+            tmp = ready.with_suffix(".tmp")
+            tmp.write_text(json.dumps({
+                "agent_id": state.get("agent_id"),
+                "version": AGENT_VERSION,
+                "pid": os.getpid(),
+                "heartbeat_at": iso(now_utc()),
+                "recorder_connected": True,
+                "recorder_vendor": getattr(device, "vendor", None),
+                "recorder_model": getattr(device, "model", None),
+                "recorder_driver": getattr(device, "driver", None),
+            }, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, ready)
+        except Exception:  # noqa: BLE001 — readiness evidence can never break monitoring
+            pass
     log("heartbeat ok")
 
 

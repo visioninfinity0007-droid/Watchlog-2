@@ -34,6 +34,8 @@ def main():
     checks = {
         "GUI is real PySide6": "from PySide6" in gui,
         "GUI build is windowed": '"--windowed"' in build_ui,
+        "GUI build packages only required Qt modules (fast one-file startup)":
+            '"--collect-all", "PySide6"' not in build_ui,
         "GUI covers recorder discovery": "discover_recorders" in gui and "test_recorder" in gui,
         "GUI performs real finalization": "finalize_install" in gui,
         "discovery auto-selects a real recorder candidate":
@@ -47,6 +49,13 @@ def main():
             "background-ready.json" in agent
             and "background-ready.json" in register
             and "did not prove a cloud heartbeat" in register,
+        "background Ready proof also requires a recorder connection":
+            "if device is not None:" in agent
+            and '"recorder_connected": True' in agent,
+        "setup seeds non-secret recorder identity for DHCP recovery":
+            "def _seed_recorder_identity" in backend
+            and "connector_rediscovery.save_identity" in backend
+            and '"serial": info.serial or ""' in backend,
         "runtime starts live work before recorder capability enrichment":
             "driver.capabilities()" not in agent.split("# Identify the recorder ONCE", 1)[1],
         "Recorder Continue is disabled while discovery worker is busy":
