@@ -8,32 +8,39 @@ patching the wrong WatchLog repository.
 As of 2026-09-25, the latest successful Windows installer is:
 
 - Product: WatchLog Windows Site Connector
-- Build: **56**
-- Product version: **5.0.8**
+- Build: **61**
+- Product version: **5.0.12**
 - Authoritative repository: `visioninfinity0007-droid/Watchlog-2`
 - Authoritative branch: `build/site-connector-v5-watchlog2`
-- Source commit: `9330c297f12a7b387059d1356b8f4fd113b4336f`
-- Windows Release workflow: **#56**, run id `36133615686`
+- Source commit: `78569edba4f125eb8c02fd6dc9fecdc9c7c669f0`
+- Windows Release workflow: **#61**, run id `36136000657`
 - Workflow conclusion: **success**
-- Artifact: `WatchLog-Windows-56`
-- Artifact id: `10862408445`
-- Artifact size: `66559271` bytes
+- Artifact: `WatchLog-Windows-61`
+- Artifact id: `10865515882`
+- Artifact size: `66562912` bytes
 - GitHub artifact digest:
-  `sha256:2160eab4240b2e6c43bf3a30f6958b7e73b00494efead9decc6847fe01da5232`
+  `sha256:5344d2b0efbfc1b6f438b09f94e9c0546f239f05f79631d9483320e3251374d7`
 - `WatchLog-Setup.exe` SHA-256:
-  `F0682D449C1E08A6AC687D714E6E2372F277F635071B1C1E9D0C4A870B61E670`
+  `715D3586521F0707E71FA7758FEFF51596EF234B548CBFCDBAE074F8E8BE199A`
 - `watchlog-agent.exe` SHA-256:
-  `24853EEBFD227544C3F836B604EC3D238066F729D7762AA023F1ACF5AC752185`
+  `9FF3DDF44B1D72F5E5EF5F5E8943D5C0CF71A6A97D221108780BD9F037F77DA5`
 - `watchlog-setup-ui.exe` SHA-256:
-  `B9167034E716D05757BE2753549C3E5A4999799BDA02CDC4F82723F508313D19`
-- Packaged setup-UI lifecycle/self-test: **passed**
-- Packaged connector self-test and checksum gates: **passed**
-- Hikvision archive/download + recovery wiring + push-bridge contracts: **passed**
+  `C0B257EA2233F8AC4E3A8AEA4DC2AA520C492925A67684D614825A5A455629AC`
+- Packaged setup-UI lifecycle/selection test: **passed**
+- Packaged connector self-test: **passed**
+- Hikvision archive/download contracts: **passed**
+- Runtime recovery wiring, including real collector recorder truth: **passed**
+- Recorder push parser/liveness contracts: **passed**
+- Generic Dahua AlarmServer safety contract: **passed**
+- Durable spool-overflow-to-archive-recovery contract: **passed**
+- Packaged file/runtime version truth: **5.0.12 / 5.0.12**
 
-Build 56 supersedes Build 50. It adds the Hikvision archive/video path,
-recorder-backed outage detection, resumable dual-vendor recovery, asynchronous
-PC-off recorder-push provisioning, end-to-end push delivery verification, and
-Hikvision 30-second direct heartbeat/broken-link retransmission configuration.
+Build 61 supersedes Build 56. It is the first baseline in this lineage where the
+automatic recovery path is wired to the actual live recorder session, a long
+cloud outage that exceeds the local spool safety cap becomes a durable recorder
+recovery interval, generic Dahua AlarmServer is fail-closed instead of being
+misused as an HTTPS webhook, and PC-off verification requires a fresh recorder
+POST rather than accepting historical `last_push_at`.
 
 The successful artifact and its exact source commit determine installer authority.
 This repository (`Alkalid-security/Watchlog`) remains product/database/portal/
@@ -69,12 +76,21 @@ itself passed and produced the artifact above.
 
 ## Field-validation boundary
 
-Build 50 is the correct next field installer for both the Dahua and Hikvision
-sites. Dahua behavior is unchanged by this runtime change. On Hikvision, the
-next field run should verify that camera samples begin arriving after setup and
-that the site no longer drifts into `nvr_unreachable` while the collector is
-healthy. The code and packaged release now cover this path, but the exact
-customer recorder remains the final hardware confirmation.
+Build 61 is the correct field installer for both Dahua and Hikvision.
+
+- **Dahua:** live event monitoring + local durable spool + recorder archive
+  search/download + automatic gap recovery are the production path. Generic
+  Dahua `AlarmServer` is a proprietary alarm-centre interface, not a generic
+  HTTP webhook, so WatchLog intentionally does **not** rewrite it for PC-off
+  delivery. A Dahua site may only claim direct PC-off cloud push if that exact
+  firmware exposes a separately proven HTTP callback mechanism.
+- **Hikvision:** the package includes live ISAPI monitoring, bounded archive/video
+  retrieval, automatic gap recovery and HTTP-host push configuration requesting
+  30-second NVR heartbeats plus broken-link retransmission. End-to-end PC-off
+  status is only verified after a fresh recorder POST reaches WatchLog.
+- **Any site:** a physical field acceptance still has to prove one bounded
+  historical retrieval and one induced gap/recovery cycle on the actual recorder.
+
 
 ## Historical lineage
 
@@ -86,7 +102,9 @@ customer recorder remains the final hardware confirmation.
 - **Build 46 / 5.0.3** — installer-child lifecycle and Hikvision integration
   hardening predecessor to Build 49.
 - **Build 49 / 5.0.6** — recorder-backed readiness predecessor.
-- **Build 50 / 5.0.7** — current successful Windows baseline; Hikvision single-session live monitoring + rotating visual samples.
+- **Build 50 / 5.0.7** — Hikvision single-session live-monitoring predecessor.
+- **Build 56 / 5.0.8** — dual-vendor archive/recovery predecessor.
+- **Build 61 / 5.0.12** — current successful Windows baseline; production recovery wiring + safe PC-off semantics.
 
 ## Mandatory rule for future installer work
 
@@ -104,14 +122,14 @@ file path, or a source commit that has not produced a successful Windows artifac
 
 ## CI note
 
-Windows Release #50 passed all Windows packaging/release gates. The repository's
+Windows Release #61 passed all Windows packaging/release gates. The repository's
 broader CI can still be red for unrelated product/backend tests; that does not turn
 a failed Windows Release into a success, and it does not invalidate a successful
 Windows Release artifact. Treat the Windows Release workflow and its artifact
 identity as the installer release authority.
 
 
-## Build 56 push-bridge production handoff
+## Build 61 push-bridge production handoff
 
 The Windows installer source is Watchlog-2, but the **live Coolify push bridge**
 is built from this repository's `main` branch, `/prototype/bridge`.
@@ -119,22 +137,25 @@ is built from this repository's `main` branch, `/prototype/bridge`.
 Bridge hardening source commit:
 `d57e600ff57eec0c849c6a818a8087802024d06e`.
 
-That main-repo change makes Hikvision `heartBeat` liveness-only (never a fake
-incident), authenticates/records recorder liveness before vendor event parsing,
-and contains the production `wl_agent_push_status` migration source. The live
-database RPC was already applied on 2026-09-25.
+That main-repo change treats Hikvision `heartBeat` as liveness only, records
+token-authenticated recorder liveness before vendor event parsing, retains
+Dahua payload parsing for firmware/gateways that truly POST HTTP, and contains
+the production `wl_agent_push_status` migration source. The live database RPC
+was applied on 2026-09-25.
 
-**Deployment is a separate gate.** The Coolify runbook explicitly states that
-there is no GitHub auto-deploy. PC-off direct reporting must not be called
+**Deployment is still a separate gate.** The Coolify runbook states there is no
+GitHub auto-deploy. Hikvision PC-off direct heartbeat must not be called
 production-active until `watchlog-push-bridge` is redeployed from main and a
-real recorder POST advances `push_sources.last_push_at`.
+fresh recorder POST advances `push_sources.last_push_at`.
 
-Field acceptance for Build 56:
-1. install/upgrade the Dahua and Hikvision PCs with Build 56;
-2. prove both recorders connect and remain reachable;
-3. request a bounded historical clip from each recorder;
-4. create a connectivity/PC gap and prove a recovery interval is backfilled;
-5. redeploy the Coolify push bridge from main;
-6. on Hikvision, turn the PC off and verify the NVR's 30-second HTTP heartbeat
-   advances the recorder-push virtual agent; on Dahua, verify direct alarm-server
-   delivery when the specific firmware supports it.
+Field acceptance for Build 61:
+1. install/upgrade one Dahua and one Hikvision site with Build 61;
+2. prove both recorders connect and a recent bounded historical retrieval works;
+3. create an Internet/PC/recorder connectivity gap and prove missed data is
+   recovered/backfilled after connectivity returns;
+4. redeploy the Coolify push bridge from main;
+5. on Hikvision, turn the Windows PC off and prove the NVR-originated heartbeat
+   continues to advance the recorder-push virtual agent;
+6. on generic Dahua, do **not** modify AlarmServer for WatchLog. PC-off direct
+   push remains unsupported unless that firmware's HTTP callback is separately
+   hardware-proven.
