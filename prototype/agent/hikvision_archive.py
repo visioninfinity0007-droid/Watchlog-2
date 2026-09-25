@@ -134,13 +134,13 @@ def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, en
               or "").strip().upper()
     matches = []
     for item in root.findall(".//searchMatchItem"):
-        playback = (item.findtext("playbackURI") or "").strip()
-        st = (item.findtext("startTime") or "").strip()
-        et = (item.findtext("endTime") or "").strip()
+        playback = (item.findtext(".//playbackURI") or "").strip()
+        st = (item.findtext(".//startTime") or "").strip()
+        et = (item.findtext(".//endTime") or "").strip()
         if not (st and et):
             continue
         matches.append({
-            "track_id": (item.findtext("trackID") or str(_track(channel))).strip(),
+            "track_id": (item.findtext(".//trackID") or str(_track(channel))).strip(),
             "start": st,
             "end": et,
             "playback_uri": playback,
@@ -184,27 +184,31 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
         f'<playbackURI>{escape(playback_uri)}</playbackURI>'
         '</downloadRequest>'
     )
-    response = _post(driver, "/ISAPI/ContentMgmt/download", body,
-                     stream=True, timeout=DOWNLOAD_TIMEOUT)
-    try:
-        chunks = []
-        total = 0
-        for chunk in response.iter_content(chunk_size=256 * 1024):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > MAX_CLIP_BYTES:
-                raise DriverError("Hikvision incident footage exceeds the 32 MiB limit")
-            chunks.append(chunk)
-        data = b"".join(chunks)
-        if not data:
-            return None
-        head = data[:300].lower()
-        if b"<responsestatus" in head or b"<html" in head or b"<!doctype" in head:
-            return None
-        return data
-    finally:
-        response.close()
+    # Hold the cross-driver lock through the WHOLE transfer. _post itself uses
+    # the same RLock, so this is re-entrant in this thread but prevents the live
+    # alert collector from opening a second Hikvision session mid-download.
+    with HIKVISION_HTTP_LOCK:
+        response = _post(driver, "/ISAPI/ContentMgmt/download", body,
+                         stream=True, timeout=DOWNLOAD_TIMEOUT)
+        try:
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_CLIP_BYTES:
+                    raise DriverError("Hikvision incident footage exceeds the 32 MiB limit")
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            if not data:
+                return None
+            head = data[:300].lower()
+            if b"<responsestatus" in head or b"<html" in head or b"<!doctype" in head:
+                return None
+            return data
+        finally:
+            response.close()
 
 
 def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> str:
