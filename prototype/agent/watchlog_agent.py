@@ -2074,10 +2074,9 @@ def recorder_push_worker(cfg: Config, state: dict, cloud: Cloud,
                          stop: threading.Event) -> None:
     """Best-effort PC-off resilience, never on the live/install critical path.
 
-    The NVR is configured asynchronously after normal monitoring has settled. A successful
-    config read-back is useful but is NOT proof that the recorder can reach WatchLog over
-    the Internet. End-to-end coverage becomes verified only after wl_push_liveness /
-    wl_ingest_push records an actual recorder POST in push_sources.last_push_at.
+    Configuration read-back proves only that a setting stuck. PC-off coverage is
+    verified only by a NEW NVR-originated POST after this runtime started/configured
+    the recorder; stale push history can never satisfy the gate.
     """
     if not (cfg.push_bridge_url or "").strip():
         return
@@ -2087,28 +2086,13 @@ def recorder_push_worker(cfg: Config, state: dict, cloud: Cloud,
     next_configure = 0.0
     configured_once = False
     backend_missing_logged = False
+    verification_after = now_utc()
 
     while not stop.is_set():
         now = time.monotonic()
-        try:
-            status = cloud.call(
-                "wl_agent_push_status",
-                p_agent_id=state["agent_id"],
-                p_agent_key=state["agent_key"],
-            ) or {}
-            backend_missing_logged = False
-            if status.get("delivery_verified"):
-                log("recorder push: end-to-end PC-off delivery verified")
-                return
-        except Exception as exc:  # noqa: BLE001
-            low = str(exc).lower()
-            if ("wl_agent_push_status" in low or "schema cache" in low or "404" in low):
-                if not backend_missing_logged:
-                    log("recorder push: status RPC unavailable; will retry after backend migration")
-                    backend_missing_logged = True
-            elif not configured_once:
-                log(f"recorder push: status check deferred ({type(exc).__name__})")
 
+        # Configure first. The previous implementation queried historical push status
+        # first, so an old last_push_at could make a new/broken recorder look verified.
         if now >= next_configure:
             try:
                 import proc_util
@@ -2127,17 +2111,51 @@ def recorder_push_worker(cfg: Config, state: dict, cloud: Cloud,
                         break
                 if report and report.get("configured"):
                     configured_once = True
+                    verification_after = now_utc()
                     if report.get("verified"):
-                        log("recorder push: NVR config read-back verified; awaiting first direct POST")
+                        log("recorder push: NVR config read-back verified; awaiting a fresh direct POST")
                     else:
-                        log("recorder push: NVR config written but read-back was inconclusive")
+                        log("recorder push: NVR config written; awaiting a fresh direct POST")
                 elif report:
-                    log("recorder push: recorder did not accept PC-off delivery configuration")
+                    log("recorder push: no safe generic PC-off configuration for this recorder")
                 elif code != 0:
                     log(f"recorder push: configuration helper exited {code}; live agent remains authoritative")
             except Exception as exc:  # noqa: BLE001
                 log(f"recorder push: background configuration deferred ({type(exc).__name__})")
             next_configure = time.monotonic() + PUSH_RECONFIGURE_SECONDS
+
+        try:
+            status = cloud.call(
+                "wl_agent_push_status",
+                p_agent_id=state["agent_id"],
+                p_agent_key=state["agent_key"],
+            ) or {}
+            backend_missing_logged = False
+            last_raw = status.get("last_push_at")
+            last_push = None
+            if last_raw:
+                try:
+                    last_push = datetime.fromisoformat(str(last_raw).replace("Z", "+00:00"))
+                    if last_push.tzinfo is None:
+                        last_push = last_push.replace(tzinfo=timezone.utc)
+                    last_push = last_push.astimezone(timezone.utc)
+                except (TypeError, ValueError):
+                    last_push = None
+
+            # A current recorder POST is the only end-to-end proof. Five seconds of
+            # skew tolerance covers recorder/bridge/server timestamp boundaries without
+            # accepting an old deployment's liveness.
+            if last_push and last_push >= (verification_after - timedelta(seconds=5)):
+                log("recorder push: fresh end-to-end PC-off delivery verified")
+                return
+        except Exception as exc:  # noqa: BLE001
+            low = str(exc).lower()
+            if ("wl_agent_push_status" in low or "schema cache" in low or "404" in low):
+                if not backend_missing_logged:
+                    log("recorder push: status RPC unavailable; will retry after backend migration")
+                    backend_missing_logged = True
+            elif not configured_once:
+                log(f"recorder push: status check deferred ({type(exc).__name__})")
 
         stop.wait(PUSH_STATUS_POLL_SECONDS)
 

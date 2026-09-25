@@ -106,11 +106,14 @@ def main():
         "recovery accepts startup channel dictionaries":
             "if isinstance(item, dict)" in agent
             and 'item.get("channel")' in agent,
-        "PC-off recorder push auto-provisions asynchronously and waits for real delivery":
+        "PC-off recorder push auto-provisions asynchronously and waits for fresh real delivery":
             "def recorder_push_worker" in agent
             and "wl_agent_push_status" in agent
             and "target=recorder_push_worker" in agent
-            and "delivery_verified" in agent,
+            and "verification_after = now_utc()" in agent
+            and 'status.get("last_push_at")' in agent
+            and "last_push >= (verification_after - timedelta(seconds=5))" in agent
+            and "Configure first" in agent,
         "Hikvision PC-off path requests 30s NVR heartbeats and broken-link resend":
             "<heartbeat>30</heartbeat>" in hikvision
             and "<httpBroken>true</httpBroken>" in hikvision
