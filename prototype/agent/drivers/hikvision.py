@@ -231,7 +231,13 @@ class HikvisionDriver(NvrDriver):
         # as all-False, so a Hikvision push that actually worked was always reported as
         # failed -- and the customer told to expect no PC-free reporting.
         try:
-            self._put(f"/ISAPI/Event/notification/httpHosts/{host_id}", body)
+            # Current ISAPI writes the selected host with PUT /httpHosts and the
+            # <id> inside HttpHostNotification. Some older firmware accepts only
+            # /httpHosts/<id>, so retain that as a bounded compatibility fallback.
+            try:
+                self._put("/ISAPI/Event/notification/httpHosts", body)
+            except DriverError:
+                self._put(f"/ISAPI/Event/notification/httpHosts/{host_id}", body)
         except DriverError as e:
             return {"applied": False, "verified": False,
                     "detail": f"recorder rejected httpHosts config: {str(e)[:120]}"}
