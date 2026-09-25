@@ -106,6 +106,14 @@ jobs:
             if ($env:PRODUCTION -eq 'true') { $releaseArgs['Production'] = $true }
             & .\tools\build_windows_release.ps1 @releaseArgs
             if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
+
+            # Production resilience contracts run after build dependencies are installed.
+            python prototype/tests/test_hikvision_archive.py
+            if ($LASTEXITCODE -ne 0) { throw "Hikvision archive/download contract failed" }
+            python prototype/tests/test_recovery_wiring.py
+            if ($LASTEXITCODE -ne 0) { throw "automatic recovery wiring contract failed" }
+            python prototype/tests/test_push_bridge.py
+            if ($LASTEXITCODE -ne 0) { throw "recorder push bridge contract failed" }
           }
           finally {
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }

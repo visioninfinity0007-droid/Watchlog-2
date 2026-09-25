@@ -53,6 +53,19 @@ HIK_EVENT_MAP = {
     "vehicledetection": "vehicle",
 }
 
+DAHUA_EVENT_MAP = {
+    "videomotion": "motion",
+    "smartmotionhuman": "person",
+    "smartmotionvehicle": "vehicle",
+    "crossline detection": "line_crossing",
+    "crossregion detection": "intrusion",
+    "videoloss": "video_loss",
+    "videoblind": "tamper",
+    "storagenotexist": "disk_error",
+    "storagefailure": "disk_error",
+    "storagefull": "disk_full",
+}
+
 
 def _strip_ns(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
@@ -110,6 +123,60 @@ def parse_hikvision(body: bytes, content_type: str):
     return ev
 
 
+def parse_dahua(body: bytes, content_type: str = ""):
+    """Parse only the Dahua alarm shape we can identify confidently.
+
+    Alarm-server payloads differ by firmware. We accept the same Code/action/index
+    grammar used by Dahua eventManager and refuse everything else. Refused payloads
+    still count as recorder liveness once their push token authenticates.
+    """
+    try:
+        text = body.decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    if "Code=" not in text:
+        return None
+    # Some firmwares wrap one alarm line in a small text body.
+    line = next((row.strip() for row in text.splitlines() if "Code=" in row), text)
+    start = line.find("Code=")
+    if start > 0:
+        line = line[start:]
+    head, sep, data = line.partition(";data=")
+    fields = {}
+    for part in head.split(";"):
+        key, mark, value = part.partition("=")
+        if mark and key:
+            fields[key.strip()] = value.strip()
+    code = fields.get("Code") or ""
+    action = (fields.get("action") or "").strip().lower()
+    if not code or action not in ("", "start", "pulse"):
+        return None
+    low = code.lower()
+    if low in ("heartbeat", "keepalive", "timechange", "ntpadjusttime"):
+        return None
+    event_type = DAHUA_EVENT_MAP.get(low, low or None)
+    if not event_type:
+        return None
+    try:
+        channel = str(int(fields.get("index", "0")) + 1)
+    except ValueError:
+        channel = "1"
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "channel": channel,
+        "event_type": event_type,
+        "device_ts": now,
+        "device_event_id": None,
+        "payload": {
+            "vendor": "dahua",
+            "code": code,
+            "action": action,
+            "data": data[:500] if sep else None,
+            "source": "recorder_push",
+        },
+    }
+
+
 def _split_multipart(body: bytes, content_type: str):
     """Return (xml_bytes|None, jpeg_bytes|None) from a multipart body."""
     m = re.search(r"boundary=([^\s;]+)", content_type or "")
@@ -140,13 +207,12 @@ def _parse_ts(raw):
     return datetime.now(timezone.utc).isoformat()
 
 
-def push(token: str, events: list) -> tuple:
-    """Call wl_ingest_push. Returns (ok, detail)."""
+def _rpc(name: str, payload: dict) -> tuple:
     if not (SUPABASE_URL and SUPABASE_KEY):
         return False, "SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY not set"
-    data = json.dumps({"p_token": token, "p_events": events}).encode()
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        f"{SUPABASE_URL}/rest/v1/rpc/wl_ingest_push", data=data, method="POST",
+        f"{SUPABASE_URL}/rest/v1/rpc/{name}", data=data, method="POST",
         headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
                  "Content-Type": "application/json"})
     try:
@@ -154,6 +220,16 @@ def push(token: str, events: list) -> tuple:
             return True, r.read().decode()
     except Exception as e:                              # noqa: BLE001
         return False, f"{type(e).__name__}: {str(e)[:160]}"
+
+
+def liveness(token: str) -> tuple:
+    """Authenticate the push token and advance the recorder-only heartbeat."""
+    return _rpc("wl_push_liveness", {"p_token": token})
+
+
+def push(token: str, events: list) -> tuple:
+    """Call wl_ingest_push. Returns (ok, detail)."""
+    return _rpc("wl_ingest_push", {"p_token": token, "p_events": events})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -173,11 +249,20 @@ class Handler(BaseHTTPRequestHandler):
         token = m.group(1)
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
-        ev = parse_hikvision(body, self.headers.get("Content-Type", ""))
+
+        # Liveness is independent of event parsing. An inactive Hikvision keep-alive or
+        # an OEM-specific Dahua payload still proves the NVR itself can reach WatchLog
+        # while the Windows PC is off, provided the token authenticates.
+        live_ok, live_detail = liveness(token)
+        if not live_ok:
+            self.log_message("push liveness rejected for token %s...: %s",
+                             token[:6], live_detail[:100])
+            self.send_response(502); self.end_headers(); return
+
+        content_type = self.headers.get("Content-Type", "")
+        ev = parse_hikvision(body, content_type) or parse_dahua(body, content_type)
         if ev is None:
-            # Not a recognisable alarm (keep-alive, unknown format). Answer
-            # OK so the recorder does not retry forever, but record nothing.
-            self.log_message("unrecognised push on token %s... (%d bytes)",
+            self.log_message("recorder liveness only on token %s... (%d bytes)",
                              token[:6], len(body))
             self.send_response(202); self.end_headers(); return
         ok, detail = push(token, [ev])

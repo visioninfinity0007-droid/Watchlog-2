@@ -26,8 +26,17 @@ class RecoveryWiring(unittest.TestCase):
         self.assertIn("detect_outage", SRC)
         self.assertIn("wl_open_recovery_interval", SRC)
 
-    def test_last_live_persisted_on_heartbeat(self):
+    def test_last_live_requires_fresh_recorder_transport(self):
+        self.assertIn("Persist RECORDER observation", SRC)
+        self.assertIn('holder.get("live_driver")', SRC)
+        self.assertIn("last_activity_monotonic", SRC)
         self.assertIn("persist_last_live", SRC)
+
+    def test_hikvision_and_dahua_archive_recovery_are_wired(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("dahua_archive.install()", worker)
+        self.assertIn("hikvision_archive.install()", worker)
+        self.assertNotIn("Hikvision archive recovery disabled", worker)
 
     def test_gated_and_live_priority_and_throttled(self):
         worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]

@@ -43,6 +43,12 @@ KEEPALIVE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 NOT_AN_ALERT = b"<?xml version='1.0'?><Something><x>1</x></Something>"
 
+DAHUA_MOTION = (
+    b"Code=VideoMotion;action=Start;index=2;"
+    b'data={"RegionName":"Loading Bay"}'
+)
+DAHUA_HEARTBEAT = b"Code=Heartbeat;action=Pulse;index=0;data={}"
+
 CASES = []
 
 
@@ -104,6 +110,31 @@ def t_unknown_type():
     ev = pb.parse_hikvision(xml, "application/xml")
     assert ev is not None and ev["event_type"] == "somenewthing", ev
     return "kept as 'somenewthing'"
+
+
+@case("Dahua Code/action/index alarm parses without inventing unsupported fields")
+def t_dahua_alarm():
+    ev = pb.parse_dahua(DAHUA_MOTION, "text/plain")
+    assert ev is not None, "known Dahua alarm was not parsed"
+    assert ev["event_type"] == "motion", ev
+    assert ev["channel"] == "3", ev
+    assert ev["payload"]["vendor"] == "dahua"
+    return "VideoMotion index=2 -> motion ch3"
+
+
+@case("Dahua heartbeat is liveness only, never an incident")
+def t_dahua_heartbeat():
+    assert pb.parse_dahua(DAHUA_HEARTBEAT, "text/plain") is None
+    return "heartbeat refused as event"
+
+
+@case("HTTP handler authenticates liveness before choosing a vendor parser")
+def t_liveness_before_parse():
+    src = Path(pb.__file__).read_text(encoding="utf-8")
+    block = src.split("def do_POST(self):", 1)[1]
+    assert block.index("liveness(token)") < block.index("parse_hikvision")
+    assert "parse_dahua(body, content_type)" in block
+    return "liveness precedes event parsing"
 
 
 def run():

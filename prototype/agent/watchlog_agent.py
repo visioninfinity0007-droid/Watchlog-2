@@ -1126,6 +1126,7 @@ def cmd_connector_selftest() -> int:
 
     try:
         import dahua_archive as _archive
+        import hikvision_archive as _hik_archive
         import recorder_probe as _probe
         import site_control as _site_control
         from drivers import hikvision as _hikvision
@@ -1141,8 +1142,12 @@ def cmd_connector_selftest() -> int:
             problems.append("recorder port fallback unavailable")
         if not hasattr(_site_control, "execute_read"):
             problems.append("site-control read plane unavailable")
-        if getattr(_hikvision, "HIKVISION_STREAM_SLICE_SECONDS", None) != 45:
+        if getattr(_hikvision, "HIKVISION_STREAM_SLICE_SECONDS", None) != 30:
             problems.append("Hikvision bounded visual sampling unavailable")
+        if not callable(getattr(_hik_archive, "search_recordings", None)):
+            problems.append("Hikvision archive search unavailable")
+        if not callable(getattr(_hik_archive, "get_clip", None)):
+            problems.append("Hikvision clip extraction unavailable")
     except Exception as exc:  # noqa: BLE001
         problems.append(f"connector module load failed: {type(exc).__name__}")
 
@@ -1263,21 +1268,31 @@ def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
             print("PUSH_JSON " + json.dumps(result), flush=True)
             return 2
 
-        driver = (_open_driver or open_driver)(cfg)
-        configure = getattr(driver, "configure_push", None)
-        if configure is None:
-            result["detail"] = "this recorder model does not support recorder-push"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+        opened = (_open_driver or open_driver)(cfg)
+        # Production open_driver() returns (driver, DeviceInfo). Test injectors may
+        # return a bare driver. Treat both shapes correctly; the old tuple mistake made
+        # every real recorder look like it had no configure_push method.
+        driver = opened[0] if isinstance(opened, tuple) else opened
+        try:
+            configure = getattr(driver, "configure_push", None)
+            if configure is None:
+                result["detail"] = "this recorder model does not support recorder-push"
+                print("PUSH_JSON " + json.dumps(result), flush=True)
+                return 2
 
-        out = configure(f"{base}/push/{token}") or {}
-        result = {"configured": bool(out.get("applied")),
-                  "verified": bool(out.get("verified")),
-                  "detail": str(out.get("detail") or "")}
-        print("PUSH_JSON " + json.dumps(result), flush=True)
-        log(f"recorder push: configured={result['configured']} "
-            f"verified={result['verified']} {result['detail']}")
-        return 0 if result["verified"] else 2
+            out = configure(f"{base}/push/{token}") or {}
+            result = {"configured": bool(out.get("applied")),
+                      "verified": bool(out.get("verified")),
+                      "detail": str(out.get("detail") or "")}
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            log(f"recorder push: configured={result['configured']} "
+                f"verified={result['verified']} {result['detail']}")
+            return 0 if result["verified"] else 2
+        finally:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001 - a bonus layer never fails loudly
         result["detail"] = f"could not configure recorder push ({type(exc).__name__})"
         try:
@@ -2038,6 +2053,84 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+PUSH_INITIAL_DELAY_SECONDS = 45
+PUSH_STATUS_POLL_SECONDS = 300
+PUSH_RECONFIGURE_SECONDS = 6 * 60 * 60
+PUSH_CONFIGURE_TIMEOUT_SECONDS = 45
+
+
+def recorder_push_worker(cfg: Config, state: dict, cloud: Cloud,
+                         stop: threading.Event) -> None:
+    """Best-effort PC-off resilience, never on the live/install critical path.
+
+    The NVR is configured asynchronously after normal monitoring has settled. A successful
+    config read-back is useful but is NOT proof that the recorder can reach WatchLog over
+    the Internet. End-to-end coverage becomes verified only after wl_push_liveness /
+    wl_ingest_push records an actual recorder POST in push_sources.last_push_at.
+    """
+    if not (cfg.push_bridge_url or "").strip():
+        return
+    if stop.wait(PUSH_INITIAL_DELAY_SECONDS):
+        return
+
+    next_configure = 0.0
+    configured_once = False
+    backend_missing_logged = False
+
+    while not stop.is_set():
+        now = time.monotonic()
+        try:
+            status = cloud.call(
+                "wl_agent_push_status",
+                p_agent_id=state["agent_id"],
+                p_agent_key=state["agent_key"],
+            ) or {}
+            backend_missing_logged = False
+            if status.get("delivery_verified"):
+                log("recorder push: end-to-end PC-off delivery verified")
+                return
+        except Exception as exc:  # noqa: BLE001
+            low = str(exc).lower()
+            if ("wl_agent_push_status" in low or "schema cache" in low or "404" in low):
+                if not backend_missing_logged:
+                    log("recorder push: status RPC unavailable; will retry after backend migration")
+                    backend_missing_logged = True
+            elif not configured_once:
+                log(f"recorder push: status check deferred ({type(exc).__name__})")
+
+        if now >= next_configure:
+            try:
+                import proc_util
+                if getattr(sys, "frozen", False):
+                    cmd = [sys.executable, "--configure-push"]
+                else:
+                    cmd = [sys.executable, str(Path(__file__).resolve()), "--configure-push"]
+                code, out = proc_util.run_bounded(cmd, PUSH_CONFIGURE_TIMEOUT_SECONDS)
+                report = None
+                for line in (out or "").splitlines():
+                    if line.startswith("PUSH_JSON "):
+                        try:
+                            report = json.loads(line[len("PUSH_JSON "):])
+                        except Exception:  # noqa: BLE001
+                            report = None
+                        break
+                if report and report.get("configured"):
+                    configured_once = True
+                    if report.get("verified"):
+                        log("recorder push: NVR config read-back verified; awaiting first direct POST")
+                    else:
+                        log("recorder push: NVR config written but read-back was inconclusive")
+                elif report:
+                    log("recorder push: recorder did not accept PC-off delivery configuration")
+                elif code != 0:
+                    log(f"recorder push: configuration helper exited {code}; live agent remains authoritative")
+            except Exception as exc:  # noqa: BLE001
+                log(f"recorder push: background configuration deferred ({type(exc).__name__})")
+            next_configure = time.monotonic() + PUSH_RECONFIGURE_SECONDS
+
+        stop.wait(PUSH_STATUS_POLL_SECONDS)
+
+
 def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
                     spool, channels=None, holder=None) -> None:
     """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
@@ -2178,6 +2271,13 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                              daemon=True, name="recovery")
     recov.start()
 
+    # PC-off resilience is deliberately asynchronous. It never delays setup or live
+    # monitoring and becomes "verified" only after an actual NVR -> bridge POST.
+    push_direct = threading.Thread(
+        target=recorder_push_worker, args=(cfg, state, cloud, stop),
+        daemon=True, name="recorder-push")
+    push_direct.start()
+
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
         f"{cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, outbound only. "
         f"Ctrl-C to stop.")
@@ -2233,6 +2333,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         health.join(timeout=5)
         sitectl.join(timeout=5)
         recov.join(timeout=5)
+        push_direct.join(timeout=5)
         spool.close()
         if holder.get("store"):
             try:
