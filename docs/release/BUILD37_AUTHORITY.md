@@ -1,6 +1,6 @@
 # WatchLog Windows Build 37 — authoritative baseline
 
-**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest field installer is **Build 50 / WatchLog 5.0.7** as of 2026-09-24.
+**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest Windows installer is **Build 56 / WatchLog 5.0.8** as of 2026-09-25.
 
 ## Canonical identity
 
@@ -213,3 +213,60 @@ rather than merely changing the installer verdict:
 
 This is the first build in this lineage that directly addresses both sides of the
 field symptom: **installation readiness** and **continued Hikvision camera data**.
+
+
+## Current authoritative baseline: Build 56
+
+Windows Release **#56** (run id `36133615686`) completed successfully from
+source commit `9330c297f12a7b387059d1356b8f4fd113b4336f`.
+
+- Product version: `5.0.8`
+- Artifact: `WatchLog-Windows-56`
+- Artifact id: `10862408445`
+- Artifact size: `66559271` bytes
+- GitHub artifact digest:
+  `sha256:2160eab4240b2e6c43bf3a30f6958b7e73b00494efead9decc6847fe01da5232`
+- `WatchLog-Setup.exe` SHA-256:
+  `F0682D449C1E08A6AC687D714E6E2372F277F635071B1C1E9D0C4A870B61E670`
+- `watchlog-agent.exe` SHA-256:
+  `24853EEBFD227544C3F836B604EC3D238066F729D7762AA023F1ACF5AC752185`
+- `watchlog-setup-ui.exe` SHA-256:
+  `B9167034E716D05757BE2753549C3E5A4999799BDA02CDC4F82723F508313D19`
+- Windows Release workflow: **passed**
+- Packaged setup-UI lifecycle/self-test: **passed**
+- Packaged connector self-test: **passed**
+- Hikvision archive/download contract: **passed**
+- automatic recovery wiring contract: **passed**
+- recorder push-bridge parser/liveness contract: **passed**
+
+Build 56 supersedes Build 50 as the authoritative Windows installer baseline.
+
+### Production resilience added in Build 56
+
+- **Dahua:** existing recorder-native monitoring, archive search/download and
+  resumable recovery remain enabled.
+- **Hikvision:** production package now includes bounded ISAPI ContentMgmt
+  archive search and incident-video download, with historical segments wired
+  into the same resumable recovery engine.
+- The recovery clock now advances only while the recorder itself is freshly
+  observed; a cloud heartbeat from the Windows PC can no longer erase an NVR
+  connectivity gap.
+- Recovery detects both a PC restart/sleep gap and an in-process recorder/network
+  outage, then opens a resumable recovery interval after recorder contact returns.
+- Recorder-push provisioning runs asynchronously after normal monitoring starts;
+  it can never block setup or Step 06.
+- Push configuration read-back is not called end-to-end success. The agent waits
+  for `wl_agent_push_status` to prove a real recorder POST reached WatchLog.
+- Hikvision HTTP-host configuration requests an NVR-originated **30-second
+  heartbeat**, all events, binary images and broken-link retransmission, using the
+  current ISAPI host-write endpoint with a legacy per-ID fallback.
+- Production DB migration for `wl_agent_push_status` was applied on 2026-09-25.
+
+### Hardware-validation boundary
+
+The packaged/release gates prove the code path and artifact. Exact firmware
+behavior remains a field acceptance item. A Hikvision or Dahua site is only
+declared PC-off push verified after `push_sources.last_push_at` records a real
+NVR-originated POST. Hikvision clip extraction is only declared hardware-proven
+after the customer's recorder returns a non-empty bounded archive clip. Failures
+remain visible/unsupported; the product must not fabricate capability.

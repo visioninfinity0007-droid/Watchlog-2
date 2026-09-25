@@ -1,17 +1,19 @@
 # WatchLog
 
-> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-24**
+> **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-25**
 >
-> The authoritative latest Windows Site Connector is **Build 50 / WatchLog 5.0.7**,
+> The authoritative latest Windows Site Connector is **Build 56 / WatchLog 5.0.8**,
 > built from this repository on branch `build/site-connector-v5-watchlog2`,
-> source commit `4d7533d7525b2cecffa47d566d277d92e7b30054`, by successful
-> Windows Release **#50** (`36038016858`). Artifact: `WatchLog-Windows-50`
-> (id `10825154761`, digest
-> `sha256:7260ed7c441ea5ac4afc3aa5d7986f9fd38b16d464669db8bf7e69ad19f6a932`).
-> Build 37 remains the frozen historical lineage anchor, but all future installer
-> diagnosis/build-forward work starts from Build 50 or a verified descendant in
-> **Watchlog-2**. Do not reconstruct installer changes from
-> `Alkalid-security/Watchlog`. See `docs/release/BUILD37_AUTHORITY.md`.
+> source commit `9330c297f12a7b387059d1356b8f4fd113b4336f`, by successful
+> Windows Release **#56** (`36133615686`). Artifact: `WatchLog-Windows-56`
+> (id `10862408445`, digest
+> `sha256:2160eab4240b2e6c43bf3a30f6958b7e73b00494efead9decc6847fe01da5232`).
+> Build 56 adds dual-vendor archive recovery, Hikvision incident-video extraction,
+> recorder-backed gap detection, asynchronous PC-off push provisioning, and
+> Hikvision direct 30-second heartbeat/retransmission configuration. Build 37 remains
+> the frozen historical lineage anchor. Future installer work starts from Build 56
+> or a verified descendant in **Watchlog-2**. Do not reconstruct installer changes
+> from `Alkalid-security/Watchlog`. See `docs/release/BUILD37_AUTHORITY.md`.
 
 
 Turns an existing DVR/NVR into a monitored, reportable system — without
