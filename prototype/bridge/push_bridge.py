@@ -83,6 +83,11 @@ def parse_hikvision(body: bytes, content_type: str):
         fields[_strip_ns(child.tag)] = (child.text or "").strip()
 
     raw_type = fields.get("eventType") or fields.get("subEventType") or ""
+    # HTTP-host heartBeat is the NVR's independent liveness signal, not a
+    # security incident. Handler authenticates the token and records liveness
+    # before parsing, so never create an event row for it.
+    if raw_type.strip().lower() == "heartbeat":
+        return None
     event_type = HIK_EVENT_MAP.get(raw_type, HIK_EVENT_MAP.get(raw_type.lower()))
     if not event_type:
         # An unknown but present eventType is still a real event; keep it
@@ -358,13 +363,21 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
         ctype = self.headers.get("Content-Type", "")
+
+        # Every POST to a valid recorder token is recorder-originated liveness,
+        # including Hikvision heartBeat and OEM/Dahua formats we do not yet parse.
+        # Authenticate/update liveness FIRST; only then decide whether there is also
+        # a security event worth ingesting.
+        live_ok, live_detail = liveness(token)
+        if not live_ok:
+            self.log_message("liveness rejected for token %s... -> %s",
+                             token[:6], live_detail[:80])
+            self.send_response(502); self.end_headers(); return
+
         vendor, ev = parse_any(body, ctype)
         if ev is None and is_liveness_chatter(body, ctype):
-            # Not an alarm, but proof the recorder is alive and can reach us. Record the
-            # liveness and nothing else -- never invent an event from a keep-alive.
-            ok, detail = liveness(token)
-            self.log_message("liveness -> %s", detail[:80])
-            self.send_response(200 if ok else 502); self.end_headers(); return
+            self.log_message("recorder liveness only -> %s", live_detail[:80])
+            self.send_response(200); self.end_headers(); return
         if ev is None:
             # Not a recognisable alarm (keep-alive, a Stop, or a format we do not
             # confidently understand). Answer OK so the recorder does not retry
