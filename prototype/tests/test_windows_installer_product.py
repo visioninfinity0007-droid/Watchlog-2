@@ -99,6 +99,13 @@ def main():
         "gap clock advances only on fresh recorder transport":
             "Persist RECORDER observation" in agent
             and "last_activity_monotonic" in agent,
+        "actual live collector publishes recorder transport for recovery":
+            'holder["live_driver"] = driver' in agent
+            and 'holder["recorder_live_at"] = time.monotonic()' in agent
+            and 'holder.pop("live_driver", None)' in agent,
+        "recovery accepts startup channel dictionaries":
+            "if isinstance(item, dict)" in agent
+            and 'item.get("channel")' in agent,
         "PC-off recorder push auto-provisions asynchronously and waits for real delivery":
             "def recorder_push_worker" in agent
             and "wl_agent_push_status" in agent

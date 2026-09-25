@@ -548,6 +548,12 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
         auth_error = False
         try:
             driver, info = open_driver(cfg)
+            if holder is not None:
+                # Publish recorder truth from the ACTUAL collector thread. Recovery
+                # must never infer recorder liveness from the PC/cloud heartbeat.
+                holder["live_driver"] = driver
+                holder["recorder_live_at"] = time.monotonic()
+                holder["recorder_live_wall"] = now_utc()
             log(f"driver {driver.name}: {info.vendor} {info.model or ''} "
                 f"fw={info.firmware or '?'}".rstrip())
             if not driver.verified_against_hardware:
@@ -559,6 +565,9 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                if holder is not None:
+                    holder["recorder_live_at"] = time.monotonic()
+                    holder["recorder_live_wall"] = now_utc()
 
                 # The image is best-effort and strictly secondary. A
                 # camera that hangs, refuses auth or returns junk must
@@ -635,6 +644,8 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             log(f"ERROR: driver crashed: {type(e).__name__}: {e}")
         finally:
             if driver:
+                if holder is not None and holder.get("live_driver") is driver:
+                    holder.pop("live_driver", None)
                 driver.close()
         if not stop.is_set():
             auth_failures = auth_failures + 1 if auth_error else 0
@@ -2143,7 +2154,13 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
-    cams = [str(c.channel) for c in (channels or [])] or None
+    def _channel_id(item):
+        if isinstance(item, dict):
+            return item.get("channel")
+        return getattr(item, "channel", None)
+
+    cams = [str(ch) for ch in (_channel_id(c) for c in (channels or []))
+            if ch is not None] or None
     holder = holder if holder is not None else {}
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run

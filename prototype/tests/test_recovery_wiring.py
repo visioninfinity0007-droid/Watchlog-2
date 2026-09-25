@@ -21,6 +21,17 @@ class RecoveryWiring(unittest.TestCase):
         self.assertIn("target=recovery_worker", SRC)
         self.assertIn("recov.join(", SRC)                     # joined on shutdown
 
+    def test_real_collector_publishes_recorder_transport_truth(self):
+        collector = SRC.split("def collector(", 1)[1].split("def upload_once(", 1)[0]
+        self.assertIn('holder["live_driver"] = driver', collector)
+        self.assertIn('holder["recorder_live_at"] = time.monotonic()', collector)
+        self.assertIn('holder.pop("live_driver", None)', collector)
+
+    def test_recovery_accepts_startup_channel_dictionaries(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("if isinstance(item, dict)", worker)
+        self.assertIn('item.get("channel")', worker)
+
     def test_outage_detection_and_report(self):
         self.assertIn("read_last_live", SRC)
         self.assertIn("detect_outage", SRC)
