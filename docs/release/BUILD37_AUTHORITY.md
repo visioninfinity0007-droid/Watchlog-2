@@ -1,6 +1,6 @@
 # WatchLog Windows Build 37 — authoritative baseline
 
-**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest Windows installer is **Build 56 / WatchLog 5.0.8** as of 2026-09-25.
+**Status:** Build 37 is the frozen historical lineage anchor. The authoritative latest Windows installer is **Build 61 / WatchLog 5.0.12** as of 2026-09-25.
 
 ## Canonical identity
 
@@ -270,3 +270,70 @@ declared PC-off push verified after `push_sources.last_push_at` records a real
 NVR-originated POST. Hikvision clip extraction is only declared hardware-proven
 after the customer's recorder returns a non-empty bounded archive clip. Failures
 remain visible/unsupported; the product must not fabricate capability.
+
+
+## Current authoritative baseline: Build 61
+
+Windows Release **#61** (run id `36136000657`) completed successfully from
+source commit `78569edba4f125eb8c02fd6dc9fecdc9c7c669f0`.
+
+- Product version: `5.0.12`
+- Artifact: `WatchLog-Windows-61`
+- Artifact id: `10865515882`
+- Artifact size: `66562912` bytes
+- GitHub artifact digest:
+  `sha256:5344d2b0efbfc1b6f438b09f94e9c0546f239f05f79631d9483320e3251374d7`
+- `WatchLog-Setup.exe` SHA-256:
+  `715D3586521F0707E71FA7758FEFF51596EF234B548CBFCDBAE074F8E8BE199A`
+- `watchlog-agent.exe` SHA-256:
+  `9FF3DDF44B1D72F5E5EF5F5E8943D5C0CF71A6A97D221108780BD9F037F77DA5`
+- `watchlog-setup-ui.exe` SHA-256:
+  `C0B257EA2233F8AC4E3A8AEA4DC2AA520C492925A67684D614825A5A455629AC`
+- Windows Release workflow: **passed**
+- packaged setup-UI recorder-selection/lifecycle test: **passed**
+- packaged connector self-test: **passed**
+- Hikvision archive/download contracts: **4 passed**
+- automatic recovery wiring contracts, including the real collector + channel shape: **passed**
+- recorder push parser/liveness contracts: **9 passed, 0 failed**
+- generic Dahua AlarmServer safety contract: **passed**
+- durable spool-overflow-to-recorder-recovery contract: **passed**
+- packaged file/runtime version truth: **5.0.12 / 5.0.12**
+
+Build 61 supersedes Build 56 as the authoritative Windows installer baseline.
+
+### What Build 61 guarantees in software
+
+- **Internet/cloud outage while the PC + recorder stay up:** events are written
+  to the local SQLite/WAL spool before upload and are removed only after the
+  server commits them. If the bounded spool ever reaches its disk-safety cap,
+  the evicted observation interval is persisted and automatically converted
+  into recorder-archive recovery after connectivity returns.
+- **PC sleep/shutdown or recorder-network gap:** the recovery clock advances
+  only from the real recorder transport. When recorder contact returns, the
+  missed interval is opened, claimed, processed in bounded chunks, checkpointed,
+  deduplicated and resumed until complete.
+- **Dahua:** live CGI/eventManager monitoring and the validated archive
+  search/download recovery path remain active. Generic `AlarmServer` is now
+  deliberately read-only/fail-closed for WatchLog PC-off setup because Dahua
+  documents it as a proprietary alarm-centre protocol rather than a generic
+  HTTP webhook; WatchLog will not overwrite customer alarm-centre settings.
+- **Hikvision:** live ISAPI monitoring, rotating visual samples, bounded
+  ContentMgmt archive search/download and recovery are packaged. HTTP-host push
+  configuration requests a 30-second recorder-originated heartbeat, event/image
+  delivery and broken-link retransmission.
+- **PC-off verification:** read-back of an NVR setting is not enough. A site is
+  marked end-to-end verified only after a **fresh** `last_push_at` generated
+  after the current runtime/configuration attempt. Historical push records
+  cannot satisfy this gate.
+- The production `wl_agent_push_status` RPC is deployed and never exposes the
+  recorder push token.
+
+### Remaining field gate
+
+Release success proves the packaged implementation, not every recorder firmware.
+Before calling a specific site hardware-proven, run Build 61 on one real Dahua
+and one real Hikvision recorder and prove: recorder connection, a bounded
+historical retrieval, an induced PC/network gap followed by recovered data, and
+(for Hikvision PC-off mode) a fresh recorder heartbeat while the Windows PC is
+powered off. Generic Dahua PC-off direct cloud heartbeat remains unsupported
+unless that exact firmware exposes a separately proven HTTP callback mechanism.

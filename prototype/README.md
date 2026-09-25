@@ -2,18 +2,21 @@
 
 > **WINDOWS INSTALLER SOURCE OF TRUTH — 2026-09-25**
 >
-> The authoritative latest Windows Site Connector is **Build 56 / WatchLog 5.0.8**,
+> The authoritative latest Windows Site Connector is **Build 61 / WatchLog 5.0.12**,
 > built from this repository on branch `build/site-connector-v5-watchlog2`,
-> source commit `9330c297f12a7b387059d1356b8f4fd113b4336f`, by successful
-> Windows Release **#56** (`36133615686`). Artifact: `WatchLog-Windows-56`
-> (id `10862408445`, digest
-> `sha256:2160eab4240b2e6c43bf3a30f6958b7e73b00494efead9decc6847fe01da5232`).
-> Build 56 adds dual-vendor archive recovery, Hikvision incident-video extraction,
-> recorder-backed gap detection, asynchronous PC-off push provisioning, and
-> Hikvision direct 30-second heartbeat/retransmission configuration. Build 37 remains
-> the frozen historical lineage anchor. Future installer work starts from Build 56
-> or a verified descendant in **Watchlog-2**. Do not reconstruct installer changes
-> from `Alkalid-security/Watchlog`. See `docs/release/BUILD37_AUTHORITY.md`.
+> source commit `78569edba4f125eb8c02fd6dc9fecdc9c7c669f0`, by successful
+> Windows Release **#61** (`36136000657`). Artifact: `WatchLog-Windows-61`
+> (id `10865515882`, digest
+> `sha256:5344d2b0efbfc1b6f438b09f94e9c0546f239f05f79631d9483320e3251374d7`).
+> Build 61 is the production-hardening baseline for dual-vendor recovery: durable
+> cloud-outage spooling with recorder-archive reconciliation, recorder-backed gap
+> detection wired to the actual live collector, Hikvision archive/video recovery,
+> safe fail-closed Dahua PC-off configuration, and fresh-post-only PC-off
+> verification. Hikvision also requests direct 30-second NVR heartbeats and
+> broken-link retransmission. Build 37 remains the frozen historical lineage anchor.
+> Future installer work starts from Build 61 or a verified descendant in
+> **Watchlog-2**. Do not reconstruct installer changes from `Alkalid-security/Watchlog`.
+> See `docs/release/BUILD37_AUTHORITY.md`.
 
 
 Turns an existing DVR/NVR into a monitored, reportable system — without
