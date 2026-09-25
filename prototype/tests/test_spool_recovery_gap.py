@@ -43,10 +43,14 @@ def test_new_overflow_cannot_be_cleared_by_stale_ack():
         path = Path(td) / "spool.sqlite3"
         sp = Spool(path, max_rows=1)
         try:
-            sp.add({"n": 1}); sp.add({"n": 2})
+            sp.add({"n": 1})
+            # SQLite created_at has millisecond precision. Ensure the second row
+            # belongs to a genuinely later interval so extending the marker is observable.
+            time.sleep(0.02)
+            sp.add({"n": 2})
             assert sp.trim() == 1
             old = sp.pending_recovery_gap()
-            time.sleep(0.01)
+            time.sleep(0.02)
             sp.add({"n": 3})
             assert sp.trim() == 1
             new = sp.pending_recovery_gap()
