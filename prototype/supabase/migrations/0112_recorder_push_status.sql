@@ -1,4 +1,4 @@
--- 0111: agent-visible recorder-push delivery truth.
+-- 0112: agent-visible recorder-push delivery truth.
 --
 -- Read-only status for the enrolled PC agent. It exposes no push token. A recorder
 -- configuration read-back is NOT enough to call PC-off coverage verified; only a real
