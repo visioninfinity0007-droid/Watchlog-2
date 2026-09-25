@@ -2165,6 +2165,22 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return bool(seen and time.monotonic() - seen < 150.0)
 
     while not stop.is_set():
+        # A very long Internet outage can fill the bounded local spool. trim() records
+        # exactly which local-observation interval had to be evicted; convert that durable
+        # marker into the same recorder-archive recovery pipeline once the NVR is live.
+        try:
+            overflow_gap = spool.pending_recovery_gap()
+            if overflow_gap and recorder_is_live():
+                cloud.call("wl_open_recovery_interval",
+                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                           p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
+                           p_cameras=cams or [])
+                if spool.clear_recovery_gap(*overflow_gap):
+                    log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
+                        "opened recorder-archive reconciliation")
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
+
         # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
         # interval after the recorder is live again; while it is still down there is
         # nothing to backfill and no reason to hammer it.

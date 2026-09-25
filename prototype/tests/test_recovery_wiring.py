@@ -38,6 +38,12 @@ class RecoveryWiring(unittest.TestCase):
         self.assertIn("hikvision_archive.install()", worker)
         self.assertNotIn("Hikvision archive recovery disabled", worker)
 
+    def test_spool_overflow_becomes_recorder_archive_recovery(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("pending_recovery_gap", worker)
+        self.assertIn("clear_recovery_gap", worker)
+        self.assertIn("spool overflow", worker)
+
     def test_gated_and_live_priority_and_throttled(self):
         worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
         self.assertIn("cfg.recovery_enabled", worker)
