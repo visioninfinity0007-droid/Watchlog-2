@@ -26,6 +26,7 @@ import watchlog_agent as app
 import connector_capabilities
 import connector_event_collector
 import dahua_archive
+import hikvision_archive
 import incident_evidence
 import recording_current
 from drivers.native_recorder import NativeDahuaDriver
@@ -78,6 +79,7 @@ def main() -> None:
     # registered wrapper through the hardened search-before-download path so
     # there is one clip implementation and one channel-index rule.
     dahua_archive.install()
+    hikvision_archive.install()
     NativeDahuaDriver.get_clip = dahua_archive.get_clip
 
     # Durable transitions remain immutable/change-only; current proof is a

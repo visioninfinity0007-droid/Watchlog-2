@@ -25,6 +25,7 @@ trusting it.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import re
 import threading
 import time
@@ -98,8 +99,14 @@ JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 # stack refuse later sessions. Slice the stream and capture ONE rotating still
 # between slices on the SAME session. Eight channels => about one proof image
 # per camera every six minutes, while native alarms continue to pass immediately.
-HIKVISION_STREAM_SLICE_SECONDS = 45
+HIKVISION_STREAM_SLICE_SECONDS = 30
 HIKVISION_SAMPLE_MAX_BYTES = 2_000_000
+
+# One Hikvision web stack, one authenticated HTTP operation at a time. Field evidence on
+# DS-7608NI-Q1 showed that parallel Digest sessions (alert stream + health + recovery)
+# can make a perfectly reachable recorder start returning timeouts. This lock is module-
+# global so separate driver instances used by incident/recovery workers serialize too.
+HIKVISION_HTTP_LOCK = threading.RLock()
 
 
 
@@ -120,27 +127,31 @@ class HikvisionDriver(NvrDriver):
         self.s.verify = False
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._last_emitted: dict[tuple[str, str], datetime] = {}
+        self.last_activity_monotonic = 0.0
 
     # -- helpers --------------------------------------------------------
 
     def _get(self, path: str, **kw) -> requests.Response:
         url = self.base_url + path
-        try:
-            r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
-        except requests.RequestException as e:
-            raise DriverError(f"{url}: {explain(e)}") from e
-        if r.status_code == 401:
-            # HTTPDigestAuth already performed the Digest challenge/response. If the
-            # final 401 still advertises Digest, the credentials were rejected; doing
-            # another Basic request only doubles the field wait. Fall back to Basic
-            # only when the recorder actually advertises Basic without Digest.
-            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
-            if "basic" in challenge and "digest" not in challenge:
-                self.s.auth = HTTPBasicAuth(self.username, self.password)
-                r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
-        if r.status_code >= 400:
-            raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
-        return r
+        timeout = kw.pop("timeout", self.timeout)
+        with HIKVISION_HTTP_LOCK:
+            try:
+                r = self.s.get(url, timeout=timeout, **kw)
+            except requests.RequestException as e:
+                raise DriverError(f"{url}: {explain(e)}") from e
+            if r.status_code == 401:
+                # HTTPDigestAuth already performed the Digest challenge/response. If the
+                # final 401 still advertises Digest, the credentials were rejected; doing
+                # another Basic request only doubles the field wait. Fall back to Basic
+                # only when the recorder actually advertises Basic without Digest.
+                challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+                if "basic" in challenge and "digest" not in challenge:
+                    self.s.auth = HTTPBasicAuth(self.username, self.password)
+                    r = self.s.get(url, timeout=timeout, **kw)
+            if r.status_code >= 400:
+                raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
+            self.last_activity_monotonic = time.monotonic()
+            return r
 
     def _xml(self, path: str) -> ET.Element:
         try:
@@ -150,20 +161,22 @@ class HikvisionDriver(NvrDriver):
 
     def _put(self, path: str, body: str) -> requests.Response:
         url = self.base_url + path
-        try:
-            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
-                           headers={"Content-Type": "application/xml"})
-        except requests.RequestException as e:
-            raise DriverError(f"{url}: {explain(e)}") from e
-        if r.status_code == 401:
-            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
-            if "basic" in challenge and "digest" not in challenge:
-                self.s.auth = HTTPBasicAuth(self.username, self.password)
+        with HIKVISION_HTTP_LOCK:
+            try:
                 r = self.s.put(url, data=body.encode(), timeout=self.timeout,
                                headers={"Content-Type": "application/xml"})
-        if r.status_code >= 400:
-            raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
-        return r
+            except requests.RequestException as e:
+                raise DriverError(f"{url}: {explain(e)}") from e
+            if r.status_code == 401:
+                challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+                if "basic" in challenge and "digest" not in challenge:
+                    self.s.auth = HTTPBasicAuth(self.username, self.password)
+                    r = self.s.put(url, data=body.encode(), timeout=self.timeout,
+                                   headers={"Content-Type": "application/xml"})
+            if r.status_code >= 400:
+                raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
+            self.last_activity_monotonic = time.monotonic()
+            return r
 
     def configure_push(self, url: str, host_id: int = 1) -> dict:
         """
@@ -187,15 +200,27 @@ class HikvisionDriver(NvrDriver):
         port = u.port or (443 if u.scheme == "https" else 80)
         path = u.path or "/"
         proto = "HTTPS" if u.scheme == "https" else "HTTP"
+        try:
+            ipaddress.ip_address(host)
+            addressing = "ipaddress"
+            address_xml = f"<ipAddress>{host}</ipAddress>"
+        except ValueError:
+            # Production bridge uses a DNS/sslip hostname. Hikvision requires
+            # addressingFormatType=hostname + hostName for this shape; putting a DNS
+            # name into ipAddress is accepted by some simulators but rejected by NVRs.
+            addressing = "hostname"
+            address_xml = f"<hostName>{host}</hostName>"
         body = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<HttpHostNotification xmlns="http://www.hikvision.com/ver20/XMLSchema">'
             f'<id>{host_id}</id><url>{path}</url>'
             f'<protocolType>{proto}</protocolType>'
             '<parameterFormatType>XML</parameterFormatType>'
-            f'<addressingFormatType>ipaddress</addressingFormatType>'
-            f'<ipAddress>{host}</ipAddress><portNo>{port}</portNo>'
+            f'<addressingFormatType>{addressing}</addressingFormatType>'
+            f'{address_xml}<portNo>{port}</portNo>'
             '<httpAuthenticationMethod>none</httpAuthenticationMethod>'
+            '<eventMode>all</eventMode>'
+            '<uploadImagesDataType>binary</uploadImagesDataType>'
             '</HttpHostNotification>')
         # MUST return the same {applied, verified, detail} contract the Dahua driver
         # returns. Returning None made provision_recorder_push read `(out or {}).get(...)`
@@ -213,7 +238,7 @@ class HikvisionDriver(NvrDriver):
         except Exception:  # noqa: BLE001 - written but unverifiable
             return {"applied": True, "verified": False,
                     "detail": "config written but could not be read back"}
-        got_host = (_text(root, "ipAddress") or "").strip()
+        got_host = (_text(root, "ipAddress") or _text(root, "hostName") or "").strip()
         got_url = (_text(root, "url") or "").strip()
         if got_host == host and (not got_url or got_url == path):
             return {"applied": True, "verified": True,
@@ -351,38 +376,41 @@ class HikvisionDriver(NvrDriver):
             buf = b""
             started = time.monotonic()
             try:
-                r = self.s.get(
-                    url,
-                    stream=True,
-                    timeout=(self.timeout, HIKVISION_STREAM_SLICE_SECONDS),
-                )
-                if r.status_code >= 400:
-                    raise DriverError(f"alertStream: HTTP {r.status_code}")
+                with HIKVISION_HTTP_LOCK:
+                    r = self.s.get(
+                        url,
+                        stream=True,
+                        timeout=(self.timeout, HIKVISION_STREAM_SLICE_SECONDS),
+                    )
+                    if r.status_code >= 400:
+                        raise DriverError(f"alertStream: HTTP {r.status_code}")
+                    self.last_activity_monotonic = time.monotonic()
 
-                try:
-                    for chunk in r.iter_content(chunk_size=1024):
-                        if stop.is_set():
-                            break
-                        if not chunk:
-                            continue
-                        buf += chunk
-                        while b"</EventNotificationAlert>" in buf:
-                            doc, _, buf = buf.partition(b"</EventNotificationAlert>")
-                            xml_start = doc.find(b"<EventNotificationAlert")
-                            if xml_start < 0:
+                    try:
+                        for chunk in r.iter_content(chunk_size=1024):
+                            if stop.is_set():
+                                break
+                            if not chunk:
                                 continue
-                            raw = doc[xml_start:] + b"</EventNotificationAlert>"
-                            ev = self._parse_alert(raw)
-                            if ev:
-                                yield ev
-                        if len(buf) > 1_000_000:
-                            buf = b""
-                        if time.monotonic() - started >= HIKVISION_STREAM_SLICE_SECONDS:
-                            break
-                except requests.RequestException as exc:
-                    low = str(exc).lower()
-                    if "read timed out" not in low and "read timeout" not in low:
-                        raise DriverError(f"alertStream: {exc}") from exc
+                            self.last_activity_monotonic = time.monotonic()
+                            buf += chunk
+                            while b"</EventNotificationAlert>" in buf:
+                                doc, _, buf = buf.partition(b"</EventNotificationAlert>")
+                                xml_start = doc.find(b"<EventNotificationAlert")
+                                if xml_start < 0:
+                                    continue
+                                raw = doc[xml_start:] + b"</EventNotificationAlert>"
+                                ev = self._parse_alert(raw)
+                                if ev:
+                                    yield ev
+                            if len(buf) > 1_000_000:
+                                buf = b""
+                            if time.monotonic() - started >= HIKVISION_STREAM_SLICE_SECONDS:
+                                break
+                    except requests.RequestException as exc:
+                        low = str(exc).lower()
+                        if "read timed out" not in low and "read timeout" not in low:
+                            raise DriverError(f"alertStream: {exc}") from exc
             except requests.RequestException as exc:
                 raise DriverError(f"alertStream: {exc}") from exc
             finally:

@@ -85,6 +85,7 @@ class DahuaDriver(NvrDriver):
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._last_emitted: dict[tuple[str, str], datetime] = {}
+        self.last_activity_monotonic = 0.0
 
     # -- helpers --------------------------------------------------------
 
@@ -108,6 +109,7 @@ class DahuaDriver(NvrDriver):
                 f"{url}: HTTP {r.status_code} — recorder rejected the username or password")
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
+        self.last_activity_monotonic = time.monotonic()
         return r.text
 
     # -- interface ------------------------------------------------------
@@ -532,6 +534,7 @@ class DahuaDriver(NvrDriver):
                     break
                 if not raw_line:
                     continue
+                self.last_activity_monotonic = time.monotonic()
                 line = raw_line.decode("utf-8", "replace").strip()
                 if not line.startswith("Code="):
                     continue          # boundary / Content-Length / heartbeat

@@ -54,6 +54,8 @@ def collector(cfg, spool, stop, holder=None) -> None:
             )
             if holder is not None:
                 holder["recorder_live_at"] = time.monotonic()
+                holder["recorder_live_wall"] = core.now_utc()
+                holder["live_driver"] = driver
                 holder["recorder_vendor"] = info.vendor or ""
                 holder["recorder_model"] = info.model or ""
                 holder["recorder_driver"] = driver.name
@@ -70,6 +72,8 @@ def collector(cfg, spool, stop, holder=None) -> None:
 
                 if holder is not None:
                     holder["recorder_live_at"] = time.monotonic()
+                    holder["recorder_live_wall"] = core.now_utc()
+                    holder["live_driver"] = driver
 
                 raw = None
                 if cfg.snapshots and not ev.snapshot_b64 and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
