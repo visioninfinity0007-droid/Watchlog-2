@@ -108,6 +108,9 @@ def main():
             "<heartbeat>30</heartbeat>" in hikvision
             and "<httpBroken>true</httpBroken>" in hikvision
             and "<SubscribeEvent>" in hikvision,
+        "generic Dahua PC-off path never overwrites proprietary AlarmServer settings":
+            "generic Dahua AlarmServer is a proprietary alarm-centre protocol" in dahua
+            and "action=setConfig&AlarmServer." not in dahua.split("def configure_push", 1)[1].split("def get_clock", 1)[0],
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,

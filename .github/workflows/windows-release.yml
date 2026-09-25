@@ -114,6 +114,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "automatic recovery wiring contract failed" }
             python prototype/tests/test_push_bridge.py
             if ($LASTEXITCODE -ne 0) { throw "recorder push bridge contract failed" }
+            python prototype/tests/test_dahua_push_safety.py
+            if ($LASTEXITCODE -ne 0) { throw "Dahua AlarmServer safety contract failed" }
           }
           finally {
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }
