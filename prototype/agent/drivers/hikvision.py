@@ -212,15 +212,19 @@ class HikvisionDriver(NvrDriver):
             address_xml = f"<hostName>{host}</hostName>"
         body = (
             '<?xml version="1.0" encoding="UTF-8"?>'
-            '<HttpHostNotification xmlns="http://www.hikvision.com/ver20/XMLSchema">'
+            '<HttpHostNotification xmlns="http://www.isapi.org/ver20/XMLSchema" version="2.0">'
             f'<id>{host_id}</id><url>{path}</url>'
             f'<protocolType>{proto}</protocolType>'
             '<parameterFormatType>XML</parameterFormatType>'
             f'<addressingFormatType>{addressing}</addressingFormatType>'
             f'{address_xml}<portNo>{port}</portNo>'
             '<httpAuthenticationMethod>none</httpAuthenticationMethod>'
-            '<eventMode>all</eventMode>'
             '<uploadImagesDataType>binary</uploadImagesDataType>'
+            '<httpBroken>true</httpBroken>'
+            '<SubscribeEvent>'
+            '<heartbeat>30</heartbeat>'
+            '<eventMode>all</eventMode>'
+            '</SubscribeEvent>'
             '</HttpHostNotification>')
         # MUST return the same {applied, verified, detail} contract the Dahua driver
         # returns. Returning None made provision_recorder_push read `(out or {}).get(...)`

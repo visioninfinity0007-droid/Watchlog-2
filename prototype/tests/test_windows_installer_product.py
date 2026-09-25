@@ -104,6 +104,10 @@ def main():
             and "wl_agent_push_status" in agent
             and "target=recorder_push_worker" in agent
             and "delivery_verified" in agent,
+        "Hikvision PC-off path requests 30s NVR heartbeats and broken-link resend":
+            "<heartbeat>30</heartbeat>" in hikvision
+            and "<httpBroken>true</httpBroken>" in hikvision
+            and "<SubscribeEvent>" in hikvision,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
         "ownership set + verified (owner holds WRITE_DAC)": "SetOwner" in secret and "owner is" in secret,

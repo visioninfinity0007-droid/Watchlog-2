@@ -96,6 +96,8 @@ def parse_hikvision(body: bytes, content_type: str):
         fields[_strip_ns(child.tag)] = (child.text or "").strip()
 
     raw_type = fields.get("eventType") or fields.get("subEventType") or ""
+    if raw_type.strip().lower() == "heartbeat":
+        return None
     event_type = HIK_EVENT_MAP.get(raw_type, HIK_EVENT_MAP.get(raw_type.lower()))
     if not event_type:
         # An unknown but present eventType is still a real event; keep it

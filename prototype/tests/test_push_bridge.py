@@ -41,6 +41,16 @@ KEEPALIVE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   <eventState>inactive</eventState>
 </EventNotificationAlert>"""
 
+HEARTBEAT_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<EventNotificationAlert xmlns="http://www.isapi.org/ver20/XMLSchema" version="2.0">
+  <channelID>1</channelID>
+  <dateTime>2026-09-25T12:00:00Z</dateTime>
+  <activePostCount>0</activePostCount>
+  <eventType>heartBeat</eventType>
+  <eventState>active</eventState>
+  <eventDescription>heartBeat</eventDescription>
+</EventNotificationAlert>"""
+
 NOT_AN_ALERT = b"<?xml version='1.0'?><Something><x>1</x></Something>"
 
 DAHUA_MOTION = (
@@ -95,6 +105,12 @@ def t_keepalive():
     ev = pb.parse_hikvision(KEEPALIVE_XML, "application/xml")
     assert ev is None, "a keep-alive was turned into an event"
     return "dropped"
+
+
+@case("an active Hikvision heartBeat is liveness only, not an incident row")
+def t_hik_heartbeat():
+    assert pb.parse_hikvision(HEARTBEAT_XML, "application/xml") is None
+    return "heartBeat reserved for wl_push_liveness"
 
 
 @case("a non-alert POST is refused")
