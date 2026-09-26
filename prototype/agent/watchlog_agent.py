@@ -977,8 +977,13 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
                  if c.get("channel")]
         mon = holder.get("monitor")
         if mon is None and chans:
+            # Hikvision collector_recent uses only the in-memory snapshot_ok clock as
+            # the per-camera probe, so probing every channel costs ZERO extra recorder
+            # sessions. Do all channels each cycle so a real fresh JPEG clears an old
+            # probe_timeout promptly instead of waiting multiple round-robin cycles.
+            health_batch = len(chans) if collector_recent else cfg.health_batch
             mon = camera_health.CameraHealthMonitor(
-                chans, batch_size=cfg.health_batch, concurrency=cfg.health_concurrency)
+                chans, batch_size=health_batch, concurrency=cfg.health_concurrency)
             holder["monitor"] = mon
         if mon is not None:
             if driver is not None:

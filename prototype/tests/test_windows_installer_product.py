@@ -99,6 +99,8 @@ def main():
         "gap clock advances only on fresh recorder transport":
             "Persist RECORDER observation" in agent
             and "last_activity_monotonic" in agent,
+        "Hikvision cached-snapshot health evaluates every channel without extra NVR probes":
+            "health_batch = len(chans) if collector_recent else cfg.health_batch" in agent,
         "actual live collector publishes recorder transport for recovery":
             'holder["live_driver"] = driver' in agent
             and 'holder["recorder_live_at"] = time.monotonic()' in agent
