@@ -64,10 +64,17 @@ def main():
             '"--ui-selftest"' in gui and "def _run_ui_selftest" in gui,
         "single recorder is selected but multiple recorders are never silently auto-picked":
             "if len(rows) == 1:" in gui and "self.recorder_list.setCurrentRow(0)" in gui,
-        "Step 06 cannot re-gate an already connected site on full acceptance":
+        "Step 06 reuses Step 04 recorder proof and has a terminal 50s watchdog":
             "acceptance is a POST-INSTALL diagnostic" in gui
             and "self.go(6)" in gui
-            and "timeout_ms=30000" in gui,
+            and "verified_recorder=self.recorder_result" in gui
+            and "timeout_ms=50000" in gui
+            and "if verified_recorder:" in backend
+            and 'progress("Recorder login already verified.")' in backend,
+        "installer-child login timeout closes instead of stranding NSIS":
+            "timeout_ms=24000" in gui
+            and "if self.installer_child:" in gui.split("def _worker_timeout", 1)[1].split("def _on_progress", 1)[0]
+            and "timed.exit_code != 2" in gui,
         "NSIS child setup auto-exits after Ready so ExecWait cannot strand installer":
             '"--installer-child"' in gui
             and "self.installer_child" in gui

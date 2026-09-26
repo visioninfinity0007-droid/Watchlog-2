@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-VERSION = "5.0.17"
+VERSION = "5.0.18"
 
 # BUILD_SHA / BUILD_CHANNEL are stamped at BUILD time into build_info.py, which the freezer
 # bundles into the exe. Reading it from a bundled module (not just an env var) is what lets a

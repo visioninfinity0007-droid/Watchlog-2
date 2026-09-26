@@ -457,6 +457,9 @@ class SetupWindow(QMainWindow):
         self._active_worker = 0
         self.set_busy(False)
         if self.stack.currentIndex() == 3:
+            if self.installer_child:
+                self._terminal_installer_failure(message)
+                return
             self.login_error.setText(message)
             self.status.setText(message)
         elif self.stack.currentIndex() == 5:
@@ -596,10 +599,10 @@ class SetupWindow(QMainWindow):
         self.run_worker(
             backend.test_recorder, (address, user, password), self.connection_ok,
             "Testing the recorder connection…", hint=self.recorder_hint,
-            timeout_ms=30000,
-            timeout_message=("The recorder did not finish the login check within 30 seconds. "
-                             "Confirm the same username/password works in the recorder's web page, "
-                             "then try again.")
+            timeout_ms=24000,
+            timeout_message=("The recorder did not finish the login check within 24 seconds. "
+                             "The installer is closing cleanly; run it again after confirming "
+                             "the recorder web/API service is reachable.")
         )
 
     def connection_ok(self, result):
@@ -645,13 +648,22 @@ class SetupWindow(QMainWindow):
         args = (self.config_path, public, self.code_edit.text().strip(), self.recorder_address,
                 self.recorder_user, self.recorder_password,
                 "custom", self.profiles())
-        self.run_worker(backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
-                        hint=self.recorder_hint)
+        self.run_worker(
+            backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
+            hint=self.recorder_hint,
+            verified_recorder=self.recorder_result,
+            timeout_ms=50000,
+            timeout_message=(
+                "WatchLog could not finish the site connection within 50 seconds. "
+                "Installation has been stopped cleanly; the previous working agent is kept "
+                "when this is an upgrade."
+            ),
+        )
         # On the connecting page use the page-local progress label too.
         self.status.setText("")
 
     def finalize_ok(self, result):
-        # finalize_install has already re-verified the recorder, encrypted the credential,
+        # finalize_install reuses the Step 04 recorder proof, encrypts the credential,
         # enrolled/authenticated the site, synced cameras, sent a heartbeat and started the
         # background agent. Those are the REQUIRED installation proofs.
         #
@@ -895,25 +907,26 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             if not window.recorder_next.isEnabled():
                 return 25
 
-            # A hung/slow Hikvision login may never leave the technician staring at
-            # a disabled Test Connection button. Exercise the real Qt watchdog path.
-            window.go(3)
-            window.login_error.setText("")
-            window.run_worker(
-                lambda progress=None: time.sleep(0.20), (), lambda _r: None,
-                "Testing the recorder connection…", timeout_ms=50,
-                timeout_message="login watchdog fired")
-            deadline = time.monotonic() + 0.15
-            while time.monotonic() < deadline:
+            # Standalone Setup keeps login timeout retryable. Installer-child timeout
+            # is terminal and is exercised after the success/failure lifecycle checks below.
+            if not installer_child:
+                window.go(3)
+                window.login_error.setText("")
+                window.run_worker(
+                    lambda progress=None: time.sleep(0.20), (), lambda _r: None,
+                    "Testing the recorder connection…", timeout_ms=50,
+                    timeout_message="login watchdog fired")
+                deadline = time.monotonic() + 0.15
+                while time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.01)
+                if not window.login_next.isEnabled() or "watchdog" not in window.login_error.text():
+                    return 26
+                # Let the abandoned worker finish; its stale result must not move the UI.
+                time.sleep(0.10)
                 app.processEvents()
-                time.sleep(0.01)
-            if not window.login_next.isEnabled() or "watchdog" not in window.login_error.text():
-                return 26
-            # Let the abandoned worker finish; its stale result must not move the UI.
-            time.sleep(0.10)
-            app.processEvents()
-            if window.stack.currentIndex() != 3:
-                return 27
+                if window.stack.currentIndex() != 3:
+                    return 27
 
             # Recreate the Step 06 field outcome: core connection + background agent are
             # already proven. finalize_ok must go straight to Ready and must not launch
@@ -956,6 +969,19 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 app.processEvents()
                 if failed.exit_code != 2 or failed.isVisible():
                     return 30
+
+                timed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
+                timed.show()
+                timed.go(3)
+                timed._active_worker = 99
+                timed._worker_timeout(99, "login watchdog fired")
+                deadline = time.monotonic() + 3.0
+                while timed.isVisible() and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                app.processEvents()
+                if timed.exit_code != 2 or timed.isVisible():
+                    return 31
             else:
                 window.close()
             return 0

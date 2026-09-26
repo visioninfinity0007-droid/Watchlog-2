@@ -1054,7 +1054,8 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
                      profiles: list[dict], progress: Callable[[str], None] | None = None,
-                     hint: dict | None = None) -> dict:
+                     hint: dict | None = None,
+                     verified_recorder: dict | None = None) -> dict:
     """Prove local recorder + WatchLog enrollment and persist only protected secrets."""
     progress = progress or (lambda _message: None)
     if not public.get("supabase_url") or not public.get("supabase_publishable_key"):
@@ -1062,8 +1063,26 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     if not enrollment_code.strip():
         raise ValueError("Enter the WatchLog site code from the portal.")
 
-    progress("Verifying the recorder one more time…")
-    recorder = test_recorder(address, username, password, progress=progress, hint=hint)
+    # Step 04 already authenticated the recorder. Repeating that full hardware
+    # transaction in Step 06 was both redundant and a field source of false hangs:
+    # embedded Digest/ISAPI/CGI stacks can answer once and then stall on the immediate
+    # duplicate session. Reuse the exact successful proof when supplied by the UI.
+    if verified_recorder:
+        recorder = dict(verified_recorder)
+        required = ("url", "vendor", "model", "driver", "channels")
+        if any(key not in recorder for key in required):
+            raise ValueError("WatchLog lost the recorder verification. Please run setup again.")
+        try:
+            if discover.host_of(str(recorder["url"])) != discover.host_of(address):
+                raise ValueError("WatchLog recorder selection changed after login. Please test the recorder again.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("WatchLog could not reuse the recorder verification. Please test the recorder again.") from exc
+        progress("Recorder login already verified.")
+    else:
+        progress("Verifying the recorder…")
+        recorder = test_recorder(address, username, password, progress=progress, hint=hint)
 
     progress("Encrypting recorder credentials on this PC…")
     try:
