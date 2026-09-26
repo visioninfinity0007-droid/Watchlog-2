@@ -9,7 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
@@ -108,6 +108,29 @@ class ProbeTests(unittest.TestCase):
         bases, addresses = discover._sweep_bases("not-an-ip")
         self.assertEqual([], bases)
         self.assertEqual([], addresses)
+
+    def test_router_answer_does_not_suppress_recorder_retry(self):
+        """A router responding on pass one must not hide a slow Dahua NVR."""
+        def fake_conn(address, timeout=None):
+            ip, port = address
+            if ip == "10.0.0.1" and port == 80 and timeout == discover.SWEEP_TIMEOUT:
+                return MagicMock()
+            if ip == "10.0.0.119" and port == 37777 and timeout == discover.SWEEP_RETRY_TIMEOUT:
+                return MagicMock()
+            raise OSError("filtered")
+
+        progress = []
+        with patch.object(discover, "_sweep_bases",
+                          return_value=(["10.0.0"], ["10.0.0.5"])), \
+             patch("socket.create_connection", side_effect=fake_conn):
+            hits = discover.sweep(log=lambda *_a: None, progress=progress.append)
+
+        self.assertIn(("10.0.0.1", [80]), hits)
+        self.assertIn(("10.0.0.119", [37777]), hits)
+        self.assertTrue(any("again" in msg.lower() for msg in progress))
+
+    def test_setup_sweep_concurrency_is_bounded(self):
+        self.assertLessEqual(discover.SWEEP_WORKERS, 256)
 
     def test_hikvision_isapi_deep_probe_auth_required(self):
         with patch.object(
