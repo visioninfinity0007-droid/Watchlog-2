@@ -519,8 +519,26 @@ def test_recorder(address: str, username: str, password: str,
             driver = build_fn(driver_name, url, username.strip(), password,
                               RECORDER_PROBE_TIMEOUT)
             info = driver.probe()
-            progress("Reading camera channels…")
-            channels = driver.list_channels()
+
+            # Setup login is an AUTHENTICATION check, not a full inventory crawl.
+            # Field Hikvision DS-7608NI-Q1 and Dahua embedded web stacks can accept
+            # Digest auth/deviceInfo quickly, then stall on extra channel/config reads.
+            # Once the native identity call succeeds, trust the recorder's reported
+            # physical input count and let the background agent enrich names later.
+            # This keeps a correct password from being turned into a false 30s timeout.
+            if driver_name in ("hikvision-isapi", "dahua-cgi") and info.channel_count:
+                progress("Recorder login verified.")
+                channels = [
+                    SimpleNamespace(channel=str(i), name=f"Camera {i}")
+                    for i in range(1, int(info.channel_count) + 1)
+                ]
+                _setup_log(
+                    f"setup-fast-path driver={driver_name} "
+                    f"reported_channels={len(channels)}")
+            else:
+                progress("Reading camera channels…")
+                channels = driver.list_channels()
+
             _setup_log(f"OK driver={driver_name} identity=1 channels={len(channels)} "
                        f"elapsed={time.monotonic() - attempt_started:.1f}s")
             return {
