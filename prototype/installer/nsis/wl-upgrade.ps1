@@ -189,7 +189,25 @@ switch ($Stage) {
       Write-Stage "no backup present to restore (fresh install or backup already consumed)"
     }
     Start-Task
-    Write-Stage "rollback complete: previous agent restarted"
-    exit 0
+    $rollbackDeadline = (Get-Date).AddSeconds([Math]::Max(10, $StartTimeoutSec))
+    while ((Get-Date) -lt $rollbackDeadline) {
+      if ((Get-AgentProcesses).Count -ge 1) {
+        Start-Sleep -Seconds 2
+        if ((Get-AgentProcesses).Count -ge 1) {
+          Write-Stage "rollback complete: previous agent restored AND running"
+          exit 0
+        }
+      }
+      Start-Sleep -Milliseconds 500
+    }
+    # One final explicit task nudge; Start-Task intentionally tolerates a transient
+    # ScheduledTasks cmdlet error, but rollback itself may not silently claim success.
+    try { & "$env:SystemRoot\System32\schtasks.exe" /Run /TN "$TaskName" | Out-Null } catch {}
+    Start-Sleep -Seconds 3
+    if ((Get-AgentProcesses).Count -ge 1) {
+      Write-Stage "rollback complete after task nudge: previous agent running"
+      exit 0
+    }
+    Fail 14 "previous agent was restored but could not be restarted; site needs local service restart"
   }
 }

@@ -116,6 +116,9 @@ def main():
             and 'status.get("last_push_at")' in agent
             and "last_push >= (verification_after - timedelta(seconds=5))" in agent
             and "Configure first" in agent,
+        "failed upgrade rollback verifies the previous agent is running again":
+            "rollback complete: previous agent restored AND running" in text("prototype/installer/nsis/wl-upgrade.ps1")
+            and "Fail 14" in text("prototype/installer/nsis/wl-upgrade.ps1"),
         "installer-child terminal failure closes all windows and returns nonzero":
             "def _terminal_installer_failure" in setup_gui
             and "self._close_installer_child(2)" in setup_gui
