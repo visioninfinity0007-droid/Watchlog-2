@@ -198,12 +198,14 @@ class SetupWindow(QMainWindow):
         layout.addSpacing(8)
         return page, layout
 
-    def _nav(self, layout, back=None, primary="Continue", action=None):
+    def _nav(self, layout, back=None, primary="Continue", action=None, back_attr=None):
         row = QHBoxLayout()
         if back is not None:
             b = QPushButton("Back")
             b.setObjectName("secondary")
             b.clicked.connect(lambda: self.go(back))
+            if back_attr:
+                setattr(self, back_attr, b)
             row.addWidget(b)
         row.addStretch(1)
         cancel = QPushButton("Cancel")
@@ -262,6 +264,14 @@ class SetupWindow(QMainWindow):
         row.addWidget(self.search_btn)
         row.addStretch(1)
         cl.addLayout(row)
+        self.discovery_status = label("", "muted")
+        self.discovery_status.hide()
+        cl.addWidget(self.discovery_status)
+        self.discovery_progress = QProgressBar()
+        self.discovery_progress.setRange(0, 0)
+        self.discovery_progress.setTextVisible(False)
+        self.discovery_progress.hide()
+        cl.addWidget(self.discovery_progress)
         self.recorder_list = QListWidget()
         self.recorder_list.setMinimumHeight(150)
         self.recorder_list.itemSelectionChanged.connect(self.recorder_selected)
@@ -271,7 +281,8 @@ class SetupWindow(QMainWindow):
         self.manual_ip.setPlaceholderText("192.168.1.108")
         cl.addWidget(self.manual_ip)
         l.addWidget(c)
-        self.recorder_next = self._nav(l, 1, "Continue", self.recorder_continue)
+        self.recorder_next = self._nav(
+            l, 1, "Continue", self.recorder_continue, back_attr="recorder_back")
         self.stack.addWidget(page)
 
         # Login
@@ -404,9 +415,10 @@ class SetupWindow(QMainWindow):
         self.pool.start(worker)
 
     def _on_progress(self, message: str):
-        """Surface live worker progress. The Connecting page has its own label, so mirror it there
-        as well — an indeterminate bar with no changing text is indistinguishable from a hang."""
+        """Surface live worker progress on the page doing the work."""
         self.status.setText(message)
+        if self.stack.currentIndex() == 2:
+            self.discovery_status.setText(message)
         if self.stack.currentIndex() == 5:
             self.progress_label.setText(message)
 
@@ -416,6 +428,8 @@ class SetupWindow(QMainWindow):
 
     def _worker_error(self, message: str):
         self.set_busy(False)
+        if self.stack.currentIndex() == 2:
+            self._set_discovery_loading(False)
         if self.stack.currentIndex() == 5:
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
@@ -438,11 +452,32 @@ class SetupWindow(QMainWindow):
         if not self.recorder_list.count():
             self.search_recorders()
 
+    def _set_discovery_loading(self, active: bool):
+        """Make network discovery visibly active and prevent duplicate overlapping scans."""
+        self.discovery_progress.setVisible(active)
+        self.discovery_status.setVisible(active)
+        self.search_btn.setText("Searching…" if active else "Search Network")
+        self.recorder_list.setEnabled(not active)
+        self.manual_ip.setEnabled(not active)
+        self.recorder_next.setEnabled(not active)
+        self.recorder_back.setEnabled(not active)
+        if active:
+            self.discovery_progress.setRange(0, 0)  # Qt indeterminate/animated progress
+            self.discovery_status.setText("Starting recorder discovery…")
+        else:
+            self.discovery_progress.setRange(0, 1)
+            self.discovery_progress.setValue(1)
+
     def search_recorders(self):
+        if self._busy:
+            return
         self.recorder_list.clear()
-        self.run_worker(backend.discover_recorders, (), self.show_recorders, "Searching the local network…")
+        self._set_discovery_loading(True)
+        self.run_worker(backend.discover_recorders, (), self.show_recorders,
+                        "Searching the local network…")
 
     def show_recorders(self, rows):
+        self._set_discovery_loading(False)
         self._discovered = {row["ip"]: row for row in rows}
         if not rows:
             self.status.setText("No recorder was found automatically. Enter its local IP address below.")

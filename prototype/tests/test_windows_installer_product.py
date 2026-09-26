@@ -34,6 +34,12 @@ def main():
         "GUI is real PySide6": "from PySide6" in gui,
         "GUI build is windowed": '"--windowed"' in build_ui,
         "GUI covers recorder discovery": "discover_recorders" in gui and "test_recorder" in gui,
+        "recorder discovery shows animated progress": "self.discovery_progress = QProgressBar()" in gui
+            and "self.discovery_progress.setRange(0, 0)" in gui
+            and "self.discovery_status.setText(message)" in gui,
+        "recorder discovery blocks duplicate navigation while scanning":
+            "self.recorder_back.setEnabled(not active)" in gui
+            and "self.recorder_next.setEnabled(not active)" in gui,
         "GUI performs real finalization": "finalize_install" in gui,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,

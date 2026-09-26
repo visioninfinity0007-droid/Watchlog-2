@@ -171,7 +171,7 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
         # hardcoded list that had drifted out of sync (it accepted 81/88/443/8081 that
         # the sweep never probed), which hid HTTPS-only and alt-web-port recorders.
         candidate_ports = set(discover.SWEEP_PORTS)
-        for ip, ports in discover.sweep(None, log=lambda _m: None):
+        for ip, ports in discover.sweep(None, log=lambda _m: None, progress=progress):
             ports = sorted(ports)
             if not any(port in candidate_ports for port in ports):
                 continue

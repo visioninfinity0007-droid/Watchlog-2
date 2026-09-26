@@ -143,6 +143,31 @@ class DiscoveryBlindSpotTests(unittest.TestCase):
             hits = discover.sweep(log=lambda *_a: None)
         self.assertEqual([("10.0.0.7", [443])], hits)
 
+    def test_router_answer_does_not_suppress_recorder_retry(self):
+        """Field regression: an unrelated web host answered pass one while the NVR
+        dropped its first SYN. The old 'if not found' condition skipped the retry
+        completely, so Back -> Continue became the accidental retry button."""
+        def fake_conn(address, timeout=None):
+            ip, port = address
+            if ip == "10.0.0.1" and port == 80 and timeout == discover.SWEEP_TIMEOUT:
+                return MagicMock()  # router answers immediately on pass one
+            if ip == "10.0.0.119" and port == 37777 and timeout == discover.SWEEP_RETRY_TIMEOUT:
+                return MagicMock()  # Dahua recorder answers only on the automatic retry
+            raise OSError("filtered")
+
+        progress = []
+        with patch.object(discover, "_sweep_bases", return_value=(["10.0.0"], ["10.0.0.5"])), \
+             patch("socket.create_connection", side_effect=fake_conn):
+            hits = discover.sweep(log=lambda *_a: None, progress=progress.append)
+
+        self.assertIn(("10.0.0.1", [80]), hits)
+        self.assertIn(("10.0.0.119", [37777]), hits)
+        self.assertTrue(any("again" in message.lower() for message in progress),
+                        "the retry should be visible to the setup UI")
+
+    def test_sweep_concurrency_is_bounded_for_customer_lans(self):
+        self.assertLessEqual(discover.SWEEP_WORKERS, 256)
+
     def test_command_ipv4s_parses_interfaces_and_rejects_masks(self):
         sample = """
 Ethernet adapter CCTV:
