@@ -54,6 +54,8 @@ SDK_PORT = int(os.environ.get(
 ))
 SDK_DELAY = float(os.environ.get("SDK_START_DELAY", "0"))
 RTSP_PORT = int(os.environ.get("RTSP_PORT", "554"))
+REAL_RTSP = os.environ.get("REAL_RTSP", "0") == "1"
+CLIP_PATH = os.environ.get("LAB_CLIP_PATH", "/tmp/watchlog-lab.mp4")
 NONCE = hashlib.md5(f"{SERIAL}:watchlog-lab".encode()).hexdigest()
 OPAQUE = hashlib.md5(f"{REALM}:opaque".encode()).hexdigest()
 
@@ -85,6 +87,17 @@ FALLBACK_JPEG = base64.b64decode(
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def recorded_clip_bytes() -> bytes:
+    try:
+        with open(CLIP_PATH, "rb") as handle:
+            data = handle.read(32 * 1024 * 1024 + 1)
+        if data and len(data) <= 32 * 1024 * 1024:
+            return data
+    except OSError:
+        pass
+    return b"WL-LAB-RECORDED-CLIP" * 256
 
 
 def jpeg_for(channel: int) -> bytes:
@@ -366,8 +379,8 @@ class DeviceHandler(BaseHTTPRequestHandler):
         if path == "/cgi-bin/loadfile.cgi" or path.startswith("/cgi-bin/RPC_Loadfile/"):
             with STATE_LOCK:
                 archive = bool(STATE["archive"])
-            self._send(200 if archive else 404, b"WL-LAB-RECORDED-CLIP" * 256 if archive else b"",
-                       "application/octet-stream")
+            self._send(200 if archive else 404, recorded_clip_bytes() if archive else b"",
+                       "video/mp4")
             return
         self._send(404, "unsupported Dahua lab endpoint")
 
@@ -463,8 +476,8 @@ class DeviceHandler(BaseHTTPRequestHandler):
                 return
             with STATE_LOCK:
                 archive = bool(STATE["archive"])
-            self._send(200 if archive else 404, b"WL-LAB-HIKVISION-CLIP" * 256 if archive else b"",
-                       "application/octet-stream")
+            self._send(200 if archive else 404, recorded_clip_bytes() if archive else b"",
+                       "video/mp4")
             return
         self._send(404, "unsupported POST")
 
@@ -497,6 +510,17 @@ class DeviceHandler(BaseHTTPRequestHandler):
                 "<trt:GetSnapshotUriResponse><trt:MediaUri>"
                 f"<tt:Uri>http://{host}/snapshot/1</tt:Uri>"
                 "</trt:MediaUri></trt:GetSnapshotUriResponse>"
+            )
+        elif "GetStreamUri" in raw:
+            channel = 1
+            for idx in range(1, CHANNELS + 1):
+                if f"profile{idx}" in raw:
+                    channel = idx
+                    break
+            body = (
+                "<trt:GetStreamUriResponse><trt:MediaUri>"
+                f"<tt:Uri>rtsp://{host}:{RTSP_PORT}/cam{channel}</tt:Uri>"
+                "</trt:MediaUri></trt:GetStreamUriResponse>"
             )
         elif "CreatePullPointSubscription" in raw:
             body = (
@@ -671,7 +695,8 @@ def ws_discovery_responder():
 def main():
     print(f"WatchLog lab device starting: kind={KIND} model={MODEL} channels={CHANNELS}", flush=True)
     threading.Thread(target=tcp_listener, args=(SDK_PORT, SDK_DELAY), daemon=True).start()
-    threading.Thread(target=tcp_listener, args=(RTSP_PORT, 0), daemon=True).start()
+    if RTSP_PORT > 0 and not REAL_RTSP:
+        threading.Thread(target=tcp_listener, args=(RTSP_PORT, 0), daemon=True).start()
     threading.Thread(target=ws_discovery_responder, daemon=True).start()
 
     control = ThreadingHTTPServer(("0.0.0.0", CONTROL_PORT), ControlHandler)
