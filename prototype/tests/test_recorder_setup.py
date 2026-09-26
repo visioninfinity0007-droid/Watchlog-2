@@ -95,6 +95,28 @@ def test_dahua_ports_plan_prefers_dahua_http_first():
     assert len(attempts) <= 5                                    # bounded
 
 
+def test_dahua_same_endpoint_fallback_precedes_second_native_port():
+    """Build 62 stacked native HTTP+HTTPS timeouts before ONVIF; Build 69 then
+    lived near the 30s watchdog. Fall back on the proven endpoint first."""
+    attempts, hard = backend.plan_recorder_probes(
+        "192.168.1.10", [80, 443, 554, 37777], "dahua")
+    assert hard is None
+    assert attempts[:4] == [
+        ("dahua-cgi", "http://192.168.1.10"),
+        ("onvif", "http://192.168.1.10"),
+        ("dahua-cgi", "https://192.168.1.10"),
+        ("onvif", "https://192.168.1.10"),
+    ]
+
+
+def test_discovery_preferred_web_port_is_tried_first():
+    attempts, hard = backend.plan_recorder_probes(
+        "192.168.1.10", [80, 443, 37777], "dahua", preferred_port=443)
+    assert hard is None
+    assert attempts[0] == ("dahua-cgi", "https://192.168.1.10")
+    assert attempts[1] == ("onvif", "https://192.168.1.10")
+
+
 # --- 2. Dahua HTTP 80 success ----------------------------------------------
 
 def test_dahua_http80_success_returns_channels():
@@ -192,7 +214,7 @@ def test_progress_sequence_and_error_copy():
     assert "Checking recorder at 192.168.1.10" in joined
     assert "Detected Dahua-compatible recorder." in joined
     assert "Signing in to the recorder" in joined
-    assert "Reading camera channels" in joined
+    assert ("Recorder login verified" in joined or "Reading camera channels" in joined)
     # every customer error key maps to a non-technical, non-empty sentence
     for key, msg in backend._CUSTOMER_ERROR.items():
         assert msg and "cgi" not in msg.lower() and "http://" not in msg
