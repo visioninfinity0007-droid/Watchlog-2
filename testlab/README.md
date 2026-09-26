@@ -66,6 +66,7 @@ Implemented paths include:
 - ISAPI device identity
 - channel inventory
 - snapshot endpoints
+- real H.264 RTSP streams (`/cam1` through `/cam4`)
 - motion / line / field analytics reads
 - native alert stream
 - httpHosts push configuration write/readback
@@ -81,10 +82,32 @@ Two separate camera identities expose:
 - Media service / profiles
 - Event service skeleton
 - snapshots
-- RTSP port presence
+- ONVIF `GetStreamUri`
+- real H.264 RTSP video
 
 The intent is to test WatchLog's generic ONVIF fallback independently from the
 vendor-native paths.
+
+## Real video streams
+
+The lab does not merely leave TCP port 554 open. Every virtual CCTV device runs
+MediaMTX with FFmpeg-generated H.264 video. This lets VLC, ffplay, ffprobe and any
+future WatchLog RTSP consumer decode actual frames.
+
+Examples:
+
+```text
+rtsp://10.77.0.20:554/cam1   # Dahua channel 1
+rtsp://10.77.0.20:554/cam4   # Dahua channel 4
+rtsp://10.77.0.21:554/cam1   # Hikvision channel 1
+rtsp://10.77.0.21:554/cam4   # Hikvision channel 4
+rtsp://10.77.0.31:554/cam1   # ONVIF camera 1
+rtsp://10.77.0.32:554/cam1   # ONVIF camera 2
+```
+
+Each device also creates a small valid H.264 MP4 used by its simulated archive
+download endpoints. Therefore archive/recovery tests can consume real video bytes
+instead of a placeholder blob.
 
 ## Lab scenarios
 
@@ -181,13 +204,14 @@ For every Windows installer candidate:
 11. Set `camera-2-offline`; verify camera health changes appropriately.
 12. Set `storage-fault`; verify NVR health reports the storage issue.
 13. Set `recording-3-off`; verify recording health is not falsely green.
-14. Prove archive search/download in healthy mode.
-15. Set `archive-empty`; verify WatchLog reports empty archive truthfully.
-16. Repeat the same install against the Hikvision NVR.
-17. Test generic ONVIF fallback with one virtual camera.
-18. Upgrade over the previous installer build.
-19. Exercise rollback/failure behavior.
-20. Uninstall and confirm the lab PC is clean.
+14. Open at least one `rtsp://...` stream in VLC/ffplay and confirm decoded video.
+15. Prove archive search/download in healthy mode and confirm the downloaded clip is valid video.
+16. Set `archive-empty`; verify WatchLog reports empty archive truthfully.
+17. Repeat the same install against the Hikvision NVR.
+18. Test generic ONVIF fallback with one virtual camera, including GetStreamUri.
+19. Upgrade over the previous installer build.
+20. Exercise rollback/failure behavior.
+21. Uninstall and confirm the lab PC is clean.
 
 ## Cloud safety
 

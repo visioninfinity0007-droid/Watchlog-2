@@ -33,3 +33,36 @@ jobs:
         run: |
           cp testlab/.env.example testlab/.env
           docker compose -f testlab/docker-compose.yml --env-file testlab/.env config >/dev/null
+      - name: Build real-media lab image
+        run: docker build -t watchlog-testlab:ci testlab
+      - name: Prove generated H.264 RTSP and recorded MP4
+        run: |
+          set -e
+          docker run -d --name watchlog-testlab-media \
+            -e DEVICE_KIND=onvif \
+            -e DEVICE_CHANNELS=4 \
+            -e HTTP_PORT=18080 \
+            -e CONTROL_PORT=19001 \
+            -e SDK_PORT=0 \
+            -e RTSP_PORT=8554 \
+            -e REAL_RTSP=1 \
+            watchlog-testlab:ci
+          trap 'docker rm -f watchlog-testlab-media >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if docker exec watchlog-testlab-media ffprobe -v error -rtsp_transport tcp \
+                -select_streams v:0 -show_entries stream=codec_name \
+                -of default=noprint_wrappers=1:nokey=1 \
+                rtsp://127.0.0.1:8554/cam1 2>/dev/null | grep -q h264; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec watchlog-testlab-media ffprobe -v error -rtsp_transport tcp \
+            -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 \
+            rtsp://127.0.0.1:8554/cam1 | grep -q h264
+          docker exec watchlog-testlab-media test -s /tmp/watchlog-lab.mp4
+          docker exec watchlog-testlab-media ffprobe -v error \
+            -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 \
+            /tmp/watchlog-lab.mp4 | grep -q h264
