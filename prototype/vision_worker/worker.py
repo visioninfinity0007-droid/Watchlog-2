@@ -8,11 +8,16 @@ complete. Raw CCTV bytes are never written to Git and are not sent to third-part
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import os
 import socket
 import threading
 import time
+
+import boto3
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
