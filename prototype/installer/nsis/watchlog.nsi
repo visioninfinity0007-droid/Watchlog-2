@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.14"
+  !define APPVERSION "5.0.15"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -83,7 +83,8 @@ Section "Install"
     ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
     ${If} $9 != 0
       MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely stop the running agent to upgrade it, so nothing was changed. Your existing WatchLog is still installed and will keep running. Close anything that may be using WatchLog and run the installer again."
-      Abort "Upgrade preflight failed; existing runtime preserved"
+      SetErrorLevel 2
+      Quit
     ${EndIf}
   ${EndIf}
 
@@ -100,7 +101,8 @@ Section "Install"
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
     ${EndIf}
     MessageBox MB_ICONSTOP|MB_OK "WatchLog could not replace the agent program (it was still in use). The previous working WatchLog has been kept. Restart Windows and run the installer again."
-    Abort "watchlog-agent.exe replacement failed"
+    SetErrorLevel 2
+    Quit
   ${EndIf}
   File "watchlog-setup-ui.exe"
   File "run-agent.ps1"
@@ -118,7 +120,8 @@ Section "Install"
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
       MessageBox MB_ICONSTOP|MB_OK "WatchLog was not able to install the new version correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
-      Abort "Installed version did not match; rolled back"
+      SetErrorLevel 2
+      Quit
     ${EndIf}
   ${EndIf}
 
@@ -146,7 +149,8 @@ Section "Install"
         ExecWait '"$SYSDIR\schtasks.exe" /Run /TN "${TASKNAME}"' $9
       ${EndIf}
       MessageBox MB_ICONSTOP|MB_OK "WatchLog could not migrate the existing recorder credential. The upgrade was stopped so the site is not left in a misleading state."
-      Abort "WatchLog credential migration failed"
+      SetErrorLevel 2
+      Quit
     ${EndIf}
     ; A reinstall can keep enrollment state while the credential file was
     ; removed (uninstall deletes it), and pre-env-store installs have no env
@@ -157,8 +161,12 @@ Section "Install"
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
-        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. Run the installer again when the recorder, site code and network are ready."
-        Abort "WatchLog setup did not complete"
+        ${If} $8 == "1"
+          DetailPrint "Setup failed; restoring the previous working WatchLog..."
+          ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+        ${EndIf}
+        SetErrorLevel 2
+        Quit
       ${EndIf}
       ; Setup returns 0 only after register-service proved a fresh background heartbeat.
       StrCpy $7 "1"
@@ -168,8 +176,9 @@ Section "Install"
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. Run the installer again when the recorder, site code and network are ready."
-      Abort "WatchLog setup did not complete"
+      ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
+      SetErrorLevel 2
+      Quit
     ${EndIf}
     ; Setup itself already registered the SYSTEM task and proved a fresh heartbeat.
     StrCpy $7 "1"
@@ -178,7 +187,8 @@ Section "Install"
   ; The recorder credential must exist before a background task can start.
   ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
     MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after setup. Run WatchLog Setup again."
-    Abort "Recorder credential missing"
+    SetErrorLevel 2
+    Quit
   ${EndIf}
 
   ; Register/update background startup only if Setup did NOT already do it.
@@ -198,7 +208,8 @@ Section "Install"
         ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
       ${EndIf}
       MessageBox MB_ICONSTOP|MB_OK "WatchLog connected the site, but automatic background startup could not be proven. Setup stopped so this is not mistaken for a complete installation."
-      Abort "WatchLog background startup registration failed"
+      SetErrorLevel 2
+      Quit
     ${EndIf}
   ${EndIf}
 
@@ -211,7 +222,8 @@ Section "Install"
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
       MessageBox MB_ICONSTOP|MB_OK "WatchLog installed the update but the new agent did not start correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
-      Abort "Upgrade commit (start/alive) failed; rolled back"
+      SetErrorLevel 2
+      Quit
     ${EndIf}
   ${EndIf}
 

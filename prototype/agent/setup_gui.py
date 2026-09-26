@@ -460,6 +460,9 @@ class SetupWindow(QMainWindow):
             self.login_error.setText(message)
             self.status.setText(message)
         elif self.stack.currentIndex() == 5:
+            if self.installer_child:
+                self._terminal_installer_failure(message)
+                return
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
@@ -475,6 +478,9 @@ class SetupWindow(QMainWindow):
     def _worker_error(self, message: str):
         self.set_busy(False)
         if self.stack.currentIndex() == 5:
+            if self.installer_child:
+                self._terminal_installer_failure(message)
+                return
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
@@ -662,11 +668,18 @@ class SetupWindow(QMainWindow):
         self.progress_bar.setValue(1)
 
         if not self.site_connected:
-            self.progress_label.setText("WatchLog could not start in the background.")
-            self.connect_error.setText(
+            message = (
                 "The recorder and WatchLog site were reached, but the background WatchLog "
-                "service did not start. Retry setup or export a support bundle."
+                "service did not start."
             )
+            if self.installer_child:
+                self._terminal_installer_failure(
+                    message + " The installer will restore the previous working version "
+                    "automatically when this is an upgrade."
+                )
+                return
+            self.progress_label.setText("WatchLog could not start in the background.")
+            self.connect_error.setText(message + " Retry setup or export a support bundle.")
             self.retry_btn.setText("Retry")
             self.retry_btn.show()
             self.incomplete_status_btn.show()
@@ -755,24 +768,39 @@ class SetupWindow(QMainWindow):
                             f"Saved to:\n{r['path']}" if r.get("ok") else "Support bundle could not be created."),
                         "Creating support bundle…")
 
+    def _close_installer_child(self, code: int) -> None:
+        """Terminate every top-level window owned by the installer-child process."""
+        self.exit_code = int(code)
+        app = QApplication.instance()
+        if app is not None:
+            for widget in list(app.topLevelWidgets()):
+                try:
+                    widget.close()
+                except Exception:
+                    pass
+            app.exit(int(code))
+        else:
+            self.close()
+
+    def _terminal_installer_failure(self, message: str, delay_ms: int = 1400) -> None:
+        """Show one short terminal error, then return non-zero to NSIS automatically."""
+        self.exit_code = 2
+        self.set_busy(False)
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("WatchLog could not complete installation.")
+        self.connect_error.setText(message + "\n\nClosing automatically…")
+        self.retry_btn.hide()
+        self.incomplete_status_btn.hide()
+        self.incomplete_bundle_btn.hide()
+        self.incomplete_exit_btn.hide()
+        self.status.setText("Installation stopped. Closing automatically…")
+        QTimer.singleShot(int(delay_ms), lambda: self._close_installer_child(2))
+
     def finish(self):
         self.exit_code = 0
         if self.installer_child:
-            # Field Build 61: the technician opened Site Status from the Ready page.
-            # Closing only Setup left another top-level Qt window alive, so QApplication
-            # never quit and NSIS ExecWait sat forever even though the background agent
-            # was already healthy. Installer-child owns this process: close any status
-            # window and terminate the application event loop explicitly.
-            status_win = getattr(self, "_status_win", None)
-            if status_win is not None:
-                try:
-                    status_win.close()
-                except Exception:
-                    pass
-            self.close()
-            app = QApplication.instance()
-            if app is not None:
-                app.exit(0)
+            self._close_installer_child(0)
             return
         self.close()
 
@@ -910,6 +938,24 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 app.processEvents()
                 if window.exit_code != 0 or window.isVisible():
                     return 29
+
+                failed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
+                failed.show()
+                failed.go(5)
+                failed.finalize_ok({
+                    "connected": False,
+                    "agent_start": {"started": False, "detail": "simulated startup failure"},
+                    "camera_count": 4,
+                    "vendor": "Dahua",
+                    "model": "Test XVR",
+                })
+                deadline = time.monotonic() + 3.0
+                while failed.isVisible() and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                app.processEvents()
+                if failed.exit_code != 2 or failed.isVisible():
+                    return 30
             else:
                 window.close()
             return 0

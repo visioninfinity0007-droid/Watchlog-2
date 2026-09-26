@@ -116,6 +116,12 @@ def main():
             and 'status.get("last_push_at")' in agent
             and "last_push >= (verification_after - timedelta(seconds=5))" in agent
             and "Configure first" in agent,
+        "installer-child terminal failure closes all windows and returns nonzero":
+            "def _terminal_installer_failure" in setup_gui
+            and "self._close_installer_child(2)" in setup_gui
+            and "failed.exit_code != 2" in setup_gui
+            and "SetErrorLevel 2" in text("prototype/installer/nsis/watchlog.nsi")
+            and "Quit" in text("prototype/installer/nsis/watchlog.nsi"),
         "installer-child exits the whole Qt process even with Site Status open":
             "app.exit(0)" in setup_gui
             and "os._exit(int(code))" in setup_gui
