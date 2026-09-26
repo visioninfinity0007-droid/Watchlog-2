@@ -208,12 +208,14 @@ class SetupWindow(QMainWindow):
         layout.addSpacing(8)
         return page, layout
 
-    def _nav(self, layout, back=None, primary="Continue", action=None):
+    def _nav(self, layout, back=None, primary="Continue", action=None, back_attr=None):
         row = QHBoxLayout()
         if back is not None:
             b = QPushButton("Back")
             b.setObjectName("secondary")
             b.clicked.connect(lambda: self.go(back))
+            if back_attr:
+                setattr(self, back_attr, b)
             row.addWidget(b)
         row.addStretch(1)
         cancel = QPushButton("Cancel")
@@ -272,6 +274,14 @@ class SetupWindow(QMainWindow):
         row.addWidget(self.search_btn)
         row.addStretch(1)
         cl.addLayout(row)
+        self.discovery_status = label("", "muted")
+        self.discovery_status.hide()
+        cl.addWidget(self.discovery_status)
+        self.discovery_progress = QProgressBar()
+        self.discovery_progress.setRange(0, 0)
+        self.discovery_progress.setTextVisible(False)
+        self.discovery_progress.hide()
+        cl.addWidget(self.discovery_progress)
         self.recorder_list = QListWidget()
         self.recorder_list.setMinimumHeight(150)
         self.recorder_list.itemSelectionChanged.connect(self.recorder_selected)
@@ -284,7 +294,8 @@ class SetupWindow(QMainWindow):
         self.manual_ip.setPlaceholderText("192.168.1.108")
         cl.addWidget(self.manual_ip)
         l.addWidget(c)
-        self.recorder_next = self._nav(l, 1, "Continue", self.recorder_continue)
+        self.recorder_next = self._nav(
+            l, 1, "Continue", self.recorder_continue, back_attr="recorder_back")
         self.stack.addWidget(page)
 
         # Login
@@ -304,6 +315,11 @@ class SetupWindow(QMainWindow):
         self.login_error = label("", "muted")
         self.login_error.setWordWrap(True)
         cl.addWidget(self.login_error)
+        self.login_progress = QProgressBar()
+        self.login_progress.setRange(0, 0)
+        self.login_progress.setTextVisible(False)
+        self.login_progress.hide()
+        cl.addWidget(self.login_progress)
         l.addWidget(c)
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
@@ -459,6 +475,7 @@ class SetupWindow(QMainWindow):
         if self.stack.currentIndex() == 3:
             # Recorder login is recoverable operator input. A timeout here must
             # never kill the whole installer, even in installer-child mode.
+            self._set_login_loading(False)
             self.login_error.setText(message)
             self.status.setText(message)
             self.login_next.setEnabled(True)
@@ -472,15 +489,21 @@ class SetupWindow(QMainWindow):
             self.retry_btn.show()
 
     def _on_progress(self, message: str):
-        """Surface live worker progress. The Connecting page has its own label, so mirror it there
-        as well — an indeterminate bar with no changing text is indistinguishable from a hang."""
+        """Surface live worker progress on the page doing the work."""
         self.status.setText(message)
-        if self.stack.currentIndex() == 5:
+        if self.stack.currentIndex() == 2:
+            self.discovery_status.setText(message)
+        elif self.stack.currentIndex() == 3:
+            self.login_error.setText(message)
+        elif self.stack.currentIndex() == 5:
             self.progress_label.setText(message)
 
     def _worker_error(self, message: str):
         self.set_busy(False)
-        if self.stack.currentIndex() == 5:
+        if self.stack.currentIndex() == 2:
+            self._set_discovery_loading(False)
+            QMessageBox.warning(self, "WatchLog Setup", message)
+        elif self.stack.currentIndex() == 5:
             if self.installer_child:
                 self._terminal_installer_failure(message)
                 return
@@ -491,6 +514,7 @@ class SetupWindow(QMainWindow):
             self.incomplete_bundle_btn.show()
             self.incomplete_exit_btn.show()
         elif self.stack.currentIndex() == 3:
+            self._set_login_loading(False)
             self.login_error.setText(message)
             self.status.setText(message)
         else:
@@ -505,11 +529,32 @@ class SetupWindow(QMainWindow):
         if not self.recorder_list.count():
             self.search_recorders()
 
+    def _set_discovery_loading(self, active: bool):
+        """Show real scan activity and prevent overlapping Back/Continue searches."""
+        self.discovery_progress.setVisible(active)
+        self.discovery_status.setVisible(active)
+        self.search_btn.setText("Searching…" if active else "Search Network")
+        self.recorder_list.setEnabled(not active)
+        self.manual_ip.setEnabled(not active)
+        self.recorder_next.setEnabled(not active)
+        self.recorder_back.setEnabled(not active)
+        if active:
+            self.discovery_progress.setRange(0, 0)
+            self.discovery_status.setText("Starting recorder discovery…")
+        else:
+            self.discovery_progress.setRange(0, 1)
+            self.discovery_progress.setValue(1)
+
     def search_recorders(self):
+        if self._busy:
+            return
         self.recorder_list.clear()
-        self.run_worker(backend.discover_recorders, (), self.show_recorders, "Searching the local network…")
+        self._set_discovery_loading(True)
+        self.run_worker(backend.discover_recorders, (), self.show_recorders,
+                        "Searching the local network…")
 
     def show_recorders(self, rows):
+        self._set_discovery_loading(False)
         self._discovered = {row["ip"]: row for row in rows}
         if not rows:
             self.status.setText("No recorder was found automatically. Enter its local IP address below.")
@@ -571,7 +616,8 @@ class SetupWindow(QMainWindow):
         self.recorder_hint = ({"ports": row.get("ports"),
                                "vendor_hint": row.get("vendor_hint"),
                                "source": row.get("source"),
-                               "integration_state": row.get("integration_state")} if row else None)
+                               "integration_state": row.get("integration_state"),
+                               "preferred_web_port": row.get("preferred_web_port")} if row else None)
         detail = f"  ({row['label']})" if row and row.get("label") else ""
         self.selected_recorder.setText(f"Recorder: {address}{detail}")
         self.login_error.setText("")
@@ -583,6 +629,15 @@ class SetupWindow(QMainWindow):
             )
         self.go(3)
 
+    def _set_login_loading(self, active: bool):
+        self.login_progress.setVisible(active)
+        self.login_next.setText("Testing…" if active else "Test Connection")
+        if active:
+            self.login_progress.setRange(0, 0)
+        else:
+            self.login_progress.setRange(0, 1)
+            self.login_progress.setValue(1)
+
     def test_connection(self):
         address = self.recorder_address
         user = self.user_edit.text().strip()
@@ -590,22 +645,25 @@ class SetupWindow(QMainWindow):
         if not user or not password:
             QMessageBox.warning(self, "WatchLog Setup", "Enter the recorder username and password.")
             return
+        if self._busy:
+            return
         self.login_error.setText("")
         self.recorder_user, self.recorder_password = user, password
-        # The backend has per-request timeouts, but old NVR firmware / HTTP Digest
-        # stacks can still keep a Python worker alive far longer than a technician
-        # should ever stare at a disabled button. The UI owns the final UX deadline:
-        # after 30s it re-enables Test Connection and ignores any late worker result.
+        self._set_login_loading(True)
+        # The backend normally finishes well before this. Keep 30 seconds as a last-resort
+        # UI watchdog; Builds 70/71 cut this to 24/22 seconds and turned the Build-69
+        # intermittent Dahua path into a repeatable false timeout.
         self.run_worker(
             backend.test_recorder, (address, user, password), self.connection_ok,
             "Testing the recorder connection…", hint=self.recorder_hint,
-            timeout_ms=22000,
-            timeout_message=("The recorder did not finish the login check within 22 seconds. "
-                             "Your credentials are still here. Check the recorder/API service "
-                             "and click Test Connection again.")
+            timeout_ms=30000,
+            timeout_message=("The recorder login check reached the 30-second safety limit. "
+                             "Your credentials are still here; click Test Connection to retry. "
+                             "If the recorder opens in your browser, export the support bundle.")
         )
 
     def connection_ok(self, result):
+        self._set_login_loading(False)
         self.recorder_result = result
         self.recorder_summary.setText(
             f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
