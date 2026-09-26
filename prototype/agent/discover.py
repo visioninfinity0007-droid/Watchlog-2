@@ -190,23 +190,20 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
     return res
 
 
-# A short list for sweeping a whole subnet - 254 hosts x 13 ports is slow
-# and mostly pointless. These six catch every recorder we can support plus
-# the two families we cannot, so an unsupported unit still gets named.
 # Every port the rest of the setup stack can actually talk to. This list must stay a
-# superset of setup_backend._WEB_PORTS / _DAHUA_SDK_PORTS: a recorder whose only open
-# port was 443/88/81/8443 used to be invisible to discovery even though the login step
-# already knew how to drive it (field: HTTPS-only and alt-web-port recorders reported as
-# "no recorder found" while manual IP entry worked).
+# superset of setup_backend._WEB_PORTS / vendor-signature ports.
 SWEEP_PORTS = [80, 443, 8000, 8080, 8443, 81, 82, 88, 8081, 8888, 554, 37777, 37778, 34567]
-# 0.4s silently dropped slow embedded recorders and any host behind Wi-Fi jitter — a
-# single missed SYN meant "nothing found". Use a more forgiving budget, then give the
-# hosts that stayed completely silent one longer second chance on the dominant ports.
+
+# Discovery is staged rather than opening thousands of sockets at once. Field PCs often
+# learn the NVR's ARP/neighbour entry during the first pass; a 768-thread burst made that
+# cold pass less reliable. First probe the ports that identify CCTV hardware, retry them
+# more patiently when no recorder signature is present, then inspect uncommon web ports.
+SWEEP_FAST_PORTS = [37777, 37778, 8000, 554, 80, 443, 34567]
+SWEEP_DEEP_PORTS = [port for port in SWEEP_PORTS if port not in SWEEP_FAST_PORTS]
+RECORDER_SIGNATURE_PORTS = {37777, 37778, 8000, 34567}
 SWEEP_TIMEOUT = 0.9
 SWEEP_RETRY_TIMEOUT = 1.6
-SWEEP_RETRY_PORTS = [80, 443, 37777, 8000]
-# Concurrency absorbs the wider port list so wall-clock stays in the same few seconds.
-SWEEP_WORKERS = 768
+SWEEP_WORKERS = 128
 MAX_AUTO_SUBNETS = 8
 
 
@@ -352,13 +349,22 @@ def _sweep_bases(subnet: str | None = None) -> tuple[list[str], list[str]]:
     return bases, addresses
 
 
-def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
+def _has_recorder_signature(found: dict[str, set[int]]) -> bool:
+    """A generic router/web response is not proof that the recorder was found."""
+    return any(bool(ports & RECORDER_SIGNATURE_PORTS) for ports in found.values())
+
+
+def sweep(subnet: str | None = None, log=print,
+          progress=lambda _message: None) -> list[tuple[str, list[int]]]:
     """
     Find recorders on the relevant local /24 network(s).
 
     Explicit subnet keeps the old single-/24 behavior. Automatic discovery scans
     each distinct active local /24 so a Wi-Fi + CCTV-Ethernet PC cannot hide the
     recorder merely because Windows routes internet traffic over Wi-Fi.
+
+    Retry is recorder-aware: an unrelated router answering port 80 must not suppress
+    the NVR's second chance. That exact bug made Back -> Continue act as a manual retry.
     """
     bases, addresses = _sweep_bases(subnet)
     if not bases:
@@ -367,8 +373,7 @@ def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
 
     if addresses:
         log(f"  this PC has local IPv4: {', '.join(addresses)}")
-    log("  sweeping " + ", ".join(f"{base}.1-254" for base in bases) + " on ports "
-        + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
+    log("  sweeping " + ", ".join(f"{base}.1-254" for base in bases))
 
     def probe(args):
         ip, port, budget = args
@@ -387,15 +392,31 @@ def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
                 if hit:
                     found.setdefault(hit[0], set()).add(hit[1])
 
-    run([(ip, port, SWEEP_TIMEOUT) for ip in all_hosts for port in SWEEP_PORTS])
+    progress("Scanning the local network for CCTV recorders…")
+    run([(ip, port, SWEEP_TIMEOUT) for ip in all_hosts for port in SWEEP_FAST_PORTS])
 
-    # Second chance: one dropped SYN (slow embedded recorder, Wi-Fi jitter) was
-    # indistinguishable from "no recorder here". Only pay for it when the first pass
-    # found nothing at all — that is exactly the "no recorder found" report — so a
-    # normal successful scan stays as fast as before.
-    if not found:
-        log("  nothing answered on the first pass; retrying slowly before giving up ...")
-        run([(ip, port, SWEEP_RETRY_TIMEOUT) for ip in all_hosts for port in SWEEP_RETRY_PORTS])
+    if not _has_recorder_signature(found):
+        progress("First scan complete. Checking again for slow CCTV recorders…")
+        log("  no recorder signature on the first pass; retrying CCTV ports slowly ...")
+        run([(ip, port, SWEEP_RETRY_TIMEOUT) for ip in all_hosts for port in SWEEP_FAST_PORTS])
+
+    if not _has_recorder_signature(found) and SWEEP_DEEP_PORTS:
+        progress("Checking additional recorder ports…")
+        run([(ip, port, SWEEP_TIMEOUT) for ip in all_hosts for port in SWEEP_DEEP_PORTS])
+
+    # Once a native signature identifies a recorder, recheck only that host with the
+    # slower budget. This also recovers a web port whose first SYN was missed.
+    recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
+    if recorder_ips:
+        progress("Confirming recorder services…")
+        remaining = [
+            (ip, port, SWEEP_RETRY_TIMEOUT)
+            for ip in recorder_ips
+            for port in SWEEP_PORTS
+            if port not in found.get(ip, set())
+        ]
+        if remaining:
+            run(remaining)
 
     return [(ip, sorted(ports)) for ip, ports in
             sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
