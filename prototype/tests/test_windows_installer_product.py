@@ -84,6 +84,10 @@ def main():
         "Hikvision login ignores proxy env and avoids pointless Basic retry after Digest rejection":
             "self.s.trust_env = False" in hikvision
             and '"digest" not in challenge' in hikvision,
+        "native recorder login succeeds on identity auth without full inventory crawl":
+            'if driver_name in ("hikvision-isapi", "dahua-cgi") and info.channel_count:' in backend
+            and 'progress("Recorder login verified.")' in backend
+            and "SimpleNamespace(channel=str(i)" in backend,
         "Hikvision quiet sites deliver rotating stills on the live session":
             "HIKVISION_STREAM_SLICE_SECONDS = 30" in hikvision
             and 'event_type="visual_sample"' in hikvision
