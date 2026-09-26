@@ -457,11 +457,11 @@ class SetupWindow(QMainWindow):
         self._active_worker = 0
         self.set_busy(False)
         if self.stack.currentIndex() == 3:
-            if self.installer_child:
-                self._terminal_installer_failure(message)
-                return
+            # Recorder login is recoverable operator input. A timeout here must
+            # never kill the whole installer, even in installer-child mode.
             self.login_error.setText(message)
             self.status.setText(message)
+            self.login_next.setEnabled(True)
         elif self.stack.currentIndex() == 5:
             if self.installer_child:
                 self._terminal_installer_failure(message)
@@ -599,10 +599,10 @@ class SetupWindow(QMainWindow):
         self.run_worker(
             backend.test_recorder, (address, user, password), self.connection_ok,
             "Testing the recorder connection…", hint=self.recorder_hint,
-            timeout_ms=24000,
-            timeout_message=("The recorder did not finish the login check within 24 seconds. "
-                             "The installer is closing cleanly; run it again after confirming "
-                             "the recorder web/API service is reachable.")
+            timeout_ms=22000,
+            timeout_message=("The recorder did not finish the login check within 22 seconds. "
+                             "Your credentials are still here. Check the recorder/API service "
+                             "and click Test Connection again.")
         )
 
     def connection_ok(self, result):
@@ -975,13 +975,16 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 timed.go(3)
                 timed._active_worker = 99
                 timed._worker_timeout(99, "login watchdog fired")
-                deadline = time.monotonic() + 3.0
-                while timed.isVisible() and time.monotonic() < deadline:
-                    app.processEvents()
-                    time.sleep(0.02)
                 app.processEvents()
-                if timed.exit_code != 2 or timed.isVisible():
+                if not timed.isVisible():
                     return 31
+                if timed.exit_code != 1:
+                    return 32
+                if not timed.login_next.isEnabled():
+                    return 33
+                if "watchdog" not in timed.login_error.text():
+                    return 34
+                timed.close()
             else:
                 window.close()
             return 0

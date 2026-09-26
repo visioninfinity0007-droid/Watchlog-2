@@ -120,11 +120,15 @@ class DahuaDriver(NvrDriver):
             raise DriverError("getSystemInfo returned nothing parseable")
 
         model = info.get("deviceType") or info.get("model")
-        try:
-            dtype = _parse_kv(self._get("/cgi-bin/magicBox.cgi?action=getDeviceType"))
-            model = dtype.get("type") or model
-        except DriverError:
-            pass
+        # getSystemInfo is already the authenticated Dahua identity proof. Older
+        # XVR web stacks can stall on the redundant getDeviceType request, so only
+        # make that second request when the model was genuinely absent.
+        if not model:
+            try:
+                dtype = _parse_kv(self._get("/cgi-bin/magicBox.cgi?action=getDeviceType"))
+                model = dtype.get("type") or model
+            except DriverError:
+                pass
 
         count = info.get("videoInChannel") or info.get("VideoInChannel")
         return DeviceInfo(

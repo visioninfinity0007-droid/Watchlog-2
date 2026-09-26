@@ -71,10 +71,11 @@ def main():
             and "timeout_ms=50000" in gui
             and "if verified_recorder:" in backend
             and 'progress("Recorder login already verified.")' in backend,
-        "installer-child login timeout closes instead of stranding NSIS":
-            "timeout_ms=24000" in gui
-            and "if self.installer_child:" in gui.split("def _worker_timeout", 1)[1].split("def _on_progress", 1)[0]
-            and "timed.exit_code != 2" in gui,
+        "installer-child recorder login timeout remains inline and retryable":
+            "timeout_ms=22000" in gui
+            and "self.login_next.setEnabled(True)" in gui.split("def _worker_timeout", 1)[1].split("def _on_progress", 1)[0]
+            and "if not timed.isVisible()" in gui
+            and "timed.login_next.isEnabled()" in gui,
         "NSIS child setup auto-exits after Ready so ExecWait cannot strand installer":
             '"--installer-child"' in gui
             and "self.installer_child" in gui
@@ -148,6 +149,9 @@ def main():
             "<heartbeat>30</heartbeat>" in hikvision
             and "<httpBroken>true</httpBroken>" in hikvision
             and "<SubscribeEvent>" in hikvision,
+        "Dahua login avoids redundant second identity request when model is already known":
+            "if not model:" in dahua
+            and 'magicBox.cgi?action=getDeviceType' in dahua,
         "generic Dahua PC-off path never overwrites proprietary AlarmServer settings":
             "generic Dahua AlarmServer is a proprietary alarm-centre protocol" in dahua
             and "action=setConfig&AlarmServer." not in dahua.split("def configure_push", 1)[1].split("def get_clock", 1)[0],
