@@ -52,8 +52,7 @@ jobs:
             if docker exec watchlog-testlab-media ffprobe -v error -rtsp_transport tcp \
                 -select_streams v:0 -show_entries stream=codec_name \
                 -of default=noprint_wrappers=1:nokey=1 \
-                rtsp://127.0.0.1:8554/cam1 2>/dev/null | grep -q '^h264
-; then
+                rtsp://127.0.0.1:8554/cam1 2>/dev/null | grep -q h264; then
               break
             fi
             sleep 1
@@ -61,11 +60,9 @@ jobs:
           docker exec watchlog-testlab-media ffprobe -v error -rtsp_transport tcp \
             -select_streams v:0 -show_entries stream=codec_name \
             -of default=noprint_wrappers=1:nokey=1 \
-            rtsp://127.0.0.1:8554/cam1 | grep -q '^h264
-
+            rtsp://127.0.0.1:8554/cam1 | grep -q h264
           docker exec watchlog-testlab-media test -s /tmp/watchlog-lab.mp4
           docker exec watchlog-testlab-media ffprobe -v error \
             -select_streams v:0 -show_entries stream=codec_name \
             -of default=noprint_wrappers=1:nokey=1 \
-            /tmp/watchlog-lab.mp4 | grep -q '^h264
-
+            /tmp/watchlog-lab.mp4 | grep -q h264
