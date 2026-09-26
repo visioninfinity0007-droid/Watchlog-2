@@ -195,11 +195,13 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             vendor_hint = (_vendor_hint_from_ports(ports)
                            or _vendor_hint_from_text(fp.get("vendor_guess")))
             integration_state = None
+            integration_port = None
             if not vendor_hint and any(p in ports for p in _WEB_PORTS):
                 deep = discover.probe_hikvision_isapi(ip, ports)
                 if deep.get("vendor_hint") == "hikvision":
                     vendor_hint = "hikvision"
                     integration_state = deep.get("state")
+                    integration_port = deep.get("port")
             hint = "Recorder candidate"
             if vendor_hint == "dahua":
                 hint = "Dahua-family recorder candidate"
@@ -246,8 +248,8 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             if integration_state:
                 row["integration_state"] = integration_state
                 row["source"] = "Hikvision ISAPI probe"
-            if vendor_hint == "hikvision" and 'deep' in locals() and deep.get("port") in _WEB_PORTS:
-                row["preferred_web_port"] = int(deep["port"])
+            if vendor_hint == "hikvision" and integration_port in _WEB_PORTS:
+                row["preferred_web_port"] = int(integration_port)
     except Exception:
         pass
     return sorted(results.values(), key=lambda row: row["ip"])
