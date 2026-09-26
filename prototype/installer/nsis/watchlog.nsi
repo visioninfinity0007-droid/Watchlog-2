@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.16"
+  !define APPVERSION "5.0.17"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
