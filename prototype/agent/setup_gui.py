@@ -757,6 +757,23 @@ class SetupWindow(QMainWindow):
 
     def finish(self):
         self.exit_code = 0
+        if self.installer_child:
+            # Field Build 61: the technician opened Site Status from the Ready page.
+            # Closing only Setup left another top-level Qt window alive, so QApplication
+            # never quit and NSIS ExecWait sat forever even though the background agent
+            # was already healthy. Installer-child owns this process: close any status
+            # window and terminate the application event loop explicitly.
+            status_win = getattr(self, "_status_win", None)
+            if status_win is not None:
+                try:
+                    status_win.close()
+                except Exception:
+                    pass
+            self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.exit(0)
+            return
         self.close()
 
     def cancel(self):
@@ -938,7 +955,13 @@ def main() -> int:
     window = SetupWindow(config_path, installer_child=args.installer_child)
     window.show()
     app.exec()
-    return window.exit_code
+    code = window.exit_code
+    if args.installer_child:
+        # Do not let a stale QThreadPool worker / Qt destructor keep the Windows
+        # process handle alive after the installer-child UI has completed. All
+        # persistent state is already committed and the background agent is proven.
+        os._exit(int(code))
+    return code
 
 
 if __name__ == "__main__":

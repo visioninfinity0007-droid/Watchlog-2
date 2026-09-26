@@ -114,6 +114,14 @@ def main():
             and 'status.get("last_push_at")' in agent
             and "last_push >= (verification_after - timedelta(seconds=5))" in agent
             and "Configure first" in agent,
+        "installer-child exits the whole Qt process even with Site Status open":
+            "app.exit(0)" in setup_gui
+            and "os._exit(int(code))" in setup_gui
+            and 'getattr(self, "_status_win", None)' in setup_gui,
+        "ONVIF discovery preserves Dahua/Hikvision identity and native drivers win all web targets":
+            '"vendor_hint": vendor_hint' in setup_backend
+            and "if hint in _DRIVERS_BY_VENDOR:" in setup_backend
+            and "for driver_name in drivers:" in setup_backend,
         "Hikvision PC-off path requests 30s NVR heartbeats and broken-link resend":
             "<heartbeat>30</heartbeat>" in hikvision
             and "<httpBroken>true</httpBroken>" in hikvision

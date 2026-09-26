@@ -161,7 +161,13 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
     try:
         for item in wsdiscovery.discover(log=lambda _m: None):
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
-            results[item.ip] = {"ip": item.ip, "label": label or "Compatible recorder", "source": "ONVIF"}
+            vendor_hint = _vendor_hint_from_text(label)
+            results[item.ip] = {
+                "ip": item.ip,
+                "label": label or "Compatible recorder",
+                "source": "ONVIF",
+                "vendor_hint": vendor_hint,
+            }
     except Exception:
         pass
 
@@ -336,11 +342,22 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
     targets = _web_target_urls(host, web_ports)
     drivers = _ordered_drivers(hint)
     attempts: list[tuple[str, str]] = []
-    for url in targets[:2]:                     # best web port, then one fallback
+    if hint in _DRIVERS_BY_VENDOR:
+        # A recorder already identified as Dahua/Hikvision must exhaust the native
+        # API over the available web ports BEFORE we accept ONVIF. Build 61 field
+        # evidence on DH-XVR1B08-I otherwise downgraded a previously native Dahua
+        # site to ONVIF, which removed archive/recovery capability.
         for driver_name in drivers:
-            pair = (driver_name, url)
-            if pair not in attempts:
-                attempts.append(pair)
+            for url in targets[:2]:
+                pair = (driver_name, url)
+                if pair not in attempts:
+                    attempts.append(pair)
+    else:
+        for url in targets[:2]:
+            for driver_name in drivers:
+                pair = (driver_name, url)
+                if pair not in attempts:
+                    attempts.append(pair)
     return attempts[:5], None                   # bounded: never minutes of probing
 
 
