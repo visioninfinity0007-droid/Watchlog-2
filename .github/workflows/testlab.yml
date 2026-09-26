@@ -1,0 +1,35 @@
+name: Virtual CCTV Test Lab
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'testlab/**'
+      - '.github/workflows/testlab.yml'
+  pull_request:
+    paths:
+      - 'testlab/**'
+      - '.github/workflows/testlab.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install lab test dependencies
+        run: python -m pip install --quiet requests pytest pillow
+      - name: Compile simulator
+        run: python -m py_compile testlab/virtual_device.py testlab/test_virtual_device.py
+      - name: Exercise virtual Dahua, Hikvision and ONVIF protocols
+        run: python -m pytest testlab/test_virtual_device.py -q
+      - name: Validate compose model
+        run: |
+          cp testlab/.env.example testlab/.env
+          docker compose -f testlab/docker-compose.yml --env-file testlab/.env config >/dev/null

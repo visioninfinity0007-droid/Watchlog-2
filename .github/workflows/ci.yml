@@ -24,9 +24,11 @@ jobs:
       - name: Install offline test deps
         run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography
       - name: Compile all Python
-        run: python -m compileall -q prototype tools
+        run: python -m compileall -q prototype tools testlab
       - name: Recorder field regressions — Build 37/39/41 classes
         run: python -m pytest prototype/tests/test_recorder_setup.py prototype/tests/test_recorder_probe.py -q
+      - name: Virtual CCTV lab protocol smoke
+        run: python -m pytest testlab/test_virtual_device.py -q
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
