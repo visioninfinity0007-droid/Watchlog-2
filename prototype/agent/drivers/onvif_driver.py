@@ -118,6 +118,10 @@ class OnvifDriver(NvrDriver):
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
         self.s = requests.Session()
+        # ONVIF services are local recorder endpoints. Bypass system proxy/PAC
+        # settings and tolerate the self-signed HTTPS certificates typical of NVRs.
+        self.s.trust_env = False
+        self.s.verify = False
         self.device_service = self.base_url + "/onvif/device_service"
         self.events_service: str | None = None
         self.media_service: str | None = None

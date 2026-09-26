@@ -22,6 +22,9 @@ def main():
     store = text("prototype/agent/credential_store.py")
     agent = text("prototype/agent/watchlog_agent.py")
     hikvision = text("prototype/agent/drivers/hikvision.py")
+    dahua = text("prototype/agent/drivers/dahua.py")
+    onvif = text("prototype/agent/drivers/onvif_driver.py")
+    discover = text("prototype/agent/discover.py")
     launcher = text("prototype/installer/run-agent.ps1")
     register = text("prototype/installer/register-service.ps1")
     nsis = text("prototype/installer/nsis/watchlog.nsi")
@@ -71,11 +74,17 @@ def main():
             and "timeout_ms=50000" in gui
             and "if verified_recorder:" in backend
             and 'progress("Recorder login already verified.")' in backend,
-        "installer-child recorder login timeout remains inline and retryable":
-            "timeout_ms=22000" in gui
+        "recorder login uses the 30s safety watchdog and remains inline/retryable":
+            "timeout_ms=30000" in gui
+            and "30-second safety limit" in gui
             and "self.login_next.setEnabled(True)" in gui.split("def _worker_timeout", 1)[1].split("def _on_progress", 1)[0]
             and "if not timed.isVisible()" in gui
             and "timed.login_next.isEnabled()" in gui,
+        "recorder discovery and login show page-local indeterminate progress":
+            "self.discovery_progress = QProgressBar()" in gui
+            and "self.login_progress = QProgressBar()" in gui
+            and "Starting recorder discovery" in gui
+            and 'self.login_next.setText("Testing…"' in gui,
         "NSIS child setup auto-exits after Ready so ExecWait cannot strand installer":
             '"--installer-child"' in gui
             and "self.installer_child" in gui
@@ -132,19 +141,24 @@ def main():
             "rollback complete: previous agent restored AND running" in text("prototype/installer/nsis/wl-upgrade.ps1")
             and "Fail 14" in text("prototype/installer/nsis/wl-upgrade.ps1"),
         "installer-child terminal failure closes all windows and returns nonzero":
-            "def _terminal_installer_failure" in setup_gui
-            and "self._close_installer_child(2)" in setup_gui
-            and "failed.exit_code != 2" in setup_gui
-            and "SetErrorLevel 2" in text("prototype/installer/nsis/watchlog.nsi")
-            and "Quit" in text("prototype/installer/nsis/watchlog.nsi"),
+            "def _terminal_installer_failure" in gui
+            and "self._close_installer_child(2)" in gui
+            and "failed.exit_code != 2" in gui
+            and "SetErrorLevel 2" in nsis
+            and "Quit" in nsis,
         "installer-child exits the whole Qt process even with Site Status open":
-            "app.exit(0)" in setup_gui
-            and "os._exit(int(code))" in setup_gui
-            and 'getattr(self, "_status_win", None)' in setup_gui,
-        "ONVIF discovery preserves Dahua/Hikvision identity and native drivers win all web targets":
-            '"vendor_hint": vendor_hint' in setup_backend
-            and "if hint in _DRIVERS_BY_VENDOR:" in setup_backend
-            and "for driver_name in drivers:" in setup_backend,
+            "app.exit(0)" in gui
+            and "os._exit(int(code))" in gui
+            and 'getattr(self, "_status_win", None)' in gui,
+        "vendor-native login stays first but same-endpoint ONVIF fallback precedes a second web-port timeout":
+            "for url in targets[:2]:" in backend
+            and "for driver_name in drivers:" in backend
+            and "preferred_port: int | None = None" in backend
+            and "preferred_web_port" in backend,
+        "cold first-pass discovery retries until a recorder signature is actually present":
+            "def _has_recorder_signature" in discover
+            and "if not _has_recorder_signature(found):" in discover
+            and "SWEEP_WORKERS = 128" in discover,
         "Hikvision PC-off path requests 30s NVR heartbeats and broken-link resend":
             "<heartbeat>30</heartbeat>" in hikvision
             and "<httpBroken>true</httpBroken>" in hikvision
@@ -152,6 +166,12 @@ def main():
         "Dahua login avoids redundant second identity request when model is already known":
             "if not model:" in dahua
             and 'magicBox.cgi?action=getDeviceType' in dahua,
+        "Dahua and ONVIF recorder traffic bypasses proxy/PAC and tolerates self-signed LAN HTTPS":
+            "self.s.trust_env = False" in dahua
+            and "self.s.verify = False" in dahua
+            and "self.s.trust_env = False" in onvif
+            and "self.s.verify = False" in onvif
+            and '"basic" in challenge and "digest" not in challenge' in dahua,
         "generic Dahua PC-off path never overwrites proprietary AlarmServer settings":
             "generic Dahua AlarmServer is a proprietary alarm-centre protocol" in dahua
             and "action=setConfig&AlarmServer." not in dahua.split("def configure_push", 1)[1].split("def get_clock", 1)[0],

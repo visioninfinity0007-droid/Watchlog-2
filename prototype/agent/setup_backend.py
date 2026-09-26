@@ -162,12 +162,15 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
         for item in wsdiscovery.discover(log=lambda _m: None):
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
             vendor_hint = _vendor_hint_from_text(label)
-            results[item.ip] = {
+            row = {
                 "ip": item.ip,
                 "label": label or "Compatible recorder",
                 "source": "ONVIF",
                 "vendor_hint": vendor_hint,
             }
+            if getattr(item, "port", None) in _WEB_PORTS:
+                row["preferred_web_port"] = int(item.port)
+            results[item.ip] = row
     except Exception:
         pass
 
@@ -177,7 +180,7 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
         # hardcoded list that had drifted out of sync (it accepted 81/88/443/8081 that
         # the sweep never probed), which hid HTTPS-only and alt-web-port recorders.
         candidate_ports = set(discover.SWEEP_PORTS)
-        for ip, ports in discover.sweep(None, log=lambda _m: None):
+        for ip, ports in discover.sweep(None, log=lambda _m: None, progress=progress):
             ports = sorted(ports)
             if not any(port in candidate_ports for port in ports):
                 continue
@@ -192,11 +195,13 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             vendor_hint = (_vendor_hint_from_ports(ports)
                            or _vendor_hint_from_text(fp.get("vendor_guess")))
             integration_state = None
+            integration_port = None
             if not vendor_hint and any(p in ports for p in _WEB_PORTS):
                 deep = discover.probe_hikvision_isapi(ip, ports)
                 if deep.get("vendor_hint") == "hikvision":
                     vendor_hint = "hikvision"
                     integration_state = deep.get("state")
+                    integration_port = deep.get("port")
             hint = "Recorder candidate"
             if vendor_hint == "dahua":
                 hint = "Dahua-family recorder candidate"
@@ -219,9 +224,32 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             row["ports"] = ports
             row["vendor_hint"] = vendor_hint
             row["rtsp"] = bool(fp.get("rtsp"))
+
+            # Preserve the web endpoint that actually identified/answered as the first
+            # login target. Build 69 blindly preferred port 80 from a numeric list even
+            # when fingerprinting had already proven HTTPS/another port, wasting a full
+            # native-auth timeout before trying the useful endpoint.
+            web_rows = list(fp.get("web") or [])
+            preferred = None
+            if vendor_hint:
+                for web_row in web_rows:
+                    guess = _vendor_hint_from_text(web_row.get("vendor_guess"))
+                    if guess == vendor_hint and web_row.get("status") is not None:
+                        preferred = web_row.get("port")
+                        break
+            if preferred is None:
+                for web_row in web_rows:
+                    if web_row.get("status") is not None:
+                        preferred = web_row.get("port")
+                        break
+            if preferred in _WEB_PORTS:
+                row["preferred_web_port"] = int(preferred)
+
             if integration_state:
                 row["integration_state"] = integration_state
                 row["source"] = "Hikvision ISAPI probe"
+            if vendor_hint == "hikvision" and integration_port in _WEB_PORTS:
+                row["preferred_web_port"] = int(integration_port)
     except Exception:
         pass
     return sorted(results.values(), key=lambda row: row["ip"])
@@ -316,7 +344,8 @@ def _web_target_urls(host: str, open_ports) -> list[str]:
     return urls
 
 
-def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
+def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None,
+                         preferred_port: int | None = None):
     """Return (attempts, hard_error).
 
     attempts is an ordered, bounded list of (driver_name, url). hard_error is a
@@ -340,24 +369,27 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
         return [], "unsupported"
 
     targets = _web_target_urls(host, web_ports)
+    if preferred_port in web_ports:
+        preferred_url = _web_target_urls(host, [preferred_port])[0]
+        targets = [preferred_url] + [url for url in targets if url != preferred_url]
+
     drivers = _ordered_drivers(hint)
     attempts: list[tuple[str, str]] = []
-    if hint in _DRIVERS_BY_VENDOR:
-        # A recorder already identified as Dahua/Hikvision must exhaust the native
-        # API over the available web ports BEFORE we accept ONVIF. Build 61 field
-        # evidence on DH-XVR1B08-I otherwise downgraded a previously native Dahua
-        # site to ONVIF, which removed archive/recovery capability.
+
+    # Build 62 changed this to exhaust the native driver on HTTP *and* HTTPS before
+    # trying ONVIF. On field Dahua firmware a dead/slow secondary web endpoint consumes
+    # another full timeout; Build 69 could sometimes finish just under 30 seconds, while
+    # the 24s/22s watchdogs in Builds 70/71 cut the same valid login off every time.
+    #
+    # Keep the native API first (so a healthy Dahua/Hikvision never downgrades), but
+    # fall back on the SAME proven web endpoint before spending time on a second port.
+    # Only then try the alternate endpoint. This preserves native preference without
+    # serially stacking avoidable timeouts.
+    for url in targets[:2]:
         for driver_name in drivers:
-            for url in targets[:2]:
-                pair = (driver_name, url)
-                if pair not in attempts:
-                    attempts.append(pair)
-    else:
-        for url in targets[:2]:
-            for driver_name in drivers:
-                pair = (driver_name, url)
-                if pair not in attempts:
-                    attempts.append(pair)
+            pair = (driver_name, url)
+            if pair not in attempts:
+                attempts.append(pair)
     return attempts[:5], None                   # bounded: never minutes of probing
 
 
@@ -442,6 +474,7 @@ def test_recorder(address: str, username: str, password: str,
     hint = hint or {}
     vendor_hint = hint.get("vendor_hint")
     integration_state = hint.get("integration_state")
+    preferred_web_port = hint.get("preferred_web_port")
     open_ports = list(hint.get("ports") or [])
 
     if is_url:
@@ -484,10 +517,12 @@ def test_recorder(address: str, username: str, password: str,
                 vendor_hint = "hikvision"
                 integration_state = deep.get("state") or integration_state
 
-        attempts, hard_error = plan_recorder_probes(host, open_ports, vendor_hint)
+        attempts, hard_error = plan_recorder_probes(
+            host, open_ports, vendor_hint, preferred_port=preferred_web_port)
 
     fam = vendor_hint or _vendor_hint_from_ports(open_ports)
     _setup_log(f"host={host} ports={sorted(open_ports)} vendor_hint={fam} "
+               f"preferred_web_port={preferred_web_port} "
                f"attempts={[(d, u.split('://')[-1]) for d, u in attempts]} hard={hard_error}")
 
     if hard_error:

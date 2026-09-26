@@ -83,6 +83,12 @@ class DahuaDriver(NvrDriver):
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
         self.s = requests.Session()
+        # Recorder traffic is LAN-local. Never inherit Windows/corporate proxy
+        # settings for 192.168/10.x/172.16-31 addresses: field PCs with proxy/PAC
+        # settings otherwise turn a local login into an external timeout.
+        self.s.trust_env = False
+        # Dahua/CP Plus recorders commonly redirect to self-signed HTTPS.
+        self.s.verify = False
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._last_emitted: dict[tuple[str, str], datetime] = {}
         self.last_activity_monotonic = 0.0
@@ -95,14 +101,18 @@ class DahuaDriver(NvrDriver):
             r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
         except requests.RequestException as e:
             raise NvrUnreachable(f"{url}: {explain(e)}") from e
-        # Digest is the norm; some Dahua-derived units answer Basic. Retry ONCE
-        # with Basic before deciding the credentials are actually wrong.
+        # HTTPDigestAuth has already completed the Digest challenge/response.
+        # A final Digest 401 is a real rejection; blindly trying Basic after it
+        # burns another timeout and can trip old recorder login throttles. Fall
+        # back only when the device explicitly advertises Basic without Digest.
         if r.status_code == 401:
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            try:
-                r = self.s.get(url, timeout=self.timeout, **kw)
-            except requests.RequestException as e:
-                raise NvrUnreachable(f"{url}: {explain(e)}") from e
+            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+            if "basic" in challenge and "digest" not in challenge:
+                self.s.auth = HTTPBasicAuth(self.username, self.password)
+                try:
+                    r = self.s.get(url, timeout=self.timeout, **kw)
+                except requests.RequestException as e:
+                    raise NvrUnreachable(f"{url}: {explain(e)}") from e
         # Reachable but the recorder rejected the login: a credentials fault, not "offline".
         if r.status_code in (401, 403):
             raise NvrAuthFailed(
