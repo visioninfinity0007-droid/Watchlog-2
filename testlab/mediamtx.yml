@@ -1,0 +1,38 @@
+logLevel: warn
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: :554
+
+paths:
+  cam1:
+    runOnInit: >-
+      ffmpeg -nostdin -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=640x360:rate=10
+      -vf drawbox=x=30:y=30:w=120:h=100:color=red:t=fill
+      -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p
+      -g 20 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
+  cam2:
+    runOnInit: >-
+      ffmpeg -nostdin -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=640x360:rate=10
+      -vf drawbox=x=180:y=40:w=120:h=100:color=green:t=fill
+      -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p
+      -g 20 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
+  cam3:
+    runOnInit: >-
+      ffmpeg -nostdin -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=640x360:rate=10
+      -vf drawbox=x=330:y=50:w=120:h=100:color=blue:t=fill
+      -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p
+      -g 20 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
+  cam4:
+    runOnInit: >-
+      ffmpeg -nostdin -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=640x360:rate=10
+      -vf drawbox=x=470:y=60:w=120:h=100:color=yellow:t=fill
+      -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p
+      -g 20 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
