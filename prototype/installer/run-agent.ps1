@@ -31,6 +31,11 @@ $data = Join-Path $env:ProgramData "WatchLog"
 $log = Join-Path $data "agent.log"
 $oldLog = "$log.old"
 $agent = Join-Path $InstallDir "watchlog-agent.exe"
+$remoteApply = Join-Path $InstallDir "apply-remote-update.ps1"
+$remoteRoot = Join-Path $data "remote-update"
+$remotePending = Join-Path $remoteRoot "pending.json"
+$remoteResult = Join-Path $remoteRoot "result.json"
+$remoteBackup = Join-Path $InstallDir "watchlog-agent.exe.remote.bak"
 
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 if (-not (Test-Path $agent)) { throw "WatchLog Site Agent is missing" }
@@ -55,9 +60,23 @@ while ($true) {
     }
   } catch { }
 
+  # A signed remote update is staged by the running agent, then applied here BETWEEN
+  # runs while watchlog-agent.exe is not alive. This avoids self-termination races.
+  try {
+    if ((Test-Path $remotePending) -and (Test-Path $remoteApply)) {
+      Write-AgentLog "==== applying staged signed remote update $(Get-Date -Format o) ===="
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $remoteApply -InstallDir $InstallDir 2>&1 |
+        ForEach-Object { Write-AgentLog ([string]$_) }
+      Write-AgentLog "==== remote update handoff exit=$LASTEXITCODE ===="
+    }
+  } catch {
+    Write-AgentLog "==== remote update handoff error: $($_.Exception.Message) ===="
+  }
+
   Write-AgentLog "`r`n==== agent starting $(Get-Date -Format o) ===="
 
   $code = $null
+  $startedAt = Get-Date
   try {
     # Stream, do not redirect to a file handle: PowerShell's `*>> $log` does not put a
     # long-running process's output on disk promptly, which left agent.log stale on
@@ -69,6 +88,28 @@ while ($true) {
     Write-AgentLog "==== launcher caught: $($_.Exception.Message) ===="
   }
 
-  Write-AgentLog "==== agent exited ($code); restarting in 15s $(Get-Date -Format o) ===="
+  $runtimeSeconds = [int]((Get-Date) - $startedAt).TotalSeconds
+  Write-AgentLog "==== agent exited ($code) after ${runtimeSeconds}s; restarting in 15s $(Get-Date -Format o) ===="
+
+  # If a just-applied remote release cannot stay alive for even 60 seconds, restore
+  # the previous binary automatically. The next healthy agent reports the rollback
+  # result to the cloud and clears the backup.
+  try {
+    if ($runtimeSeconds -lt 60 -and (Test-Path $remoteBackup) -and (Test-Path $remoteResult)) {
+      $rr = Get-Content -LiteralPath $remoteResult -Raw | ConvertFrom-Json
+      if ($rr.ok -eq $true) {
+        Copy-Item -LiteralPath $remoteBackup -Destination $agent -Force
+        $rr.ok = $false
+        $rr.detail = "new agent failed startup health check; previous version restored"
+        $rr.applied_version = ""
+        $rr.completed_at = [DateTimeOffset]::UtcNow.ToString("o")
+        $rr | ConvertTo-Json -Compress | Set-Content -LiteralPath $remoteResult -Encoding UTF8
+        Write-AgentLog "==== remote update rolled back after early runtime exit ===="
+      }
+    }
+  } catch {
+    Write-AgentLog "==== remote update rollback check error: $($_.Exception.Message) ===="
+  }
+
   try { Start-Sleep -Seconds 15 } catch { }
 }

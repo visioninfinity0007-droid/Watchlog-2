@@ -29,7 +29,7 @@ _DAHUA_NATIVE_AI = {
 }
 _HIK_NATIVE_AI = {
     "peopledetection","vehicledetection","linedetection","fielddetection",
-    "regionexiting","regionentrance",
+    "regionexiting","regionentrance","facedetection",
 }
 
 CLIP_MAX_BYTES = 32 * 1024 * 1024
@@ -162,9 +162,11 @@ class NativeHikvisionDriver(HikvisionDriver):
     def _parse_alert(self,raw: bytes) -> Event | None:
         ev=super()._parse_alert(raw)
         if ev is None:return None
-        raw_type=str((ev.payload or {}).get("eventType") or "").lower()
-        if raw_type in _HIK_NATIVE_AI:return _native(ev,"hikvision",raw_type)
-        payload=dict(ev.payload or {});payload.setdefault("source","recorder_event")
+        payload=dict(ev.payload or {})
+        raw_type=str(payload.get("eventType") or "").lower()
+        if payload.get("native_ai") or raw_type in _HIK_NATIVE_AI:
+            return _native(ev,"hikvision",raw_type)
+        payload.setdefault("source","recorder_event")
         return replace(ev,payload=payload)
 
     def capabilities(self) -> dict:
@@ -173,7 +175,9 @@ class NativeHikvisionDriver(HikvisionDriver):
         for row in data.get("channels") or []:
             for analytic in row.get("analytics") or []:
                 analytic["source"]="recorder"
-                if analytic.get("key") in ("line_crossing","intrusion"):
+                if analytic.get("key") in (
+                    "human_vehicle","line_crossing","intrusion","region_entry","region_exit"
+                ):
                     analytic["native_ai"]=True
                     if analytic.get("supported"):has_native=True
         data["native_ai"]=has_native

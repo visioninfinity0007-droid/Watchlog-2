@@ -16,6 +16,8 @@ param(
   [string]$SupabaseUrl = "",
   [string]$SupabasePublishableKey = "",
   [string]$PushBridgeUrl = "",
+  [string]$UpdateUrl = "",
+  [string]$UpdatePublicKey = "",
   [switch]$Lean,
   [switch]$Production,
   [string]$SignPfx = "",
@@ -104,7 +106,7 @@ try {
   $inst = Join-Path $root "prototype\installer"
   Copy-Item $agentExe (Join-Path $stage "watchlog-agent.exe")
   Copy-Item $setupUiExe (Join-Path $stage "watchlog-setup-ui.exe")
-  foreach ($f in @("run-agent.ps1","register-service.ps1","READ ME FIRST.txt","setup.ico")) {
+  foreach ($f in @("run-agent.ps1","register-service.ps1","apply-remote-update.ps1","READ ME FIRST.txt","setup.ico")) {
     Copy-Item (Join-Path $inst $f) (Join-Path $stage $f)
   }
   # transactional upgrade orchestrator (lives beside the .nsi, staged for File "wl-upgrade.ps1")
@@ -132,6 +134,26 @@ try {
     throw "PushBridgeUrl is not an https URL: '$pushUrl' (argument-binding leak?)"
   }
 
+  # Signed remote-update public configuration. These are safe to ship: the URL
+  # selects a signed manifest and the key is Ed25519 PUBLIC material only.
+  $updUrl = $UpdateUrl
+  if (-not $updUrl) { $updUrl = $env:WATCHLOG_UPDATE_URL }
+  if (-not $updUrl) { $updUrl = $cfg["WATCHLOG_UPDATE_URL"] }
+  if ($null -eq $updUrl) { $updUrl = "" }
+  $updUrl = ([string]$updUrl).Trim()
+  if ($updUrl -and $updUrl -notmatch '^https://') {
+    throw "UpdateUrl is not an https URL: '$updUrl'"
+  }
+
+  $updKey = $UpdatePublicKey
+  if (-not $updKey) { $updKey = $env:WATCHLOG_UPDATE_PUBLIC_KEY }
+  if (-not $updKey) { $updKey = $cfg["WATCHLOG_UPDATE_PUBLIC_KEY"] }
+  if ($null -eq $updKey) { $updKey = "" }
+  $updKey = ([string]$updKey).Trim()
+  if (($updUrl -and -not $updKey) -or ($updKey -and -not $updUrl)) {
+    throw "remote update requires BOTH UpdateUrl and UpdatePublicKey"
+  }
+
   $pubKey = $SupabasePublishableKey
   if (-not $pubKey) { $pubKey = $env:SUPABASE_PUBLISHABLE_KEY }
   if (-not $pubKey) { $pubKey = $cfg["SUPABASE_PUBLISHABLE_KEY"] }
@@ -155,6 +177,10 @@ supabase_publishable_key = $pubKey
 enrollment_code = $Code
 nvr_driver = auto
 push_bridge_url = $pushUrl
+update_url = $updUrl
+update_public_key = $updKey
+update_require_signature = true
+update_channel = production
 "@ | Set-Content -Path $defaultsPath -Encoding UTF8
 
   # Parse the STAGED file back and assert EXACT equality with the intended
@@ -189,7 +215,18 @@ push_bridge_url = $pushUrl
   } else {
     Write-Host "NOTE: no PushBridgeUrl supplied - PC-free reporting will be unavailable in this build." -ForegroundColor Yellow
   }
-  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code / push_bridge_url." -ForegroundColor Green
+  if ($stagedMap['update_url'] -ne $updUrl) {
+    throw "staged update_url '$($stagedMap['update_url'])' != intended '$updUrl'"
+  }
+  if ($stagedMap['update_public_key'] -ne $updKey) {
+    throw "staged update_public_key does not equal intended public key"
+  }
+  if ($updUrl) {
+    Write-Host "Signed remote update enabled: $updUrl" -ForegroundColor Green
+  } else {
+    Write-Host "NOTE: signed remote update is not configured in this build." -ForegroundColor Yellow
+  }
+  Write-Host "Staged public config verified: exact match on Supabase / enrollment / push / update settings." -ForegroundColor Green
 
   # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"

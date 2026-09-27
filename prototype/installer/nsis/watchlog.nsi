@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.0"
+  !define APPVERSION "5.0.22"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -102,6 +102,7 @@ Section "Install"
   File "watchlog-setup-ui.exe"
   File "run-agent.ps1"
   File "register-service.ps1"
+  File "apply-remote-update.ps1"
   File "wl-upgrade.ps1"
   File "READ ME FIRST.txt"
   File "setup.ico"
@@ -237,6 +238,7 @@ Section "Uninstall"
   Delete "$INSTDIR\watchlog-agent.exe"
   Delete "$INSTDIR\watchlog-setup-ui.exe"
   Delete "$INSTDIR\run-agent.ps1"
+  Delete "$INSTDIR\apply-remote-update.ps1"
   Delete "$INSTDIR\run-agent.cmd"
   Delete "$INSTDIR\register-service.ps1"
   Delete "$INSTDIR\READ ME FIRST.txt"

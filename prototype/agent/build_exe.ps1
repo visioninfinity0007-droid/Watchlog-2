@@ -24,7 +24,9 @@ $common = @(
     "--hidden-import","requests",
     "--hidden-import","psutil",
     "--hidden-import","zoneinfo",
+    "--hidden-import","cryptography.hazmat.primitives.asymmetric.ed25519",
     "--collect-all","tzdata",
+    "--collect-all","cryptography",
     "--exclude-module","torch","--exclude-module","ultralytics",
     "--exclude-module","matplotlib","--exclude-module","tkinter",
     "--exclude-module","pandas","--exclude-module","scipy",
@@ -77,8 +79,8 @@ if ($WithAI) {
   yolo export model=yolov8n.pt format=onnx
 then copy it there."
     }
-    Write-Host "Installing production dependencies (psutil, onnxruntime, numpy, pillow, tzdata)..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata
+    Write-Host "Installing production dependencies (psutil, onnxruntime, numpy, pillow, tzdata, cryptography)..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata cryptography
     $ai = @(
         "--hidden-import","numpy",
         "--hidden-import","onnxruntime","--collect-all","onnxruntime",
@@ -90,7 +92,7 @@ then copy it there."
 } else {
     $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
     Write-Host "Installing lean build dependencies..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata cryptography
     Write-Host "Freezing lean diagnostic build (analytics measurement pauses without AI)..." -ForegroundColor Cyan
     python -m PyInstaller @common @lean $entry
 }

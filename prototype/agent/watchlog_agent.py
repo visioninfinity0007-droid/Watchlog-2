@@ -981,6 +981,9 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
         try:
             claimed = cloud.call("wl_agent_claim_command",
                                  p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+            # Runtime capability truth: advertise Site Control only after this
+            # worker has actually reached the claim RPC recently.
+            cfg.site_control_last_poll_monotonic = time.monotonic()
             cmd = (claimed or {}).get("command")
             if cmd:
                 busy = True

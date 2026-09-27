@@ -36,6 +36,8 @@ jobs:
       # build simply ships without PC-free reporting, which is what every release before
       # 0.4.11 did silently.
       WATCHLOG_PUSH_BRIDGE_URL: ${{ vars.WATCHLOG_PUSH_BRIDGE_URL }}
+      WATCHLOG_UPDATE_URL: ${{ vars.WATCHLOG_UPDATE_URL }}
+      WATCHLOG_UPDATE_PUBLIC_KEY: ${{ vars.WATCHLOG_UPDATE_PUBLIC_KEY }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
       # Tag pushes (v*) are always production: they must hard-fail without valid
@@ -83,6 +85,16 @@ jobs:
           if ($env:PUBLISHER_URL) { $releaseArgs['PublisherUrl'] = $env:PUBLISHER_URL }
           if ($env:WATCHLOG_PUSH_BRIDGE_URL) {
             $releaseArgs['PushBridgeUrl'] = $env:WATCHLOG_PUSH_BRIDGE_URL
+          }
+          if ($env:WATCHLOG_UPDATE_URL -or $env:WATCHLOG_UPDATE_PUBLIC_KEY) {
+            if (-not $env:WATCHLOG_UPDATE_URL -or -not $env:WATCHLOG_UPDATE_PUBLIC_KEY) {
+              throw 'Remote update requires both WATCHLOG_UPDATE_URL and WATCHLOG_UPDATE_PUBLIC_KEY.'
+            }
+            if ($env:WATCHLOG_UPDATE_URL -notmatch '^https://') {
+              throw 'WATCHLOG_UPDATE_URL must be an https URL.'
+            }
+            $releaseArgs['UpdateUrl'] = $env:WATCHLOG_UPDATE_URL
+            $releaseArgs['UpdatePublicKey'] = $env:WATCHLOG_UPDATE_PUBLIC_KEY
           }
 
           $pfx = $null

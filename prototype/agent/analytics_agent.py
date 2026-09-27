@@ -44,6 +44,26 @@ RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
                         "operations_evidence_still", "operations_evidence_clip",
                         "archive_processing", "multi_agent_fencing", "recorder_probe_v2"]
 
+def runtime_capabilities(cfg) -> list[str]:
+    caps = list(RUNTIME_CAPABILITIES)
+    now = time.monotonic()
+
+    site_poll = getattr(cfg, "site_control_last_poll_monotonic", None)
+    site_fresh_for = max(60.0, float(getattr(cfg, "site_control_seconds", 15)) * 3.0)
+    if (getattr(cfg, "site_control_enabled", False)
+            and site_poll is not None and now - float(site_poll) <= site_fresh_for):
+        caps.append("site_control_runtime")
+
+    update_ready = bool(getattr(cfg, "update_url", "")) and (
+        not getattr(cfg, "update_require_signature", True)
+        or bool(getattr(cfg, "update_public_key", ""))
+    )
+    update_poll = getattr(cfg, "remote_update_last_poll_monotonic", None)
+    if (update_ready and update_poll is not None
+            and now - float(update_poll) <= max(90.0, 3.0 * 30.0)):
+        caps.append("remote_update_v1")
+    return caps
+
 
 class Config(core.Config):
     def __init__(self):
@@ -325,7 +345,7 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     # as unsupported, which is the safe default.
                     try:
                         cloud.call("wl_agent_report_capabilities", p_agent_id=state["agent_id"],
-                                   p_agent_key=state["agent_key"], p_capabilities=RUNTIME_CAPABILITIES)
+                                   p_agent_key=state["agent_key"], p_capabilities=runtime_capabilities(cfg))
                     except (RuntimeError, requests.RequestException):
                         pass
                     if payload.get("changed") and payload.get("config"):

@@ -246,43 +246,158 @@ class HikvisionDriver(NvrDriver):
         return out
 
     def capabilities(self) -> dict:
-        """
-        Report per-channel analytics from ISAPI. Read-only.
+        """Read-only per-channel Hikvision analytic capability/config census.
 
-        UNVALIDATED against real hardware. Hikvision's Smart endpoints vary
-        across firmware (some units expose /ISAPI/Smart/<fn>/<ch>, others
-        gate it behind AcuSense or a channel's IP-camera capabilities), so
-        this is written to the documented schema but must be proven on a
-        real unit. It fails safe: a channel whose config cannot be read
-        reports motion only rather than crashing.
+        Endpoint support varies by recorder/camera firmware, so every probe is
+        independent. A missing/rejected endpoint is UNKNOWN/unsupported; it
+        never causes the whole recorder inspection to fail.
         """
-        def _active(path: str) -> bool:
+        def _read(path: str):
             try:
-                el = self._xml(path)
+                return self._xml(path)
             except DriverError:
-                return None            # unknown / not supported
-            en = el.find(".//enabled")
-            return en is not None and (en.text or "").strip().lower() == "true"
+                return None
+
+        def _enabled(root) -> bool | None:
+            if root is None:
+                return None
+            for el in root.iter():
+                if el.tag.lower() in ("enabled", "enable"):
+                    text = (el.text or "").strip().lower()
+                    if text in ("true", "1", "yes", "on"):
+                        return True
+                    if text in ("false", "0", "no", "off"):
+                        return False
+            return None
+
+        def _contains(root, *needles: str) -> bool:
+            if root is None:
+                return False
+            blob = ET.tostring(root, encoding="unicode").lower()
+            return all(n.lower() in blob for n in needles)
 
         out = []
         for c in self.list_channels():
             ch = c.channel
-            motion = _active(f"/ISAPI/System/Video/inputs/channels/{ch}/motionDetection")
-            line = _active(f"/ISAPI/Smart/LineDetection/{ch}")
-            field = _active(f"/ISAPI/Smart/FieldDetection/{ch}")
+            motion_root = _read(f"/ISAPI/System/Video/inputs/channels/{ch}/motionDetection")
+            motion_cap = _read(
+                f"/ISAPI/System/Video/inputs/channels/{ch}/motionDetection/capabilities"
+            )
+            line_root = _read(f"/ISAPI/Smart/LineDetection/{ch}")
+            field_root = _read(f"/ISAPI/Smart/FieldDetection/{ch}")
+            entrance_root = _read(f"/ISAPI/Smart/RegionEntrance/{ch}")
+            exit_root = _read(f"/ISAPI/Smart/RegionExiting/{ch}")
+
+            motion = _enabled(motion_root)
+            line = _enabled(line_root)
+            field = _enabled(field_root)
+            entrance = _enabled(entrance_root)
+            region_exit = _enabled(exit_root)
+
+            # Motion Detection 2.0 / target classification is exposed differently
+            # across firmware. Treat human+vehicle as supported only when the
+            # recorder's own capability/config XML explicitly names those targets.
+            hv_supported = (
+                _contains(motion_cap, "human", "vehicle")
+                or _contains(motion_root, "human", "vehicle")
+            )
+            hv_active = False
+            if hv_supported and motion_root is not None:
+                blob = ET.tostring(motion_root, encoding="unicode").lower()
+                hv_active = (
+                    ("human" in blob or "pedestrian" in blob)
+                    and "vehicle" in blob
+                    and motion is True
+                )
+
             analytics = [
                 {"key": "motion", "label": "Motion detection",
-                 "supported": motion is not None,
-                 "active": bool(motion), "geometry": False},
+                 "supported": motion_root is not None,
+                 "active": motion is True, "geometry": False},
+                {"key": "human_vehicle", "label": "Human / vehicle classification",
+                 "supported": hv_supported,
+                 "active": hv_active, "geometry": False},
                 {"key": "line_crossing", "label": "Line crossing",
-                 "supported": line is not None,
-                 "active": bool(line), "geometry": True},
+                 "supported": line_root is not None,
+                 "active": line is True, "geometry": True},
                 {"key": "intrusion", "label": "Intrusion zone",
-                 "supported": field is not None,
-                 "active": bool(field), "geometry": True},
+                 "supported": field_root is not None,
+                 "active": field is True, "geometry": True},
+                {"key": "region_entry", "label": "Region entrance",
+                 "supported": entrance_root is not None,
+                 "active": entrance is True, "geometry": True},
+                {"key": "region_exit", "label": "Region exit",
+                 "supported": exit_root is not None,
+                 "active": region_exit is True, "geometry": True},
             ]
             out.append({"channel": ch, "name": c.name, "analytics": analytics})
         return {"channels": out}
+
+    def get_clock(self) -> dict:
+        """Read recorder clock/timezone/NTP state through Hikvision ISAPI."""
+        try:
+            root = self._xml("/ISAPI/System/time")
+        except DriverError:
+            return {"supported": False}
+
+        current = (_text(root, "localTime") or _text(root, "time") or
+                   _text(root, "currentTime"))
+        timezone = (_text(root, "timeZone") or _text(root, "timezone"))
+        mode = (_text(root, "timeMode") or _text(root, "mode") or "").strip().lower()
+        ntp_enabled = True if "ntp" in mode else (False if mode else None)
+        ntp_server = None
+
+        for path in ("/ISAPI/System/time/ntpServers",
+                     "/ISAPI/System/time/ntpServers/1"):
+            try:
+                ntp = self._xml(path)
+            except DriverError:
+                continue
+            ntp_server = (_text(ntp, ".//hostName") or _text(ntp, ".//ipAddress")
+                          or _text(ntp, ".//serverName"))
+            if ntp_server:
+                break
+
+        dst_text = (_text(root, "dstEnabled") or _text(root, "DSTEnabled") or "")
+        dst_enabled = None
+        if dst_text:
+            dst_enabled = dst_text.strip().lower() in ("true", "1", "yes", "on")
+        return {
+            "supported": True,
+            "current_time": current,
+            "timezone": timezone,
+            "dst_enabled": dst_enabled,
+            "ntp_enabled": ntp_enabled,
+            "ntp_server": ntp_server,
+        }
+
+    def storage_status(self) -> dict:
+        """Read current storage-health state; never starts SMART/bad-sector tests."""
+        try:
+            root = self._xml("/ISAPI/Smart/storageDetection")
+        except DriverError:
+            return {"supported": False, "state": None}
+
+        health = (_text(root, "healthState") or "").strip().lower()
+        state = None
+        if health == "good":
+            state = "ok"
+        elif health in ("bad", "damage", "damaged", "failed", "failure"):
+            state = "fault"
+        elif health in ("warning", "degraded"):
+            state = "degraded"
+
+        detail = {
+            "health_state": health or None,
+            "bad_blocks": _text(root, "badBlocks"),
+        }
+        return {
+            "supported": True,
+            "state": state,
+            "native_fatal": state == "fault",
+            "native_lowspace": False,
+            "detail": detail,
+        }
 
     def get_snapshot(self, channel: str) -> bytes | None:
         """
@@ -388,12 +503,32 @@ class HikvisionDriver(NvrDriver):
             return None
         self._last_emitted[key] = ts
 
+        targets = []
+        for node in root.iter():
+            tag = node.tag.lower()
+            text = (node.text or "").strip().lower()
+            if "targettype" in tag or tag in ("objecttype", "targetclass"):
+                for raw_target in re.split(r"[,;|\\s]+", text):
+                    if raw_target in ("human", "person", "pedestrian"):
+                        targets.append("human")
+                    elif raw_target in ("vehicle", "car", "motorvehicle"):
+                        targets.append("vehicle")
+        targets = sorted(set(targets))
+
+        smart_native = etype_raw.lower() in {
+            "linedetection", "fielddetection", "regionexiting", "regionentrance",
+            "facedetection", "peopledetection", "vehicledetection"
+        } or bool(targets)
+
         return Event(
             channel=str(channel),
             event_type=etype,
             device_ts=ts,
             device_event_id=None,     # ISAPI alerts carry no stable id
             payload={"vendor": "hikvision", "eventType": etype_raw,
+                     "native_code": etype_raw,
+                     "native_ai": smart_native,
+                     "targets": targets,
                      "eventDescription": _text(root, "eventDescription"),
                      "activePostCount": _text(root, "activePostCount")},
         )
