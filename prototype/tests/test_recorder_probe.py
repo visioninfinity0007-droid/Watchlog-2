@@ -166,10 +166,17 @@ class ProbeTests(unittest.TestCase):
             addresses = discover._adapter_ipv4s()
         self.assertEqual(["10.44.7.20", "192.168.10.25", "172.22.64.1"], addresses)
 
-    def test_setup_sweep_has_hard_product_budget(self):
-        self.assertLessEqual(discover.MAX_AUTO_SUBNETS, 4)
+    def test_setup_sweep_preserves_build69_coverage_with_hard_product_budget(self):
+        # Build 69 is the field-proven discovery baseline. Future releases may
+        # improve ordering/timing, but may not silently shrink its eight-/24 reach.
+        self.assertEqual(discover.MAX_AUTO_SUBNETS, 8)
+        self.assertEqual(discover.SWEEP_WORKERS, 256)
         self.assertLessEqual(discover.DISCOVERY_DEADLINE_SECONDS, 32)
-        self.assertLessEqual(discover.SWEEP_WORKERS, 256)
+        self.assertTrue({80, 443, 8000, 37777}.issubset(set(discover.SWEEP_FAST_PORTS)))
+        self.assertTrue({
+            80, 443, 8000, 8080, 8443, 81, 82, 88, 8081, 8888,
+            554, 37777, 37778, 34567,
+        }.issubset(set(discover.SWEEP_PORTS)))
 
     def test_hikvision_isapi_deep_probe_auth_required(self):
         with patch.object(
