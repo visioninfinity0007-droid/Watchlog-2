@@ -48,13 +48,17 @@ class Response:
 
 class Session:
     def __init__(self):
-        self.posts = []
+        self.calls = []
         self.auth = None
     def post(self, url, data=None, headers=None, stream=False, timeout=None):
         body = data.decode() if isinstance(data, bytes) else str(data or "")
-        self.posts.append((url, body, bool(stream), timeout))
+        self.calls.append(("POST", url, body, bool(stream), timeout))
         if url.endswith("/ISAPI/ContentMgmt/search"):
             return Response(SEARCH_XML)
+        raise AssertionError(url)
+    def request(self, method, url, data=None, headers=None, stream=False, timeout=None):
+        body = data.decode() if isinstance(data, bytes) else str(data or "")
+        self.calls.append((method, url, body, bool(stream), timeout))
         if url.endswith("/ISAPI/ContentMgmt/download"):
             return Response(chunks=[b"RECORDED-", b"VIDEO"])
         raise AssertionError(url)
@@ -77,9 +81,13 @@ def test_search_track_time_and_pagination():
     assert result["matches"][0]["track_id"] == "101"
     assert result["matches"][0]["playback_uri"].startswith("rtsp://")
     assert result["next_offset"] == 1
-    body = d.s.posts[0][1]
+    body = d.s.calls[0][2]
+    assert d.s.calls[0][0] == "POST"
     assert "<trackID>101</trackID>" in body
     assert "<startTime>2026-09-25T08:00:00Z</startTime>" in body
+    assert "<contentType>video</contentType>" in body
+    assert "<searchResultPostion>0</searchResultPostion>" in body
+    assert "//recordType.meta.std-cgi.com" in body
 
 
 def test_enumeration_is_recovery_shape():
@@ -99,9 +107,12 @@ def test_clip_download_is_bounded_binary_path():
     end = datetime(2026, 9, 25, 8, 0, 10, tzinfo=timezone.utc)
     data = ha.get_clip(d, "1", start, end)
     assert data == b"RECORDED-VIDEO"
-    download = [row for row in d.s.posts if row[0].endswith("/ISAPI/ContentMgmt/download")]
-    assert download and "<downloadRequest" in download[0][1]
-    assert "<playbackURI>" in download[0][1]
+    assert d.s.calls[0][1].endswith("/ISAPI/ContentMgmt/search")
+    download = [row for row in d.s.calls if row[1].endswith("/ISAPI/ContentMgmt/download")]
+    assert download and download[0][0] == "GET"
+    assert "<downloadRequest" in download[0][2]
+    assert "<playbackURI>" in download[0][2]
+    assert "name=" not in download[0][2] or "Streaming/tracks/101" in download[0][2]
 
 
 def test_install_exposes_archive_to_production_driver():
