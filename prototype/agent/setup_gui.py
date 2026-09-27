@@ -123,6 +123,13 @@ def card_layout() -> tuple[QFrame, QVBoxLayout]:
 class SetupWindow(QMainWindow):
     STEPS = ["Welcome", "Site Code", "Recorder", "Login", "Cameras", "Connecting", "Ready"]
 
+    # Chai Wala field profile. This branch is intentionally based on the exact
+    # Build 69 source and carries only non-secret site hints. Recorder credentials
+    # are still entered locally and protected only after setup succeeds.
+    FIELD_RECORDER_IP = "192.168.18.15"
+    FIELD_VENDOR_HINT = "hikvision"
+    FIELD_SITE_TYPE = "retail"
+
     def __init__(self, config_path: Path, *, installer_child: bool = False):
         super().__init__()
         self.config_path = config_path
@@ -134,11 +141,15 @@ class SetupWindow(QMainWindow):
         self.pool = QThreadPool.globalInstance()
         self.exit_code = 1
         self.site_connected = False   # set once the agent is registered + running
-        self.recorder_address = self.public.get("nvr_url", "")
+        self.recorder_address = self.public.get("nvr_url", "") or self.FIELD_RECORDER_IP
         self.recorder_user = self.public.get("nvr_username", "admin")
         self.recorder_password = ""
         self.recorder_result = None
-        self.recorder_hint = None
+        self.field_recorder_hint = {
+            "vendor_hint": self.FIELD_VENDOR_HINT,
+            "source": "Chai Wala field profile",
+        }
+        self.recorder_hint = dict(self.field_recorder_hint)
         self._discovered = {}
         self.final_result = None
         self._busy = False
@@ -281,8 +292,12 @@ class SetupWindow(QMainWindow):
         cl.addWidget(self.recorder_list)
         cl.addWidget(label("OR ENTER THE LOCAL ADDRESS", "eyebrow"))
         self.manual_ip = QLineEdit(self.recorder_address)
-        self.manual_ip.setPlaceholderText("192.168.1.108")
+        self.manual_ip.setPlaceholderText(self.FIELD_RECORDER_IP)
         cl.addWidget(self.manual_ip)
+        cl.addWidget(label(
+            "This Chai Wala field build is pre-configured for the on-site Hikvision recorder. "
+            "Change the address only if the recorder IP has changed.",
+            "muted"))
         l.addWidget(c)
         self.recorder_next = self._nav(l, 1, "Continue", self.recorder_continue)
         self.stack.addWidget(page)
@@ -499,7 +514,13 @@ class SetupWindow(QMainWindow):
             QMessageBox.warning(self, "WatchLog Setup", "Enter the site code shown in WatchLog Settings → Sites & Setup.")
             return
         self.go(2)
-        if not self.recorder_list.count():
+        # This field build already knows the recorder address. Avoid a full /24 scan:
+        # prove the exact host during Login instead. The address remains editable in
+        # case the NVR was renumbered before installation.
+        if self.manual_ip.text().strip():
+            self.status.setText(
+                f"Recorder prepared: {self.manual_ip.text().strip()} (Hikvision). Continue to sign in.")
+        elif not self.recorder_list.count():
             self.search_recorders()
 
     def search_recorders(self):
@@ -568,7 +589,9 @@ class SetupWindow(QMainWindow):
         self.recorder_hint = ({"ports": row.get("ports"),
                                "vendor_hint": row.get("vendor_hint"),
                                "source": row.get("source"),
-                               "integration_state": row.get("integration_state")} if row else None)
+                               "integration_state": row.get("integration_state")}
+                              if row else dict(self.field_recorder_hint)
+                              if address == self.FIELD_RECORDER_IP else None)
         detail = f"  ({row['label']})" if row and row.get("label") else ""
         self.selected_recorder.setText(f"Recorder: {address}{detail}")
         self.login_error.setText("")
@@ -644,7 +667,7 @@ class SetupWindow(QMainWindow):
         public = dict(self.public)
         args = (self.config_path, public, self.code_edit.text().strip(), self.recorder_address,
                 self.recorder_user, self.recorder_password,
-                "custom", self.profiles())
+                self.FIELD_SITE_TYPE, self.profiles())
         self.run_worker(backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
                         hint=self.recorder_hint)
         # On the connecting page use the page-local progress label too.
