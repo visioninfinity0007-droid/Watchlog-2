@@ -130,23 +130,24 @@ class ProbeTests(unittest.TestCase):
         self.assertIn(37777, by_ip["10.0.0.119"])
         self.assertTrue(any("confirm" in msg.lower() for msg in progress))
 
-    def test_native_signature_stops_broad_scan_before_unrelated_second_subnet(self):
-        """Once a recorder is proven, discovery must not spend minutes sweeping VPN LANs."""
-        called = []
+    def test_multiple_ranked_lans_preserve_multiple_recorder_candidates(self):
+        """Bounding discovery must not hide a second real recorder LAN."""
         def fake_conn(address, timeout=None):
             ip, port = address
-            called.append((ip, port))
             if ip == "10.44.7.119" and port == 8000:
+                return MagicMock()
+            if ip == "192.168.10.108" and port == 37777:
                 return MagicMock()
             raise OSError("filtered")
 
         with patch.object(discover, "_sweep_bases",
-                          return_value=(["10.44.7", "172.30.90"], ["10.44.7.20", "172.30.90.5"])), \
+                          return_value=(["10.44.7", "192.168.10"], ["10.44.7.20", "192.168.10.25"])), \
              patch("socket.create_connection", side_effect=fake_conn):
             hits = discover.sweep(log=lambda *_a: None, progress=lambda *_a: None)
 
-        self.assertIn("10.44.7.119", dict(hits))
-        self.assertFalse(any(ip.startswith("172.30.90.") for ip, _port in called))
+        by_ip = dict(hits)
+        self.assertIn(8000, by_ip["10.44.7.119"])
+        self.assertIn(37777, by_ip["192.168.10.108"])
 
     def test_physical_adapters_rank_before_virtual_adapters(self):
         fake = SimpleNamespace(
