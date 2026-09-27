@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build-metadata stamping (0.4.4 Section 2) — the shipped exe carries its exact source commit.
+"""Build-metadata stamping — the shipped exe carries its exact source commit.
 
 wl_version resolves BUILD_SHA from a build-time-baked build_info.py (bundled into the frozen
 exe by build_exe.ps1) before the env var, so a customer machine with no build environment still
@@ -26,7 +26,7 @@ class BuildMetadata(unittest.TestCase):
             importlib.reload(wl_version)
             self.assertEqual(wl_version.BUILD_SHA, "abc1234def567890")
             self.assertEqual(wl_version.BUILD_CHANNEL, "pilot")
-            self.assertEqual(wl_version.version_string(), "0.4.4+abc1234")   # short SHA in the string
+            self.assertEqual(wl_version.version_string(), f"{wl_version.VERSION}+abc1234")   # short SHA in the string
             md = wl_version.build_metadata()
             self.assertEqual(md["build_sha"], "abc1234def567890")
             self.assertEqual(md["channel"], "pilot")
@@ -44,17 +44,17 @@ class BuildMetadata(unittest.TestCase):
             importlib.reload(wl_version)
             # env is used only when no baked build_info is present on the path
             if wl_version.BUILD_SHA == "envsha0099":
-                self.assertTrue(wl_version.version_string().startswith("0.4.4+envsha0"))
+                self.assertTrue(wl_version.version_string().startswith(f"{wl_version.VERSION}+envsha0"))
         finally:
             del os.environ["WATCHLOG_BUILD_SHA"]
             importlib.reload(wl_version)
 
     def test_version_and_metadata_shape(self):
         importlib.reload(wl_version)
-        self.assertEqual(wl_version.VERSION, "0.4.4")
+        self.assertRegex(wl_version.VERSION, r"^\\d+\\.\\d+\\.\\d+$")
         md = wl_version.build_metadata()
         self.assertEqual(set(md), {"version", "build_sha", "channel", "version_string"})
-        self.assertTrue(md["version_string"].startswith("0.4.4"))
+        self.assertTrue(md["version_string"].startswith(wl_version.VERSION))
         self.assertEqual(md["channel"] or "production", md["channel"] or "production")
 
     def test_build_exe_stamps_build_info(self):
