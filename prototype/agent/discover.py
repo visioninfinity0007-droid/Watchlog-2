@@ -21,6 +21,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -194,17 +195,23 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
 # superset of setup_backend._WEB_PORTS / vendor-signature ports.
 SWEEP_PORTS = [80, 443, 8000, 8080, 8443, 81, 82, 88, 8081, 8888, 554, 37777, 37778, 34567]
 
-# Discovery is staged rather than opening thousands of sockets at once. Field PCs often
-# learn the NVR's ARP/neighbour entry during the first pass; a 768-thread burst made that
-# cold pass less reliable. First probe the ports that identify CCTV hardware, retry them
-# more patiently when no recorder signature is present, then inspect uncommon web ports.
-SWEEP_FAST_PORTS = [37777, 37778, 8000, 554, 80, 443, 34567]
+# Field Build 74 exposed a release-blocking discovery failure: a Windows PC with several
+# private/virtual adapters could queue 8 x /24 x many ports and leave the setup UI spinning
+# for minutes. Discovery is now budgeted as a product interaction, not an unbounded scan.
+#
+# Phase 1 uses the four highest-value recorder/control ports with a patient enough timeout
+# to survive cold ARP/neighbour learning. Phase 2 checks the remaining CCTV/web ports only
+# while the global deadline remains. Physical adapters are ranked ahead of virtual/VPN
+# adapters, and automatic scanning is capped at four /24s. Explicit subnet and manual-IP
+# paths remain available for unusual topologies.
+SWEEP_FAST_PORTS = [37777, 8000, 80, 443]
 SWEEP_DEEP_PORTS = [port for port in SWEEP_PORTS if port not in SWEEP_FAST_PORTS]
 RECORDER_SIGNATURE_PORTS = {37777, 37778, 8000, 34567}
-SWEEP_TIMEOUT = 0.9
-SWEEP_RETRY_TIMEOUT = 1.6
-SWEEP_WORKERS = 128
-MAX_AUTO_SUBNETS = 8
+SWEEP_TIMEOUT = 0.75
+SWEEP_DEEP_TIMEOUT = 0.35
+SWEEP_WORKERS = 192
+MAX_AUTO_SUBNETS = 4
+DISCOVERY_DEADLINE_SECONDS = 32.0
 
 
 def _usable_ipv4(value: str | None) -> str | None:
@@ -231,25 +238,39 @@ def _usable_ipv4(value: str | None) -> str | None:
     return str(addr)
 
 
+_VIRTUAL_ADAPTER_TOKENS = (
+    "virtual", "vethernet", "hyper-v", "vmware", "virtualbox", "docker",
+    "wsl", "tailscale", "wireguard", "vpn", "loopback", "bluetooth",
+)
+
+
 def _adapter_ipv4s() -> list[str]:
-    """Reliable active-interface enumeration when psutil is packaged."""
+    """Reliable active-interface enumeration, physical NICs before virtual/VPN NICs.
+
+    We do not discard virtual adapters completely because unusual CCTV deployments can
+    legitimately use one. We rank them after physical Ethernet/Wi-Fi so the bounded
+    automatic scan cannot spend its whole budget on Docker/Hyper-V/VPN /24s first.
+    """
     if psutil is None:
         return []
-    found: list[str] = []
+    primary: list[str] = []
+    secondary: list[str] = []
     try:
         stats = psutil.net_if_stats()
         for name, addresses in psutil.net_if_addrs().items():
             if name in stats and not stats[name].isup:
                 continue
+            lower_name = str(name).lower()
+            bucket = secondary if any(token in lower_name for token in _VIRTUAL_ADAPTER_TOKENS) else primary
             for address in addresses:
                 if address.family != socket.AF_INET:
                     continue
                 ip = _usable_ipv4(address.address)
-                if ip and ip not in found:
-                    found.append(ip)
+                if ip and ip not in primary and ip not in secondary:
+                    bucket.append(ip)
     except Exception:                                    # noqa: BLE001
         return []
-    return found
+    return primary + secondary
 
 
 def _command_ipv4s() -> list[str]:
@@ -356,24 +377,24 @@ def _has_recorder_signature(found: dict[str, set[int]]) -> bool:
 
 def sweep(subnet: str | None = None, log=print,
           progress=lambda _message: None) -> list[tuple[str, list[int]]]:
-    """
-    Find recorders on the relevant local /24 network(s).
+    """Find recorder candidates without ever leaving setup spinning indefinitely.
 
-    Explicit subnet keeps the old single-/24 behavior. Automatic discovery scans
-    each distinct active local /24 so a Wi-Fi + CCTV-Ethernet PC cannot hide the
-    recorder merely because Windows routes internet traffic over Wi-Fi.
-
-    Retry is recorder-aware: an unrelated router answering port 80 must not suppress
-    the NVR's second chance. That exact bug made Back -> Continue act as a manual retry.
+    Automatic discovery is deliberately bounded. It scans the most likely four local
+    /24s (physical adapters first), then returns whatever it proved before the global
+    deadline. A strong recorder-native signature ends the broad scan early after the
+    identified host(s) are service-confirmed. Manual IP and explicit-subnet paths are
+    never removed.
     """
     bases, addresses = _sweep_bases(subnet)
     if not bases:
         log("  could not work out this PC's network; enter the recorder IP manually")
         return []
 
+    started = time.monotonic()
+    deadline = started + DISCOVERY_DEADLINE_SECONDS
     if addresses:
         log(f"  this PC has local IPv4: {', '.join(addresses)}")
-    log("  sweeping " + ", ".join(f"{base}.1-254" for base in bases))
+    log("  bounded sweep: " + ", ".join(f"{base}.1-254" for base in bases))
 
     def probe(args):
         ip, port, budget = args
@@ -383,41 +404,80 @@ def sweep(subnet: str | None = None, log=print,
         except Exception:                                # noqa: BLE001
             return None
 
-    all_hosts = [f"{base}.{h}" for base in bases for h in range(1, 255)]
     found: dict[str, set[int]] = {}
 
-    def run(targets):
+    def run_stage(targets, label: str):
+        """Run one bounded batch. Socket timeouts make each stage finite."""
+        if time.monotonic() >= deadline:
+            return
+        progress(label)
         with ThreadPoolExecutor(max_workers=SWEEP_WORKERS) as pool:
             for hit in pool.map(probe, targets):
                 if hit:
                     found.setdefault(hit[0], set()).add(hit[1])
+                if time.monotonic() >= deadline:
+                    # Do not enqueue another discovery phase after this one. pool.map's
+                    # already-running connects are individually bounded by their socket
+                    # timeout, so leaving the context cannot turn into a minutes-long hang.
+                    break
 
-    progress("Scanning the local network for CCTV recorders…")
-    run([(ip, port, SWEEP_TIMEOUT) for ip in all_hosts for port in SWEEP_FAST_PORTS])
+    # Phase 1: patient probes on the ports that prove most Hikvision/Dahua boxes.
+    for index, base in enumerate(bases, 1):
+        if time.monotonic() >= deadline:
+            break
+        progress(f"Checking local network {index}/{len(bases)} ({base}.x)…")
+        hosts = [f"{base}.{h}" for h in range(1, 255)]
+        run_stage(
+            [(ip, port, SWEEP_TIMEOUT) for ip in hosts for port in SWEEP_FAST_PORTS],
+            f"Checking local network {index}/{len(bases)} for recorder services…",
+        )
+        # A native SDK signature is strong recorder evidence. Once one exists, do
+        # not burn the remaining user-visible wait budget sweeping unrelated subnets.
+        if _has_recorder_signature(found):
+            break
 
-    if not _has_recorder_signature(found):
-        progress("First scan complete. Checking again for slow CCTV recorders…")
-        log("  no recorder signature on the first pass; retrying CCTV ports slowly ...")
-        run([(ip, port, SWEEP_RETRY_TIMEOUT) for ip in all_hosts for port in SWEEP_FAST_PORTS])
-
-    if not _has_recorder_signature(found) and SWEEP_DEEP_PORTS:
-        progress("Checking additional recorder ports…")
-        run([(ip, port, SWEEP_TIMEOUT) for ip in all_hosts for port in SWEEP_DEEP_PORTS])
-
-    # Once a native signature identifies a recorder, recheck only that host with the
-    # slower budget. This also recovers a web port whose first SYN was missed.
+    # Confirm every strong candidate with the complete port set, using the same
+    # patient timeout. This recovers RTSP / alternate web ports without a broad scan.
     recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
-    if recorder_ips:
-        progress("Confirming recorder services…")
+    if recorder_ips and time.monotonic() < deadline:
+        progress("Recorder found. Confirming its services…")
         remaining = [
-            (ip, port, SWEEP_RETRY_TIMEOUT)
+            (ip, port, SWEEP_TIMEOUT)
             for ip in recorder_ips
             for port in SWEEP_PORTS
             if port not in found.get(ip, set())
         ]
-        if remaining:
-            run(remaining)
+        run_stage(remaining, "Recorder found. Confirming web and video services…")
+        return [(ip, sorted(ports)) for ip, ports in
+                sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
 
+    # Phase 2: no native signature yet. Check alternate web/RTSP/vendor ports only
+    # while the global UX budget remains. This keeps HTTPS/custom-port recorders
+    # discoverable without allowing a fleet of virtual adapters to hang setup.
+    for index, base in enumerate(bases, 1):
+        if time.monotonic() >= deadline:
+            break
+        hosts = [f"{base}.{h}" for h in range(1, 255)]
+        run_stage(
+            [(ip, port, SWEEP_DEEP_TIMEOUT) for ip in hosts for port in SWEEP_DEEP_PORTS],
+            f"Checking alternate CCTV ports on network {index}/{len(bases)}…",
+        )
+        if _has_recorder_signature(found):
+            break
+
+    recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
+    if recorder_ips and time.monotonic() < deadline:
+        progress("Recorder found. Confirming its services…")
+        remaining = [
+            (ip, port, SWEEP_TIMEOUT)
+            for ip in recorder_ips
+            for port in SWEEP_PORTS
+            if port not in found.get(ip, set())
+        ]
+        run_stage(remaining, "Recorder found. Confirming web and video services…")
+
+    elapsed = time.monotonic() - started
+    log(f"  discovery finished in {elapsed:.1f}s; {len(found)} host(s) answered")
     return [(ip, sorted(ports)) for ip, ports in
             sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
 
