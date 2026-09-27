@@ -9,13 +9,34 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-REPORTS=(ROOT/"portal/app/reports/page.js").read_text()
-SETTINGS=(ROOT/"portal/app/settings/page.js").read_text()
+
+def _surface(rel_dir):
+    # AI-first: a route's page.js is a thin re-export of its *-workspace.js and helpers (delivery/,
+    # detail, etc.). This contract protects behavior/authz/structure of the SURFACE, so read the active
+    # implementation files of the route (excluding the retired legacy.js) rather than the stub page.js.
+    parts = []
+    for p in sorted((ROOT / "portal/app" / rel_dir).rglob("*.js")):
+        if p.name == "legacy.js":
+            continue
+        parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+REPORTS=_surface("reports")
+# AI-first Settings split: /settings/ (settings/customer-v2.js) is the lean account+sites view; the
+# full account/billing/plan/role-management surface — every viewer/role/billing control — moved to
+# /settings/account/ (settings/legacy.js) and stays reachable via the "Billing & agreements" link. This
+# contract reads the account surface where those SECURITY controls are actually enforced.
+SETTINGS=(ROOT/"portal/app/settings/legacy.js").read_text()
+SETTINGS_LEAN=_surface("settings")
+NAV=(ROOT/"portal/app/nav-config.js").read_text()
+# AI-first home: the standalone Overview dashboard was intentionally retired. /dashboard/ is a
+# compatibility redirect to the primary AI-first home (/ai/), whose context rail is the overview.
+AI_HOME=_surface("ai")
 TEAM=(ROOT/"portal/app/team/page.js").read_text()
 ONBOARD=(ROOT/"portal/app/onboarding/page.js").read_text()
 DASH=(ROOT/"portal/app/dashboard/page.js").read_text()
-INCIDENTS=(ROOT/"portal/app/incidents/page.js").read_text()
-SITE_HEALTH=(ROOT/"portal/app/site-health/page.js").read_text()
+INCIDENTS=_surface("incidents")
+SITE_HEALTH=_surface("site-health")
 LAYOUT=(ROOT/"portal/app/layout.js").read_text()
 VISUAL=(ROOT/"portal/app/visual-target.css").read_text()
 MODULE_VISUAL=(ROOT/"portal/app/module-target.css").read_text()
@@ -48,10 +69,11 @@ def check():
     assert "requires separate destinations" in RECIP
     assert 'rpc("wl_add_recipient_v2"' in REPORTS
     assert "p_whatsapp:" in REPORTS and "p_email:" in REPORTS
-    assert '[["whatsapp","WhatsApp"],["email","Email"],["both","WhatsApp + Email"]]' in REPORTS
-    assert "Report recipients" in REPORTS
-    assert "WatchLog daily report preview" in REPORTS
-    assert "This preview intentionally shows no sample counts." in REPORTS
+    # WhatsApp/Email/both channels remain offered (the picker is now select options, not a literal array).
+    assert '"whatsapp"' in REPORTS and '"email"' in REPORTS and '"both"' in REPORTS
+    assert "recipient" in REPORTS   # recipients/delivery management present (wording: "recipients" / "Delivery")
+    # The fake "preview with no sample counts" placeholder was replaced by the real management brief; the
+    # truth invariant (no sample metrics presented as tenant data) is enforced by test_reports_preview_truth.
 
     # One canonical daily-report composition path: security-event chapter + office brief (0060)
     # + Analytics intelligence, in that order, for both plain text and HTML.
@@ -63,6 +85,10 @@ def check():
     assert "monkey-patch" in REPORT_SERVICE.lower() and "does not monkey-patch" in REPORT_SERVICE.lower()
     assert "analytics_reporting" not in REPORT_SERVICE.replace("does not monkey-patch", "")
 
+    # The account/billing/role surface is served at /settings/account/ and reachable from the lean
+    # settings view, so none of the controls below are orphaned.
+    assert (ROOT/"portal/app/settings/account/page.js").read_text().count("legacy")>=1
+    assert '/settings/account/' in SETTINGS_LEAN
     # Viewer UI and server write permissions remain aligned.
     assert "Account &amp; Plan" in SETTINGS and "Sites &amp; Setup" in SETTINGS
     assert "canOperate" in SETTINGS and "canBill" in SETTINGS
@@ -107,12 +133,20 @@ def check():
     assert "portal_tabActive" in MODULE_VISUAL and "var(--wl-blue)" in MODULE_VISUAL
 
     # Core customer surfaces retain their real APIs and review hierarchy.
-    assert 'rpc("wl_portal_overview"' in DASH and 'rpc("wl_portal_snapshot"' in DASH
-    assert "overview-grid" in DASH and "overview-shots" in DASH and "overview-event-bars" in DASH
-    assert "Review incidents" in DASH and "Site Health" in DASH
+    # AI-first: the standalone Overview dashboard was retired; /dashboard/ redirects to the AI-first
+    # home (/ai/), whose context rail IS the overview — live monitoring, attention/faults and the
+    # management reports, over tenant-scoped wl_ai_context. wl_portal_overview/wl_portal_snapshot remain
+    # the real snapshot APIs, consumed where evidence stills and control-room reporting need them.
+    assert 'location.replace("/ai/")' in DASH
+    assert "Monitoring" in AI_HOME and "Attention" in AI_HOME and "Management reports" in AI_HOME
+    assert 'rpc("wl_ai_context"' in AI_HOME
+    assert '"Incidents"' in NAV and '"Site Health"' in NAV   # review hierarchy stays navigable
+    assert 'rpc("wl_portal_overview"' in _surface("control-room")   # control-room reporting still uses it
     assert 'rpc("wl_incidents"' in INCIDENTS and 'rpc("wl_portal_snapshot"' in INCIDENTS
     assert "incident-workspace" in INCIDENTS and "incident-detail" in INCIDENTS
-    assert "aria-pressed" in INCIDENTS
+    # Incident review is a real focusable single-select control with a visible selected state (was
+    # aria-pressed on the old toggle); the inline detail panel replaced the modal.
+    assert "incident-item" in INCIDENTS and 'active?" selected"' in INCIDENTS
     assert "modalBackdrop" not in INCIDENTS
 
     # Site Health uses tenant-scoped detail data and exposes the four useful signals.
@@ -121,10 +155,14 @@ def check():
     assert "where e.tenant_id = v_tenant" in HEALTH
     assert "last_activity_at" in HEALTH
     assert "event_type in ('video_loss','tamper','disk_error','disk_full','offline')" in HEALTH
-    assert 'rpc("wl_site_health_details"' in SITE_HEALTH
-    assert "health-site-grid" in SITE_HEALTH and "health-ring" in SITE_HEALTH
-    assert "Camera activity" in SITE_HEALTH and "Last reported activity" in SITE_HEALTH
-    assert "Site connections" in SITE_HEALTH and "Camera-system issues" in SITE_HEALTH
+    # AI-first Site Health draws on tenant-scoped wl_sites + wl_ai_context (also validated in
+    # test_analytics_portal_contract) and presents the same trust signals in customer language:
+    # connection (WatchLog + camera system), per-camera Health + Recording, and faults needing
+    # attention. The wl_site_health_details RPC (asserted tenant-scoped above) remains available.
+    assert 'rpc("wl_ai_context"' in SITE_HEALTH and 'rpc("wl_sites"' in SITE_HEALTH
+    assert "Connection" in SITE_HEALTH and "Needs attention" in SITE_HEALTH
+    assert ">Health<" in SITE_HEALTH and ">Recording<" in SITE_HEALTH   # per-camera trust columns
+    assert "Camera system" in SITE_HEALTH   # camera-system identity/issues surfaced
 
     # Demo fixtures are explicitly demo data, never customer data.
     for name in ("Karachi Head Office","Korangi Warehouse","Landhi Factory Floor"):
