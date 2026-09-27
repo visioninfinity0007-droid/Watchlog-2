@@ -108,6 +108,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
 
             # Production resilience contracts run after build dependencies are installed.
+            # Discovery/connectivity is a FIELD release gate. Build 74 passed packaging
+            # while a real site remained stuck on Search Network, so a Windows artifact may
+            # never be published again without the bounded multi-NIC discovery/login contracts.
+            python prototype/tests/test_recorder_probe.py
+            if ($LASTEXITCODE -ne 0) { throw "recorder discovery hardening contract failed" }
+            python prototype/tests/test_recorder_setup.py
+            if ($LASTEXITCODE -ne 0) { throw "recorder login/connectivity contract failed" }
+
             python prototype/tests/test_hikvision_archive.py
             if ($LASTEXITCODE -ne 0) { throw "Hikvision archive/download contract failed" }
             python prototype/tests/test_recovery_wiring.py
