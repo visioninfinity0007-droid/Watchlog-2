@@ -376,7 +376,8 @@ def _has_recorder_signature(found: dict[str, set[int]]) -> bool:
 
 
 def sweep(subnet: str | None = None, log=print,
-          progress=lambda _message: None) -> list[tuple[str, list[int]]]:
+          progress=lambda _message: None, _connect=None,
+          _bases=None) -> list[tuple[str, list[int]]]:
     """Find recorder candidates without ever leaving setup spinning indefinitely.
 
     Automatic discovery is deliberately bounded. It scans the most likely four local
@@ -385,7 +386,8 @@ def sweep(subnet: str | None = None, log=print,
     identified host(s) are service-confirmed. Manual IP and explicit-subnet paths are
     never removed.
     """
-    bases, addresses = _sweep_bases(subnet)
+    bases, addresses = _bases if _bases is not None else _sweep_bases(subnet)
+    connect_fn = _connect or socket.create_connection
     if not bases:
         log("  could not work out this PC's network; enter the recorder IP manually")
         return []
@@ -399,7 +401,7 @@ def sweep(subnet: str | None = None, log=print,
     def probe(args):
         ip, port, budget = args
         try:
-            with socket.create_connection((ip, port), timeout=budget):
+            with connect_fn((ip, port), timeout=budget):
                 return ip, port
         except Exception:                                # noqa: BLE001
             return None
