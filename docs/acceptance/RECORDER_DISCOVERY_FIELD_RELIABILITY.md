@@ -81,8 +81,14 @@ re-run Search Network unless the encrypted recorder credential is missing.
 ## Golden baseline: Build 69
 
 Field-proven Windows Release Build 69 is the discovery/connectivity regression baseline:
-- release run 69;
+- release run 69 / run id `36238903083`;
+- product version `5.0.17`;
 - source SHA `811d378e3a7556047f294bb128b8caf45a295469`;
+- artifact `WatchLog-Windows-69`, id `10905576478`;
+- artifact ZIP digest `sha256:6f84aa14b10eb245f66b9a344524fa39490817bb1882c89daa1954da266809d1`;
+- `WatchLog-Setup.exe` SHA-256 `A5428B33A9789056D8156F445FE099F73CC926E5903C4162F96746D7C90E1B5E`;
+- `watchlog-agent.exe` SHA-256 `24EEAC5826CF104DC41770A66A69F53F83960443B73D9D3CEEC997B39BFDD5F4`;
+- `watchlog-setup-ui.exe` SHA-256 `C5B732F1D28F0D2FB54EBC4ACD00C4BBFF3EC654960F3BA3C82AA8E48007F8E6`;
 - automatic discovery covered up to eight local /24s;
 - the common recorder port set included HTTP/HTTPS, Hikvision 8000, Dahua 37777/37778,
   RTSP 554, alternate web ports and 34567;
