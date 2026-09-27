@@ -10,6 +10,7 @@ def read(rel):
 def main():
     problems = []
     migration = read("prototype/supabase/migrations/0111_visual_snapshot_pipeline.sql")
+    context_migration = read("prototype/supabase/migrations/0115_context_aware_visual_review.sql")
     worker = read("prototype/vision_worker/worker.py")
     compose = read("prototype/vision_worker/docker-compose.coolify.yml")
     gateway = read("prototype/supabase/functions/watchlog-ai/index.ts")
@@ -31,6 +32,16 @@ def main():
             problems.append(f"visual pipeline migration missing: {token}")
 
     for token in [
+        "business_context",
+        "camera_context",
+        "owner_insight_priorities",
+        "camera_purpose",
+        "r.analysis->'business'",
+    ]:
+        if token not in context_migration:
+            problems.append(f"context-aware visual migration missing: {token}")
+
+    for token in [
         "gemma3:4b",
         "boto3",
         "load_and_mirror_image",
@@ -42,9 +53,16 @@ def main():
         "wl_vision_claim_snapshots",
         "wl_vision_complete_snapshot",
         "wl_vision_save_day_summary",
+        "snapshot-vision-v2-context",
+        "Camera role:",
+        "queue_pressure",
+        "periodic CCTV snapshots",
     ]:
         if token not in worker:
             problems.append(f"vision worker missing: {token}")
+
+    if "professional office security report" in worker:
+        problems.append("vision worker must not hard-code office context")
 
     for token in ["minio/minio", "watchlog_media", "ollama/ollama", "watchlog_ollama", "SUPABASE_SERVICE_ROLE_KEY", "WATCHLOG_MEDIA_ACCESS_KEY", "WATCHLOG_MEDIA_SECRET_KEY", "VISION_MODEL"]:
         if token not in compose:

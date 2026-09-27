@@ -21,4 +21,17 @@ assert not missing, f"vision worker missing imports: {sorted(missing)}"
 for symbol in ("boto3.client(", "hashlib.sha256(", "base64.b64encode(", "io.BytesIO("):
     assert symbol in src, symbol
 
+for symbol in (
+    "snapshot-vision-v2-context",
+    "business_context",
+    "camera_purpose",
+    "queue_pressure",
+    "periodic CCTV snapshots",
+    "Never infer sales, revenue",
+):
+    assert symbol in src, symbol
+
+assert "professional office security report" not in src
+assert "actual office" not in src
+
 print("OK: vision worker imports all runtime dependencies")

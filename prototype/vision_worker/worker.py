@@ -32,8 +32,8 @@ WORKER_ID = os.getenv("WORKER_ID", socket.gethostname())[:120]
 BATCH_SIZE = max(1, min(16, int(os.getenv("VISION_BATCH_SIZE", "4"))))
 POLL_SECONDS = max(1, int(os.getenv("VISION_POLL_SECONDS", "5")))
 AUTO_PULL = os.getenv("VISION_AUTO_PULL", "true").lower() in ("1", "true", "yes", "on")
-ANALYSIS_VERSION = "snapshot-vision-v1"
-SUMMARY_VERSION = "visual-day-v1"
+ANALYSIS_VERSION = "snapshot-vision-v2-context"
+SUMMARY_VERSION = "visual-day-v2-context"
 PORT = int(os.getenv("PORT", "8640"))
 MEDIA_ENDPOINT = os.getenv("MEDIA_ENDPOINT", "http://minio:9000").rstrip("/")
 MEDIA_ACCESS_KEY = os.environ["WATCHLOG_MEDIA_ACCESS_KEY"]
@@ -137,6 +137,21 @@ SNAPSHOT_SCHEMA = {
         },
         "unusual": {"type": "boolean"},
         "unusual_reason": {"type": "string"},
+        "business": {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string"},
+                "operational_state": {"type": "string"},
+                "queue_pressure": {
+                    "type": "string",
+                    "enum": ["not_applicable", "none", "light", "moderate", "heavy", "unclear"]
+                },
+                "safety_concern": {"type": "boolean"},
+                "safety_reason": {"type": "string"},
+                "visible_smoke_or_flame": {"type": "boolean"},
+                "visible_fall_or_accident": {"type": "boolean"}
+            }
+        },
         "quality": {"type": "string", "enum": ["usable", "partly_obscured", "dark", "blurred", "unusable"]}
     }
 }
@@ -306,28 +321,62 @@ def ollama_chat(messages: list, schema: dict, timeout: int = 180) -> dict:
     return out
 
 
+def _business_context(job: dict) -> tuple[dict, dict]:
+    ctx = job.get("business_context") or {}
+    camera_ctx = ctx.get("camera_context") or {}
+    channel = str(job.get("channel") or "")
+    per_camera = camera_ctx.get(channel) or {}
+    return ctx, per_camera
+
+
 def analyze_snapshot(job: dict) -> dict:
     camera = job.get("camera") or "camera"
-    prompt = f"""
-You are reviewing one CCTV still from {camera} for a professional office security report.
+    purpose = str(job.get("camera_purpose") or "general")
+    ctx, per_camera = _business_context(job)
+    site_type = str(job.get("site_type") or ctx.get("site_type") or "business")
+    role = str(per_camera.get("role") or purpose or "general area")
+    watch_for = per_camera.get("watch_for") or []
+    safety_note = str(per_camera.get("safety_note") or "")
+    ai_note = str(ctx.get("ai_context_note") or "")
+    watch_text = "; ".join(str(x) for x in watch_for[:12]) or "routine activity and meaningful exceptions"
 
-Describe only what is visibly supported by this single image.
-Do NOT identify any person or guess a name. Do not infer ethnicity, religion, health,
-criminality, or other sensitive traits. Do not guess that someone is staff merely from
-appearance. Use neutral phrases such as "one person" or "two people".
-Do not turn a person being present into an incident.
-For restricted-area cameras, mark entry_visible/exit_visible only when the image itself
-visibly supports an entry or exit, not merely because a person is near a door.
-Keep summary and activity concise and factual.
-Clothing descriptors are allowed only to help correlate adjacent CCTV frames.
-If the image is too poor to support a conclusion, say so through quality.
+    prompt = f"""
+You are reviewing one CCTV still from camera "{camera}" at a {site_type} site for an owner-facing
+WatchLog operational and security report.
+
+BUSINESS CONTEXT
+- Camera purpose: {purpose}
+- Camera role: {role}
+- What this camera should help observe: {watch_text}
+- Site guidance: {ai_note or "Use the camera role and visible evidence only."}
+- Camera safety guidance: {safety_note or "None beyond the general rules below."}
+
+GENERAL RULES
+- Describe only what is visibly supported by this single image.
+- Do NOT identify any person or guess a name. Do not infer ethnicity, religion, health,
+  criminality, employment status, or other sensitive traits from appearance.
+- Use neutral phrases such as "one person" or "two people"; do not call someone staff,
+  waiter, customer, manager, or delivery personnel unless the image itself clearly supports
+  the activity and the wording is still appropriately qualified.
+- people_count is only the number visibly present in this frame. Never turn it into unique
+  customers, visits, sales, orders, revenue, conversion, or footfall.
+- Do not turn ordinary presence into an incident.
+- For restricted/access cameras, entry_visible/exit_visible are true only when an actual
+  crossing is visibly supported by this image.
+- queue_pressure must be "not_applicable" unless the camera role actually shows a queue,
+  service counter, pickup/handoff point, or waiting area.
+- For kitchens/safety-sensitive areas, safety_concern is true only for a concrete visible
+  concern. Smoke/flame or a fall/accident must be visibly apparent; never diagnose a fire,
+  injury, illness, food-safety breach, or equipment fault from ambiguous imagery.
+- Keep summary, activity and business.operational_state concise, factual and useful to the owner.
+- If image quality prevents a reliable conclusion, say so through quality and use "unclear"
+  where appropriate.
 """.strip()
     image_b64 = load_and_mirror_image(job)
     result = ollama_chat([
         {"role": "user", "content": prompt, "images": [image_b64]}
     ], SNAPSHOT_SCHEMA)
 
-    # Application-level normalization: do not allow negative/absurd counts.
     try:
         result["people_count"] = max(0, min(50, int(result.get("people_count", 0))))
     except Exception:
@@ -336,20 +385,40 @@ If the image is too poor to support a conclusion, say so through quality.
     result["summary"] = str(result.get("summary") or "Visual review completed.")[:500]
     result["activity"] = str(result.get("activity") or "")[:300]
     result["unusual_reason"] = str(result.get("unusual_reason") or "")[:300]
+
+    business = result.get("business") if isinstance(result.get("business"), dict) else {}
+    queue = str(business.get("queue_pressure") or "not_applicable")
+    if queue not in {"not_applicable", "none", "light", "moderate", "heavy", "unclear"}:
+        queue = "unclear"
+    result["business"] = {
+        "role": str(business.get("role") or role)[:200],
+        "operational_state": str(business.get("operational_state") or result["activity"])[:300],
+        "queue_pressure": queue,
+        "safety_concern": bool(business.get("safety_concern", False)),
+        "safety_reason": str(business.get("safety_reason") or "")[:300],
+        "visible_smoke_or_flame": bool(business.get("visible_smoke_or_flame", False)),
+        "visible_fall_or_accident": bool(business.get("visible_fall_or_accident", False)),
+    }
     return result
 
 
 def summarize_day(day: dict) -> dict:
     tz = day.get("timezone") or "Asia/Karachi"
     frames = day.get("frames") or []
+    ctx = day.get("business_context") or {}
+    site_type = str(ctx.get("site_type") or "business")
+    owner_priorities = ctx.get("owner_insight_priorities") or []
+    ai_note = str(ctx.get("ai_context_note") or "")
     compact = []
     for f in frames:
         compact.append({
             "time": f.get("captured_at"),
             "camera": f.get("camera"),
+            "purpose": f.get("purpose"),
             "people_count": f.get("people_count"),
             "summary": f.get("summary"),
             "activity": f.get("activity"),
+            "business": f.get("business"),
             "restricted_area": f.get("restricted_area"),
             "unusual": f.get("unusual"),
             "unusual_reason": f.get("unusual_reason"),
@@ -358,24 +427,32 @@ def summarize_day(day: dict) -> dict:
 
     prompt = f"""
 Prepare a concise owner-facing operational summary for {day.get('date')} in timezone {tz}.
-The input is a chronological list of visual observations from CCTV snapshots.
+The site is a {site_type}. The input is a chronological list of visual observations from
+periodic CCTV snapshots, not continuous video.
 
-Rules:
-- Consolidate repeated adjacent frames into continuous activity; never count frames as people or visits.
-- Do not invent identities. Say "a person", "people", or "appears to be the same person" only when
+BUSINESS GUIDANCE
+- Owner priorities: {json.dumps(owner_priorities, ensure_ascii=False)}
+- Site guidance: {ai_note or "Focus on operationally useful, visibly supported observations."}
+
+RULES
+- Consolidate repeated adjacent frames into continuous-looking periods only when timing and
+  evidence support it. Be explicit that periodic snapshots cannot prove what happened between frames.
+- Never count frames as people, customers, visits, transactions or orders.
+- Do not invent identities or roles. "Appears to be the same person" is allowed only when
   clothing/location/timing make that visually plausible.
-- A serious incident requires a concrete visible security/safety problem. Ordinary office presence,
-  door approach, or restricted-area proximity alone is not a serious incident.
-- Restricted-area entries/exits must be based on visible evidence, not camera alert labels.
-- Report the first and last VISUALLY OBSERVED activity; never claim those are the actual office
-  opening/closing unless the observations clearly cover those boundaries.
-- Focus on what a business owner would want to know: overall day, meaningful occupancy, restricted
-  area activity, unusual behaviour, and important limitations.
+- A serious incident requires a concrete visible security or safety problem.
+- Restricted-area entries/exits must be based on visible evidence, not alert labels.
+- Report first and last VISUALLY OBSERVED activity; never claim those are actual opening/closing.
+- For restaurants/cafes, useful themes include relative floor activity, visible queue/service
+  pressure, service-handoff activity, kitchen activity continuity, access activity, office presence,
+  late-night/after-hours exceptions, and visible safety concerns when the camera supports them.
+- Never infer sales, revenue, order accuracy, food quality, staff performance, unique customer
+  counts, confirmed fire, confirmed injury, or medical conditions from CCTV alone.
 - Use Pakistan-friendly 12-hour times such as 2:15 PM.
-- No technical terms about models, detections, confidence, databases, pipelines, or AI internals.
+- No technical terms about models, detections, confidence, databases, queues, pipelines, or AI internals.
 
 OBSERVATIONS:
-{json.dumps(compact, separators=(',', ':'))}
+{json.dumps(compact, separators=(',', ':'), ensure_ascii=False)}
 """.strip()
     return ollama_chat([{"role": "user", "content": prompt}], DAY_SCHEMA, timeout=240)
 
