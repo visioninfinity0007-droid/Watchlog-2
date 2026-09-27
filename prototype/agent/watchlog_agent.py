@@ -2565,9 +2565,9 @@ def main() -> None:
     # Identify the recorder ONCE and reuse the answer: enrollment, camera sync
     # and the first heartbeat need only identity + channel inventory.
     #
-    # Do NOT call driver.capabilities() here. On Hikvision that fans out into
-    # multiple ISAPI calls per channel and Build 41 could spend minutes doing
-    # optional enrichment before the live collector/heartbeat loop even started.
+    # Do NOT run recorder capability enumeration here. On Hikvision that fans
+    # out into multiple ISAPI calls per channel and Build 41 could spend minutes
+    # doing optional enrichment before the live collector/heartbeat loop started.
     # Connectivity and event collection must start first; recorder capability
     # enrichment is deliberately deferred out of this startup critical path.
     device, channels = None, []

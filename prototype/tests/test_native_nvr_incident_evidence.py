@@ -112,7 +112,9 @@ def test_clip_migrations_are_fail_closed_short_lived_and_physically_pruned():
 
 
 def test_portal_footage_download_fails_closed_on_integrity():
-    src = (ROOT / "portal" / "app" / "incidents" / "page.js").read_text(encoding="utf-8")
+    # /incidents/evidence renders LegacyIncidents, where the explicit clip
+    # request/download flow lives after the customer portal split.
+    src = (ROOT / "portal" / "app" / "incidents" / "legacy.js").read_text(encoding="utf-8")
     assert "This browser cannot verify the footage checksum" in src
     assert "blob.size!==Number(clip.bytes)" in src
     assert 'if(!clip.sha256)throw new Error("Footage checksum is missing.' in src
@@ -121,10 +123,12 @@ def test_portal_footage_download_fails_closed_on_integrity():
 
 def test_release_entrypoint_activates_all_production_policies():
     src = (AGENT / "release_agent.py").read_text(encoding="utf-8")
-    assert "app.core.collector = native_event_collector.collector" in src
+    assert "app.collector = connector_event_collector.collector" in src
     assert "dahua_archive.install()" in src
+    assert "hikvision_archive.install()" in src
     assert "NativeDahuaDriver.get_clip = dahua_archive.get_clip" in src
     assert "incident_evidence.wrap_cmd_run" in src
+    assert "connector_capabilities.wrap_cmd_run" in src
     assert 'if explicit_setup:' in src
     assert "_setup_validation_complete" in src
 

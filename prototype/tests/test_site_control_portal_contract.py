@@ -19,8 +19,12 @@ def check(cond, name):
 
 
 def main() -> int:
-    page = (REPO / "portal" / "app" / "site-control" / "page.js").read_text(encoding="utf-8")
-    shell = (REPO / "portal" / "app" / "shell.js").read_text(encoding="utf-8")
+    # AI-first: site-control/page.js is a thin re-export of customer-workspace.js, which draws on the
+    # use-customer-control hook. Read the real surface where the capability-aware Read/Recommend/Approve
+    # UX and the tenant-guarded RPC calls are implemented. Nav registration lives in nav-config.js.
+    sc = REPO / "portal" / "app" / "site-control"
+    page = (sc / "customer-workspace.js").read_text(encoding="utf-8") + "\n" + (sc / "use-customer-control.js").read_text(encoding="utf-8")
+    nav = (REPO / "portal" / "app" / "nav-config.js").read_text(encoding="utf-8")
 
     # driven by the capability KB + diagnosis, with tenant guard
     check("requireTenant" in page, "page uses the requireTenant session gate")
@@ -48,7 +52,7 @@ def main() -> int:
         check(banned not in low, f"page never exposes '{banned}'")
 
     # nav registration
-    check('"/site-control/"' in shell, "Site Control is registered in the portal nav")
+    check('"/site-control/"' in nav, "Site Control is registered in the portal nav")
 
     # backing RPCs are tenant-guarded (granted to authenticated, not anon)
     sql79 = (ROOT / "supabase" / "migrations" / "0079_site_diagnosis.sql").read_text(encoding="utf-8")

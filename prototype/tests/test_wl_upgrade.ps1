@@ -9,7 +9,8 @@
     * commit FAILS when the installed file/runtime version != the expected release
       (so a binary that was not actually replaced can never be reported as a successful upgrade);
     * commit FAILS when the binary is missing; usage error when -ExpectedVersion is absent;
-    * rollback restores the previously working binary from the backup;
+    * rollback restores the previously working binary from the backup and fails closed
+      when the isolated test sandbox has no Scheduled Task to restart it;
     * Stop-Agent terminates ONLY the exact watchlog-agent.exe under the install dir and leaves
       unrelated processes untouched (never a broad Python/system kill).
 
@@ -57,7 +58,10 @@ try {
   # corrupt the (half-)installed binary then roll back to the backed-up old one
   Set-Content -LiteralPath $agent -Value "HALF-BROKEN" -Encoding ascii
   $rb = Run-Stage $box 'rollback' @()
-  Check "rollback succeeds (exit 0)" ($rb -eq 0)
+  # This isolated sandbox deliberately has NO Scheduled Task. Production
+  # rollback must therefore restore the old binary but REFUSE to claim the
+  # site is running; exit 14 is the correct fail-closed result.
+  Check "rollback without a registered task refuses false running success (exit 14)" ($rb -eq 14)
   Check "rollback restores the previous working binary" (((Get-Content -LiteralPath $agent -Raw).Trim()) -eq "OLD-0.3.4")
   Remove-Item -LiteralPath $agent -Force
   $missing = Run-Stage $box 'verify-version' @("-ExpectedVersion","0.3.6")
