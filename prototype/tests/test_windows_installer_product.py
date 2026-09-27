@@ -160,6 +160,7 @@ def main():
             and "MAX_AUTO_SUBNETS = 4" in discover
             and "_VIRTUAL_ADAPTER_TOKENS" in discover
             and "return primary + secondary" in discover
+            and "SWEEP_WORKERS = 256" in discover
             and "SWEEP_FAST_PORTS = [37777, 8000, 80, 443]" in discover
             and "Recorder found. Confirming" in discover
             and "timeout_ms=40000" in gui
