@@ -149,6 +149,26 @@ class ProbeTests(unittest.TestCase):
         self.assertIn(8000, by_ip["10.44.7.119"])
         self.assertIn(37777, by_ip["192.168.10.108"])
 
+    def test_build69_eighth_subnet_recorder_is_still_discovered(self):
+        """Field-proven Build 69 searched eight /24s; keep that reach permanently."""
+        bases = [
+            "10.0.1", "10.0.2", "10.0.3", "10.0.4",
+            "10.0.5", "10.0.6", "10.0.7", "10.0.8",
+        ]
+        def fake_conn(address, timeout=None):
+            ip, port = address
+            if ip == "10.0.8.108" and port == 8000:
+                return MagicMock()
+            raise OSError("filtered")
+
+        with patch.object(discover, "_sweep_bases",
+                          return_value=(bases, [f"{b}.20" for b in bases])), \
+             patch("socket.create_connection", side_effect=fake_conn):
+            hits = discover.sweep(log=lambda *_a: None, progress=lambda *_a: None)
+
+        self.assertIn("10.0.8.108", dict(hits))
+        self.assertIn(8000, dict(hits)["10.0.8.108"])
+
     def test_physical_adapters_rank_before_virtual_adapters(self):
         fake = SimpleNamespace(
             net_if_stats=lambda: {
