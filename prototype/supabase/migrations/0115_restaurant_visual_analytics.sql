@@ -117,6 +117,24 @@ grant all on public.restaurant_tables to service_role;
 grant all on public.restaurant_visual_observations to service_role;
 grant all on public.restaurant_table_observations to service_role;
 
+create index if not exists restaurant_tables_tenant_site_idx
+  on public.restaurant_tables(tenant_id,site_id);
+create index if not exists restaurant_visual_observations_tenant_site_time_idx
+  on public.restaurant_visual_observations(tenant_id,site_id,captured_at desc);
+create index if not exists restaurant_table_observations_tenant_site_time_idx
+  on public.restaurant_table_observations(tenant_id,site_id,captured_at desc);
+create index if not exists restaurant_table_observations_camera_time_idx
+  on public.restaurant_table_observations(camera_id,captured_at desc);
+
+create policy restaurant_camera_profiles_no_direct on public.restaurant_camera_profiles
+  for all to authenticated using (false) with check (false);
+create policy restaurant_tables_no_direct on public.restaurant_tables
+  for all to authenticated using (false) with check (false);
+create policy restaurant_visual_observations_no_direct on public.restaurant_visual_observations
+  for all to authenticated using (false) with check (false);
+create policy restaurant_table_observations_no_direct on public.restaurant_table_observations
+  for all to authenticated using (false) with check (false);
+
 create or replace function public.wl_analytics_valid_site_type(p text)
 returns boolean
 language sql
