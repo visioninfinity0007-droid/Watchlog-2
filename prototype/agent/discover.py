@@ -431,10 +431,9 @@ def sweep(subnet: str | None = None, log=print,
             [(ip, port, SWEEP_TIMEOUT) for ip in hosts for port in SWEEP_FAST_PORTS],
             f"Checking local network {index}/{len(bases)} for recorder services…",
         )
-        # A native SDK signature is strong recorder evidence. Once one exists, do
-        # not burn the remaining user-visible wait budget sweeping unrelated subnets.
-        if _has_recorder_signature(found):
-            break
+        # Keep scanning the other ranked physical LANs in this fast phase so a PC
+        # connected to more than one recorder network can still present every strong
+        # candidate. The cap + timeout keep this finite.
 
     # Confirm every strong candidate with the complete port set, using the same
     # patient timeout. This recovers RTSP / alternate web ports without a broad scan.
@@ -462,8 +461,6 @@ def sweep(subnet: str | None = None, log=print,
             [(ip, port, SWEEP_DEEP_TIMEOUT) for ip in hosts for port in SWEEP_DEEP_PORTS],
             f"Checking alternate CCTV ports on network {index}/{len(bases)}…",
         )
-        if _has_recorder_signature(found):
-            break
 
     recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
     if recorder_ips and time.monotonic() < deadline:
