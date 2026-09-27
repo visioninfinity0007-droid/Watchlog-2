@@ -155,10 +155,18 @@ def main():
             and "for driver_name in drivers:" in backend
             and "preferred_port: int | None = None" in backend
             and "preferred_web_port" in backend,
-        "cold first-pass discovery retries until a recorder signature is actually present":
-            "def _has_recorder_signature" in discover
-            and "if not _has_recorder_signature(found):" in discover
-            and "SWEEP_WORKERS = 128" in discover,
+        "recorder discovery is bounded, physical-NIC-first, and never traps manual IP":
+            "DISCOVERY_DEADLINE_SECONDS = 32.0" in discover
+            and "MAX_AUTO_SUBNETS = 4" in discover
+            and "_VIRTUAL_ADAPTER_TOKENS" in discover
+            and "return primary + secondary" in discover
+            and "SWEEP_FAST_PORTS = [37777, 8000, 80, 443]" in discover
+            and "Recorder found. Confirming" in discover
+            and "timeout_ms=40000" in gui
+            and "Use this IP" in gui
+            and "self.manual_ip.setEnabled(True)" in gui
+            and "_discover.sweep(" in gui
+            and '["192.168.10", "10.44.7"]' in gui,
         "Hikvision PC-off path requests 30s NVR heartbeats and broken-link resend":
             "<heartbeat>30</heartbeat>" in hikvision
             and "<httpBroken>true</httpBroken>" in hikvision
