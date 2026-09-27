@@ -19,7 +19,7 @@ for text in FORBIDDEN_SAMPLE_METRICS:
 # Lock the current fail-closed behavior: real saved evidence or a plain
 # unavailable state, never sample/demo figures presented as tenant truth.
 assert "Management report" in PAGE
-assert "No saved report is available for yesterday yet." in PAGE
+assert "No saved evidence report is available for this service day yet." in PAGE
 assert "No report is available yet." in PAGE
 assert "Snapshot evidence" in PAGE
 assert "What happened, what needs attention, and whether WatchLog was watching reliably." in PAGE
