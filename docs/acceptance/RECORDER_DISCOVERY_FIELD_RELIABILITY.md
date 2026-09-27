@@ -49,11 +49,30 @@ The candidate changes:
 
 ## Promotion status
 
-Source fix: **IMPLEMENTED ON CANDIDATE BRANCH**.
+Source fix: **MERGED** to `build/site-connector-v5-watchlog2` at
+`7990cfe4e502b3b0722ba36588be1e0405653da4`.
 
-CI / packaged setup proof: **PENDING** until the current branch checks complete.
+CI / packaged setup proof: **PASSED**.
+- CI run 284: all seven jobs passed.
+- Windows Release **Build 77** / run id `36351124843`: passed.
+- Artifact: `WatchLog-Windows-77`, id `10941814471`.
+- Artifact ZIP digest:
+  `sha256:120f3d11329ddfbe59774e02209b5bc2b920daed3cc7f830dc4a5f8baeb28845`.
+- `WatchLog-Setup.exe` SHA-256:
+  `B73F314FA809FE38B04A2E8DC47FDD51E22864AFDE7EEE62B663734F9A53960C`.
+- `watchlog-agent.exe` SHA-256:
+  `1305EB5BB936AEFC9F77F8B5DE53481850B2E375CD064BE5F3C5C35F1280A429`.
+- `watchlog-setup-ui.exe` SHA-256:
+  `0889A810519B1A035C52CF213DFC9974A80EA3BF7BD1108AD75963A20FAF2203`.
+- Packaged setup-UI discovery behavior: **passed**, including the deterministic second-NIC
+  recorder simulation and discovery watchdog/manual-IP escape contracts.
+- Recorder discovery and login/connectivity release gates: **passed**.
+- Product version remains **5.0.21**; Build 77 identity and hashes distinguish this candidate
+  from Build 76. Do not infer remote-maintenance capability from the product version alone.
 
 Physical field acceptance: **NOT YET PROVEN**.
 
-Do not call the next installer field-reliable until the physical Hikvision + Dahua acceptance
-above has been completed.
+Build 77 is therefore a controlled **field candidate**, not a promoted fleet release.
+Do not call it field-reliable until the physical Hikvision + Dahua acceptance above has been
+completed. Existing enrolled upgrades preserve the stored recorder configuration and do not
+re-run Search Network unless the encrypted recorder credential is missing.
