@@ -117,6 +117,18 @@ grant all on public.restaurant_tables to service_role;
 grant all on public.restaurant_visual_observations to service_role;
 grant all on public.restaurant_table_observations to service_role;
 
+create or replace function public.wl_analytics_valid_site_type(p text)
+returns boolean
+language sql
+immutable
+set search_path=public,pg_temp
+as $
+  select p in (
+    'retail','warehouse_logistics','manufacturing','office_commercial',
+    'school_campus','parking_yard','residential_community','restaurant','custom'
+  )
+$;
+
 create or replace function public.wl_restaurant_site_config(p_site_id uuid)
 returns jsonb
 language plpgsql
@@ -133,11 +145,11 @@ begin
   if v_site.id is null then
     raise exception 'not authorized for this site' using errcode='42501';
   end if;
-  if v_site.site_type<>'restaurant' then
-    return jsonb_build_object('enabled',false,'site_type',v_site.site_type);
-  end if;
   select * into v_ctx from public.site_business_context
    where site_id=p_site_id and tenant_id=v_tenant;
+  if coalesce(v_ctx.site_type,v_site.site_type,'other')<>'restaurant' then
+    return jsonb_build_object('enabled',false,'site_type',coalesce(v_ctx.site_type,v_site.site_type,'other'));
+  end if;
 
   return jsonb_build_object(
     'enabled',true,
@@ -199,11 +211,11 @@ declare
 begin
   select * into v_site from public.sites where id=p_site_id and tenant_id=v_tenant;
   if v_site.id is null then raise exception 'not authorized for this site' using errcode='42501'; end if;
-  if v_site.site_type<>'restaurant' then
-    return jsonb_build_object('enabled',false,'site_type',v_site.site_type);
-  end if;
   select * into v_ctx from public.site_business_context
    where site_id=p_site_id and tenant_id=v_tenant;
+  if coalesce(v_ctx.site_type,v_site.site_type,'other')<>'restaurant' then
+    return jsonb_build_object('enabled',false,'site_type',coalesce(v_ctx.site_type,v_site.site_type,'other'));
+  end if;
 
   v_local_now := now() at time zone v_site.timezone;
   v_date := p_date;
