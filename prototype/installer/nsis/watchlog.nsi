@@ -158,7 +158,7 @@ Section "Install"
     ; it rather than dead-ending on the check below.
     ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
       DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
-      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
+      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" "--installer-child" --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
         ${If} $8 == "1"
@@ -173,7 +173,7 @@ Section "Install"
     ${EndIf}
   ${Else}
     DetailPrint "Opening WatchLog Setup..."
-    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
+    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" "--installer-child" --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
       ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
