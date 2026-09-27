@@ -157,7 +157,7 @@ def main():
             and "preferred_web_port" in backend,
         "recorder discovery is bounded, physical-NIC-first, and never traps manual IP":
             "DISCOVERY_DEADLINE_SECONDS = 32.0" in discover
-            and "MAX_AUTO_SUBNETS = 4" in discover
+            and "MAX_AUTO_SUBNETS = 8" in discover
             and "_VIRTUAL_ADAPTER_TOKENS" in discover
             and "return primary + secondary" in discover
             and "SWEEP_WORKERS = 256" in discover
