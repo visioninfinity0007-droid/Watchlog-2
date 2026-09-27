@@ -292,7 +292,16 @@ class SetupWindow(QMainWindow):
         cl.addWidget(label("OR ENTER THE LOCAL ADDRESS", "eyebrow"))
         self.manual_ip = QLineEdit(self.recorder_address)
         self.manual_ip.setPlaceholderText("192.168.1.108")
-        cl.addWidget(self.manual_ip)
+        manual_row = QHBoxLayout()
+        manual_row.addWidget(self.manual_ip, 1)
+        self.manual_use = QPushButton("Use this IP")
+        self.manual_use.setObjectName("secondary")
+        self.manual_use.clicked.connect(self.recorder_continue)
+        manual_row.addWidget(self.manual_use)
+        cl.addLayout(manual_row)
+        cl.addWidget(label(
+            "You can use the recorder IP immediately; automatic search may continue in the background.",
+            "muted"))
         l.addWidget(c)
         self.recorder_next = self._nav(
             l, 1, "Continue", self.recorder_continue, back_attr="recorder_back")
@@ -472,7 +481,17 @@ class SetupWindow(QMainWindow):
         # if that old worker returns later its token is stale and its signals are ignored.
         self._active_worker = 0
         self.set_busy(False)
-        if self.stack.currentIndex() == 3:
+        if self.stack.currentIndex() == 2:
+            # Network discovery is optional. A timeout must never trap setup:
+            # abandon this worker generation and leave manual IP immediately usable.
+            self._set_discovery_loading(False)
+            self.discovery_status.setText(message)
+            self.discovery_status.show()
+            self.status.setText(message)
+            self.search_btn.setEnabled(True)
+            self.manual_ip.setEnabled(True)
+            self.manual_use.setEnabled(True)
+        elif self.stack.currentIndex() == 3:
             # Recorder login is recoverable operator input. A timeout here must
             # never kill the whole installer, even in installer-child mode.
             self._set_login_loading(False)
@@ -535,7 +554,10 @@ class SetupWindow(QMainWindow):
         self.discovery_status.setVisible(active)
         self.search_btn.setText("Searching…" if active else "Search Network")
         self.recorder_list.setEnabled(not active)
-        self.manual_ip.setEnabled(not active)
+        # Build 74 trapped the operator behind a long network scan. Manual-IP is
+        # an independent, deterministic connection path and must stay available.
+        self.manual_ip.setEnabled(True)
+        self.manual_use.setEnabled(True)
         self.recorder_next.setEnabled(not active)
         self.recorder_back.setEnabled(not active)
         if active:
@@ -550,8 +572,15 @@ class SetupWindow(QMainWindow):
             return
         self.recorder_list.clear()
         self._set_discovery_loading(True)
-        self.run_worker(backend.discover_recorders, (), self.show_recorders,
-                        "Searching the local network…")
+        self.run_worker(
+            backend.discover_recorders, (), self.show_recorders,
+            "Searching the local network…",
+            timeout_ms=40000,
+            timeout_message=(
+                "Automatic search reached its 40-second safety limit. "
+                "Enter the recorder IP and click Use this IP, or retry Search Network."
+            ),
+        )
 
     def show_recorders(self, rows):
         self._set_discovery_loading(False)
@@ -611,6 +640,16 @@ class SetupWindow(QMainWindow):
         if not address:
             QMessageBox.warning(self, "WatchLog Setup", "Select a discovered recorder or enter its local IP address.")
             return
+
+        # Manual IP is the deterministic escape hatch from automatic discovery.
+        # We cannot kill a Python worker thread safely, so invalidate its generation;
+        # any late result is ignored by the token checks already used for login timeouts.
+        if self._busy and self.stack.currentIndex() == 2:
+            self._worker_seq += 1
+            self._active_worker = 0
+            self.set_busy(False)
+            self._set_discovery_loading(False)
+
         self.recorder_address = address
         row = self._discovered.get(address)
         self.recorder_hint = ({"ports": row.get("ports"),
@@ -972,11 +1011,60 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             # Recreate the asynchronous discovery race.
             window.go(2)
             window.set_busy(True, "Searching the local network…")
+            window._set_discovery_loading(True)
             if window.recorder_next.isEnabled():
                 return 24
-            window.set_busy(False)
-            if not window.recorder_next.isEnabled():
+            # Build 74 trapped the technician until discovery returned. The fixed
+            # packaged UI must keep the deterministic manual-IP path available.
+            if not window.manual_ip.isEnabled() or not window.manual_use.isEnabled():
                 return 25
+            window.manual_ip.setText("10.10.10.2")
+            window._active_worker = 91
+            window.recorder_continue()
+            app.processEvents()
+            if window.stack.currentIndex() != 3 or window._active_worker != 0:
+                return 26
+
+            # Discovery watchdog itself must recover to a usable page, not spinner-forever.
+            window.go(2)
+            window._active_worker = 92
+            window._set_discovery_loading(True)
+            window._worker_timeout(92, "discovery watchdog fired")
+            app.processEvents()
+            if window.discovery_progress.isVisible():
+                return 27
+            if not window.manual_use.isEnabled() or "watchdog" not in window.discovery_status.text():
+                return 28
+
+            # Exercise the DISCOVERY ENGINE inside the frozen setup executable, not just
+            # a synthetic recorder-list row. The recorder exists only on the second CCTV
+            # subnet, matching the multi-NIC field failure that Build 74 did not catch.
+            import discover as _discover
+
+            class _FakeConnect:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *_args):
+                    return False
+
+            def _fake_connect(address, timeout=None):
+                ip, port = address
+                if ip == "10.44.7.119" and port == 8000:
+                    return _FakeConnect()
+                raise OSError("filtered")
+
+            discovery_started = time.monotonic()
+            simulated_hits = _discover.sweep(
+                log=lambda *_a: None,
+                progress=lambda *_a: None,
+                _bases=(["192.168.10", "10.44.7"],
+                        ["192.168.10.25", "10.44.7.20"]),
+                _connect=_fake_connect,
+            )
+            if 8000 not in dict(simulated_hits).get("10.44.7.119", []):
+                return 29
+            if time.monotonic() - discovery_started > 5.0:
+                return 30
 
             # Standalone Setup keeps login timeout retryable. Installer-child timeout
             # is terminal and is exercised after the success/failure lifecycle checks below.
@@ -992,12 +1080,12 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                     app.processEvents()
                     time.sleep(0.01)
                 if not window.login_next.isEnabled() or "watchdog" not in window.login_error.text():
-                    return 26
+                    return 31
                 # Let the abandoned worker finish; its stale result must not move the UI.
                 time.sleep(0.10)
                 app.processEvents()
                 if window.stack.currentIndex() != 3:
-                    return 27
+                    return 32
 
             # Recreate the Step 06 field outcome: core connection + background agent are
             # already proven. finalize_ok must go straight to Ready and must not launch
@@ -1012,7 +1100,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             })
             app.processEvents()
             if window.stack.currentIndex() != 6 or not window.site_connected:
-                return 28
+                return 33
 
             if installer_child:
                 deadline = time.monotonic() + 3.5
@@ -1021,7 +1109,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                     time.sleep(0.02)
                 app.processEvents()
                 if window.exit_code != 0 or window.isVisible():
-                    return 29
+                    return 34
 
                 failed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
                 failed.show()
@@ -1039,7 +1127,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                     time.sleep(0.02)
                 app.processEvents()
                 if failed.exit_code != 2 or failed.isVisible():
-                    return 30
+                    return 35
 
                 timed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
                 timed.show()
@@ -1048,13 +1136,13 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 timed._worker_timeout(99, "login watchdog fired")
                 app.processEvents()
                 if not timed.isVisible():
-                    return 31
+                    return 36
                 if timed.exit_code != 1:
-                    return 32
+                    return 37
                 if not timed.login_next.isEnabled():
-                    return 33
+                    return 38
                 if "watchdog" not in timed.login_error.text():
-                    return 34
+                    return 39
                 timed.close()
             else:
                 window.close()

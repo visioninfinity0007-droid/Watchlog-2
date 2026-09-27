@@ -109,13 +109,13 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual([], bases)
         self.assertEqual([], addresses)
 
-    def test_router_answer_does_not_suppress_recorder_retry(self):
-        """A router responding on pass one must not hide a slow Dahua NVR."""
+    def test_router_answer_does_not_hide_native_recorder_signature(self):
+        """A generic router response must not hide a Dahua recorder on the same LAN."""
         def fake_conn(address, timeout=None):
             ip, port = address
-            if ip == "10.0.0.1" and port == 80 and timeout == discover.SWEEP_TIMEOUT:
+            if ip == "10.0.0.1" and port == 80:
                 return MagicMock()
-            if ip == "10.0.0.119" and port == 37777 and timeout == discover.SWEEP_RETRY_TIMEOUT:
+            if ip == "10.0.0.119" and port == 37777:
                 return MagicMock()
             raise OSError("filtered")
 
@@ -125,11 +125,50 @@ class ProbeTests(unittest.TestCase):
              patch("socket.create_connection", side_effect=fake_conn):
             hits = discover.sweep(log=lambda *_a: None, progress=progress.append)
 
-        self.assertIn(("10.0.0.1", [80]), hits)
-        self.assertIn(("10.0.0.119", [37777]), hits)
-        self.assertTrue(any("again" in msg.lower() for msg in progress))
+        by_ip = dict(hits)
+        self.assertIn(80, by_ip["10.0.0.1"])
+        self.assertIn(37777, by_ip["10.0.0.119"])
+        self.assertTrue(any("confirm" in msg.lower() for msg in progress))
 
-    def test_setup_sweep_concurrency_is_bounded(self):
+    def test_multiple_ranked_lans_preserve_multiple_recorder_candidates(self):
+        """Bounding discovery must not hide a second real recorder LAN."""
+        def fake_conn(address, timeout=None):
+            ip, port = address
+            if ip == "10.44.7.119" and port == 8000:
+                return MagicMock()
+            if ip == "192.168.10.108" and port == 37777:
+                return MagicMock()
+            raise OSError("filtered")
+
+        with patch.object(discover, "_sweep_bases",
+                          return_value=(["10.44.7", "192.168.10"], ["10.44.7.20", "192.168.10.25"])), \
+             patch("socket.create_connection", side_effect=fake_conn):
+            hits = discover.sweep(log=lambda *_a: None, progress=lambda *_a: None)
+
+        by_ip = dict(hits)
+        self.assertIn(8000, by_ip["10.44.7.119"])
+        self.assertIn(37777, by_ip["192.168.10.108"])
+
+    def test_physical_adapters_rank_before_virtual_adapters(self):
+        fake = SimpleNamespace(
+            net_if_stats=lambda: {
+                "vEthernet (Default Switch)": SimpleNamespace(isup=True),
+                "CCTV Ethernet": SimpleNamespace(isup=True),
+                "Wi-Fi": SimpleNamespace(isup=True),
+            },
+            net_if_addrs=lambda: {
+                "vEthernet (Default Switch)": [SimpleNamespace(family=socket.AF_INET, address="172.22.64.1")],
+                "CCTV Ethernet": [SimpleNamespace(family=socket.AF_INET, address="10.44.7.20")],
+                "Wi-Fi": [SimpleNamespace(family=socket.AF_INET, address="192.168.10.25")],
+            },
+        )
+        with patch.object(discover, "psutil", fake):
+            addresses = discover._adapter_ipv4s()
+        self.assertEqual(["10.44.7.20", "192.168.10.25", "172.22.64.1"], addresses)
+
+    def test_setup_sweep_has_hard_product_budget(self):
+        self.assertLessEqual(discover.MAX_AUTO_SUBNETS, 4)
+        self.assertLessEqual(discover.DISCOVERY_DEADLINE_SECONDS, 32)
         self.assertLessEqual(discover.SWEEP_WORKERS, 256)
 
     def test_hikvision_isapi_deep_probe_auth_required(self):
