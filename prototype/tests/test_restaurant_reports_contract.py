@@ -63,7 +63,7 @@ def test_chaiwala_config_is_reproducible_and_role_specific():
         "office_security",
     ):
         assert f"'{role}'" in CONFIG
-    assert CONFIG.count("'anchor_match'") == 23
+    assert CONFIG.count(",4,'anchor_match'") == 23
     assert "'F1-01'" in CONFIG and "'F1-13'" in CONFIG
     assert "'F2-01'" in CONFIG and "'F2-10'" in CONFIG
     assert '"customer_footfall_available":false' in CONFIG
