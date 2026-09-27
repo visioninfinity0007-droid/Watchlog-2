@@ -214,22 +214,67 @@ class OnvifDriver(NvrDriver):
             return [Channel(channel="1", name="Channel 1")]
 
         root = self._call(self.media_service, "<trt:GetProfiles/>")
-        out: list[Channel] = []
+
+        # ONVIF GetProfiles returns ENCODING PROFILES, not physical cameras. A
+        # recorder commonly exposes MainStream + SubStream for the same
+        # VideoSourceConfiguration/SourceToken. Treating each profile as a
+        # channel created duplicate "cameras" in WatchLog. Collapse profiles by
+        # SourceToken and retain one preferred profile token for snapshots.
+        groups: list[dict] = []
+        by_source: dict[str, dict] = {}
         for idx, prof in enumerate(root.findall(".//Profiles"), start=1):
             name_node = prof.find("Name")
+            name = (name_node.text.strip()
+                    if name_node is not None and name_node.text
+                    else f"Camera {idx}")
             src = prof.find(".//VideoSourceConfiguration/SourceToken")
-            token = src.text.strip() if src is not None and src.text else None
-            channel = str(idx)
-            if token:
-                self._source_to_channel[token] = channel
-            tok = prof.get("token") or prof.findtext("token")
-            if tok:
-                self._profile_tokens[channel] = tok
-            out.append(Channel(
-                channel=channel,
-                name=(name_node.text.strip()
-                      if name_node is not None and name_node.text
-                      else f"Channel {idx}")))
+            source_token = src.text.strip() if src is not None and src.text else ""
+            profile_token = prof.get("token") or prof.findtext("token") or ""
+
+            # If a device omits SourceToken, fail safe: that profile remains a
+            # separate camera rather than accidentally merging unrelated views.
+            key = source_token or f"__profile__:{profile_token or idx}"
+            row = by_source.get(key)
+            is_sub = bool(re.search(r"(sub[ _-]?stream|stream[ _-]?2)", name, re.I))
+            is_main = bool(re.search(r"(main[ _-]?stream|stream[ _-]?1)", name, re.I))
+            if row is None:
+                row = {
+                    "source_token": source_token,
+                    "profile_token": profile_token,
+                    "name": name,
+                    "is_sub": is_sub,
+                    "is_main": is_main,
+                }
+                by_source[key] = row
+                groups.append(row)
+            elif row.get("is_sub") and not is_sub:
+                # Prefer a non-sub/main profile for snapshot quality when both
+                # profiles point at the same physical video source.
+                row.update(profile_token=profile_token, name=name,
+                           is_sub=is_sub, is_main=is_main)
+            elif is_main and not row.get("is_main"):
+                row.update(profile_token=profile_token, name=name,
+                           is_sub=is_sub, is_main=is_main)
+
+        self._source_to_channel.clear()
+        self._profile_tokens.clear()
+        out: list[Channel] = []
+        for physical_idx, row in enumerate(groups, start=1):
+            channel = str(physical_idx)
+            source_token = row.get("source_token") or ""
+            if source_token:
+                self._source_to_channel[source_token] = channel
+            if row.get("profile_token"):
+                self._profile_tokens[channel] = str(row["profile_token"])
+
+            raw_name = str(row.get("name") or "").strip()
+            # Dahua/Hikvision ONVIF profile labels are transport/profile names,
+            # not customer-facing camera names. Use a neutral physical camera
+            # label until the operator names it in Guided Setup.
+            if re.search(r"mediaprofile[_ -]*channel\d+", raw_name, re.I):
+                raw_name = f"Camera {physical_idx}"
+            out.append(Channel(channel=channel,
+                               name=raw_name or f"Camera {physical_idx}"))
         return out or [Channel(channel="1", name="Channel 1")]
 
     # -- events ---------------------------------------------------------

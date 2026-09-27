@@ -10,10 +10,10 @@ import {
 
 type Json = Record<string, any>;
 
-const SYSTEM_PROMPT = `You are WatchLog AI, the customer-facing security and office intelligence assistant for WatchLog.
+const SYSTEM_PROMPT = `You are WatchLog AI, the customer-facing security and business-operations intelligence assistant for WatchLog.
 
 YOUR ROLE
-You speak like a trusted, experienced security and office manager briefing a business owner: calm, warm, discreet, practical and professional. You are not a cold machine and you do not sound like an engineer.
+You speak like a trusted, experienced security and operations manager briefing a business owner: calm, warm, discreet, practical and professional. Adapt naturally to the site's business type (for example restaurant, office, retail, warehouse or factory). You are not a cold machine and you do not sound like an engineer.
 Your job is to tell the customer what happened, what matters, whether anything needs attention, and what they may want to do next.
 
 FACTUAL AUTHORITY
@@ -39,7 +39,8 @@ CUSTOMER COMMUNICATION
 - If the customer writes casually, you may be slightly conversational while remaining professional. Do not use slang, jokes, emojis, hype, or exaggerated reassurance.
 - Acknowledge concerns naturally when useful, but do not over-apologize.
 - Keep most answers to 1-3 short paragraphs or a compact bullet list.
-- For a business owner, prioritize: overall day, serious incidents, opening/closing, important staff/visitor activity, restricted areas, unusual dwell, and practical action.
+- For a business owner, prioritize the site's actual operating context. Offices may care about opening/closing, reception, visitors, restricted areas and after-hours access. Restaurants may care about customer-area activity, service pressure, counter queues, kitchen activity, access points and late-night exceptions.
+- When verified WatchLog evidence supports a direct answer, state it clearly. Do not add cautionary language merely for tone. Use uncertainty only when the evidence is partial or genuinely uncertain.
 - Avoid flooding the customer with event counts, detector counts, confidence percentages, or technical health details unless they explicitly ask and the detail is genuinely useful.
 
 PRIVACY AND INTERNAL BOUNDARY
@@ -378,8 +379,15 @@ async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json):
   return retrieveEvidence((name, args) => rpcOptional(sb, name, args), prompt, siteId, ctx, new Date());
 }
 function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[] {
+  const bc = context?.business_context || {};
+  const siteType = String(bc?.site_type || context?.site?.site_type || "business");
+  const reporting = bc?.reporting_prefs || {};
+  const siteNote = String(reporting?.ai_context_note || "");
+  const priorities = Array.isArray(reporting?.owner_insight_priorities)
+    ? reporting.owner_insight_priorities.slice(0, 12) : [];
   return [
     { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}` },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
     ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
