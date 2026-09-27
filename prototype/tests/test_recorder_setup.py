@@ -150,6 +150,22 @@ def test_hikvision_8000_preferred():
     assert out["ok"] and out["result"]["driver"] == "hikvision-isapi"
 
 
+def test_chai_wala_known_ip_uses_exact_host_and_hikvision_native_first():
+    """The field build knows the target family but still scans the exact host so
+    a changed/disabled web port fails truthfully instead of trusting a hardcoded port."""
+    out = run(
+        "192.168.18.15",
+        hint={"vendor_hint": "hikvision", "source": "Chai Wala field profile"},
+        scan_ports=[80, 554, 8000],
+        rules={"hikvision-isapi": {"vendor": "Hikvision", "model": "DS-LAB", "channels": 8}},
+    )
+    assert out["ok"]
+    assert out["result"]["driver"] == "hikvision-isapi"
+    assert out["result"]["url"] == "http://192.168.18.15"
+    assert out["built"][0] == ("hikvision-isapi", "http://192.168.18.15")
+    assert "Checking recorder at 192.168.18.15" in " | ".join(out["progress"])
+
+
 # --- 7. Xiongmai 34567: immediate unsupported ------------------------------
 
 def test_xiongmai_34567_unsupported_immediately():
