@@ -172,8 +172,8 @@ class CmdAccept(unittest.TestCase):
         self.assertIn("RESULT: ACCEPTED", out)
         self.assertTrue(report["ready"])
         keys = [c["key"] for c in report["checks"]]
-        self.assertEqual(keys, ["config", "identity", "runtime", "cloud", "recorder",
-                                "cameras", "archive", "live", "ai", "spool", "security"])
+        self.assertEqual(keys, ["config", "identity", "cloud", "recorder", "cameras",
+                                "spool", "security", "runtime", "archive", "live", "ai"])
 
     def test_plaintext_recorder_password_blocks(self):
         code, out, report = _run_accept(_ini_text="[watchlog]\nnvr_password = Sup3rSecret!\n")
