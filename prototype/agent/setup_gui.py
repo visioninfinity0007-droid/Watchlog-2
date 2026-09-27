@@ -1036,6 +1036,36 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             if not window.manual_use.isEnabled() or "watchdog" not in window.discovery_status.text():
                 return 28
 
+            # Exercise the DISCOVERY ENGINE inside the frozen setup executable, not just
+            # a synthetic recorder-list row. The recorder exists only on the second CCTV
+            # subnet, matching the multi-NIC field failure that Build 74 did not catch.
+            import discover as _discover
+
+            class _FakeConnect:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *_args):
+                    return False
+
+            def _fake_connect(address, timeout=None):
+                ip, port = address
+                if ip == "10.44.7.119" and port == 8000:
+                    return _FakeConnect()
+                raise OSError("filtered")
+
+            discovery_started = time.monotonic()
+            simulated_hits = _discover.sweep(
+                log=lambda *_a: None,
+                progress=lambda *_a: None,
+                _bases=(["192.168.10", "10.44.7"],
+                        ["192.168.10.25", "10.44.7.20"]),
+                _connect=_fake_connect,
+            )
+            if 8000 not in dict(simulated_hits).get("10.44.7.119", []):
+                return 29
+            if time.monotonic() - discovery_started > 5.0:
+                return 30
+
             # Standalone Setup keeps login timeout retryable. Installer-child timeout
             # is terminal and is exercised after the success/failure lifecycle checks below.
             if not installer_child:
@@ -1050,12 +1080,12 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                     app.processEvents()
                     time.sleep(0.01)
                 if not window.login_next.isEnabled() or "watchdog" not in window.login_error.text():
-                    return 29
+                    return 31
                 # Let the abandoned worker finish; its stale result must not move the UI.
                 time.sleep(0.10)
                 app.processEvents()
                 if window.stack.currentIndex() != 3:
-                    return 30
+                    return 32
 
             # Recreate the Step 06 field outcome: core connection + background agent are
             # already proven. finalize_ok must go straight to Ready and must not launch
@@ -1070,7 +1100,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             })
             app.processEvents()
             if window.stack.currentIndex() != 6 or not window.site_connected:
-                return 31
+                return 33
 
             if installer_child:
                 deadline = time.monotonic() + 3.5
@@ -1079,7 +1109,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                     time.sleep(0.02)
                 app.processEvents()
                 if window.exit_code != 0 or window.isVisible():
-                    return 32
+                    return 34
 
                 failed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
                 failed.show()
@@ -1097,7 +1127,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                     time.sleep(0.02)
                 app.processEvents()
                 if failed.exit_code != 2 or failed.isVisible():
-                    return 33
+                    return 35
 
                 timed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
                 timed.show()
@@ -1106,13 +1136,13 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 timed._worker_timeout(99, "login watchdog fired")
                 app.processEvents()
                 if not timed.isVisible():
-                    return 34
-                if timed.exit_code != 1:
-                    return 35
-                if not timed.login_next.isEnabled():
                     return 36
-                if "watchdog" not in timed.login_error.text():
+                if timed.exit_code != 1:
                     return 37
+                if not timed.login_next.isEnabled():
+                    return 38
+                if "watchdog" not in timed.login_error.text():
+                    return 39
                 timed.close()
             else:
                 window.close()
