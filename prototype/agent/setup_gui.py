@@ -841,6 +841,16 @@ class SetupWindow(QMainWindow):
     def _close_installer_child(self, code: int) -> None:
         """Terminate every top-level window owned by the installer-child process."""
         self.exit_code = int(code)
+
+        # Site Status can be opened from Ready and is a separate top-level
+        # window. Close it explicitly so it can never keep NSIS ExecWait alive.
+        status_win = getattr(self, "_status_win", None)
+        if status_win is not None:
+            try:
+                status_win.close()
+            except Exception:
+                pass
+
         app = QApplication.instance()
         if app is not None:
             for widget in list(app.topLevelWidgets()):
@@ -848,7 +858,10 @@ class SetupWindow(QMainWindow):
                     widget.close()
                 except Exception:
                     pass
-            app.exit(int(code))
+            if int(code) == 0:
+                app.exit(0)
+            else:
+                app.exit(int(code))
         else:
             self.close()
 
