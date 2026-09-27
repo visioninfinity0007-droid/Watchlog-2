@@ -15,6 +15,7 @@ on:
   push:
     branches:
       - 'build/site-connector-v5-watchlog2'
+      - 'field/chai-wala-build69-hikvision'
     tags:
       - 'v*'
     paths-ignore:
@@ -42,6 +43,7 @@ jobs:
       # build simply ships without PC-free reporting, which is what every release before
       # 0.4.11 did silently.
       WATCHLOG_PUSH_BRIDGE_URL: ${{ vars.WATCHLOG_PUSH_BRIDGE_URL }}
+      WATCHLOG_BUILD_CHANNEL: ${{ github.ref_name == 'field/chai-wala-build69-hikvision' && 'field-chai-wala-b69' || 'production' }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
       # Tag pushes (v*) are always production: they must hard-fail without valid
@@ -302,7 +304,7 @@ jobs:
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
         with:
-          name: WatchLog-Windows-${{ github.run_number }}
+          name: ${{ github.ref_name == 'field/chai-wala-build69-hikvision' && format('WatchLog-ChaiWala-B69-{0}', github.run_number) || format('WatchLog-Windows-{0}', github.run_number) }}
           path: |
             dist-installer/WatchLog-Setup.exe
             dist-installer/WatchLog-Setup.exe.sha256
