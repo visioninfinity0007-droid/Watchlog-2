@@ -12,7 +12,10 @@ STUDIO = (ROOT / "portal/app/analytics/studio/page.js").read_text()
 OVERVIEW = (ROOT / "portal/app/analytics/page.js").read_text()
 SHELL = (ROOT / "portal/app/shell.js").read_text()
 NAV = (ROOT / "portal/app/nav-config.js").read_text()
-HEALTH = (ROOT / "portal/app/site-health/page.js").read_text()
+HEALTH = "\n".join([
+    (ROOT / "portal/app/site-health/page.js").read_text(),
+    (ROOT / "portal/app/site-health/health-workspace.js").read_text(),
+])
 
 
 def check() -> None:
