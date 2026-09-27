@@ -18,7 +18,7 @@ A successor Windows build may only be promoted for field use when all of these a
 
 1. Automatic discovery has a hard backend time budget and a separate UI watchdog.
 2. Physical Ethernet/Wi-Fi networks are searched before virtual/VPN/Hyper-V/Docker networks.
-3. The automatic subnet set is bounded; an unusual topology always retains manual-IP and
+3. The automatic subnet set preserves Build 69's eight-/24 coverage but is time-bounded; an unusual topology always retains manual-IP and
    explicit-subnet escape paths.
 4. A technician can enter/use the recorder IP while automatic search is still running.
 5. Hikvision and Dahua native/control ports are checked before broad uncommon-port scanning.
@@ -38,7 +38,7 @@ A successor Windows build may only be promoted for field use when all of these a
 Branch: `fix/discovery-field-reliability-v5`
 
 The candidate changes:
-- cap broad automatic scanning to the four highest-ranked local /24s;
+- preserve Build 69's eight-/24 automatic discovery reach while ranking physical LANs first;
 - rank physical interfaces before virtual/VPN interfaces;
 - use a 32-second discovery budget;
 - use a 40-second setup-UI watchdog;
@@ -76,3 +76,19 @@ Build 77 is therefore a controlled **field candidate**, not a promoted fleet rel
 Do not call it field-reliable until the physical Hikvision + Dahua acceptance above has been
 completed. Existing enrolled upgrades preserve the stored recorder configuration and do not
 re-run Search Network unless the encrypted recorder credential is missing.
+
+
+## Golden baseline: Build 69
+
+Field-proven Windows Release Build 69 is the discovery/connectivity regression baseline:
+- release run 69;
+- source SHA `811d378e3a7556047f294bb128b8caf45a295469`;
+- automatic discovery covered up to eight local /24s;
+- the common recorder port set included HTTP/HTTPS, Hikvision 8000, Dahua 37777/37778,
+  RTSP 554, alternate web ports and 34567;
+- recorder login used a 5-second per-probe timeout, an 18-second backend deadline and a
+  30-second UI watchdog.
+
+A newer build may reorder/prioritize those probes and may bound concurrency/deadlines, but
+it must not silently reduce this field-proven reach. Build 69 itself remains the live-site
+reference until a successor passes physical Hikvision and Dahua acceptance.
