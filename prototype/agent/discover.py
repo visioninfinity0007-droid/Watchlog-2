@@ -382,9 +382,10 @@ def sweep(subnet: str | None = None, log=print,
 
     Automatic discovery is deliberately bounded. It scans the most likely four local
     /24s (physical adapters first), then returns whatever it proved before the global
-    deadline. A strong recorder-native signature ends the broad scan early after the
-    identified host(s) are service-confirmed. Manual IP and explicit-subnet paths are
-    never removed.
+    deadline. The fast phase preserves multiple strong recorder candidates across those
+    ranked LANs; once that phase proves native recorder signatures, only those recorder
+    hosts are service-confirmed and the expensive deep broad scan is skipped. Manual IP
+    and explicit-subnet paths are never removed.
     """
     bases, addresses = _bases if _bases is not None else _sweep_bases(subnet)
     connect_fn = _connect or socket.create_connection
