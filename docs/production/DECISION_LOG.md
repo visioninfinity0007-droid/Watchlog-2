@@ -5,6 +5,40 @@ Format: Decision · Reason · Evidence · Rollback.
 
 ---
 
+### 2026-09-28 · Camera identity — physical cameras are canonical; ONVIF stream profiles are transport detail
+- **Decision:** model one customer-visible camera per physical video source. ONVIF MainStream/SubStream profiles may be retained as hidden historical transport rows but must not appear as separate cameras.
+- **Reason:** Al-Khalid's Dahua recorder exposed 16 ONVIF profiles for 8 physical cameras, which corrupted camera counts and role semantics.
+- **Evidence:** production now has 16 retained rows / 8 canonical physical cameras for Al-Khalid; Build 76 normalizes ONVIF profiles by source token; cloud sync remains backward-compatible with older Agents.
+- **Safety:** contradictory legacy Reception/Director/Armory/Admin role rules were disabled rather than guessed. Historical evidence was preserved.
+
+### 2026-09-28 · Site lifecycle — removing a Site revokes its Agent identity
+- **Decision:** Owner/Admin site removal requires exact-name confirmation and deletes the Site, its enrolled Agent identity, site-scoped chats, and all site-owned data through audited cascades.
+- **Reason:** customers need a complete disconnect/remove operation, not an orphaned Agent/site row.
+- **Evidence:** `wl_remove_site(uuid,text)` exists live; rollback-transaction acceptance verified site=0, agent=0 and site chat=0 after removal; site-owned foreign keys were audited for cascade behavior.
+
+### 2026-09-28 · Notifications — one customer inbox over existing incident/health/report truth
+- **Decision:** Notification Center is a read/read-state layer over incidents, operational faults and report snapshots; external report/alert delivery remains in the existing delivery engine.
+- **Reason:** avoid duplicating alert/report truth into a second notification pipeline.
+- **Evidence:** `notification_reads`, `wl_notifications`, `wl_notification_mark_read` and `wl_notifications_mark_all_read` are live; portal Notifications UI is on product main.
+
+### 2026-09-28 · Watch AI — site-type-aware business operations assistant
+- **Decision:** Watch AI adapts to site/business context rather than universally presenting itself as an office assistant.
+- **Reason:** WatchLog now serves both offices and the Chai Wala restaurant; office-only prompt framing biased answers.
+- **Evidence:** live Edge Function contains the business-operations identity, `SITE OPERATING CONTEXT`, owner priorities and the invariant `UNKNOWN means unconfirmed`.
+- **Boundary:** guardrails remain for tenant isolation, credentials, unsupported capabilities and recorder writes; verified evidence should still be answered directly.
+
+### 2026-09-28 · Visual Worker — context-aware design is implemented, deployment health remains a separate gate
+- **Decision:** keep CCTV visual review on WatchLog-controlled MinIO + local Ollama and feed it site/camera business context.
+- **Reason:** restaurant and office cameras require different operational interpretations; raw CCTV should not be sent externally merely to make review work.
+- **Evidence:** context-aware worker/migration exists; current production audit found no active worker heartbeat and 3,425 pending / 2,119 failed review jobs.
+- **Boundary:** do not describe Visual Worker as live until heartbeat + fresh completed reviews are observed.
+
+### 2026-09-28 · Incident footage — cloud claim path proven; field clip export requires Build-76 acceptance
+- **Decision:** keep bounded recorder-native clip requests and treat physical-recorder success as the field gate.
+- **Reason:** the Chai Wala Build-69 Agent successfully claimed a clip request but its DS-7608NI-Q1 returned no validated video bytes.
+- **Evidence:** production request reached processing and ended `unsupported`; Build 76 adds Hikvision search-first/recorder-returned playback URI and GET/POST download compatibility.
+- **Boundary:** do not claim Chai Wala clip extraction field-proven until Build 76 or later returns real bounded footage from the recorder.
+
 ### 2026-09-01 · P11/closure — One authoritative pricing source (website == billing), CI-enforced
 - **Decision:** treat the **published website** as the single source of truth for demo pricing —
   Starter PKR 6,000/mo, Growth PKR 12,000/mo, Enterprise "Talk to us" (contact-only). `0022_pricing_align.sql`

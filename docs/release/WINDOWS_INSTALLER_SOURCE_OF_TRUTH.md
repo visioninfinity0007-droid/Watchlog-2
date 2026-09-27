@@ -1,5 +1,7 @@
 # Windows installer source of truth
 
+For current live tenant/site/runtime context, also read `docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`.
+
 **Purpose:** prevent release work, support analysis, or AI-assisted changes from
 patching the wrong WatchLog repository.
 
@@ -113,7 +115,8 @@ Build 76 is the correct field installer for both Dahua and Hikvision.
 - **Build 69 / 5.0.17** — fast native-auth/login regression baseline; intermittent near 30-second field timeout.
 - **Build 70 / 5.0.18** — duplicate-login/Step-06 fix; 24-second login watchdog proved too aggressive in field use.
 - **Build 71 / 5.0.19** — retryable login UI + shorter Dahua identity path; 22-second watchdog still false-timed out.
-- **Build 72 / 5.0.20** — deterministic first-pass discovery + bounded same-endpoint recorder auth fallback + visible progress.\n- **Build 76 / 5.0.21** — current successful Windows baseline; physical-camera ONVIF de-duplication + legacy-profile compatibility + Hikvision recorded-footage retrieval hardening.
+- **Build 72 / 5.0.20** — deterministic first-pass discovery + bounded same-endpoint recorder auth fallback + visible progress.
+- **Build 76 / 5.0.21** — current successful Windows baseline; physical-camera ONVIF de-duplication + legacy-profile compatibility + Hikvision recorded-footage retrieval hardening.
 
 ## Mandatory rule for future installer work
 
@@ -158,7 +161,7 @@ production-active until `watchlog-push-bridge` is redeployed from main and a
 fresh recorder POST advances `push_sources.last_push_at`.
 
 Field acceptance for Build 76:
-1. install/upgrade one Dahua and one Hikvision site with Build 72;
+1. install/upgrade one Dahua and one Hikvision site with Build 76;
 2. prove both recorders connect and a recent bounded historical retrieval works;
 3. create an Internet/PC/recorder connectivity gap and prove missed data is
    recovered/backfilled after connectivity returns;

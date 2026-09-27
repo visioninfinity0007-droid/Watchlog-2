@@ -17,6 +17,32 @@ in `index.ts`. It does not read this YAML tree; it enforces routing in code:
 Authorized scope is always resolved by the **application** (`wl_my_tenant()` / `wl_assert_my_site`),
 never by a model: `tenant → site → allowed cameras → allowed date/time → allowed event/incident IDs`.
 
+
+## Live site/business context
+
+The harness content folders `site-types/` and `skills/` are still planned content
+artifacts, but the **runtime site/business context is already live** through
+`site_business_context` and `wl_ai_context`.
+
+The Watch AI Edge Function injects a customer-safe `SITE OPERATING CONTEXT`
+containing:
+
+- site/business type;
+- owner insight priorities;
+- site-specific AI guidance;
+- canonical camera roles from the production context.
+
+Current verified production examples are documented in
+`docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`:
+
+- Al-Khalid Security Services — office;
+- HASCO Steel Head Office — office;
+- Chai Wala - Chota Bukhari — restaurant.
+
+Do not interpret the absence of `ai-harness/site-types/` YAML files as meaning
+the runtime lacks business context. Conversely, do not invent site-type skills
+that are not backed by configured analytics/evidence.
+
 ## Implemented harness content (safe to reference)
 
 - `taxonomy/` — observations, activities, entities, incident-families, severity.
