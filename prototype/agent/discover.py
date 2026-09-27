@@ -210,7 +210,7 @@ RECORDER_SIGNATURE_PORTS = {37777, 37778, 8000, 34567}
 SWEEP_TIMEOUT = 0.75
 SWEEP_DEEP_TIMEOUT = 0.35
 SWEEP_WORKERS = 192
-MAX_AUTO_SUBNETS = 4
+MAX_AUTO_SUBNETS = 8
 DISCOVERY_DEADLINE_SECONDS = 32.0
 
 
@@ -380,8 +380,8 @@ def sweep(subnet: str | None = None, log=print,
           _bases=None) -> list[tuple[str, list[int]]]:
     """Find recorder candidates without ever leaving setup spinning indefinitely.
 
-    Automatic discovery is deliberately bounded. It scans the most likely four local
-    /24s (physical adapters first), then returns whatever it proved before the global
+    Automatic discovery is deliberately bounded. It scans up to the same eight local
+    /24s covered by field-proven Build 69 (physical adapters first), then returns whatever it proved before the global
     deadline. The fast phase preserves multiple strong recorder candidates across those
     ranked LANs; once that phase proves native recorder signatures, only those recorder
     hosts are service-confirmed and the expensive deep broad scan is skipped. Manual IP
