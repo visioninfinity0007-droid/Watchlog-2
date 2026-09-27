@@ -51,7 +51,7 @@ class BuildMetadata(unittest.TestCase):
 
     def test_version_and_metadata_shape(self):
         importlib.reload(wl_version)
-        self.assertRegex(wl_version.VERSION, r"^\\d+\\.\\d+\\.\\d+$")
+        self.assertRegex(wl_version.VERSION, r"^\d+\.\d+\.\d+$")
         md = wl_version.build_metadata()
         self.assertEqual(set(md), {"version", "build_sha", "channel", "version_string"})
         self.assertTrue(md["version_string"].startswith(wl_version.VERSION))
