@@ -13,6 +13,8 @@ set search_path=public
 as $$
 declare
   v_site public.sites;
+  v_ctx public.site_business_context;
+  v_is_restaurant boolean;
   v_date date;
   v_existing uuid;
   v_payload jsonb;
@@ -22,6 +24,8 @@ declare
 begin
   select * into v_site from public.sites where id=p_site_id;
   if v_site.id is null then raise exception 'no such site' using errcode='22023'; end if;
+  select * into v_ctx from public.site_business_context where site_id=p_site_id;
+  v_is_restaurant:=coalesce(v_ctx.site_type,v_site.site_type,'other')='restaurant';
   v_date:=coalesce(p_date,(now() at time zone v_site.timezone)::date);
 
   select id into v_existing from public.report_snapshots
@@ -34,7 +38,7 @@ begin
   end if;
 
   v_payload:=public.wl_daily_intelligence(p_site_id,v_date,true);
-  if v_site.site_type='restaurant' then
+  if v_is_restaurant then
     v_payload:=v_payload||jsonb_build_object(
       'restaurant',public.wl_restaurant_day(p_site_id,v_date)
     );
@@ -53,7 +57,7 @@ begin
       'journeys','topology-v2',
       'day_state','state-machine-v1',
       'intelligence',v_payload->>'schema',
-      'restaurant',case when v_site.site_type='restaurant' then 'restaurant-day-v1' else null end
+      'restaurant',case when v_is_restaurant then 'restaurant-day-v1' else null end
     ),
     (v_payload->'coverage'->>'coverage_ratio')::numeric
   )
