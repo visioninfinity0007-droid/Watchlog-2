@@ -188,9 +188,9 @@ def check():
 
     # Background agent and branded GUI remain separate release surfaces.
     assert '$entry = "agent\\release_agent.py"' in AGENT_BUILD
-    assert '_ORIGINAL_SETUP = app.analytics_setup.run' in RELEASE_ENTRY
+    assert '_ORIGINAL_SETUP = app.setup_wizard.run' in RELEASE_ENTRY
     assert 'raise SystemExit(1)' in RELEASE_ENTRY
-    assert 'app.enhanced_cmd_run = _setup_validation_complete' in RELEASE_ENTRY
+    assert 'app.cmd_run = _setup_validation_complete' in RELEASE_ENTRY
     assert '"--setup" in sys.argv' in RELEASE_ENTRY
     assert 'File "watchlog-setup-ui.exe"' in NSIS
     gui_exec='ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --config "$INSTDIR\\watchlog.ini"\''
