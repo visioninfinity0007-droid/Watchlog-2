@@ -1,7 +1,7 @@
 """Branded graphical first-run setup for WatchLog on Windows.
 
 Customer path:
-Welcome -> Site Code -> Find Recorder -> Recorder Login -> Camera Context ->
+Welcome -> Site Code -> Find Recorder -> Recorder Login -> Camera Check ->
 Connect -> Ready.
 
 All network/recorder work runs off the Qt UI thread. Detailed diagnostic output
@@ -13,6 +13,7 @@ import argparse
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # A PyInstaller --windowed process has no console streams. Existing recorder
@@ -35,7 +36,7 @@ if os.name == "nt":
         except Exception:  # noqa: BLE001 - logging may never prevent setup from running
             _LOG_HANDLE = None
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -122,9 +123,13 @@ def card_layout() -> tuple[QFrame, QVBoxLayout]:
 class SetupWindow(QMainWindow):
     STEPS = ["Welcome", "Site Code", "Recorder", "Login", "Cameras", "Connecting", "Ready"]
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, *, installer_child: bool = False):
         super().__init__()
         self.config_path = config_path
+        # NSIS waits synchronously for this process. A successful setup therefore
+        # MUST terminate itself; showing Ready forever leaves the parent installer
+        # apparently stuck even though WatchLog is already connected.
+        self.installer_child = bool(installer_child)
         self.public = backend.read_public_defaults(config_path)
         self.pool = QThreadPool.globalInstance()
         self.exit_code = 1
@@ -137,6 +142,11 @@ class SetupWindow(QMainWindow):
         self._discovered = {}
         self.final_result = None
         self._busy = False
+        # Worker generation lets the UI abandon a timed-out recorder login safely.
+        # A late result from the abandoned thread is ignored instead of jumping pages
+        # minutes later after the technician has retried.
+        self._worker_seq = 0
+        self._active_worker = 0
 
         self.setWindowTitle("WatchLog Setup")
         self.setMinimumSize(900, 630)
@@ -275,11 +285,23 @@ class SetupWindow(QMainWindow):
         self.recorder_list = QListWidget()
         self.recorder_list.setMinimumHeight(150)
         self.recorder_list.itemSelectionChanged.connect(self.recorder_selected)
+        # Direct mouse intent must populate the address even if Qt's selection/current
+        # bookkeeping arrives in a different order on a particular Windows/Qt build.
+        self.recorder_list.itemClicked.connect(self.recorder_item_clicked)
         cl.addWidget(self.recorder_list)
         cl.addWidget(label("OR ENTER THE LOCAL ADDRESS", "eyebrow"))
         self.manual_ip = QLineEdit(self.recorder_address)
         self.manual_ip.setPlaceholderText("192.168.1.108")
-        cl.addWidget(self.manual_ip)
+        manual_row = QHBoxLayout()
+        manual_row.addWidget(self.manual_ip, 1)
+        self.manual_use = QPushButton("Use this IP")
+        self.manual_use.setObjectName("secondary")
+        self.manual_use.clicked.connect(self.recorder_continue)
+        manual_row.addWidget(self.manual_use)
+        cl.addLayout(manual_row)
+        cl.addWidget(label(
+            "You can use the recorder IP immediately; automatic search may continue in the background.",
+            "muted"))
         l.addWidget(c)
         self.recorder_next = self._nav(
             l, 1, "Continue", self.recorder_continue, back_attr="recorder_back")
@@ -299,32 +321,33 @@ class SetupWindow(QMainWindow):
         self.password_edit.setEchoMode(QLineEdit.Password)
         cl.addWidget(self.password_edit)
         cl.addWidget(label("Your recorder password is protected securely on this PC after setup succeeds.", "muted"))
+        self.login_error = label("", "muted")
+        self.login_error.setWordWrap(True)
+        cl.addWidget(self.login_error)
+        self.login_progress = QProgressBar()
+        self.login_progress.setRange(0, 0)
+        self.login_progress.setTextVisible(False)
+        self.login_progress.hide()
+        cl.addWidget(self.login_progress)
         l.addWidget(c)
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
 
-        # Cameras
-        page, l = self._page("Camera context", "Confirm what WatchLog found",
-            "Camera names come from the recorder. Purpose suggestions help Analytics Studio start with useful defaults and can be changed later.")
+        # Cameras — connectivity proof only. Naming/purpose/analytics belong in the portal.
+        page, l = self._page("Camera check", "Confirm the recorder channels",
+            "WatchLog has signed in to the recorder and read its camera inventory. Camera naming, purpose and analytics configuration are done later in the WatchLog portal.")
         c, cl = card_layout()
         self.recorder_summary = label("", "muted")
         cl.addWidget(self.recorder_summary)
-        site_row = QHBoxLayout()
-        site_row.addWidget(label("SITE TYPE", "eyebrow"))
-        self.site_type = QComboBox()
-        for key, text in backend.SITE_TYPES:
-            self.site_type.addItem(text, key)
-        self.site_type.currentIndexChanged.connect(self.refresh_purpose_suggestions)
-        site_row.addWidget(self.site_type, 1)
-        cl.addLayout(site_row)
-        self.camera_table = QTableWidget(0, 4)
-        self.camera_table.setHorizontalHeaderLabels(["Channel", "Camera name (editable)", "Monitor", "Purpose"])
+        self.camera_table = QTableWidget(0, 2)
+        self.camera_table.setHorizontalHeaderLabels(["Channel", "Recorder camera name"])
         self.camera_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.camera_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.camera_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.camera_table.setMinimumHeight(220)
         cl.addWidget(self.camera_table)
+        cl.addWidget(label(
+            "All discovered channels are connected by default. You can rename, ignore or assign camera purposes from the portal after setup.",
+            "muted"))
         l.addWidget(c)
         self._nav(l, 3, "Connect WatchLog", self.begin_finalize)
         self.stack.addWidget(page)
@@ -374,7 +397,7 @@ class SetupWindow(QMainWindow):
         c, cl = card_layout()
         self.success_summary = label("")
         cl.addWidget(self.success_summary)
-        cl.addWidget(label("You can now return to the WatchLog portal. WatchLog will keep Site Health and Analytics up to date automatically.", "muted"))
+        cl.addWidget(label("You can now return to the WatchLog portal. The Site Connector will keep the recorder connection, camera health, events and evidence services online automatically.", "muted"))
         l.addWidget(c)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -404,42 +427,115 @@ class SetupWindow(QMainWindow):
         self._busy = busy
         self.status.setText(message)
         self.search_btn.setEnabled(not busy)
+        # Build 37 left Recorder/Continue enabled while discovery was still running.
+        # That allowed the operator to race the worker and validate an empty/stale
+        # address. Treat discovery as a real busy state in the UI.
+        self.recorder_next.setEnabled(not busy)
         self.login_next.setEnabled(not busy)
 
-    def run_worker(self, fn, args, on_success, busy_message: str, **kwargs):
+    def run_worker(self, fn, args, on_success, busy_message: str,
+                   timeout_ms: int | None = None, timeout_message: str | None = None,
+                   **kwargs):
+        self._worker_seq += 1
+        token = self._worker_seq
+        self._active_worker = token
         self.set_busy(True, busy_message)
         worker = Worker(fn, *args, **kwargs)
-        worker.signals.progress.connect(self._on_progress)
-        worker.signals.finished.connect(lambda result: self._worker_ok(on_success, result))
-        worker.signals.failed.connect(self._worker_error)
+        worker.signals.progress.connect(
+            lambda message, t=token: self._on_progress_if_current(t, message))
+        worker.signals.finished.connect(
+            lambda result, t=token: self._worker_ok_if_current(t, on_success, result))
+        worker.signals.failed.connect(
+            lambda message, t=token: self._worker_error_if_current(t, message))
         self.pool.start(worker)
+        if timeout_ms:
+            QTimer.singleShot(
+                int(timeout_ms),
+                lambda t=token, m=timeout_message: self._worker_timeout(
+                    t, m or "This step took too long. Please try again.")
+            )
+
+    def _on_progress_if_current(self, token: int, message: str):
+        if token != self._active_worker:
+            return
+        self._on_progress(message)
+
+    def _worker_ok_if_current(self, token: int, callback, result):
+        if token != self._active_worker:
+            return
+        self._active_worker = 0
+        self.set_busy(False)
+        callback(result)
+
+    def _worker_error_if_current(self, token: int, message: str):
+        if token != self._active_worker:
+            return
+        self._active_worker = 0
+        self._worker_error(message)
+
+    def _worker_timeout(self, token: int, message: str):
+        if token != self._active_worker:
+            return
+        # We cannot safely kill an arbitrary Python thread, so abandon this generation
+        # at the UI boundary. Every recorder HTTP/socket operation is separately bounded;
+        # if that old worker returns later its token is stale and its signals are ignored.
+        self._active_worker = 0
+        self.set_busy(False)
+        if self.stack.currentIndex() == 2:
+            # Network discovery is optional. A timeout must never trap setup:
+            # abandon this worker generation and leave manual IP immediately usable.
+            self._set_discovery_loading(False)
+            self.discovery_status.setText(message)
+            self.discovery_status.show()
+            self.status.setText(message)
+            self.search_btn.setEnabled(True)
+            self.manual_ip.setEnabled(True)
+            self.manual_use.setEnabled(True)
+        elif self.stack.currentIndex() == 3:
+            # Recorder login is recoverable operator input. A timeout here must
+            # never kill the whole installer, even in installer-child mode.
+            self._set_login_loading(False)
+            self.login_error.setText(message)
+            self.status.setText(message)
+            self.login_next.setEnabled(True)
+        elif self.stack.currentIndex() == 5:
+            if self.installer_child:
+                self._terminal_installer_failure(message)
+                return
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self.connect_error.setText(message)
+            self.retry_btn.show()
 
     def _on_progress(self, message: str):
         """Surface live worker progress on the page doing the work."""
         self.status.setText(message)
         if self.stack.currentIndex() == 2:
             self.discovery_status.setText(message)
-        if self.stack.currentIndex() == 5:
+        elif self.stack.currentIndex() == 3:
+            self.login_error.setText(message)
+        elif self.stack.currentIndex() == 5:
             self.progress_label.setText(message)
-
-    def _worker_ok(self, callback, result):
-        self.set_busy(False)
-        callback(result)
 
     def _worker_error(self, message: str):
         self.set_busy(False)
         if self.stack.currentIndex() == 2:
             self._set_discovery_loading(False)
-        if self.stack.currentIndex() == 5:
+            QMessageBox.warning(self, "WatchLog Setup", message)
+        elif self.stack.currentIndex() == 5:
+            if self.installer_child:
+                self._terminal_installer_failure(message)
+                return
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
             self.retry_btn.show()
-            # Retry was the ONLY control here, so a technician whose setup failed had no
-            # way to export a support bundle and no way out except killing the window --
-            # which then aborted the NSIS install. Mirror the acceptance-failure page.
             self.incomplete_bundle_btn.show()
             self.incomplete_exit_btn.show()
+        elif self.stack.currentIndex() == 3:
+            self._set_login_loading(False)
+            self.login_error.setText(message)
+            self.status.setText(message)
         else:
             QMessageBox.warning(self, "WatchLog Setup", message)
 
@@ -453,16 +549,19 @@ class SetupWindow(QMainWindow):
             self.search_recorders()
 
     def _set_discovery_loading(self, active: bool):
-        """Make network discovery visibly active and prevent duplicate overlapping scans."""
+        """Show real scan activity and prevent overlapping Back/Continue searches."""
         self.discovery_progress.setVisible(active)
         self.discovery_status.setVisible(active)
         self.search_btn.setText("Searching…" if active else "Search Network")
         self.recorder_list.setEnabled(not active)
-        self.manual_ip.setEnabled(not active)
+        # Build 74 trapped the operator behind a long network scan. Manual-IP is
+        # an independent, deterministic connection path and must stay available.
+        self.manual_ip.setEnabled(True)
+        self.manual_use.setEnabled(True)
         self.recorder_next.setEnabled(not active)
         self.recorder_back.setEnabled(not active)
         if active:
-            self.discovery_progress.setRange(0, 0)  # Qt indeterminate/animated progress
+            self.discovery_progress.setRange(0, 0)
             self.discovery_status.setText("Starting recorder discovery…")
         else:
             self.discovery_progress.setRange(0, 1)
@@ -473,8 +572,15 @@ class SetupWindow(QMainWindow):
             return
         self.recorder_list.clear()
         self._set_discovery_loading(True)
-        self.run_worker(backend.discover_recorders, (), self.show_recorders,
-                        "Searching the local network…")
+        self.run_worker(
+            backend.discover_recorders, (), self.show_recorders,
+            "Searching the local network…",
+            timeout_ms=40000,
+            timeout_message=(
+                "Automatic search reached its 40-second safety limit. "
+                "Enter the recorder IP and click Use this IP, or retry Search Network."
+            ),
+        )
 
     def show_recorders(self, rows):
         self._set_discovery_loading(False)
@@ -487,6 +593,18 @@ class SetupWindow(QMainWindow):
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, row["ip"])
             self.recorder_list.addItem(item)
+
+        # Field build 37 exposed a Qt selection mismatch: a single discovered row
+        # could LOOK highlighted without itemSelectionChanged populating manual_ip.
+        # For exactly one candidate, make it a real selection and mirror its address.
+        # With multiple candidates, do NOT silently choose the first recorder.
+        if len(rows) == 1:
+            self.recorder_list.setCurrentRow(0)
+            current = self.recorder_list.currentItem()
+            if current:
+                current.setSelected(True)
+                self.manual_ip.setText(str(current.data(Qt.UserRole) or ""))
+
         recorder_word = "recorder" if len(rows) == 1 else "recorders"
         found = f"Found {len(rows)} possible {recorder_word}."
         if len(rows) > 1:
@@ -503,21 +621,61 @@ class SetupWindow(QMainWindow):
     def recorder_selected(self):
         items = self.recorder_list.selectedItems()
         if items:
-            self.manual_ip.setText(items[0].data(Qt.UserRole))
+            self.manual_ip.setText(str(items[0].data(Qt.UserRole) or ""))
+
+    def recorder_item_clicked(self, item):
+        if item is not None:
+            self.manual_ip.setText(str(item.data(Qt.UserRole) or ""))
 
     def recorder_continue(self):
         address = self.manual_ip.text().strip()
         if not address:
+            # Continue must follow what the installer visibly shows as selected,
+            # even if Qt did not emit itemSelectionChanged.
+            current = self.recorder_list.currentItem()
+            if current:
+                address = str(current.data(Qt.UserRole) or "").strip()
+                if address:
+                    self.manual_ip.setText(address)
+        if not address:
             QMessageBox.warning(self, "WatchLog Setup", "Select a discovered recorder or enter its local IP address.")
             return
+
+        # Manual IP is the deterministic escape hatch from automatic discovery.
+        # We cannot kill a Python worker thread safely, so invalidate its generation;
+        # any late result is ignored by the token checks already used for login timeouts.
+        if self._busy and self.stack.currentIndex() == 2:
+            self._worker_seq += 1
+            self._active_worker = 0
+            self.set_busy(False)
+            self._set_discovery_loading(False)
+
         self.recorder_address = address
         row = self._discovered.get(address)
         self.recorder_hint = ({"ports": row.get("ports"),
                                "vendor_hint": row.get("vendor_hint"),
-                               "source": row.get("source")} if row else None)
+                               "source": row.get("source"),
+                               "integration_state": row.get("integration_state"),
+                               "preferred_web_port": row.get("preferred_web_port")} if row else None)
         detail = f"  ({row['label']})" if row and row.get("label") else ""
         self.selected_recorder.setText(f"Recorder: {address}{detail}")
+        self.login_error.setText("")
+        if row and row.get("vendor_hint") == "hikvision" and row.get("integration_state") == "unavailable":
+            self.login_error.setText(
+                "Hikvision recorder found, but its ISAPI integration service does not appear "
+                "available. If the normal browser login works, enable ISAPI under the recorder's "
+                "System Service / Integration settings, then retry."
+            )
         self.go(3)
+
+    def _set_login_loading(self, active: bool):
+        self.login_progress.setVisible(active)
+        self.login_next.setText("Testing…" if active else "Test Connection")
+        if active:
+            self.login_progress.setRange(0, 0)
+        else:
+            self.login_progress.setRange(0, 1)
+            self.login_progress.setValue(1)
 
     def test_connection(self):
         address = self.recorder_address
@@ -526,62 +684,52 @@ class SetupWindow(QMainWindow):
         if not user or not password:
             QMessageBox.warning(self, "WatchLog Setup", "Enter the recorder username and password.")
             return
+        if self._busy:
+            return
+        self.login_error.setText("")
         self.recorder_user, self.recorder_password = user, password
-        self.run_worker(backend.test_recorder, (address, user, password), self.connection_ok,
-                        "Testing the recorder connection…", hint=self.recorder_hint)
+        self._set_login_loading(True)
+        # The backend normally finishes well before this. Keep 30 seconds as a last-resort
+        # UI watchdog; Builds 70/71 cut this to 24/22 seconds and turned the Build-69
+        # intermittent Dahua path into a repeatable false timeout.
+        self.run_worker(
+            backend.test_recorder, (address, user, password), self.connection_ok,
+            "Testing the recorder connection…", hint=self.recorder_hint,
+            timeout_ms=30000,
+            timeout_message=("The recorder login check reached the 30-second safety limit. "
+                             "Your credentials are still here; click Test Connection to retry. "
+                             "If the recorder opens in your browser, export the support bundle.")
+        )
 
     def connection_ok(self, result):
+        self._set_login_loading(False)
         self.recorder_result = result
         self.recorder_summary.setText(
             f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
-        site_default = self.public.get("site_type", "custom")
-        idx = self.site_type.findData(site_default)
-        self.site_type.setCurrentIndex(idx if idx >= 0 else self.site_type.findData("custom"))
         self.populate_cameras()
         self.go(4)
 
     def populate_cameras(self):
         channels = self.recorder_result["channels"] if self.recorder_result else []
         self.camera_table.setRowCount(len(channels))
-        site = self.site_type.currentData() or "custom"
         for row, camera in enumerate(channels):
-            ch = QTableWidgetItem(camera["channel"])
-            ch.setFlags(ch.flags() & ~Qt.ItemIsEditable)
-            name = QTableWidgetItem(camera["name"])           # EDITABLE: give this camera a useful name
-            self.camera_table.setItem(row, 0, ch)
-            self.camera_table.setItem(row, 1, name)
-            monitor = QComboBox()
-            monitor.addItem("Monitor", True)
-            monitor.addItem("Ignore / unused", False)
-            monitor.setCurrentIndex(0)                        # discovered cameras are monitored by default
-            self.camera_table.setCellWidget(row, 2, monitor)
-            combo = QComboBox()
-            for key, text in backend.PURPOSES:
-                combo.addItem(text, key)
-            suggested = backend.suggest_purpose(camera["name"], site)
-            idx = combo.findData(suggested)
-            combo.setCurrentIndex(max(0, idx))
-            self.camera_table.setCellWidget(row, 3, combo)
-
-    def refresh_purpose_suggestions(self):
-        if self.recorder_result:
-            self.populate_cameras()
+            channel_item = QTableWidgetItem(str(camera["channel"]))
+            channel_item.setFlags(channel_item.flags() & ~Qt.ItemIsEditable)
+            name_item = QTableWidgetItem(camera.get("name") or f"Camera {camera['channel']}")
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.camera_table.setItem(row, 0, channel_item)
+            self.camera_table.setItem(row, 1, name_item)
 
     def profiles(self):
-        rows = []
-        for row in range(self.camera_table.rowCount()):
-            monitor = self.camera_table.cellWidget(row, 2)
-            combo = self.camera_table.cellWidget(row, 3)
-            monitored = bool(monitor.currentData()) if monitor else True
-            rows.append({
-                "channel": self.camera_table.item(row, 0).text(),
-                "name": self.camera_table.item(row, 1).text().strip() or self.camera_table.item(row, 0).text(),
-                "purpose": combo.currentData() if combo else "custom",
-                "monitored": monitored,
-                # analytics only runs on monitored cameras; an ignored channel is not analysed
-                "analytics_enabled": monitored,
-            })
-        return rows
+        """Connectivity-first defaults; richer camera configuration belongs in portal."""
+        channels = self.recorder_result["channels"] if self.recorder_result else []
+        return [{
+            "channel": str(camera["channel"]),
+            "name": camera.get("name") or f"Camera {camera['channel']}",
+            "purpose": "custom",
+            "monitored": True,
+            "analytics_enabled": True,
+        } for camera in channels]
 
     def begin_finalize(self):
         if self._busy:
@@ -596,51 +744,89 @@ class SetupWindow(QMainWindow):
         public = dict(self.public)
         args = (self.config_path, public, self.code_edit.text().strip(), self.recorder_address,
                 self.recorder_user, self.recorder_password,
-                self.site_type.currentData() or "custom", self.profiles())
-        self.run_worker(backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
-                        hint=self.recorder_hint)
+                "custom", self.profiles())
+        self.run_worker(
+            backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
+            hint=self.recorder_hint,
+            verified_recorder=self.recorder_result,
+            timeout_ms=50000,
+            timeout_message=(
+                "WatchLog could not finish the site connection within 50 seconds. "
+                "Installation has been stopped cleanly; the previous working agent is kept "
+                "when this is an upgrade."
+            ),
+        )
         # On the connecting page use the page-local progress label too.
         self.status.setText("")
 
     def finalize_ok(self, result):
-        # Install is proven; now run the FULL acceptance suite before declaring Ready. The setup
-        # never shows a green Ready state after a hard acceptance failure (0.4.4 P8).
+        # finalize_install reuses the Step 04 recorder proof, encrypts the credential,
+        # enrolled/authenticated the site, synced cameras, sent a heartbeat and started the
+        # background agent. Those are the REQUIRED installation proofs.
+        #
+        # Build 39 field evidence showed the old design then launched the much broader
+        # --accept suite and kept the technician on Step 06 even though the connected site
+        # was already reporting. Closing the window succeeded because site_connected was
+        # already true. Therefore acceptance is a POST-INSTALL diagnostic, not an installer
+        # gate. Site Status can run it later without blocking installation.
         self.final_result = result
-        # The background agent was already started inside finalize_install, on the worker
-        # thread. It must NOT be started from here: this is the GUI thread, and blocking it
-        # freezes the window mid-repaint -- which is exactly why 0.4.7 appeared to hang on
-        # "Confirming the WatchLog connection" while it was really running my own code.
         self.agent_start = (result or {}).get("agent_start") or {}
         self.site_connected = bool((result or {}).get("connected"))
-        self.progress_label.setText("Running final acceptance checks…")
-        from status_controller import StatusController
-        ctrl = StatusController()
-        self.run_worker(lambda progress=None: ctrl.run_acceptance(progress=progress), (),
-                        self.acceptance_done, "Running final acceptance checks…")
 
-    def _push_line(self) -> str:
-        """PC-free reporting status. Only claims active when the RECORDER confirmed the
-        config on read-back; anything else states what actually happened."""
-        info = (getattr(self, "final_result", None) or {}).get("recorder_push") or {}
-        if info.get("verified"):
-            return "✓ PC-free reporting active (the recorder reports even if this PC is off)"
-        if info.get("configured"):
-            return f"! PC-free reporting not confirmed by the recorder — {info.get('detail', '')}"
-        return "· PC-free reporting not enabled (this PC does the reporting)"
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(1)
+
+        if not self.site_connected:
+            message = (
+                "The recorder and WatchLog site were reached, but the background WatchLog "
+                "service did not start."
+            )
+            if self.installer_child:
+                self._terminal_installer_failure(
+                    message + " The installer will restore the previous working version "
+                    "automatically when this is an upgrade."
+                )
+                return
+            self.progress_label.setText("WatchLog could not start in the background.")
+            self.connect_error.setText(message + " Retry setup or export a support bundle.")
+            self.retry_btn.setText("Retry")
+            self.retry_btn.show()
+            self.incomplete_status_btn.show()
+            self.incomplete_bundle_btn.show()
+            self.incomplete_exit_btn.show()
+            return
+
+        self.progress_label.setText("Connected.")
+        base = (
+            f"✓ Recorder verified\n"
+            f"✓ WatchLog site linked\n"
+            f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
+            f"✓ Recorder credential encrypted on this PC\n"
+            f"{self._background_line()}\n\n"
+            f"{result.get('vendor', '')} {result.get('model', '')}"
+        )
+        self.success_summary.setText(base)
+        self.go(6)
+        if self.installer_child:
+            # Give the technician a brief visual confirmation, then return exit 0
+            # to NSIS automatically. Standalone "WatchLog Setup" remains open and
+            # still uses the Finish button.
+            self.status.setText("Installation complete. Finishing automatically…")
+            QTimer.singleShot(1800, self.finish)
 
     def _background_line(self) -> str:
-        """Say plainly whether the BACKGROUND service is running.
+        """State only what register-service actually proved.
 
-        Only claims what was actually verified: register-service.ps1 throws unless the
-        scheduled task reaches Running, so "started" is a real check, not an assumption.
-        It deliberately does NOT claim the site is "reporting" -- the local agent log is
-        written through a PowerShell redirection that does not reach disk promptly, and
-        0.4.8 wrongly reported failure by trusting it."""
+        A successful registration now requires BOTH the scheduled task to be Running
+        and a fresh background-agent cloud heartbeat marker created after that task
+        starts. This avoids the old false-positive where the PowerShell supervisor was
+        alive while watchlog-agent.exe repeatedly failed underneath it.
+        """
         info = getattr(self, "agent_start", None) or {}
         if info.get("started"):
-            return "✓ WatchLog is running in the background (starts automatically at boot)"
-        return ("! WatchLog is NOT running in the background yet — this site will not "
-                "report until that is fixed")
+            return "✓ WatchLog background connector started and reached WatchLog"
+        return ("! WatchLog background connector could not prove it is reporting — "
+                "retry setup or export a support bundle")
 
     def acceptance_done(self, acc):
         result = self.final_result or {}
@@ -691,8 +877,53 @@ class SetupWindow(QMainWindow):
                             f"Saved to:\n{r['path']}" if r.get("ok") else "Support bundle could not be created."),
                         "Creating support bundle…")
 
+    def _close_installer_child(self, code: int) -> None:
+        """Terminate every top-level window owned by the installer-child process."""
+        self.exit_code = int(code)
+
+        # Site Status can be opened from Ready and is a separate top-level
+        # window. Close it explicitly so it can never keep NSIS ExecWait alive.
+        status_win = getattr(self, "_status_win", None)
+        if status_win is not None:
+            try:
+                status_win.close()
+            except Exception:
+                pass
+
+        app = QApplication.instance()
+        if app is not None:
+            for widget in list(app.topLevelWidgets()):
+                try:
+                    widget.close()
+                except Exception:
+                    pass
+            if int(code) == 0:
+                app.exit(0)
+            else:
+                app.exit(int(code))
+        else:
+            self.close()
+
+    def _terminal_installer_failure(self, message: str, delay_ms: int = 1400) -> None:
+        """Show one short terminal error, then return non-zero to NSIS automatically."""
+        self.exit_code = 2
+        self.set_busy(False)
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("WatchLog could not complete installation.")
+        self.connect_error.setText(message + "\n\nClosing automatically…")
+        self.retry_btn.hide()
+        self.incomplete_status_btn.hide()
+        self.incomplete_bundle_btn.hide()
+        self.incomplete_exit_btn.hide()
+        self.status.setText("Installation stopped. Closing automatically…")
+        QTimer.singleShot(int(delay_ms), lambda: self._close_installer_child(2))
+
     def finish(self):
         self.exit_code = 0
+        if self.installer_child:
+            self._close_installer_child(0)
+            return
         self.close()
 
     def cancel(self):
@@ -742,6 +973,187 @@ def _emit_line(line: str) -> None:
         pass
 
 
+def _run_ui_selftest(*, installer_child: bool = False) -> int:
+    """Exercise the exact packaged Qt recorder-selection and installer lifecycle."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    old_pd = os.environ.get("PROGRAMDATA")
+    try:
+        with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
+            os.environ["PROGRAMDATA"] = td
+            window = SetupWindow(Path(td) / "watchlog.ini", installer_child=installer_child)
+            # Show the real window even on the offscreen Qt platform so the lifecycle
+            # assertion can prove that installer-child mode actually closes it.
+            window.show()
+            app.processEvents()
+            window.go(2)
+            window.show_recorders([{
+                "ip": "10.10.10.2",
+                "label": "Dahua-family recorder candidate",
+                "source": "Network fingerprint",
+                "ports": [80, 37777],
+                "vendor_hint": "dahua",
+            }])
+            app.processEvents()
+            current = window.recorder_list.currentItem()
+            if current is None or not current.isSelected():
+                return 21
+            if window.manual_ip.text().strip() != "10.10.10.2":
+                return 22
+
+            # Recreate Build 37: visible/current row but empty address field.
+            window.manual_ip.clear()
+            window.recorder_continue()
+            app.processEvents()
+            if window.recorder_address != "10.10.10.2" or window.stack.currentIndex() != 3:
+                return 23
+
+            # Recreate the asynchronous discovery race.
+            window.go(2)
+            window.set_busy(True, "Searching the local network…")
+            window._set_discovery_loading(True)
+            if window.recorder_next.isEnabled():
+                return 24
+            # Build 74 trapped the technician until discovery returned. The fixed
+            # packaged UI must keep the deterministic manual-IP path available.
+            if not window.manual_ip.isEnabled() or not window.manual_use.isEnabled():
+                return 25
+            window.manual_ip.setText("10.10.10.2")
+            window._active_worker = 91
+            window.recorder_continue()
+            app.processEvents()
+            if window.stack.currentIndex() != 3 or window._active_worker != 0:
+                return 26
+
+            # Discovery watchdog itself must recover to a usable page, not spinner-forever.
+            window.go(2)
+            window._active_worker = 92
+            window._set_discovery_loading(True)
+            window._worker_timeout(92, "discovery watchdog fired")
+            app.processEvents()
+            if window.discovery_progress.isVisible():
+                return 27
+            if not window.manual_use.isEnabled() or "watchdog" not in window.discovery_status.text():
+                return 28
+
+            # Exercise the DISCOVERY ENGINE inside the frozen setup executable, not just
+            # a synthetic recorder-list row. The recorder exists only on the second CCTV
+            # subnet, matching the multi-NIC field failure that Build 74 did not catch.
+            import discover as _discover
+
+            class _FakeConnect:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *_args):
+                    return False
+
+            def _fake_connect(address, timeout=None):
+                ip, port = address
+                if ip == "10.44.7.119" and port == 8000:
+                    return _FakeConnect()
+                raise OSError("filtered")
+
+            discovery_started = time.monotonic()
+            simulated_hits = _discover.sweep(
+                log=lambda *_a: None,
+                progress=lambda *_a: None,
+                _bases=(["192.168.10", "10.44.7"],
+                        ["192.168.10.25", "10.44.7.20"]),
+                _connect=_fake_connect,
+            )
+            if 8000 not in dict(simulated_hits).get("10.44.7.119", []):
+                return 29
+            if time.monotonic() - discovery_started > 5.0:
+                return 30
+
+            # Standalone Setup keeps login timeout retryable. Installer-child timeout
+            # is terminal and is exercised after the success/failure lifecycle checks below.
+            if not installer_child:
+                window.go(3)
+                window.login_error.setText("")
+                window.run_worker(
+                    lambda progress=None: time.sleep(0.20), (), lambda _r: None,
+                    "Testing the recorder connection…", timeout_ms=50,
+                    timeout_message="login watchdog fired")
+                deadline = time.monotonic() + 0.15
+                while time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.01)
+                if not window.login_next.isEnabled() or "watchdog" not in window.login_error.text():
+                    return 31
+                # Let the abandoned worker finish; its stale result must not move the UI.
+                time.sleep(0.10)
+                app.processEvents()
+                if window.stack.currentIndex() != 3:
+                    return 32
+
+            # Recreate the Step 06 field outcome: core connection + background agent are
+            # already proven. finalize_ok must go straight to Ready and must not launch
+            # the long --accept diagnostic as another installer gate.
+            window.finalize_ok({
+                "connected": True,
+                "agent_start": {"started": True, "detail": "test"},
+                "recorder_push": {"configured": False, "verified": False, "detail": "test"},
+                "camera_count": 4,
+                "vendor": "Hikvision",
+                "model": "Test NVR",
+            })
+            app.processEvents()
+            if window.stack.currentIndex() != 6 or not window.site_connected:
+                return 33
+
+            if installer_child:
+                deadline = time.monotonic() + 3.5
+                while window.exit_code != 0 and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                app.processEvents()
+                if window.exit_code != 0 or window.isVisible():
+                    return 34
+
+                failed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
+                failed.show()
+                failed.go(5)
+                failed.finalize_ok({
+                    "connected": False,
+                    "agent_start": {"started": False, "detail": "simulated startup failure"},
+                    "camera_count": 4,
+                    "vendor": "Dahua",
+                    "model": "Test XVR",
+                })
+                deadline = time.monotonic() + 3.0
+                while failed.isVisible() and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                app.processEvents()
+                if failed.exit_code != 2 or failed.isVisible():
+                    return 35
+
+                timed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
+                timed.show()
+                timed.go(3)
+                timed._active_worker = 99
+                timed._worker_timeout(99, "login watchdog fired")
+                app.processEvents()
+                if not timed.isVisible():
+                    return 36
+                if timed.exit_code != 1:
+                    return 37
+                if not timed.login_next.isEnabled():
+                    return 38
+                if "watchdog" not in timed.login_error.text():
+                    return 39
+                timed.close()
+            else:
+                window.close()
+            return 0
+    finally:
+        if old_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = old_pd
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
@@ -749,7 +1161,11 @@ def main() -> int:
     parser.add_argument("--status", action="store_true",
                         help="open the WatchLog Site Status window instead of first-run setup")
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("--ui-selftest", action="store_true")
+    parser.add_argument("--installer-child", action="store_true")
     args, _unknown = parser.parse_known_args()
+    if args.ui_selftest:
+        return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0
@@ -770,10 +1186,16 @@ def main() -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("WatchLog Setup")
     app.setStyle("Fusion")
-    window = SetupWindow(config_path)
+    window = SetupWindow(config_path, installer_child=args.installer_child)
     window.show()
     app.exec()
-    return window.exit_code
+    code = window.exit_code
+    if args.installer_child:
+        # Do not let a stale QThreadPool worker / Qt destructor keep the Windows
+        # process handle alive after the installer-child UI has completed. All
+        # persistent state is already committed and the background agent is proven.
+        os._exit(int(code))
+    return code
 
 
 if __name__ == "__main__":

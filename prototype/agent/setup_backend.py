@@ -161,7 +161,16 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
     try:
         for item in wsdiscovery.discover(log=lambda _m: None):
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
-            results[item.ip] = {"ip": item.ip, "label": label or "Compatible recorder", "source": "ONVIF"}
+            vendor_hint = _vendor_hint_from_text(label)
+            row = {
+                "ip": item.ip,
+                "label": label or "Compatible recorder",
+                "source": "ONVIF",
+                "vendor_hint": vendor_hint,
+            }
+            if getattr(item, "port", None) in _WEB_PORTS:
+                row["preferred_web_port"] = int(item.port)
+            results[item.ip] = row
     except Exception:
         pass
 
@@ -175,16 +184,72 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             ports = sorted(ports)
             if not any(port in candidate_ports for port in ports):
                 continue
+
+            # ONVIF may be disabled. Fingerprint only the ports we already know
+            # are open, using read-only HTTP/HTTPS banners/auth realms.
+            try:
+                fp = discover.fingerprint(ip, ports)
+            except Exception:
+                fp = {"vendor_guess": None, "rtsp": 554 in ports, "web": []}
+
+            vendor_hint = (_vendor_hint_from_ports(ports)
+                           or _vendor_hint_from_text(fp.get("vendor_guess")))
+            integration_state = None
+            integration_port = None
+            if not vendor_hint and any(p in ports for p in _WEB_PORTS):
+                deep = discover.probe_hikvision_isapi(ip, ports)
+                if deep.get("vendor_hint") == "hikvision":
+                    vendor_hint = "hikvision"
+                    integration_state = deep.get("state")
+                    integration_port = deep.get("port")
             hint = "Recorder candidate"
-            if any(p in ports for p in _DAHUA_SDK_PORTS):
+            if vendor_hint == "dahua":
                 hint = "Dahua-family recorder candidate"
-            elif 8000 in ports:
+            elif vendor_hint == "hikvision":
                 hint = "Hikvision-family recorder candidate"
-            elif 34567 in ports:
+            elif vendor_hint == "uniview":
+                hint = "Uniview recorder candidate"
+            elif vendor_hint == "tiandy":
+                hint = "Tiandy recorder candidate"
+            elif vendor_hint == "xiongmai":
                 hint = "Unsupported Xiongmai-family device"
-            results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
-            results[ip]["ports"] = ports
-            results[ip]["vendor_hint"] = _vendor_hint_from_ports(ports)
+            elif fp.get("rtsp"):
+                hint = "RTSP CCTV device / recorder candidate"
+
+            row = results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
+            # Prefer the stronger non-ONVIF fingerprint when it identifies the box.
+            if vendor_hint:
+                row["label"] = hint
+                row["source"] = "Network fingerprint"
+            row["ports"] = ports
+            row["vendor_hint"] = vendor_hint
+            row["rtsp"] = bool(fp.get("rtsp"))
+
+            # Preserve the web endpoint that actually identified/answered as the first
+            # login target. Build 69 blindly preferred port 80 from a numeric list even
+            # when fingerprinting had already proven HTTPS/another port, wasting a full
+            # native-auth timeout before trying the useful endpoint.
+            web_rows = list(fp.get("web") or [])
+            preferred = None
+            if vendor_hint:
+                for web_row in web_rows:
+                    guess = _vendor_hint_from_text(web_row.get("vendor_guess"))
+                    if guess == vendor_hint and web_row.get("status") is not None:
+                        preferred = web_row.get("port")
+                        break
+            if preferred is None:
+                for web_row in web_rows:
+                    if web_row.get("status") is not None:
+                        preferred = web_row.get("port")
+                        break
+            if preferred in _WEB_PORTS:
+                row["preferred_web_port"] = int(preferred)
+
+            if integration_state:
+                row["integration_state"] = integration_state
+                row["source"] = "Hikvision ISAPI probe"
+            if vendor_hint == "hikvision" and integration_port in _WEB_PORTS:
+                row["preferred_web_port"] = int(integration_port)
     except Exception:
         pass
     return sorted(results.values(), key=lambda row: row["ip"])
@@ -201,11 +266,12 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-POST_CONNECT_BUDGET_SECONDS = 120   # total for ALL optional post-connection work
-RECORDER_PROBE_TIMEOUT = 5          # seconds per driver probe
-RECORDER_DEADLINE = 18             # seconds hard cap for the whole login test
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
+RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
+RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
-_WEB_PORTS = (80, 8000, 8080, 81, 88, 8081, 443, 8443)
+_WEB_PORTS = (80, 8080, 81, 82, 88, 8081, 8888, 443, 8443)
+_HIKVISION_SDK_PORTS = (8000,)
 _DAHUA_SDK_PORTS = (37777, 37778)
 _XIONGMAI_PORTS = (34567, 9000)
 
@@ -216,6 +282,14 @@ _DRIVERS_BY_VENDOR = {
 
 _CUSTOMER_ERROR = {
     "wrong_credentials": "The recorder rejected that username or password.",
+    "hikvision_integration_auth":
+        "The Hikvision recorder answered, but its integration API rejected this login. "
+        "If the same login works in the normal browser page, enable ISAPI and set HTTP "
+        "Authentication to Digest (or Digest/Basic) in Hikvision System Service, then retry.",
+    "hikvision_integration_unavailable":
+        "This looks like a Hikvision recorder, but WatchLog could not reach an enabled ISAPI/ONVIF "
+        "integration service. Enable ISAPI in Hikvision System Service (or ONVIF Integration "
+        "Protocol) and restart the recorder if its settings require it, then retry.",
     "web_unreachable": "WatchLog found the recorder, but its web service is not reachable. "
                        "Check that the recorder's HTTP or HTTPS service is enabled.",
     "unsupported": "WatchLog found this recorder, but this model is not yet supported.",
@@ -232,10 +306,25 @@ def _vendor_hint_from_ports(ports) -> str | None:
     ps = set(ports or [])
     if ps & set(_DAHUA_SDK_PORTS):
         return "dahua"
-    if 8000 in ps:
+    if ps & set(_HIKVISION_SDK_PORTS):
         return "hikvision"
     if ps & set(_XIONGMAI_PORTS):
         return "xiongmai"
+    return None
+
+
+def _vendor_hint_from_text(value: str | None) -> str | None:
+    text = (value or "").lower()
+    if any(token in text for token in ("dahua", "cp plus", "imou")):
+        return "dahua"
+    if any(token in text for token in ("hikvision", "hilook", "ds-")):
+        return "hikvision"
+    if any(token in text for token in ("xiongmai", "xmeye", "netsurveillance")):
+        return "xiongmai"
+    if any(token in text for token in ("uniview", "unv")):
+        return "uniview"
+    if "tiandy" in text:
+        return "tiandy"
     return None
 
 
@@ -255,7 +344,8 @@ def _web_target_urls(host: str, open_ports) -> list[str]:
     return urls
 
 
-def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
+def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None,
+                         preferred_port: int | None = None):
     """Return (attempts, hard_error).
 
     attempts is an ordered, bounded list of (driver_name, url). hard_error is a
@@ -274,14 +364,28 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
     if not web_ports:
         if has_xiongmai and not has_dahua_sdk:
             return [], "unsupported"
-        return [], "web_unreachable"           # Dahua SDK-only, or web disabled
+        return [], "web_unreachable"           # vendor SDK/RTSP found, but HTTP(S) control is disabled
     if has_xiongmai and hint == "xiongmai" and not has_dahua_sdk:
         return [], "unsupported"
 
     targets = _web_target_urls(host, web_ports)
+    if preferred_port in web_ports:
+        preferred_url = _web_target_urls(host, [preferred_port])[0]
+        targets = [preferred_url] + [url for url in targets if url != preferred_url]
+
     drivers = _ordered_drivers(hint)
     attempts: list[tuple[str, str]] = []
-    for url in targets[:2]:                     # best web port, then one fallback
+
+    # Build 62 changed this to exhaust the native driver on HTTP *and* HTTPS before
+    # trying ONVIF. On field Dahua firmware a dead/slow secondary web endpoint consumes
+    # another full timeout; Build 69 could sometimes finish just under 30 seconds, while
+    # the 24s/22s watchdogs in Builds 70/71 cut the same valid login off every time.
+    #
+    # Keep the native API first (so a healthy Dahua/Hikvision never downgrades), but
+    # fall back on the SAME proven web endpoint before spending time on a second port.
+    # Only then try the alternate endpoint. This preserves native preference without
+    # serially stacking avoidable timeouts.
+    for url in targets[:2]:
         for driver_name in drivers:
             pair = (driver_name, url)
             if pair not in attempts:
@@ -346,7 +450,8 @@ def _setup_log(message: str) -> None:
 
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
-                  hint: dict | None = None, _scan=None, _build=None, _probe=None) -> dict:
+                  hint: dict | None = None, _scan=None, _build=None, _probe=None,
+                  _hik_probe=None) -> dict:
     """Prove recorder identity + credentials + channel list — fast and bounded.
 
     `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
@@ -357,6 +462,7 @@ def test_recorder(address: str, username: str, password: str,
     scan_fn = _scan or (lambda h: discover.scan(h, log=lambda _m: None))
     build_fn = _build or build
     probe_fn = _probe or _probe_web_ports
+    hik_probe_fn = _hik_probe or discover.probe_hikvision_isapi
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
 
@@ -367,6 +473,8 @@ def test_recorder(address: str, username: str, password: str,
 
     hint = hint or {}
     vendor_hint = hint.get("vendor_hint")
+    integration_state = hint.get("integration_state")
+    preferred_web_port = hint.get("preferred_web_port")
     open_ports = list(hint.get("ports") or [])
 
     if is_url:
@@ -381,12 +489,10 @@ def test_recorder(address: str, username: str, password: str,
                 if not vendor_hint:
                     for r in results:
                         guess = (getattr(r, "vendor_guess", "") or "").lower()
-                        if "dahua" in guess or "cp plus" in guess:
-                            vendor_hint = "dahua"; break
-                        if "hikvision" in guess or "hilook" in guess:
-                            vendor_hint = "hikvision"; break
-                        if "xiongmai" in guess:
-                            vendor_hint = "xiongmai"; break
+                        parsed = _vendor_hint_from_text(guess)
+                        if parsed:
+                            vendor_hint = parsed
+                            break
             except Exception as exc:
                 _setup_log(f"scan failed host={host}: {_redact(str(exc), password)}")
                 open_ports = []
@@ -400,10 +506,23 @@ def test_recorder(address: str, username: str, password: str,
             if rescued:
                 _setup_log(f"web-port rescue host={host} added={rescued}")
                 open_ports = sorted(set(open_ports) | set(rescued))
-        attempts, hard_error = plan_recorder_probes(host, open_ports, vendor_hint)
+
+        # Salman field path: discovery may initially see only RTSP, then the targeted
+        # rescue finds the web port. Re-identify AFTER rescue so Hikvision gets the
+        # Hikvision/ONVIF route and actionable integration diagnostics instead of the
+        # generic vendor loop.
+        if not vendor_hint and any(p in open_ports for p in _WEB_PORTS):
+            deep = hik_probe_fn(host, open_ports) or {}
+            if deep.get("vendor_hint") == "hikvision":
+                vendor_hint = "hikvision"
+                integration_state = deep.get("state") or integration_state
+
+        attempts, hard_error = plan_recorder_probes(
+            host, open_ports, vendor_hint, preferred_port=preferred_web_port)
 
     fam = vendor_hint or _vendor_hint_from_ports(open_ports)
     _setup_log(f"host={host} ports={sorted(open_ports)} vendor_hint={fam} "
+               f"preferred_web_port={preferred_web_port} "
                f"attempts={[(d, u.split('://')[-1]) for d, u in attempts]} hard={hard_error}")
 
     if hard_error:
@@ -417,7 +536,14 @@ def test_recorder(address: str, username: str, password: str,
         progress("Detected a compatible recorder.")
 
     last_class = "connect"
+    hikvision_auth_rejected = False
+    hikvision_api_unavailable = (vendor_hint == "hikvision" and integration_state == "unavailable")
     for driver_name, url in attempts:
+        # If ISAPI itself issued an authentication rejection, this host is now a
+        # strong Hikvision candidate. Do not let a generic Dahua attempt overwrite
+        # that diagnosis with another 401 before we try the standards fallback.
+        if hikvision_auth_rejected and driver_name not in ("hikvision-isapi", "onvif"):
+            continue
         if time.monotonic() - started > RECORDER_DEADLINE:
             last_class = "timeout"
             break
@@ -428,8 +554,26 @@ def test_recorder(address: str, username: str, password: str,
             driver = build_fn(driver_name, url, username.strip(), password,
                               RECORDER_PROBE_TIMEOUT)
             info = driver.probe()
-            progress("Reading camera channels…")
-            channels = driver.list_channels()
+
+            # Setup login is an AUTHENTICATION check, not a full inventory crawl.
+            # Field Hikvision DS-7608NI-Q1 and Dahua embedded web stacks can accept
+            # Digest auth/deviceInfo quickly, then stall on extra channel/config reads.
+            # Once the native identity call succeeds, trust the recorder's reported
+            # physical input count and let the background agent enrich names later.
+            # This keeps a correct password from being turned into a false 30s timeout.
+            if driver_name in ("hikvision-isapi", "dahua-cgi") and info.channel_count:
+                progress("Recorder login verified.")
+                channels = [
+                    SimpleNamespace(channel=str(i), name=f"Camera {i}")
+                    for i in range(1, int(info.channel_count) + 1)
+                ]
+                _setup_log(
+                    f"setup-fast-path driver={driver_name} "
+                    f"reported_channels={len(channels)}")
+            else:
+                progress("Reading camera channels…")
+                channels = driver.list_channels()
+
             _setup_log(f"OK driver={driver_name} identity=1 channels={len(channels)} "
                        f"elapsed={time.monotonic() - attempt_started:.1f}s")
             return {
@@ -437,6 +581,7 @@ def test_recorder(address: str, username: str, password: str,
                 "vendor": info.vendor or "Recorder",
                 "model": info.model or "Unknown model",
                 "firmware": info.firmware or "",
+                "serial": info.serial or "",
                 "driver": driver.name,
                 "verified_against_hardware": bool(driver.verified_against_hardware),
                 "channels": [{"channel": str(row.channel),
@@ -450,7 +595,20 @@ def test_recorder(address: str, username: str, password: str,
                        f"elapsed={time.monotonic() - attempt_started:.1f}s "
                        f"detail={_redact(str(exc), password)}")
             if cls == "wrong_credentials":
+                if driver_name == "hikvision-isapi":
+                    # A Hikvision browser login and its integration service are not the
+                    # same proof. Do not falsely tell the technician the password is wrong
+                    # after only the ISAPI attempt; try ONVIF too, then explain the exact
+                    # integration setting if neither API accepts the account.
+                    hikvision_auth_rejected = True
+                    last_class = cls
+                    continue
+                if driver_name == "onvif" and (vendor_hint == "hikvision" or hikvision_auth_rejected):
+                    last_class = cls
+                    continue
                 raise ValueError(_CUSTOMER_ERROR["wrong_credentials"]) from None
+            if driver_name == "hikvision-isapi" and cls == "unsupported" and vendor_hint == "hikvision":
+                hikvision_api_unavailable = True
             last_class = cls
         finally:
             if driver:
@@ -459,6 +617,11 @@ def test_recorder(address: str, username: str, password: str,
                 except Exception:
                     pass
 
+    if vendor_hint == "hikvision" or hikvision_auth_rejected:
+        if hikvision_auth_rejected:
+            raise ValueError(_CUSTOMER_ERROR["hikvision_integration_auth"])
+        if hikvision_api_unavailable:
+            raise ValueError(_CUSTOMER_ERROR["hikvision_integration_unavailable"])
     raise ValueError(_CUSTOMER_ERROR.get(last_class, _CUSTOMER_ERROR["connect"]))
 
 
@@ -548,6 +711,33 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
         section["push_bridge_url"] = str(public["push_bridge_url"]).rstrip("/")
     section["camera_profiles_json"] = json.dumps(profiles, separators=(",", ":"))
     _write_ini(config_path, ini)
+
+
+def _seed_recorder_identity(config_path: Path, recorder: dict) -> None:
+    """Persist the proven recorder's NON-SECRET identity before the background task starts.
+
+    The production connector can then safely rediscover the same recorder after DHCP/IP
+    movement even if its very first background connection fails. Build 41 could otherwise
+    have a perfectly proven foreground setup but no recorder_identity.json, leaving the
+    background runtime unable to authenticate any rediscovery candidate.
+    """
+    try:
+        import connector_rediscovery
+        cfg = SimpleNamespace(
+            state_path=programdata_dir() / "agent_state.json",
+            nvr_driver=recorder.get("driver") or "auto",
+            nvr_url=recorder.get("url") or "",
+            _ini_path=config_path,
+        )
+        info = SimpleNamespace(
+            vendor=recorder.get("vendor") or "",
+            model=recorder.get("model") or "",
+            serial=recorder.get("serial") or "",
+            driver=recorder.get("driver") or "",
+        )
+        connector_rediscovery.save_identity(cfg, info, recorder.get("url") or "")
+    except Exception as exc:  # noqa: BLE001 — resilience metadata may never fail setup
+        _setup_log(f"recorder identity seed skipped ({type(exc).__name__})")
 
 
 def _clear_consumed_code(config_path: Path) -> bool:
@@ -844,7 +1034,7 @@ def _log_size(path: Path) -> int:
 def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
                             username: str, password: str,
                             progress: Callable[[str], None] | None = None,
-                            timeout: float = 90.0, _run=None) -> dict:
+                            timeout: float = 20.0, _run=None) -> dict:
     """Point the RECORDER at WatchLog, so the site keeps reporting with no PC running.
 
     RUNS OUT OF PROCESS (5.0). 0.4.11 did this inline and the very first time the feature
@@ -867,7 +1057,7 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
         return {"configured": False, "verified": False,
                 "detail": "no push bridge configured in this build"}
 
-    progress("Setting up PC-free reporting on the recorder…")
+    progress("Finishing optional recorder integration (up to 10 seconds)…")
     try:
         if _run is not None:
             code, out = _run()
@@ -899,7 +1089,8 @@ def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
                      profiles: list[dict], progress: Callable[[str], None] | None = None,
-                     hint: dict | None = None) -> dict:
+                     hint: dict | None = None,
+                     verified_recorder: dict | None = None) -> dict:
     """Prove local recorder + WatchLog enrollment and persist only protected secrets."""
     progress = progress or (lambda _message: None)
     if not public.get("supabase_url") or not public.get("supabase_publishable_key"):
@@ -907,8 +1098,26 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     if not enrollment_code.strip():
         raise ValueError("Enter the WatchLog site code from the portal.")
 
-    progress("Verifying the recorder one more time…")
-    recorder = test_recorder(address, username, password, progress=progress, hint=hint)
+    # Step 04 already authenticated the recorder. Repeating that full hardware
+    # transaction in Step 06 was both redundant and a field source of false hangs:
+    # embedded Digest/ISAPI/CGI stacks can answer once and then stall on the immediate
+    # duplicate session. Reuse the exact successful proof when supplied by the UI.
+    if verified_recorder:
+        recorder = dict(verified_recorder)
+        required = ("url", "vendor", "model", "driver", "channels")
+        if any(key not in recorder for key in required):
+            raise ValueError("WatchLog lost the recorder verification. Please run setup again.")
+        try:
+            if discover.host_of(str(recorder["url"])) != discover.host_of(address):
+                raise ValueError("WatchLog recorder selection changed after login. Please test the recorder again.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("WatchLog could not reuse the recorder verification. Please test the recorder again.") from exc
+        progress("Recorder login already verified.")
+    else:
+        progress("Verifying the recorder…")
+        recorder = test_recorder(address, username, password, progress=progress, hint=hint)
 
     progress("Encrypting recorder credentials on this PC…")
     try:
@@ -916,6 +1125,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except SecretError as exc:
         raise ValueError("Windows could not securely store the recorder credential on this PC.") from exc
     _write_proven_config(config_path, public, enrollment_code, recorder, username, site_type, profiles)
+    _seed_recorder_identity(config_path, recorder)
 
     progress("Connecting this site to WatchLog…")
     cloud = core.Cloud(public["supabase_url"].rstrip("/"), public["supabase_publishable_key"])
@@ -959,43 +1169,31 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
     # =================================================================
-    # THE SITE IS NOW CONNECTED: enrolled, credential stored, heartbeat proven.
-    # EVERYTHING BELOW IS OPTIONAL and runs under ONE hard deadline.
+    # CORE CONNECTION IS PROVEN ABOVE. From here the ONLY installer-critical
+    # operation is starting the real background connector and proving that the
+    # SYSTEM-launched agent itself reaches WatchLog.
     #
-    # Four separate hangs shipped in this stretch of code (0.4.5 acceptance, 0.4.7
-    # pipe deadlock, 0.4.7 GUI thread, 0.4.9 ini lock). Fixing them one at a time
-    # was not working, because the real defect is the SHAPE: optional post-connection
-    # work was able to pin the wizard forever. So the budget is now structural --
-    # whatever is unfinished when it expires is simply reported as unfinished, and
-    # setup always reaches a final screen.
+    # Build 41 field evidence proved that recorder-push, although labelled
+    # "optional", was still executed synchronously here and could strand Step 06
+    # after the site/cameras were already connected. Optional recorder-side
+    # integration is therefore NEVER run by first-run setup.
     # =================================================================
-    optional_deadline = time.monotonic() + POST_CONNECT_BUDGET_SECONDS
-
-    def _remaining(cap: float) -> float:
-        return max(0.0, min(cap, optional_deadline - time.monotonic()))
-
     progress("Starting WatchLog in the background…")
-    # NOT optional work, and NOT drawn from the optional budget. 0.4.9 gave registration
-    # whatever was LEFT of the 120s, so a slow recorder probe could hand it a fraction of a
-    # second and it was taskkill'd mid-registration -- the one step that makes the site
-    # survive a reboot. It gets its own guaranteed floor.
-    agent_start = ensure_background_agent(timeout=max(60.0, _remaining(90)))
+    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 
-    push = {"configured": False, "verified": False, "detail": "skipped (time budget)"}
-    if _remaining(1) > 0:
-        push = provision_recorder_push(cloud, state, recorder, public, username, password,
-                                       progress=progress)
-
-    # The field outcome of PC-free reporting was computed and then thrown away -- never
-    # logged, never shown. That is the second reason nobody noticed the bridge was dead.
-    core.log(f"recorder push: configured={push.get('configured')} "
-             f"verified={push.get('verified')} {push.get('detail')}")
+    # Recorder-side push remains an explicit support/diagnostic command only.
+    # It is intentionally absent from the installer critical path until it has
+    # been field-verified across supported recorder firmware.
+    push = {
+        "configured": False,
+        "verified": False,
+        "detail": "not run during installation; background Site Connector is authoritative",
+    }
 
     cleared = _clear_consumed_code(config_path)
-    core.log(f"post-connect phase done in "
-             f"{POST_CONNECT_BUDGET_SECONDS - max(0.0, optional_deadline - time.monotonic()):.0f}s "
+    core.log(f"post-connect phase done "
              f"(agent_started={connected} code_cleared={cleared})")
     return {
         "site_id": state["site_id"],

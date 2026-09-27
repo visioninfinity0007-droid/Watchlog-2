@@ -18,6 +18,7 @@ def text(path):
 def main():
     gui = text("prototype/agent/setup_gui.py")
     backend = text("prototype/agent/setup_backend.py")
+    discover = text("prototype/agent/discover.py")
     secret = text("prototype/agent/windows_secret.py")
     store = text("prototype/agent/credential_store.py")
     agent = text("prototype/agent/watchlog_agent.py")
@@ -40,6 +41,18 @@ def main():
         "recorder discovery blocks duplicate navigation while scanning":
             "self.recorder_back.setEnabled(not active)" in gui
             and "self.recorder_next.setEnabled(not active)" in gui,
+        "recorder discovery preserves Build 69 reach and cannot spinner-forever":
+            "DISCOVERY_DEADLINE_SECONDS = 32.0" in discover
+            and "MAX_AUTO_SUBNETS = 8" in discover
+            and "SWEEP_WORKERS = 256" in discover
+            and "_VIRTUAL_ADAPTER_TOKENS" in discover
+            and "return primary + secondary" in discover
+            and "SWEEP_FAST_PORTS = [37777, 8000, 80, 443]" in discover
+            and "timeout_ms=40000" in gui
+            and "Use this IP" in gui
+            and "self.manual_ip.setEnabled(True)" in gui
+            and "_discover.sweep(" in gui
+            and '["192.168.10", "10.44.7"]' in gui,
         "GUI performs real finalization": "finalize_install" in gui,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,

@@ -112,6 +112,13 @@ jobs:
             if ($env:PRODUCTION -eq 'true') { $releaseArgs['Production'] = $true }
             & .\tools\build_windows_release.ps1 @releaseArgs
             if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
+
+            # Field release gates: preserve Build 69 discovery reach while preventing
+            # the Build 74 spinner-forever failure class.
+            python prototype/tests/test_recorder_probe.py
+            if ($LASTEXITCODE -ne 0) { throw "recorder discovery hardening contract failed" }
+            python prototype/tests/test_recorder_setup.py
+            if ($LASTEXITCODE -ne 0) { throw "recorder login/connectivity contract failed" }
           }
           finally {
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }
@@ -136,6 +143,20 @@ jobs:
             throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
           }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
+
+          # Packaged setup-UI proof: execute the exact frozen EXE against the
+          # multi-NIC discovery race, manual-IP escape and installer-child lifecycle.
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $uiStarted = Get-Date
+          $uiSelf = Start-Process -FilePath $setupUi.FullName -ArgumentList @('--ui-selftest','--installer-child') -Wait -PassThru
+          $uiElapsed = ((Get-Date) - $uiStarted).TotalSeconds
+          if ($uiElapsed -gt 15) {
+            throw "packaged setup UI lifecycle took $([math]::Round($uiElapsed,1))s; installer would appear stuck"
+          }
+          if ($uiSelf.ExitCode -ne 0) {
+            throw "packaged setup UI recorder discovery self-test failed with exit $($uiSelf.ExitCode)"
+          }
+          Write-Host 'Packaged setup UI recorder discovery behavior PASSED.'
 
           # Prove the packaged AI runtime/model, not just the Python source tree.
           $agentSelftest = & $agent.FullName --selftest 2>&1 | Out-String
