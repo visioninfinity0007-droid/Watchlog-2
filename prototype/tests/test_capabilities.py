@@ -178,7 +178,7 @@ def t_incident_footage_contract():
 @case("release entrypoint activates native AI and footage workers only for runtime")
 def t_release_policy():
     src = (ROOT / "agent" / "release_agent.py").read_text(encoding="utf-8")
-    assert "app.core.collector = native_event_collector.collector" in src
+    assert "app.collector = connector_event_collector.collector" in src
     assert "incident_evidence.wrap_cmd_run" in src
     assert 'if explicit_setup:' in src
     return "packaged runtime enabled; explicit installer setup still exits deterministically"
