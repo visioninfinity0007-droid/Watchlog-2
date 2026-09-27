@@ -103,19 +103,26 @@ def _strip(root: ET.Element) -> ET.Element:
 
 
 def _search_body(channel: str, start: datetime, end: datetime, offset: int, limit: int) -> str:
+    # Hikvision recorder firmware is strict about this legacy schema.
+    # Many NVRs expect the historical misspelling searchResultPostion and
+    # require a video selector plus a recording metadata descriptor before
+    # returning playbackURI rows.
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<CMSearchDescription version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
+        '<CMSearchDescription version="1.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
         f'<searchID>{uuid.uuid4()}</searchID>'
         f'<trackIDList><trackID>{_track(channel)}</trackID></trackIDList>'
         '<timeSpanList><timeSpan>'
         f'<startTime>{_iso(start)}</startTime><endTime>{_iso(end)}</endTime>'
         '</timeSpan></timeSpanList>'
-        f'<searchResultPosition>{max(0, int(offset))}</searchResultPosition>'
+        '<contentTypeList><contentType>video</contentType></contentTypeList>'
         f'<maxResults>{min(SEARCH_LIMIT, max(1, int(limit)))}</maxResults>'
+        f'<searchResultPostion>{max(0, int(offset))}</searchResultPostion>'
+        '<metadataList>'
+        '<metadataDescriptor>//recordType.meta.std-cgi.com</metadataDescriptor>'
+        '</metadataList>'
         '</CMSearchDescription>'
     )
-
 
 def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, end: datetime,
                       *, offset: int = 0, limit: int = SEARCH_LIMIT) -> dict:
@@ -177,6 +184,29 @@ def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
     return {"status": "supported", "events": events, "next_cursor": nxt}
 
 
+def _read_download_response(response) -> bytes | None:
+    try:
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=256 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MAX_CLIP_BYTES:
+                raise DriverError("Hikvision incident footage exceeds the 32 MiB limit")
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        if not data:
+            return None
+        head = data[:500].lower()
+        if (b"<responsestatus" in head or b"<html" in head or
+                b"<!doctype" in head or b"<cmsearchresult" in head):
+            return None
+        return data
+    finally:
+        response.close()
+
+
 def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -184,32 +214,55 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
         f'<playbackURI>{escape(playback_uri)}</playbackURI>'
         '</downloadRequest>'
     )
-    # Hold the cross-driver lock through the WHOLE transfer. _post itself uses
-    # the same RLock, so this is re-entrant in this thread but prevents the live
-    # alert collector from opening a second Hikvision session mid-download.
-    with HIKVISION_HTTP_LOCK:
-        response = _post(driver, "/ISAPI/ContentMgmt/download", body,
-                         stream=True, timeout=DOWNLOAD_TIMEOUT)
-        try:
-            chunks = []
-            total = 0
-            for chunk in response.iter_content(chunk_size=256 * 1024):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > MAX_CLIP_BYTES:
-                    raise DriverError("Hikvision incident footage exceeds the 32 MiB limit")
-                chunks.append(chunk)
-            data = b"".join(chunks)
-            if not data:
-                return None
-            head = data[:300].lower()
-            if b"<responsestatus" in head or b"<html" in head or b"<!doctype" in head:
-                return None
-            return data
-        finally:
-            response.close()
+    url = driver.base_url + "/ISAPI/ContentMgmt/download"
 
+    # Firmware families differ here: older RaCM documents use GET-with-body
+    # while newer NVR examples also accept POST-with-body. Try both, using
+    # only the recorder-returned playback URI and keeping the transfer bounded.
+    last_error = None
+    with HIKVISION_HTTP_LOCK:
+        for method in ("GET", "POST"):
+            try:
+                response = driver.s.request(
+                    method, url, data=body.encode("utf-8"),
+                    headers={"Content-Type": "application/xml"},
+                    stream=True, timeout=DOWNLOAD_TIMEOUT,
+                )
+            except requests.RequestException as error:
+                last_error = error
+                continue
+
+            if response.status_code == 401:
+                challenge = (response.headers.get("WWW-Authenticate") or "").lower()
+                if "basic" in challenge and "digest" not in challenge:
+                    driver.s.auth = HTTPBasicAuth(driver.username, driver.password)
+                    response.close()
+                    try:
+                        response = driver.s.request(
+                            method, url, data=body.encode("utf-8"),
+                            headers={"Content-Type": "application/xml"},
+                            stream=True, timeout=DOWNLOAD_TIMEOUT,
+                        )
+                    except requests.RequestException as error:
+                        last_error = error
+                        continue
+            if response.status_code in (401, 403):
+                response.close()
+                raise NvrAuthFailed(
+                    f"{url}: HTTP {response.status_code} — recorder rejected the username or password"
+                )
+            if response.status_code >= 400:
+                response.close()
+                continue
+
+            driver.last_activity_monotonic = __import__("time").monotonic()
+            data = _read_download_response(response)
+            if data:
+                return data
+
+    if last_error is not None:
+        raise NvrUnreachable(f"{url}: {explain(last_error)}") from last_error
+    return None
 
 def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> str:
     host = urlparse(driver.base_url).hostname or "127.0.0.1"
@@ -222,32 +275,41 @@ def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: da
 def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> bytes | None:
     """Download a bounded incident window.
 
-    Prefer Hikvision's documented download-by-time playback URI. If firmware requires
-    a search-returned URI (common older NVRs), fall back to the first overlapping match.
+    Search first and use the recorder-returned playbackURI. That URI often
+    carries firmware-specific name/size metadata required by ContentMgmt.
+    Only if search yields no usable URI do we try a generic by-time URI.
     """
     if end <= start:
         raise DriverError("invalid Hikvision incident footage time window")
+
+    search_error = None
+    try:
+        result = search_recordings(driver, str(channel), start, end, offset=0, limit=8)
+        for row in result.get("matches") or []:
+            uri = row.get("playback_uri")
+            if not uri:
+                continue
+            try:
+                data = _download_uri(driver, uri)
+                if data:
+                    return data
+            except (DriverError, NvrUnreachable):
+                continue
+    except (DriverError, NvrUnreachable) as error:
+        search_error = error
+
+    # Compatibility fallback for firmware that supports download-by-time but
+    # returns no search row for a very small incident window.
     try:
         data = _download_uri(driver, _by_time_uri(driver, str(channel), start, end))
         if data:
             return data
-    except DriverError:
-        # Search-returned URI is the compatibility fallback below.
+    except (DriverError, NvrUnreachable):
         pass
 
-    result = search_recordings(driver, str(channel), start, end, offset=0, limit=8)
-    for row in result.get("matches") or []:
-        uri = row.get("playback_uri")
-        if not uri:
-            continue
-        try:
-            data = _download_uri(driver, uri)
-            if data:
-                return data
-        except DriverError:
-            continue
+    if search_error is not None:
+        raise search_error
     return None
-
 
 def historical_capability(driver: HikvisionDriver = None) -> dict:
     return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
