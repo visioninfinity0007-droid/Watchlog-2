@@ -11,6 +11,7 @@ MIG = (ROOT / "prototype/supabase/migrations/0030_analytics_semantics_authz.sql"
 STUDIO = (ROOT / "portal/app/analytics/studio/page.js").read_text()
 OVERVIEW = (ROOT / "portal/app/analytics/page.js").read_text()
 SHELL = (ROOT / "portal/app/shell.js").read_text()
+NAV = (ROOT / "portal/app/nav-config.js").read_text()
 HEALTH = (ROOT / "portal/app/site-health/page.js").read_text()
 
 
@@ -28,7 +29,7 @@ def check() -> None:
     assert "'always_on',jsonb_build_array" in MIG
     assert "Site Health','note','Always on" in MIG
     assert "rule_type<>'health'" in MIG
-    assert '["Site Health", "/site-health/"]' in SHELL
+    assert '["Site Health","/site-health/","Site Health"]' in NAV
     assert 'Nav active="Site Health"' in HEALTH
     assert 'rpc("wl_portal_overview"' in HEALTH
     assert 'rpc("wl_sites"' in HEALTH
