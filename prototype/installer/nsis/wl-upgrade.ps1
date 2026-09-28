@@ -36,13 +36,13 @@ $AgentExe   = Join-Path $InstallDir "watchlog-agent.exe"
 $SetupExe   = Join-Path $InstallDir "watchlog-setup-ui.exe"
 $RunnerPs1  = Join-Path $InstallDir "run-agent.ps1"
 $RunnerCmd  = Join-Path $InstallDir "run-agent.cmd"
-$LauncherPidFile = Join-Path $DataRoot "run-agent.pid"
 $BackupExe  = Join-Path $InstallDir "watchlog-agent.exe.wlbak"   # compatibility / support breadcrumb
 $DataRoot   = if ([string]::IsNullOrWhiteSpace($DataRootOverride)) {
   Join-Path $env:ProgramData "WatchLog"
 } else {
   [System.IO.Path]::GetFullPath($DataRootOverride)
 }
+$LauncherPidFile = Join-Path $DataRoot "run-agent.pid"
 $UpgradeLog = Join-Path $DataRoot "upgrade.log"
 $BackupRoot = Join-Path $DataRoot "upgrade-backup"
 $Manifest   = Join-Path $BackupRoot "manifest.json"
