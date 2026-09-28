@@ -12,8 +12,9 @@ Current authority:
 - product/source: `Alkalid-security/Watchlog/main`
 - release ledger: `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`
 - current live handoff: `docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`
-- authoritative source version: 5.0.23
+- authoritative source version: 5.0.24
 - field-proven discovery/connectivity baseline: Build 69 / 5.0.17 until a later exact authoritative artifact passes physical Hikvision + Dahua acceptance.
+- existing-site upgrade authority: `WatchLog-Repair-Upgrade.exe` staged bootstrap in 5.0.24; full Setup is for new-site/new-PC onboarding.
 
 ## Mirror facts reconciled into canonical
 
@@ -26,7 +27,7 @@ The useful field facts from the mirror handoff are retained in canonical context
 
 2. **Hikvision historical footage compatibility**
    - search-first recorded-media retrieval and recorder-returned playback URI handling were part of the Build-76 lineage;
-   - canonical 5.0.23 now owns the newer bounded archive/gap recovery contract;
+   - canonical 5.0.24 owns the bounded archive/gap recovery contract plus the staged existing-site Repair/Upgrade bootstrap;
    - exact physical-recorder acceptance is still required before claiming a hardware path field-proven.
 
 3. **Al-Khalid mapping boundary**
@@ -48,3 +49,31 @@ The useful field facts from the mirror handoff are retained in canonical context
 
 Do not copy product work back into Watchlog-2 and then treat the mirror as authority.
 All new product/runtime/reporting work belongs in canonical `Alkalid-security/Watchlog/main`.
+
+
+## 5.0.24 installer context supersession note
+
+This mirror handoff is historical. Current installer truth is in:
+
+- `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`
+- `docs/release/EXISTING_SITE_REPAIR_UPGRADE_5_0_24.md`
+- `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`
+
+Current product behavior:
+- `WatchLog-Setup.exe` is the new-site/new-PC path;
+- `WatchLog-Repair-Upgrade.exe` is the existing enrolled-site path;
+- staged passive validation runs before the old Agent is stopped;
+- staged recorder validation runs before installed files are replaced;
+- health commit requires fresh heartbeat, recorder observation and real updater polling;
+- rollback success requires proof that the previous Agent actually restarted;
+- `remote_update_v1` is evidence-based, not code-presence-based.
+
+Recent Al-Khalid Head Office field evidence:
+- a full-installer candidate failed post-install health and rolled back to 5.0.19;
+- 5.0.19 remains online-update incapable;
+- this is the field case that triggered the permanent staged Repair/Upgrade model.
+
+Windows 5.0.24 validation remains in
+`visioninfinity0007-droid/Watchlog-2:fix/existing-site-repair-upgrader-v5`.
+No exact 5.0.24 artifact should be called field-ready until Windows Release and the
+controlled Al-Khalid acceptance are recorded.
