@@ -180,8 +180,11 @@ jobs:
           if ($setup.Length -lt 10MB) {
             throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
           }
-          if ($repair.Length -lt $agent.Length -or $repair.Length -ge $setup.Length) {
-            throw "WatchLog-Repair-Upgrade.exe size is invalid ($($repair.Length) bytes); it must contain the connector but remain smaller than full Setup."
+          # NSIS compresses the embedded one-file connector, so the installer can
+          # legitimately be smaller than the raw PyInstaller EXE. Prove it is
+          # substantial and still materially smaller than the full Qt Setup.
+          if ($repair.Length -lt 5MB -or $repair.Length -ge $setup.Length) {
+            throw "WatchLog-Repair-Upgrade.exe size is invalid ($($repair.Length) bytes); expected >=5 MB and smaller than full Setup."
           }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
           if (-not (Test-Path $repairChecksumPath)) { throw 'repair checksum file is missing' }
