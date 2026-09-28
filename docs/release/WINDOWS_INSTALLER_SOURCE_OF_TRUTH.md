@@ -22,7 +22,7 @@ Current authoritative source version:
 
 **5.0.22**
 
-Current main commit containing the combined installer/runtime work:
+Authoritative merged implementation commit containing the current installer/runtime hardening:
 
 `a3fe605f51f06605355bf9133f8568b5a4a56491`
 
