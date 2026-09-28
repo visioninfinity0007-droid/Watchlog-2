@@ -36,6 +36,7 @@ $AgentExe   = Join-Path $InstallDir "watchlog-agent.exe"
 $SetupExe   = Join-Path $InstallDir "watchlog-setup-ui.exe"
 $RunnerPs1  = Join-Path $InstallDir "run-agent.ps1"
 $RunnerCmd  = Join-Path $InstallDir "run-agent.cmd"
+$LauncherPidFile = Join-Path $DataRoot "run-agent.pid"
 $BackupExe  = Join-Path $InstallDir "watchlog-agent.exe.wlbak"   # compatibility / support breadcrumb
 $DataRoot   = if ([string]::IsNullOrWhiteSpace($DataRootOverride)) {
   Join-Path $env:ProgramData "WatchLog"
@@ -154,23 +155,52 @@ function Get-AgentRuntimeLeaves {
 
 function Get-LauncherProcesses {
   # Stop ONLY PowerShell/cmd launchers whose command line points to THIS
-  # WatchLog install directory. Normalize CIM objects before returning them:
-  # Build 84 proved raw CIM results could reach the stop routine without a usable PID.
+  # WatchLog install directory. Prefer the launcher PID file when present, but
+  # verify the command line so a stale/reused PID is harmless. Then scan as a
+  # fallback for Build 69 and other older launchers that never wrote run-agent.pid.
   $wantPs1 = [System.IO.Path]::GetFullPath($RunnerPs1).ToLowerInvariant()
   $wantCmd = [System.IO.Path]::GetFullPath($RunnerCmd).ToLowerInvariant()
-  try {
-    $out = @()
-    foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
-      $name = ([string]$p.Name).ToLowerInvariant()
-      if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { continue }
-      $line = ([string]$p.CommandLine).ToLowerInvariant()
-      if (-not $line) { continue }
-      if (-not ($line.Contains($wantPs1) -or $line.Contains($wantCmd))) { continue }
-      $rec = Convert-ProcessRecord $p
-      if ($null -ne $rec) { $out += $rec }
+  $out = @()
+  $seen = @{}
+
+  function Add-LauncherRecord($p) {
+    if ($null -eq $p) { return }
+    $name = ([string]$p.Name).ToLowerInvariant()
+    if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { return }
+    $line = ([string]$p.CommandLine).ToLowerInvariant()
+    if (-not $line) { return }
+    if (-not ($line.Contains($wantPs1) -or $line.Contains($wantCmd))) { return }
+    $rec = Convert-ProcessRecord $p
+    if ($null -eq $rec) { return }
+    $key = [string]$rec.ProcessId
+    if (-not $seen.ContainsKey($key)) {
+      $seen[$key] = $true
+      $script:__wl_launcher_records += $rec
     }
+  }
+
+  try {
+    $script:__wl_launcher_records = @()
+
+    if (Test-Path -LiteralPath $LauncherPidFile) {
+      $pidText = ""
+      try { $pidText = (Get-Content -LiteralPath $LauncherPidFile -Raw).Trim() } catch {}
+      $pidValue = 0
+      if ([int]::TryParse($pidText, [ref]$pidValue) -and $pidValue -gt 0) {
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
+        Add-LauncherRecord $p
+      }
+    }
+
+    foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+      Add-LauncherRecord $p
+    }
+
+    $out = @($script:__wl_launcher_records)
+    Remove-Variable -Name __wl_launcher_records -Scope Script -ErrorAction SilentlyContinue
     return @($out)
   } catch {
+    Remove-Variable -Name __wl_launcher_records -Scope Script -ErrorAction SilentlyContinue
     return @()
   }
 }
