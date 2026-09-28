@@ -25,15 +25,14 @@ function Alive($p) {
   return $null -ne (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)
 }
 
-function TargetLauncherCount {
-  $needle = ([System.IO.Path]::GetFullPath((Join-Path $Install "run-agent.ps1"))).ToLowerInvariant()
+function ExactProcessCount([string]$ExpectedPath) {
+  $want = [System.IO.Path]::GetFullPath($ExpectedPath)
   try {
     return @(
       Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
-          $_.Name -in @("powershell.exe","pwsh.exe","cmd.exe") -and
-          $_.CommandLine -and
-          ([string]$_.CommandLine).ToLowerInvariant().Contains($needle)
+          $_.ExecutablePath -and
+          ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want)
         }
     ).Count
   } catch {
@@ -49,7 +48,10 @@ try {
   Copy-Item $cmd (Join-Path $Install "watchlog-setup-ui.exe")
   Copy-Item $cmd (Join-Path $Other "watchlog-agent.exe")
 
-  Set-Content (Join-Path $Install "run-agent.ps1") 'Start-Sleep -Seconds 300' -Encoding UTF8
+  @'
+$agent = Join-Path $PSScriptRoot "watchlog-agent.exe"
+& $agent /d /c "ping -n 300 127.0.0.1 >nul"
+'@ | Set-Content (Join-Path $Install "run-agent.ps1") -Encoding UTF8
   Set-Content (Join-Path $Install "register-service.ps1") '# OLD register' -Encoding UTF8
   Set-Content (Join-Path $Install "apply-remote-update.ps1") '# OLD updater' -Encoding UTF8
   Set-Content (Join-Path $Install "wl-upgrade.ps1") '# OLD helper' -Encoding UTF8
@@ -57,27 +59,25 @@ try {
   Set-Content (Join-Path $Install "setup.ico") 'OLD ICON'
   Set-Content (Join-Path $Install "watchlog.defaults.ini") 'OLD DEFAULTS' -Encoding UTF8
 
-  $agent = Start-Process -FilePath (Join-Path $Install "watchlog-agent.exe") -ArgumentList @('/d','/c','ping -t 127.0.0.1 >NUL') -PassThru -WindowStyle Hidden
   $setup = Start-Process -FilePath (Join-Path $Install "watchlog-setup-ui.exe") -ArgumentList @('/d','/c','ping -t 127.0.0.1 >NUL') -PassThru -WindowStyle Hidden
   $launcherScript = '"' + (Join-Path $Install "run-agent.ps1") + '"'
   $launcher = Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcherScript) -PassThru -WindowStyle Hidden
   $otherAgent = Start-Process -FilePath (Join-Path $Other "watchlog-agent.exe") -ArgumentList @('/d','/c','ping -t 127.0.0.1 >NUL') -PassThru -WindowStyle Hidden
-  $procs = @($agent,$setup,$launcher,$otherAgent)
+  $procs = @($setup,$launcher,$otherAgent)
 
-  Start-Sleep -Seconds 1
-  Assert (Alive $agent) "target agent did not start"
+  Start-Sleep -Seconds 2
+  Assert ((ExactProcessCount (Join-Path $Install "watchlog-agent.exe")) -ge 1) "target agent child did not start through run-agent.ps1"
   Assert (Alive $setup) "target setup UI did not start"
   Assert (Alive $launcher) "target launcher did not start"
-  Assert ((TargetLauncherCount) -ge 1) "target launcher was not visible in Win32_Process"
   Assert (Alive $otherAgent) "same-named outside agent did not start"
 
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage preflight -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 6 -DataRootOverride $Data
   Assert ($LASTEXITCODE -eq 0) "preflight returned $LASTEXITCODE"
 
   Start-Sleep -Milliseconds 500
-  Assert (-not (Alive $agent)) "target agent survived preflight"
+  Assert ((ExactProcessCount (Join-Path $Install "watchlog-agent.exe")) -eq 0) "target agent survived preflight"
   Assert (-not (Alive $setup)) "target setup UI survived preflight"
-  Assert ((TargetLauncherCount) -eq 0) "a run-agent.ps1 launcher survived preflight"
+  Assert (-not (Alive $launcher)) "target run-agent.ps1 launcher survived preflight"
   Assert (Alive $otherAgent) "preflight killed same-named process outside InstallDir"
 
   $manifest = Join-Path $Data "upgrade-backup\manifest.json"
@@ -104,7 +104,8 @@ try {
   Assert ($LASTEXITCODE -eq 14) "rollback without task should fail closed with 14, got $LASTEXITCODE"
 
   Assert ((Get-Content (Join-Path $Install "READ ME FIRST.txt") -Raw).Trim() -eq "OLD README") "README was not restored"
-  Assert ((Get-Content (Join-Path $Install "run-agent.ps1") -Raw).Trim() -eq "Start-Sleep -Seconds 300") "runner was not restored"
+  $restoredRunner = Get-Content (Join-Path $Install "run-agent.ps1") -Raw
+  Assert ($restoredRunner -match 'watchlog-agent\.exe' -and $restoredRunner -match 'ping -n 300') "runner was not restored"
   Assert (Test-Path (Join-Path $Install "setup.ico")) "deleted payload file was not restored"
   Assert (-not (Test-Path (Join-Path $Data "upgrade-backup"))) "rollback backup was not cleared"
   Assert (Alive $otherAgent) "rollback touched same-named process outside InstallDir"
