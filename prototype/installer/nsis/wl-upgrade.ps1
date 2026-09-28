@@ -155,52 +155,48 @@ function Get-AgentRuntimeLeaves {
 
 function Get-LauncherProcesses {
   # Stop ONLY PowerShell/cmd launchers whose command line points to THIS
-  # WatchLog install directory. Prefer the launcher PID file when present, but
-  # verify the command line so a stale/reused PID is harmless. Then scan as a
-  # fallback for Build 69 and other older launchers that never wrote run-agent.pid.
+  # WatchLog install directory. Prefer the verified PID file when present, then
+  # scan all processes as a fallback for Build 69/older launchers.
   $wantPs1 = [System.IO.Path]::GetFullPath($RunnerPs1).ToLowerInvariant()
   $wantCmd = [System.IO.Path]::GetFullPath($RunnerCmd).ToLowerInvariant()
   $out = @()
   $seen = @{}
 
-  function Add-LauncherRecord($p) {
-    if ($null -eq $p) { return }
+  function Normalize-Launcher($p) {
+    if ($null -eq $p) { return $null }
     $name = ([string]$p.Name).ToLowerInvariant()
-    if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { return }
+    if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { return $null }
     $line = ([string]$p.CommandLine).ToLowerInvariant()
-    if (-not $line) { return }
-    if (-not ($line.Contains($wantPs1) -or $line.Contains($wantCmd))) { return }
-    $rec = Convert-ProcessRecord $p
-    if ($null -eq $rec) { return }
-    $key = [string]$rec.ProcessId
-    if (-not $seen.ContainsKey($key)) {
-      $seen[$key] = $true
-      $script:__wl_launcher_records += $rec
-    }
+    if (-not $line) { return $null }
+    if (-not ($line.Contains($wantPs1) -or $line.Contains($wantCmd))) { return $null }
+    return (Convert-ProcessRecord $p)
   }
 
   try {
-    $script:__wl_launcher_records = @()
-
     if (Test-Path -LiteralPath $LauncherPidFile) {
       $pidText = ""
       try { $pidText = (Get-Content -LiteralPath $LauncherPidFile -Raw).Trim() } catch {}
       $pidValue = 0
       if ([int]::TryParse($pidText, [ref]$pidValue) -and $pidValue -gt 0) {
         $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-        Add-LauncherRecord $p
+        $rec = Normalize-Launcher $p
+        if ($null -ne $rec) {
+          $seen[[string]$rec.ProcessId] = $true
+          $out += $rec
+        }
       }
     }
 
     foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
-      Add-LauncherRecord $p
+      $rec = Normalize-Launcher $p
+      if ($null -eq $rec) { continue }
+      $key = [string]$rec.ProcessId
+      if ($seen.ContainsKey($key)) { continue }
+      $seen[$key] = $true
+      $out += $rec
     }
-
-    $out = @($script:__wl_launcher_records)
-    Remove-Variable -Name __wl_launcher_records -Scope Script -ErrorAction SilentlyContinue
     return @($out)
   } catch {
-    Remove-Variable -Name __wl_launcher_records -Scope Script -ErrorAction SilentlyContinue
     return @()
   }
 }
