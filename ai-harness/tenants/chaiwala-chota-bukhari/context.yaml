@@ -18,6 +18,19 @@ service_day:
   overnight: true
   days_iso: [1, 2, 3, 4, 5, 6, 7]
   authority: configured_watchlog_context
+  monitoring_truth:
+    fully_monitored_rule: >-
+      Only call a completed service day fully monitored when the full configured
+      4:00 PM to 4:00 AM window has no unrecovered or unverified monitoring time.
+    historical_authority: >-
+      Service-day monitoring coverage plus the completed visual review/saved report
+      outrank generic calendar-day coverage and an empty event index.
+    empty_event_index_rule: >-
+      An empty event index does not mean there is no retained evidence when reviewed
+      snapshots or a saved report exist for the same service day.
+    unverified_language: >-
+      Unverified time means WatchLog cannot confirm what happened in that period;
+      never describe it as no activity.
 
 camera_role_map:
   Floor 1: {role: dining_floor, target_sampling_seconds: 60}

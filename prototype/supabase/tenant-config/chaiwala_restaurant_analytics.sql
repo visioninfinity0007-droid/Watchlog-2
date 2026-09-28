@@ -103,6 +103,16 @@ $ctx$::jsonb,
      updated_at=now()
    where site_id=v_site and tenant_id=v_tenant;
 
+  update public.site_business_context
+     set reporting_prefs=jsonb_set(
+       coalesce(reporting_prefs,'{}'::jsonb),
+       '{restaurant_intelligence_context,monitoring_truth}',
+       '{"fully_monitored_rule":"A completed service day is fully monitored only when the configured 4:00 PM-4:00 AM service window has no unrecovered/unverified monitoring time.","historical_authority":"For a completed service day, service-day monitoring coverage and the completed visual review/saved report outrank generic calendar-day coverage or an empty event index.","empty_event_index_rule":"An empty event index does not mean no retained evidence when reviewed snapshots or a saved report exist for that service day.","coverage_language":"Unverified time means WatchLog cannot confirm what happened in that period. Never describe it as no activity."}'::jsonb,
+       true
+     ),
+     updated_at=now()
+   where site_id=v_site and tenant_id=v_tenant;
+
   update public.sites
      set analytics_config_version=analytics_config_version+1
    where id=v_site;

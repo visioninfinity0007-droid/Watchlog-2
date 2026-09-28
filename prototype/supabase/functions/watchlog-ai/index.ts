@@ -18,6 +18,7 @@ Your job is to tell the customer what happened, what matters, whether anything n
 
 FACTUAL AUTHORITY
 - WATCHLOG_CONTEXT and WATCHLOG_TOOL_RESULTS are authoritative for this tenant/site.
+- Current verified context/tool results override any earlier assistant message that conflicts with them. Do not preserve a previous answer merely for conversational consistency when newer verified site evidence disproves it.
 - Never invent a recorder capability, camera state, incident, person identity, count, time, health state, report, coverage state, or tool result.
 - UNKNOWN means unconfirmed. Never translate an unknown state into a positive or negative claim.
 - Capability verdicts and evidence classes are authoritative internally, but do not expose those internal labels to customers.
@@ -26,6 +27,8 @@ FACTUAL AUTHORITY
 - A saved historical report is the authority for an already-generated report. Keep its figures consistent unless an authorized updated report exists.
 - Raw camera detections are evidence, not automatically unique people, visits, access events, or serious incidents.
 - When WATCHLOG_TOOL_RESULTS.visual_day contains a completed image-by-image visual review, prefer that visual-day summary for questions about what visibly happened on that date. Use other camera/event data as supporting context, not as a substitute for the visual review.
+- For questions about whether a configured business/service day was fully monitored, WATCHLOG_TOOL_RESULTS.business_day_monitoring is authoritative. Its service-day boundaries override calendar-day coverage.
+- An empty event/evidence index does NOT mean there is no retained evidence when a completed visual review or saved report exists. A completed reviewed report outranks an empty event index for that same historical business day.
 
 CUSTOMER COMMUNICATION
 - Lead with the answer or business takeaway, not with how WatchLog reached it.
@@ -261,10 +264,14 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     last_completed_business_date: lastCompletedBusinessDate,
     requested_window: yesterdayIntent ? "last_completed_business_day" : overnightIntent ? "overnight_window" : "current",
     setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null,
+    business_day_monitoring: null,
     restaurant_day: null, restaurant_period: null, restaurant_config: null,
     office_period: null, report_config: null
   };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
+  if (yesterdayIntent) {
+    out.business_day_monitoring = await rpcOptional(sb, "wl_my_business_day_monitoring", { p_site_id: siteId, p_date: lastCompletedBusinessDate });
+  }
   if (yesterdayIntent || overnightIntent || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
     if (yesterdayIntent) out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: lastCompletedBusinessDate });
     else if (overnightIntent) out.daily_intelligence = {
@@ -299,7 +306,7 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     const visualDate = yesterdayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
     out.visual_day = await rpcOptional(sb, "wl_my_visual_day", { p_site_id: siteId, p_date: visualDate });
   }
-  if (reportIntent) {
+  if (reportIntent || yesterdayIntent) {
     const reportDate = yesterdayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
     out.frozen_report = await rpcOptional(sb, "wl_my_report_snapshot", { p_site_id: siteId, p_date: reportDate });
   }
@@ -313,14 +320,18 @@ function visualDayFallback(tools: Json) {
   const v = tools?.visual_day;
   if (!v?.ok || !v.data) return null;
   const d = v.data || {}, s = d.summary || {};
+  if (String(s.public_report_authority || "") === "report_snapshots") return null;
   const owner = String(s.owner_summary || "").trim();
   if (!owner) {
     const total = Number(d.snapshots_total || 0), done = Number(d.snapshots_analyzed || 0);
     if (!total) return null;
+    const complete = String(d.status || "").toLowerCase() === "complete" || s.review_complete === true || (total > 0 && done >= total);
     return {
-      answer: done
-        ? `I’ve visually reviewed ${done} of ${total} available snapshots for that day. The full owner summary will be ready once the remaining snapshots are reviewed.`
-        : "The visual review for that day has not completed yet.",
+      answer: complete
+        ? `The visual review for that day is complete: ${done} of ${total} available snapshots were reviewed.`
+        : done
+          ? `I’ve visually reviewed ${done} of ${total} available snapshots for that day. The remaining snapshots have not been reviewed yet.`
+          : "The visual review for that day has not completed yet.",
       cards: [],
       suggestions: ["Were there any serious incidents?", "Show me the Armory activity", "What time was the office active?"],
       proposed_actions: [],
@@ -350,6 +361,45 @@ function visualDayFallback(tools: Json) {
     }],
     suggestions: ["Were there any serious incidents?", "Show me the Armory activity", "Summarize staff presence"],
     proposed_actions: [],
+    mode: "guided_fallback",
+  };
+}
+
+function reviewedHistoricalReportFallback(prompt: string, ctx: Json, tools: Json) {
+  if (tools?.requested_window !== "last_completed_business_day") return null;
+  const r = tools?.frozen_report;
+  if (!r?.ok || !r.data?.payload?.manual_business_report) return null;
+
+  const p = prompt.toLowerCase();
+  if (/fully monitored|monitored|monitoring|coverage|unverified|downtime|missed|gap|gaps/.test(p)) return null;
+
+  const payload = r.data.payload || {};
+  const summary = String(payload.narrative_summary || payload.ai_summary || payload.executive_summary || "").trim();
+  if (!summary) return null;
+
+  let answer = summary;
+  if (/security|incident|access|office|back entrance/.test(p)) {
+    const incidents = Array.isArray(payload.incidents) ? payload.incidents : [];
+    if (incidents.length) {
+      const bits = incidents.slice(0,3).map((x: Json) => {
+        const title = String(x?.title || "").trim();
+        const body = String(x?.body || "").trim();
+        return title && body ? `${title}: ${body}` : title || body;
+      }).filter(Boolean);
+      if (bits.length) answer = bits.join(" ");
+    }
+  } else if (/recommend|attention|improve|action|follow up/.test(p)) {
+    const actions = Array.isArray(payload.action_items) ? payload.action_items : [];
+    if (actions.length) {
+      answer = actions.slice(0,3).map((x: Json, i: number) => `${i+1}. ${x.title}: ${x.body}`).join(" ");
+    }
+  }
+
+  return {
+    answer,
+    cards: [{ type: "report", title: `Report — ${r.data.report_date}`, data: r.data }],
+    suggestions: ["Show the main business findings", "What needs attention?", "Was yesterday fully monitored?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
     mode: "guided_fallback",
   };
 }
@@ -464,6 +514,70 @@ function officePeriodFallback(prompt: string, ctx: Json, tools: Json) {
   };
 }
 
+function businessDayMonitoringFallback(prompt: string, ctx: Json, tools: Json) {
+  const p = prompt.toLowerCase();
+  if (tools?.requested_window !== "last_completed_business_day") return null;
+  if (!/fully monitored|monitored|monitoring|coverage|unverified|downtime|missed|gap|gaps/.test(p)) return null;
+
+  const wrapped = tools?.business_day_monitoring;
+  if (!wrapped?.ok || !wrapped.data) return null;
+  const d = wrapped.data || {}, coverage = d.coverage || {}, classes = coverage.classes || {};
+  const ratio = Number(classes.total_coverage_ratio ?? coverage.coverage_ratio ?? 0);
+  const pct = Number.isFinite(ratio) ? Math.round(ratio * 100) : null;
+  const fully = d.fully_monitored === true;
+  const win = d.window || {};
+  const gaps = Array.isArray(coverage.gaps) ? coverage.gaps : [];
+  const visual = d.visual_review || {};
+  const saved = d.saved_report_coverage || {};
+  const tz = ctx?.site?.timezone || win.timezone || "Asia/Karachi";
+
+  const gapText = gaps.slice(0, 3).map((g: Json) => {
+    const a = customerTime(g?.start, tz), b = customerTime(g?.end, tz);
+    return a && b ? `${a}–${b}` : "";
+  }).filter(Boolean);
+
+  const observedPeriod = String(saved?.period || "").trim();
+  const reviewedComplete = visual?.review_complete === true || String(visual?.status || "").toLowerCase() === "complete";
+  const reviewedCount = Number(visual?.snapshots_analyzed || 0);
+  const totalCount = Number(visual?.snapshots_total || 0);
+
+  let answer = fully
+    ? `Yes. The last completed service day was fully monitored from ${customerTime(win.from, tz)} to ${customerTime(win.to, tz)}.`
+    : `No. The last completed Chai Wala service day was not fully monitored. Verified monitoring covered about ${pct == null ? "part of" : pct + "% of"} the configured ${customerTime(win.from, tz)}–${customerTime(win.to, tz)} service window.`;
+
+  if (!fully && gapText.length) answer += ` The unverified periods were approximately ${gapText.join(" and ")}.`;
+  if (reviewedComplete && totalCount > 0) {
+    answer += observedPeriod
+      ? ` The completed visual review covers the available evidence from ${observedPeriod}; all ${reviewedCount || totalCount} available snapshots in that reviewed set were processed.`
+      : ` The visual review is complete for the available evidence: ${reviewedCount || totalCount} of ${totalCount} snapshots were reviewed.`;
+  }
+  answer += " Unverified time means WatchLog cannot confirm what happened during those periods; it is not treated as no activity.";
+
+  return {
+    answer,
+    cards: [{
+      type: "coverage",
+      title: "Yesterday’s monitoring",
+      data: {
+        business_date: d.business_date,
+        window: win,
+        fully_monitored: fully,
+        coverage_ratio: ratio,
+        gaps: gaps.slice(0, 6),
+        reviewed_evidence: reviewedComplete ? {
+          status: visual.status,
+          snapshots_reviewed: reviewedCount,
+          snapshots_total: totalCount,
+          observed_period: observedPeriod || null,
+        } : null,
+      },
+    }],
+    suggestions: ["What happened during the monitored period?", "Summarize yesterday’s report", "What should management follow up?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+    mode: "guided_fallback",
+  };
+}
+
 function dailyFallback(tools: Json) {
   const daily = tools?.daily_intelligence;
   if (!daily) return null;
@@ -485,8 +599,14 @@ function dailyFallback(tools: Json) {
 }
 function fallback(prompt: string, ctx: Json, tools: Json) {
   const p = prompt.toLowerCase(), cameras = ctx?.cameras || [], faults = ctx?.faults || [], recorder = ctx?.recorder || {}, coverage = ctx?.coverage || {};
+  const serviceMonitoring = businessDayMonitoringFallback(prompt, ctx, tools);
+  if (serviceMonitoring) return serviceMonitoring;
   if (tools?.evidence) {
     const ev = tools.evidence, sum = evidenceSummary(ev);
+    const hasEvidence = sum.events > 0 || (Array.isArray(ev?.bundles) && ev.bundles.length > 0);
+    if (!hasEvidence) {
+      // Empty event index is not evidence absence. Continue to completed visual review/report/daily truth.
+    } else {
     return {
       answer: sum.text + (ev?.window?.from ? ` I reviewed the requested period from ${customerTime(ev.window.from, ctx?.site?.timezone)} to ${customerTime(ev.window.to, ctx?.site?.timezone)}.` : ""),
       cards: [{ type: "incident", title: `Evidence — ${ev?.window?.label || "requested window"}`,
@@ -494,6 +614,7 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
       suggestions: ["Show the snapshots", "Which cameras were involved?", "Check site health"],
       proposed_actions: [{ kind: "navigate", label: "Open incidents", data: { href: "/incidents/" } }], mode: "guided_fallback",
     };
+    }
   }
   if (/setup|configure|connect|install|what can|capabilit/.test(p)) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
@@ -503,6 +624,8 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
   if (restaurantPeriod) return restaurantPeriod;
   const officePeriod = officePeriodFallback(prompt, ctx, tools);
   if (officePeriod) return officePeriod;
+  const reviewedReport = reviewedHistoricalReportFallback(prompt, ctx, tools);
+  if (reviewedReport) return reviewedReport;
   const restaurant = restaurantFallback(prompt, ctx, tools);
   if (restaurant) return restaurant;
   const visual = visualDayFallback(tools);
