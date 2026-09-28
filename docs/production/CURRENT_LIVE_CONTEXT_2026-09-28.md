@@ -554,7 +554,7 @@ Sources:
 
 - incidents;
 - open operational/site-health faults;
-- generated reports.
+- generated reports (including the top report-backed recommended action when one exists).
 
 Production objects verified:
 

@@ -76,7 +76,7 @@ export default function CustomerNotifications(){
     <Nav active="Notifications" email={email} currentSiteId={siteId}/>
     <main className="main">
       <header className={s.head}>
-        <div><div className={s.eyebrow}>Notifications</div><h1>What needs your attention</h1><p>Incidents, site-health issues and reports from your WatchLog sites.</p></div>
+        <div><div className={s.eyebrow}>Notifications</div><h1>What needs your attention</h1><p>Incidents, site-health issues, reports and report-backed recommended actions from your WatchLog sites.</p></div>
         <div className={s.actions}>
           {sites.length>1&&<select value={siteId} onChange={e=>choose(e.target.value)}>{sites.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>}
           <button type="button" onClick={markAll} disabled={!unread}>Mark all read</button>
