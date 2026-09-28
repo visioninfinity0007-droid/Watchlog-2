@@ -26,7 +26,24 @@ Generic schema:
   "people": [{"location":"...","activity":"...","role_hint":"customer|staff|unknown|null"}]
 }
 
-If RESTAURANT_ANALYTICS.enabled is true, ALSO return top-level "restaurant" using the exact restaurant contract supplied in the prompt. Use RESTAURANT_INTELLIGENCE_CONTEXT as the business meaning contract, never as evidence that a value occurred. "visible_customers" means concurrent visibly present customers, never unique footfall. "food_present" means visible food at a calibrated table and says nothing about quality or correctness. Use null when evidence is not reliable. Only populate fields supported by the current camera_role. For configured dining tables, return one row for every listed table_key so occupancy transitions can be measured. If adjacent movable tables are visibly joined into one party, give those table rows the same short combined_group value. Otherwise combined_group must be null.`;
+If RESTAURANT_ANALYTICS.enabled is true, ALSO return top-level "restaurant" using the exact restaurant contract supplied in the prompt. Use RESTAURANT_INTELLIGENCE_CONTEXT as the business meaning contract, never as evidence that a value occurred. "visible_customers" means concurrent visibly present customers, never unique footfall. "food_present" means visible food at a calibrated table and says nothing about quality or correctness. Use null when evidence is not reliable. Only populate fields supported by the current camera_role. For configured dining tables, return one row for every listed table_key so occupancy transitions can be measured. If adjacent movable tables are visibly joined into one party, give those table rows the same short combined_group value. Otherwise combined_group must be null.
+
+For every restaurant frame, ALSO return restaurant.analytics_quality:
+{
+  "visibility_quality": number|null,
+  "people_count_confidence": number|null,
+  "table_tracking_confidence": number|null,
+  "glare_level": number|null,
+  "overexposure_level": number|null,
+  "occlusion_level": number|null,
+  "obstruction_level": number|null,
+  "camera_angle_adequacy": number|null,
+  "lighting_uniformity": number|null,
+  "issues": ["short factual visible issue"],
+  "blocked_regions": ["short visible region/object description"],
+  "recommended_actions": ["short physical camera/lighting/calibration improvement"]
+}
+All scores are 0..1. For adequacy/confidence/visibility/lighting, 1 is best. For glare/overexposure/occlusion/obstruction, 1 is worst. Only describe visible image-quality or geometry problems. Do not invent equipment faults. Bright bulbs, direct lamps or blown highlights in the camera view should increase glare/overexposure and may lower people-count/table-tracking confidence. Furniture, poles, fixtures, umbrellas, people or other objects blocking table/customer visibility should increase occlusion/obstruction. A recommendation is not evidence that the fix has been performed.`;
 
 if (!URL || !SERVICE_KEY) throw new Error("missing Supabase runtime configuration");
 const sb = createClient(URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -134,8 +151,9 @@ function normalize(raw: Json, item: Json): Json {
         confidence: as01(row.confidence),
       };
     });
+    const aq = isObject(rr.analytics_quality) ? rr.analytics_quality : {};
     out.restaurant = {
-      schema_version: "restaurant-vision-v2",
+      schema_version: "restaurant-vision-v3",
       visible_customers: role === "dining_floor" ? asInt(rr.visible_customers) : null,
       staff_count: asInt(rr.staff_count),
       occupied_tables: role === "dining_floor" ? asInt(rr.occupied_tables) : null,
@@ -144,6 +162,20 @@ function normalize(raw: Json, item: Json): Json {
       handoff_load: role === "service_handoff" ? as01(rr.handoff_load) : null,
       counter_active: role === "cash_counter" ? asBool(rr.counter_active) : null,
       confidence: as01(rr.confidence),
+      analytics_quality: {
+        visibility_quality: as01(aq.visibility_quality),
+        people_count_confidence: role === "dining_floor" ? as01(aq.people_count_confidence) : null,
+        table_tracking_confidence: role === "dining_floor" ? as01(aq.table_tracking_confidence) : null,
+        glare_level: as01(aq.glare_level),
+        overexposure_level: as01(aq.overexposure_level),
+        occlusion_level: as01(aq.occlusion_level),
+        obstruction_level: as01(aq.obstruction_level),
+        camera_angle_adequacy: as01(aq.camera_angle_adequacy),
+        lighting_uniformity: as01(aq.lighting_uniformity),
+        issues: Array.isArray(aq.issues) ? aq.issues.slice(0, 8).map((x: any) => cleanText(x, 180)).filter(Boolean) : [],
+        blocked_regions: Array.isArray(aq.blocked_regions) ? aq.blocked_regions.slice(0, 8).map((x: any) => cleanText(x, 180)).filter(Boolean) : [],
+        recommended_actions: Array.isArray(aq.recommended_actions) ? aq.recommended_actions.slice(0, 8).map((x: any) => cleanText(x, 220)).filter(Boolean) : [],
+      },
       tables,
     };
   }

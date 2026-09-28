@@ -11,6 +11,7 @@ SCHEDULE=(ROOT/"prototype/supabase/migrations/0122_schedule_vision_worker.sql").
 PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")
 CAPTURE=(ROOT/"prototype/supabase/migrations/0124_restaurant_server_capture_scheduler.sql").read_text(encoding="utf-8")
 ALIGN=(ROOT/"prototype/supabase/migrations/0125_chaiwala_ai_context_alignment.sql").read_text(encoding="utf-8")\nPERIOD=(ROOT/"prototype/supabase/migrations/0126_chaiwala_report_windows.sql").read_text(encoding="utf-8")
+QUALITY=(ROOT/"prototype/supabase/migrations/0127_chaiwala_analytics_quality.sql").read_text(encoding="utf-8")
 AGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
 CHAT=(ROOT/"prototype/supabase/functions/watchlog-ai/index.ts").read_text(encoding="utf-8")
 
@@ -261,3 +262,73 @@ def test_period_ai_is_grounded_in_period_rpc():
     assert "function restaurantPeriodFallback" in CHAT
     assert "Across the last" in CHAT
     assert "Coverage is partial, so trend comparisons should be treated cautiously." in CHAT
+
+
+def test_vision_worker_scores_analytics_quality_and_camera_blockers():
+    assert 'restaurant-vision-v3' in WORKER
+    for field in (
+        "visibility_quality",
+        "people_count_confidence",
+        "table_tracking_confidence",
+        "glare_level",
+        "overexposure_level",
+        "occlusion_level",
+        "obstruction_level",
+        "camera_angle_adequacy",
+        "lighting_uniformity",
+        "blocked_regions",
+        "recommended_actions",
+    ):
+        assert field in WORKER
+    assert "Bright bulbs, direct lamps or blown highlights" in WORKER
+    assert 'role === "dining_floor" ? as01(aq.people_count_confidence) : null' in WORKER
+
+
+def test_quality_summary_requires_repeated_evidence_and_no_fake_accuracy():
+    assert "CREATE OR REPLACE FUNCTION public.wl_restaurant_quality_summary" in QUALITY
+    assert "v_c.samples>=3" in QUALITY
+    assert "glare_frames::numeric/v_c.samples>=0.20" in QUALITY
+    assert "occlusion_frames::numeric/v_c.samples>=0.20" in QUALITY
+    assert "obstruction_frames::numeric/v_c.samples>=0.15" in QUALITY
+    assert "low_people_confidence_frames::numeric/v_c.samples>=0.25" in QUALITY
+    assert "not_calibrated_against_human_ground_truth" in QUALITY
+    assert "'can_publish_accuracy_percentage',false" in QUALITY
+    assert "manual count validation sample" in QUALITY
+
+
+def test_day_and_period_reports_include_analytics_quality():
+    assert "restaurant-day-v3" in QUALITY
+    assert "restaurant-period-v2" in QUALITY
+    assert "'analytics_quality',public.wl_restaurant_quality_summary" in QUALITY
+    assert "restaurant-analytics-quality-v1" in QUALITY
+    assert "watchlog-ai-context-v5" in QUALITY
+
+
+def test_report_ui_has_camera_quality_chart_and_improvement_recommendations():
+    for text in (
+        "Analytics quality & improvement recommendations",
+        "People count",
+        "Table tracking",
+        "Glare risk",
+        "Occlusion",
+        "Angle quality",
+        "Recommended improvement",
+        "Customer-count accuracy:",
+    ):
+        assert text in REPORT
+    assert "qualityTrack" in REPORT
+    assert "improvementCard" in REPORT
+    assert "Quality scoring is waiting for processed restaurant frames." in REPORT
+
+
+def test_chaiwala_quality_context_is_tenant_specific_and_reproducible():
+    assert '"schema": "restaurant-vision-v3"' in CONFIG or '"schema":"restaurant-vision-v3"' in CONFIG
+    assert "analytics_quality and improvement recommendations" in QUALITY
+    assert "Do not publish a customer-count accuracy percentage" in QUALITY
+    assert "Repeated glare or overexposure" in QUALITY
+
+
+def test_customer_ai_surfaces_quality_limits_before_operational_advice():
+    assert "high-priority camera improvement" in CHAT
+    assert "Camera analytics quality needs attention" in CHAT
+    assert "analytics_quality: aq" in CHAT
