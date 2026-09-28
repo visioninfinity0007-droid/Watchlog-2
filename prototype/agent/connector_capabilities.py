@@ -17,7 +17,6 @@ from pathlib import Path
 import requests
 
 BASE_CAPABILITIES = (
-    "site_control_runtime",
     "operations_evidence_still",
     "recorder_probe_v2",
 )
@@ -95,6 +94,23 @@ def has_proof(cfg, capability: str) -> bool:
 
 def runtime_capabilities(cfg) -> list[str]:
     caps = list(BASE_CAPABILITIES)
+    now = time.monotonic()
+
+    site_poll = getattr(cfg, "site_control_last_poll_monotonic", None)
+    site_fresh_for = max(60.0, float(getattr(cfg, "site_control_seconds", 15)) * 3.0)
+    if (getattr(cfg, "site_control_enabled", False)
+            and site_poll is not None and now - float(site_poll) <= site_fresh_for):
+        caps.append("site_control_runtime")
+
+    update_ready = bool(getattr(cfg, "update_url", "")) and (
+        not getattr(cfg, "update_require_signature", True)
+        or bool(getattr(cfg, "update_public_key", ""))
+    )
+    update_poll = getattr(cfg, "remote_update_last_poll_monotonic", None)
+    if (update_ready and update_poll is not None
+            and now - float(update_poll) <= 90.0):
+        caps.append("remote_update_v1")
+
     if has_proof(cfg, "operations_evidence_clip"):
         caps.append("operations_evidence_clip")
     return caps
