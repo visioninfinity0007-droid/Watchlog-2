@@ -45,13 +45,17 @@ This repository owns:
 
 `main`
 
-Authoritative merged implementation commit containing the current installer/runtime/recovery hardening:
+Current authoritative product main at this context update:
 
-`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
+`7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
+
+Existing-site Repair/Upgrade implementation:
+
+PR `#78` / merge commit `e74526affc4722daf5e14aab07e56b08f72c3d44`
 
 Current source version:
 
-**5.0.23**
+**5.0.24**
 
 This main branch now combines:
 
@@ -65,7 +69,11 @@ This main branch now combines:
 - shutdown-before-replace transactional installer upgrades that stop the existing WatchLog launcher/UI/Agent before touching files;
 - Dahua/Hikvision archive footage recovery with bundled FFmpeg historical JPEG extraction;
 - recorder-liveness gap detection and durable spool-overflow reconciliation;
-- historical recovered snapshots on a 300-second default cadence with original footage timestamps.
+- historical recovered snapshots on a 300-second default cadence with original footage timestamps;
+- a separate staged `WatchLog-Repair-Upgrade.exe` path for existing enrolled sites;
+- passive SYSTEM candidate validation before the old Agent is stopped;
+- recorder compatibility validation before installed files are replaced;
+- protected runtime-health proof requiring fresh cloud heartbeat, recorder observation and real remote-update polling before commit.
 
 ### Field-proven baseline — Build 69
 
@@ -133,7 +141,7 @@ Build 83 passed the Windows release workflow, packaged setup-UI discovery self-t
 recorder discovery/login gates, eighth-subnet regression and installer checksum/version checks.
 
 **Build 83 is a controlled validation candidate, not the final fleet installer.**
-It does not contain the authoritative 5.0.23 combined remote-maintenance source.
+It does not contain the authoritative 5.0.24 existing-site Repair/Upgrade/bootstrap source.
 
 ### Release-line upgrade-lock validation — Build 98
 
@@ -164,10 +172,8 @@ the upgrade preflight stops the target Setup UI/Agent/launcher path, leaves an u
 process outside the install directory alone, verifies all payload files are unlocked/backed up,
 and restores the previous payload on rollback.
 
-The authoritative 5.0.23 source now includes this behavior through merged PR #67 /
-implementation commit `a3fe605f51f06605355bf9133f8568b5a4a56491`.
-
-Build 98 remains validation evidence, not the final authoritative 5.0.23 fleet installer.
+The lower-level shutdown/rollback behavior remains part of authoritative 5.0.24.
+Build 98 remains validation evidence, not the final 5.0.24 fleet installer.
 
 ### Archive/gap recovery validation — Build 100
 
@@ -208,23 +214,60 @@ be called physically proven.
 
 ### Current installer promotion boundary
 
-Do **not** replace a working Build-69 site simply because a newer build exists.
+Do **not** replace a working site simply because a newer version exists.
 
-The next promotable installer must be an exact Windows artifact built from the authoritative
-`Alkalid-security/Watchlog` main 5.0.23 source (or later) and must then pass:
+Current product source is **5.0.24** and the required Windows model is now:
 
-1. real Hikvision discovery/login/connectivity;
-2. real Dahua discovery/login/connectivity;
-3. in-place upgrade from Build 69 without forced rediscovery or file-lock/update stalls;
-4. Site Control command claim/completion;
-5. signed remote-update/rollback acceptance;
-6. bounded historical footage/archive proof on the actual Hikvision and Dahua pilot hardware;
-7. forced-gap recovery proving historical snapshots reappear at original timestamps.
+- `WatchLog-Setup.exe` — new site / new PC only;
+- `WatchLog-Repair-Upgrade.exe` — existing enrolled sites.
 
-The authoritative 5.0.23 Windows artifact has **not yet been produced** because the current
-GitHub Actions jobs on `Alkalid-security/Watchlog` are terminating before executing any steps.
+The Repair/Upgrade candidate must validate itself as SYSTEM against the existing site
+**before** it stops the old Agent, then validate recorder identity/channels before any
+installed payload is replaced.
 
-See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` for the release ledger and promotion rules.
+The Windows validation branch is:
+
+`visioninfinity0007-droid/Watchlog-2:fix/existing-site-repair-upgrader-v5`
+
+Branch head at the installer-context update:
+
+`0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
+
+The branch contains the staged preflight/runtime-health/updater port, but an exact
+5.0.24 Windows Repair/Upgrade artifact has **not yet been promoted**.
+
+### Recent Al-Khalid upgrade field event
+
+The recent full-installer test was on **Al-Khalid Head Office**.
+
+The candidate did not remain healthy and rolled back to the previous **5.0.19** Agent.
+That field event proved why full Setup must no longer be the normal existing-site
+upgrade mechanism.
+
+5.0.19 does not advertise `remote_update_v1` and has not claimed the online-update queue,
+so the site still needs one successful 5.0.24 Repair/Upgrade bootstrap before future normal
+updates can be remote.
+
+The old rollback dialog also exposed a truth bug: it could say the previous version was
+restored without independently proving the old Agent restart. 5.0.24 corrects that behavior.
+
+The next promotable artifact must pass:
+
+1. packaged Repair/Upgrade contract tests;
+2. real Hikvision staged preflight + recorder preflight;
+3. real Dahua staged preflight + recorder preflight;
+4. in-place upgrade without rediscovery/re-login;
+5. fresh heartbeat + recorder_seen_at + remote_update_poll_at on the new exact version;
+6. `remote_update_v1` only after actual updater polling;
+7. Site Control read-only command claim/completion;
+8. rollback proof;
+9. archive/gap recovery proof on pilot hardware.
+
+See:
+- `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`
+- `docs/release/EXISTING_SITE_REPAIR_UPGRADE_5_0_24.md`
+- `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`
+
 
 ---
 
@@ -912,10 +955,16 @@ Post-PR #71 Watchlog-2 commit `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b` was als
 - Never treat a green packaging workflow alone as field discovery proof; Build 74 is the counterexample.
 - Never reduce automatic discovery below Build 69's eight-/24 field baseline without explicit field evidence.
 - Never replace a working Build-69 site with a candidate build that has not passed physical field acceptance.
-- Never call Build 83, Build 98 or Build 100 the authoritative 5.0.23 installer; they are 5.0.21 release-line validation artifacts.
+- Never call Build 83, Build 98 or Build 100 the authoritative 5.0.24 installer; they are behavior-specific validation artifacts.
+- Never use full Setup as the default upgrade path for a complete enrolled site.
+- Never stop the installed Agent before passive staged Repair/Upgrade validation succeeds.
+- Never replace WatchLog payload files before staged recorder validation succeeds.
 - Never overwrite WatchLog payload files while that install's launcher, Setup UI or Agent is still running.
 - Never let the scheduled-task watchdog restart WatchLog during an installer file-replacement transaction.
 - Never broad-kill same-named processes outside the current WatchLog install path.
+- Never commit an upgrade based only on process liveness; require fresh heartbeat + recorder + updater-poll proof.
+- Never advertise `remote_update_v1` without a real successful updater claim poll.
+- Never claim rollback success unless the previous Agent restart is proven.
 - Never describe the Visual Worker as active without a fresh heartbeat + completed reviews.
 - Never share tenant AI chats across tenants.
 - Never silently broaden chats from per-user to tenant-wide.
