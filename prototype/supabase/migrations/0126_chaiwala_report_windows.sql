@@ -389,6 +389,22 @@ set reporting_prefs=jsonb_set(
 updated_at=now()
 where site_id='1a1fab32-10b3-4082-b61c-180ec04c758c';
 
+
+update public.site_business_context
+set reporting_prefs=jsonb_set(
+  reporting_prefs,
+  '{restaurant_intelligence_context,report_windows}',
+  '{
+    "today":{"label":"Today","purpose":"Latest/current Chai Wala service-day operating report.","sections":["service-day coverage and data quality","headline KPIs","hourly dining demand","floor comparison","table utilization","observed service timing","kitchen and handoff pressure","operational/security exceptions","management reading"]},
+    "yesterday":{"label":"Yesterday","purpose":"Completed prior Chai Wala service-day review with restaurant operations plus frozen security/evidence report when available.","sections":["service-day coverage and data quality","headline KPIs","hourly dining demand","floor comparison","table utilization","observed service timing","kitchen and handoff pressure","management reading","security/evidence report"]},
+    "last_7_days":{"label":"Last 7 days","purpose":"Short-term operations pattern report with comparison to the previous seven service days.","sections":["period coverage","headline KPIs","previous-period comparison","service-day trend","demand by hour","floor comparison","table utilization ranking","observed service-time distribution","repeated operational patterns","management reading and practical actions"]},
+    "last_30_days":{"label":"Last 30 days","purpose":"Management trend report for recurring demand, layout, service and operating-pattern decisions.","sections":["period coverage","headline KPIs","previous-period comparison","weekly trend","weekday pattern","demand by hour","floor comparison","high- and low-utilization tables","observed service-time distribution","recurring operational/security patterns","management improvement opportunities"]}
+  }'::jsonb,
+  true
+),
+updated_at=now()
+where site_id='1a1fab32-10b3-4082-b61c-180ec04c758c';
+
 CREATE OR REPLACE FUNCTION public.wl_restaurant_site_config(p_site_id uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
