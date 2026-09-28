@@ -37,37 +37,118 @@ This repository owns:
 
 ### Windows installer / Site Connector
 
-Authoritative repository:
+**Authoritative product/source repository:**
 
-`visioninfinity0007-droid/Watchlog-2`
+`Alkalid-security/Watchlog`
 
-Authoritative branch:
+**Authoritative branch:**
 
-`build/site-connector-v5-watchlog2`
+`main`
 
-Current successful Windows release:
+Current authoritative main commit containing the combined installer/runtime work:
 
-- Build: **76**
-- Version: **5.0.21**
-- Source SHA: `26b036a654446b3e8c262b2f476118f2e2f41916`
-- Windows Release run: **#76**
-- Run ID: `36346424676`
-- Result: **success**
-- Artifact: `WatchLog-Windows-76`
-- Artifact ID: `10941445308`
-- Artifact digest:
-  `sha256:0fdf73bc6421291e58413330ac73b439a6256f59c95227cc4dfd1e4c6eea54b5`
+`d141e392291c038c006a806f026e6fa11b4a8dd8`
 
-Build 76 supersedes Build 72 for new installations.
+Current source version:
 
-Build 76 carries forward the Build-72 discovery/login fixes and adds:
+**5.0.22**
 
-1. ONVIF physical-camera normalization so MainStream/SubStream profiles are not exposed as separate physical cameras.
-2. Backward-compatible cloud camera identity for older deployed ONVIF Agents, preserving historical evidence.
-3. Hikvision bounded historical-footage retrieval hardening:
-   search first, use recorder-returned playback URI, and support firmware-dependent GET/POST download behavior.
+This main branch now combines:
 
-See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` for the release ledger.
+- Build-69-class discovery/connectivity reach;
+- bounded multi-NIC discovery and installer watchdogs;
+- Site Control runtime truth;
+- secure signed remote-update infrastructure;
+- Hikvision recorder readback improvements;
+- incident still/clip workers;
+- archive/recovery/runtime health logic.
+
+### Field-proven baseline — Build 69
+
+Build **69 / 5.0.17** remains the currently field-proven discovery/connectivity baseline.
+
+Exact identity:
+
+- source SHA:
+  `811d378e3a7556047f294bb128b8caf45a295469`
+- Windows Release run id:
+  `36238903083`
+- artifact:
+  `WatchLog-Windows-69`
+- artifact id:
+  `10905576478`
+- artifact ZIP digest:
+  `sha256:6f84aa14b10eb245f66b9a344524fa39490817bb1882c89daa1954da266809d1`
+- `WatchLog-Setup.exe` SHA-256:
+  `A5428B33A9789056D8156F445FE099F73CC926E5903C4162F96746D7C90E1B5E`
+- `watchlog-agent.exe` SHA-256:
+  `24EEAC5826CF104DC41770A66A69F53F83960443B73D9D3CEEC997B39BFDD5F4`
+- `watchlog-setup-ui.exe` SHA-256:
+  `C5B732F1D28F0D2FB54EBC4ACD00C4BBFF3EC654960F3BA3C82AA8E48007F8E6`
+
+Build 69 is the regression baseline for discovery/login/connectivity until a later exact artifact passes physical Hikvision and Dahua field acceptance.
+
+### Build 74 field failure
+
+Build 74 passed packaging but failed real field discovery: setup could remain on
+`Search Network` without surfacing the recorder.
+
+The root reliability class was an unbounded/over-broad Windows network scan across
+multiple adapters. Later builds must therefore not be promoted merely because packaging is green.
+
+### Release-line validation candidate — Build 83
+
+A separate Windows release-line repository was used to validate the discovery/setup hardening:
+
+- repository:
+  `visioninfinity0007-droid/Watchlog-2`
+- branch:
+  `build/site-connector-v5-watchlog2`
+- Build:
+  **83**
+- product version:
+  **5.0.21**
+- source SHA:
+  `dfc3ec5bc1229a88c510f8057cd9ac898f8cf848`
+- run id:
+  `36351875478`
+- artifact:
+  `WatchLog-Windows-83`
+- artifact id:
+  `10942702630`
+- artifact ZIP digest:
+  `sha256:0abf05c447abfa74277f4355f86da2a66f7d75788d29bba815b9413898eb871d`
+- `WatchLog-Setup.exe` SHA-256:
+  `EEBA56F5879306CDA0662E6CCA5DBDA2D85AA66D0463D09B21D4F90E54B6F8EC`
+- `watchlog-agent.exe` SHA-256:
+  `6593168ED008D36467772948C909888CE58380BBC4CE5D3B7657C26563024576`
+- `watchlog-setup-ui.exe` SHA-256:
+  `F345DC7C247741C6643BD7021EB285FCC9796881AF213DECF204431B2DF5853D`
+
+Build 83 passed the Windows release workflow, packaged setup-UI discovery self-test,
+recorder discovery/login gates, eighth-subnet regression and installer checksum/version checks.
+
+**Build 83 is a controlled validation candidate, not the final fleet installer.**
+It does not contain the authoritative 5.0.22 combined remote-maintenance source.
+
+### Current installer promotion boundary
+
+Do **not** replace a working Build-69 site simply because a newer build exists.
+
+The next promotable installer must be an exact Windows artifact built from the authoritative
+`Alkalid-security/Watchlog` main 5.0.22 source (or later) and must then pass:
+
+1. real Hikvision discovery/login/connectivity;
+2. real Dahua discovery/login/connectivity;
+3. in-place upgrade from Build 69 without forced rediscovery;
+4. Site Control command claim/completion;
+5. signed remote-update/rollback acceptance;
+6. bounded historical footage/archive proof where hardware supports it.
+
+The authoritative 5.0.22 Windows artifact has **not yet been produced** because the current
+GitHub Actions jobs on `Alkalid-security/Watchlog` are terminating before executing any steps.
+
+See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` for the release ledger and promotion rules.
 
 ---
 
@@ -650,10 +731,15 @@ Do not integrate these wholesale without license/performance/field evaluation.
    - process a controlled current-site batch;
    - verify context-aware outputs before draining the backlog.
 
-2. **Build 76 field deployment**
-   - upgrade one Hikvision and one Dahua pilot;
+2. **Authoritative 5.0.22 Windows artifact + field acceptance**
+   - produce the Windows installer from `Alkalid-security/Watchlog` main;
+   - verify its SHA-256/artifact identity in Git;
+   - upgrade one Build-69 Hikvision pilot in-place without forced rediscovery;
+   - install/upgrade one Dahua pilot;
+   - prove Site Control command claim/completion;
+   - prove signed remote-update rollback path;
    - prove camera inventory remains physical/canonical;
-   - prove bounded historical clip retrieval on the actual recorder;
+   - prove bounded historical clip/archive retrieval on the actual recorder where supported;
    - prove gap/recovery behavior.
 
 3. **Al-Khalid physical-view naming**
@@ -688,6 +774,10 @@ Do not integrate these wholesale without license/performance/field evaluation.
 - Never delete historical evidence merely to repair camera identity.
 - Never say an Agent row is active without checking a recent heartbeat.
 - Never say Chai Wala clip export is proven based on the Build-69 unsupported test.
+- Never treat a green packaging workflow alone as field discovery proof; Build 74 is the counterexample.
+- Never reduce automatic discovery below Build 69's eight-/24 field baseline without explicit field evidence.
+- Never replace a working Build-69 site with a candidate build that has not passed physical field acceptance.
+- Never call Build 83 the authoritative 5.0.22 installer; it is a 5.0.21 release-line validation candidate.
 - Never describe the Visual Worker as active without a fresh heartbeat + completed reviews.
 - Never share tenant AI chats across tenants.
 - Never silently broaden chats from per-user to tenant-wide.
