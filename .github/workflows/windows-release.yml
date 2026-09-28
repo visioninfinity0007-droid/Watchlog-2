@@ -119,6 +119,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "recorder discovery hardening contract failed" }
             python prototype/tests/test_recorder_setup.py
             if ($LASTEXITCODE -ne 0) { throw "recorder login/connectivity contract failed" }
+
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/tests/test_upgrade_shutdown.ps1
+            if ($LASTEXITCODE -ne 0) { throw "running-agent upgrade shutdown/rollback regression failed" }
           }
           finally {
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }

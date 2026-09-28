@@ -91,6 +91,38 @@ def main():
             "InitPluginsDir" in nsis and 'File "/oname=$PLUGINSDIR\\wl-upgrade.ps1"' in nsis and 'File "wl-upgrade.ps1"' in nsis,
         "upgrade STOPS+verifies the agent BEFORE replacing the binary":
             "-Stage preflight" in nsis and nsis.index("-Stage preflight") < nsis.index('File "watchlog-agent.exe"'),
+        "preflight runs for any existing WatchLog payload, not only an enrolled site":
+            'StrCpy $5 "0"' in nsis
+            and '${If} ${FileExists} "$INSTDIR\\watchlog-agent.exe"' in nsis
+            and '${ElseIf} ${FileExists} "$INSTDIR\\watchlog-setup-ui.exe"' in nsis
+            and '${ElseIf} ${FileExists} "$INSTDIR\\run-agent.ps1"' in nsis
+            and '${If} $5 == "1"' in nsis
+            and '${If} $6 == "1"' in nsis,
+        "upgrade preflight stops launcher + setup UI + agent from this install":
+            "Get-LauncherProcesses" in upgrade
+            and "Get-SetupProcesses" in upgrade
+            and "Stop-WatchLogRuntime" in upgrade
+            and "watchlog-setup-ui.exe" in upgrade,
+        "upgrade suspends task watchdog while replacing files":
+            "Disable-ScheduledTask" in upgrade
+            and "Resume-Task" in upgrade
+            and "task_enabled" in upgrade,
+        "upgrade proves every core payload file is unlocked before replacement":
+            "$PayloadFiles = @(" in upgrade
+            and "Get-LockedPayloadFiles" in upgrade
+            and "all payload files unlocked and backed up" in upgrade,
+        "upgrade backs up and restores the complete payload, not just the agent exe":
+            "upgrade-backup" in upgrade
+            and "Backup-Payload" in upgrade
+            and "Restore-Payload" in upgrade
+            and "existing_files" in upgrade,
+        "NSIS checks extraction failure after the entire core payload":
+            nsis.index('File "watchlog-agent.exe"') < nsis.index('File "setup.ico"')
+            < nsis.index("${If} ${Errors}", nsis.index('File "setup.ico"')),
+        "upgrade migration/setup failures restore the previous payload":
+            "Credential migration failed; restoring the complete previous WatchLog installation" in nsis
+            and "Recorder credential repair did not finish; restoring the previous WatchLog installation" in nsis
+            and "Recorder credential is missing after upgrade; restoring the previous WatchLog installation" in nsis,
         "a locked agent binary cannot silently continue (SetOverwrite try + error check + rollback)":
             "SetOverwrite try" in nsis and "${Errors}" in nsis and "-Stage rollback" in nsis,
         "upgrade verifies the INSTALLED version before starting":
@@ -101,8 +133,16 @@ def main():
             nsis.index("-Stage commit") < nsis.index('"DisplayVersion" "${APPVERSION}"'),
         "failed upgrade rolls back to the previous working agent":
             "-Stage rollback" in nsis and "rollback" in upgrade and "wlbak" in upgrade,
-        "helper stops ONLY the exact watchlog-agent.exe (no broad kill)":
-            "Name='watchlog-agent.exe'" in upgrade and "ExecutablePath" in upgrade and "-Force -ErrorAction SilentlyContinue" in upgrade,
+        "helper stops ONLY WatchLog processes from the exact install path (no broad kill)":
+            "Get-ExactExecutableProcesses" in upgrade
+            and 'Get-ExactExecutableProcesses "watchlog-agent.exe" $AgentExe' in upgrade
+            and "ExecutablePath" in upgrade
+            and "Get-LauncherProcesses" in upgrade
+            and "-Force -ErrorAction SilentlyContinue" in upgrade,
+        "service registration does not broad-kill same-named agents":
+            "Get-CimInstance Win32_Process" in register
+            and "ExecutablePath" in register
+            and 'Get-Process -Name "watchlog-agent"' not in register,
         "helper verifies BOTH file ProductVersion and runtime --version":
             "VersionInfo.ProductVersion" in upgrade and "--version" in upgrade,
         "helper verifies a single instance (no duplicate runtime)":

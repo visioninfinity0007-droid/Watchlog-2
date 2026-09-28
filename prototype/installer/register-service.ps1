@@ -34,11 +34,20 @@ if ($existing) {
   try { Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue } catch { }
   Start-Sleep -Milliseconds 500
 }
-# And kill any orphaned agent left behind by a stopped task, so the new instance is not
-# refused and the exe is not locked.
+# And kill any orphaned agent left behind by a stopped task, but ONLY when its
+# executable path belongs to THIS WatchLog install. Never broad-kill a same-named
+# process from another location.
 try {
-  Get-Process -Name "watchlog-agent" -ErrorAction SilentlyContinue |
-    Stop-Process -Force -ErrorAction SilentlyContinue
+  $agent = Join-Path $InstallDir "watchlog-agent.exe"
+  $want = [System.IO.Path]::GetFullPath($agent)
+  Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.ExecutablePath -and
+      ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want)
+    } |
+    ForEach-Object {
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
 } catch { }
 
 $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
