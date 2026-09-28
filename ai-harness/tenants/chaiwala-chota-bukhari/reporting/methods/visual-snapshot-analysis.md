@@ -73,7 +73,9 @@ Label session/cover metrics as estimated or observed-derived.
 
 ## 7. Site-wide totals
 
-Only sum Floor 1 and Floor 2 when observations are sufficiently time-aligned. Otherwise report floors separately.
+Only combine Floor 1 and Floor 2 when observations are sufficiently time-aligned.
+
+Before combining, check whether the two cameras overlap physically. When they show the same seating area from different angles, de-duplicate the same party/table instead of adding both camera counts. If overlap cannot be resolved confidently, report a range or report the camera zones separately.
 
 Never call visible diners footfall or unique customers. True footfall is unsupported until a clean validated entry counting line exists.
 
@@ -85,18 +87,37 @@ A single bad frame is not enough for a physical recommendation.
 
 Model confidence is not measured accuracy. Publish a customer-count accuracy percentage only after representative frames are manually counted and compared with WatchLog.
 
-## 9. Reporting order
+## 9. Client-facing report boundary
 
-1. Coverage/data quality.
-2. Analytics quality and camera improvements.
-3. Visible diners and occupied tables by hour/floor.
-4. Table utilization and estimated sessions/covers.
-5. Served sessions and observed time-to-food.
-6. Kitchen/handoff/counter operations.
-7. Security/access exceptions.
-8. Evidence-backed recommendations.
+The client report is an owner/management product, not a technical audit.
 
-## 10. Truth rules
+Client-facing output should lead with:
+- demand timing and customer/table use;
+- service-flow continuity;
+- kitchen/handoff/counter operations;
+- security/access exceptions;
+- closing/opening discipline;
+- customer-facing presentation;
+- practical, evidence-backed actions.
+
+Do not expose implementation details such as snapshot counts, worker names, queue status, model/provider names, RPC/function names, processing attempts, database table names, egress policy, internal IDs or pipeline failures in the owner report.
+
+If evidence is incomplete, describe the business observation window in plain language, for example: "This brief covers the observed evening period from 8:42 PM onward." Keep the technical reason and exact audit inventory in an internal-only audit.
+
+A completed human/manual visual review may be used as the authoritative daily business brief even when automated structured extraction is unavailable. Do not place an internal "processing" state above a completed reviewed report.
+
+## 10. Reporting order
+
+1. Owner summary and management significance.
+2. Business KPIs that are visually defensible.
+3. Demand and table/customer pattern.
+4. Service handoff, kitchen and counter operations.
+5. Security/access exceptions.
+6. Customer-facing presentation and camera-view limitations where they affect decisions.
+7. Practical improvement actions.
+8. Plain-language evidence-window caveat only where needed.
+
+## 11. Truth rules
 
 Missing coverage = unknown, not zero.
 One frame = observation, not trend.

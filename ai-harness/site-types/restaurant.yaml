@@ -206,3 +206,35 @@ truth_boundaries:
   - a single frame is an observation, not a trend
   - site-wide dining totals require a complete composite across configured dining-floor cameras
   - recommendations about staffing, service or layout require repeated observations and adequate coverage
+
+
+client_reporting:
+  audience: business_owner_or_manager
+  principle: business_value_first
+  lead_with:
+    - demand_and_table_use
+    - service_flow
+    - kitchen_handoff_counter_operations
+    - security_and_access
+    - closing_discipline
+    - customer_facing_presentation
+    - practical_actions
+  never_expose_in_client_report:
+    - snapshot_counts
+    - processing_queue_status
+    - worker_names
+    - model_or_provider_names
+    - database_table_names
+    - rpc_or_function_names
+    - processing_attempts
+    - external_egress_policy
+    - internal_ids
+    - implementation_failures
+  incomplete_evidence_rule: >-
+    Describe the represented business observation window in plain management language.
+    Do not turn a technical collection/processing limitation into the headline of the
+    client report.
+  manual_review_rule: >-
+    A completed human/manual visual review can be the authoritative daily owner brief
+    when automated structured extraction is unavailable. A client must not see an
+    internal processing state above a completed reviewed report.

@@ -1,162 +1,141 @@
-# Chai Wala — Detailed Daily Report
+# Chai Wala — Detailed Daily Business Report
 
-## 1. Report window
-- Tenant/site: Chai Wala — Chota Bukhari
-- Business/service date: **2026-09-27**
-- Configured local start: **16:00, 27 Sep 2026**
-- Configured local end: **04:00, 28 Sep 2026**
-- Timezone: **Asia/Karachi**
-- Yesterday rule: latest completed configured Chai Wala service day, not midnight-to-midnight calendar yesterday.
-- Report status: **coverage-limited; visual review pending**
+## 1. Service-day reading
+**Service date:** 27 September 2026  
+**Configured business day:** 4:00 PM → 4:00 AM  
+**Branch:** Chota Bukhari, DHA Phase 6, Karachi
 
-## 2. Evidence inventory
-WatchLog has a saved report snapshot for this service date and **610 raw image snapshots** across all 8 configured camera views.
+The business evidence available for review begins at approximately **8:42 PM** and continues into close-down. Earlier service hours are therefore outside this report. Customer-volume estimates should be read as observed-evening estimates rather than full-day totals.
 
-Raw snapshot evidence spans approximately **20:42 to 03:22 local time**. The early service period from 16:00 to about 20:42 is not represented by raw snapshots in this report, and the final part of the service window after roughly 03:22 is also not represented.
+## 2. Executive business picture
+The night showed two distinct demand periods:
 
-All 610 snapshot-review rows are currently **pending** with zero completed attempts. There are **0 restaurant_visual_observations** for this service day.
+- **Evening wave — roughly 8:45 PM to 10:45 PM:** steady multi-table dining with several simultaneous parties.
+- **Late-night wave — roughly 12:10 AM to 1:15 AM:** renewed demand, including a large group that combined tables.
 
-Camera inventory:
+Across the overlapping Floor 1 and Floor 2 views, the conservative peak is approximately **18–22 concurrent visible diners** with about **6–8 occupied table groups**. The estimated customer volume represented in the observed evening is roughly **45–60 covers**.
 
-| Camera | Snapshots | First local | Last local | Current interpretation |
-| --- | ---: | --- | --- | --- |
-| Back Entrance | 76 | 20:44 | 03:22 | Raw evidence captured; visual review pending |
-| Cash Counter | 75 | 20:45 | 03:18 | Raw evidence captured; visual review pending |
-| Floor 1 | 77 | 20:42 | 03:20 | Raw dining-floor evidence captured; analytics pending |
-| Floor 2 | 76 | 20:45 | 03:18 | Raw dining-floor evidence captured; analytics pending |
-| Kitchen | 76 | 20:46 | 03:19 | Raw kitchen evidence captured; analytics pending |
-| Office Camera | 76 | 20:46 | 03:20 | Raw management/security evidence captured; review pending |
-| Office View | 77 | 20:43 | 03:22 | Raw management/security evidence captured; review pending |
-| Shop Front | 77 | 20:43 | 03:21 | Raw service-handoff evidence captured; analytics pending |
+These figures are deliberately ranges. The two dining cameras overlap and tables are movable, so the report de-duplicates simultaneous parties rather than adding camera counts together. They are camera-derived estimates, not unique footfall, transactions or POS covers.
 
-The capture distribution is balanced across cameras, with 75–77 images per view.
+## 3. Dining-floor performance
 
-## 3. Visual extraction
-No structured visual extraction is available yet for this service day.
+### Floor 1 camera zone
+Floor 1 shows a mix of smaller parties distributed across the outdoor seating area, with solid activity during the evening and another visible lift after midnight.
 
-Because the snapshot-review queue has not processed the 610 images, this report does **not** publish:
-- visible diner counts;
-- occupied-table counts;
-- estimated covers;
-- table sessions;
-- observed time-to-food;
-- kitchen load;
-- service-handoff load;
-- cash-counter activity conclusions;
-- camera image-quality scores;
-- customer-count accuracy.
+The strongest recurring limitation is **direct decorative-light glare** through the right-centre of the scene. It repeatedly washes out people and tables in that part of the floor. The camera still provides useful management context, but table/customer counting on the affected side is less dependable than elsewhere.
 
-These values are unknown for this service day, not zero.
+### Floor 2 camera zone
+Floor 2 gives a strong view of the large-party area and clearly captures the after-midnight combined-table group. This supports a practical business conclusion: **movable-table flexibility is useful and should be treated as an intentional seating capability**, not an ad-hoc response.
 
-## 4. Business and security findings
+A hanging line / light fixture runs through the centre of this view and partially blocks some table positions, although its impact is lower than the Floor 1 glare.
 
-### Observed facts
-- 610 image snapshots were captured.
-- All 8 configured cameras contributed image evidence.
-- Snapshot evidence begins around 20:42 and continues until around 03:22.
-- No structured restaurant visual observations have been produced from those images.
-- No incident record was generated from the available event stream.
+### Table / customer pattern
+The observed dining pattern is better described as **party sessions**, not unique visitors.
 
-### Observed-derived facts
-- Evidence coverage is incomplete relative to the configured 16:00–04:00 service window.
-- The structured visual-analysis backlog is the primary limitation affecting this report.
+- Peak simultaneous load: approximately **18–22 visible diners**
+- Peak active table groups: approximately **6–8**
+- Estimated observed-evening covers: approximately **45–60**
+- Large group: a combined-table party remained active for a sustained period after midnight
+- Customer seating fell sharply after approximately **1:15–1:20 AM**
 
-### Estimated metrics
-None are published because the visual-analysis stage has not completed.
+A reliable seated-to-first-food timing is not published for this service day because several parties were already seated / served when the observed period began and the strongest glare affects part of the dining view. The report does not manufacture a service-time KPI when the start point is not defensible.
 
-### Unsupported metrics
-The report does not infer:
+## 4. Service handoff / Shop Front
+The Shop Front is correctly treated as a **waiter/service handoff point**, not the customer entrance.
+
+Repeated waiter pickups and vehicle-side activity were visible through the evening and late night. Cars stopped close to the frontage at multiple points, and service staff repeatedly used the handoff window. This supports treating **car-side / takeaway handoff as a meaningful service channel**, especially through the two demand waves.
+
+The front of the branch began visibly transitioning into closed mode after the customer seating decline. By approximately **2:45 AM**, the Shop Front was substantially shuttered.
+
+### Owner implication
+Protect this channel operationally:
+- keep the handoff area clear;
+- avoid allowing closing activity to interfere with late-night pickups;
+- maintain waiter coverage through the midnight demand wave.
+
+## 5. Cash counter
+The Cash Counter remained visibly attended through most of the active trading period, with frequent staff-to-counter interactions and only short gaps.
+
+The camera does **not** provide a reliable customer queue line, so this report does not infer queue length, sales, transactions or revenue.
+
+Loose paper / small debris was repeatedly visible around the counter/frontage area. This is a straightforward presentation opportunity rather than a major operational issue.
+
+## 6. Kitchen / back of house
+Kitchen activity broadly matched the customer pattern.
+
+- Stronger activity was visible during the evening customer wave.
+- Activity rose again around the late-night demand period.
+- Production intensity eased after roughly **2:10 AM**.
+- From around **2:40 AM**, the kitchen increasingly shifted into shutdown / reset, including furniture movement and chair storage.
+- No obvious smoke/flame emergency or visible accident/fall was identified in the reviewed period.
+
+Several chairs were temporarily used / stored inside the work area during the night. During close-down, larger stacks materially changed the normal movement space. Keeping closing storage out of the active kitchen path would improve workflow and reduce congestion.
+
+## 7. Closing pattern — main owner issue
+The configured Sunday service envelope extends to **4:00 AM**, but the visible operation reduced substantially earlier:
+
+- customer seating drops sharply after ~1:15–1:20 AM;
+- table/chair consolidation begins around ~1:40 AM;
+- outdoor seating is largely cleared by ~2:40 AM;
+- Shop Front is substantially shuttered around ~2:45 AM;
+- kitchen / rear areas are visibly in closing-reset mode from roughly ~2:40 AM onward.
+
+This does **not** prove lost revenue, because sales/POS data are not available from cameras. It does identify a management question with direct commercial relevance:
+
+> If the branch is meant to trade to 4:00 AM on Sunday, was this early reduction in visible trading capacity planned and commercially justified?
+
+If 2:30–3:00 AM is the intended practical close, the configured business hours should be aligned to reality. If 4:00 AM is the intended close, the owner should review closing discipline so tables and frontage remain available while late-night demand can still occur.
+
+## 8. Security and access
+
+### Office / management area
+Both office views remained unoccupied and visually undisturbed throughout the observed period. No after-hours office access was visible.
+
+The brighter Office Camera gives the stronger security view. The alternate Office View is darker and partly obstructed by a large fan in the foreground.
+
+### Back Entrance
+The rear service access was quiet for most of the night, with occasional people/service movement and one utility vehicle visit.
+
+Close-down logistics used the alley heavily: chairs and other materials were moved / staged through the rear route. At points, stacked chairs and closing materials visibly reduced the width of the access path.
+
+No obvious forced-entry event was observed. The practical recommendation is to preserve a clearer access lane during closing.
+
+## 9. Customer-facing presentation and camera quality
+
+### Frontage
+Street-edge litter / loose paper remained visible immediately around parts of the Shop Front during the night. A simple mid-shift and pre-close presentation check would improve the visible customer environment.
+
+### Floor 1
+Direct bulbs create repeated glare and overexposure through the right-centre seating zone. Consider a small camera-angle change, shielding the nearest bulbs from the lens, or another lighting adjustment that preserves the ambience while reducing direct light into the camera.
+
+### Floor 2
+A central hanging line / fixture partially obstructs the view. Moving it out of the main sightline would improve table tracking.
+
+### Back Entrance
+The brightest upper area is comparatively washed out. Exposure / WDR tuning may improve detail at the far end while retaining the usable alley view.
+
+### Office View
+A large fan blocks a meaningful portion of the foreground. The second office camera already provides better complementary coverage; repositioning the fan or the weaker camera would make the pair more useful.
+
+## 10. Priority actions
+1. **Confirm Sunday closing policy and enforce it consistently.** If 4:00 AM is the real trading target, investigate the visible 1:40–2:45 AM close-down sequence.
+2. **Plan for large late-night groups.** Keep one easy-to-combine table zone and ensure service coverage is still available after midnight.
+3. **Protect Shop Front handoff.** Treat waiter pickup / takeaway / car-side service as a real operating channel and keep it clear during peak periods.
+4. **Add two presentation checks.** One during the main evening wave and one before close for frontage / cash-counter litter and loose paper.
+5. **Keep the rear route open.** Move stacked chairs / closing materials away from the usable Back Entrance lane.
+6. **Improve dining-view visibility.** Reduce Floor 1 glare and move the Floor 2 hanging obstruction so future customer/table estimates are more dependable.
+
+## 11. Truth boundaries
+This report is designed for business decisions, but it does not pretend the cameras can answer questions they cannot support.
+
+It does not claim:
 - unique customer footfall;
 - sales or revenue;
 - transaction count;
 - order accuracy;
 - food quality;
-- customer or staff identity;
-- demographics;
-- confirmed fire;
-- medical diagnosis.
+- customer/staff identity or demographics;
+- POS order-to-serve time;
+- confirmed fire or medical diagnosis.
 
-### Unknown because of missing analysis/coverage
-- customer demand pattern by hour;
-- floor-to-floor demand comparison;
-- table utilization;
-- estimated table sessions/covers;
-- observed service timing;
-- kitchen pressure;
-- handoff pressure;
-- image-quality problems such as glare, overexposure or occlusion.
-
-## 5. Time / area / floor breakdown
-A business-performance breakdown is not published because the raw images have not been analyzed.
-
-Evidence availability by operational area is confirmed:
-- Floor 1 — raw snapshots available;
-- Floor 2 — raw snapshots available;
-- Shop Front — raw snapshots available;
-- Cash Counter — raw snapshots available;
-- Kitchen — raw snapshots available;
-- Back Entrance — raw snapshots available;
-- Office View — raw snapshots available;
-- Office Camera — raw snapshots available.
-
-## 6. Analytics & camera quality
-No customer-count, table-tracking, glare, occlusion, obstruction, visibility, lighting or camera-angle quality score is published for this date because **0 frames have been scored**.
-
-Model confidence must not be presented as measured accuracy. Customer-count accuracy can only be published after representative Floor 1 and Floor 2 frames are manually validated against human counts.
-
-## 7. Recommendations
-
-### 1. Clear the visual-analysis backlog
-**Issue:** 610 images are captured but all 610 visual reviews remain pending.
-
-**Evidence:** snapshot count = 610; review rows = 610 pending; restaurant visual observations = 0.
-
-**Impact:** diner, table, cover, service-time, kitchen/handoff and image-quality metrics cannot be trusted or published.
-
-**Recommended improvement:** process the pending images through an approved Chai Wala visual-analysis path and regenerate the service-day report.
-
-**Confidence:** high.
-
-### 2. Restore full service-window evidence
-**Issue:** raw evidence starts around 20:42 even though the configured service day starts at 16:00; evidence also stops before the 04:00 close.
-
-**Evidence:** first raw snapshot approximately 20:42; last approximately 03:22.
-
-**Impact:** early-service and closing-period activity cannot be assessed from the current raw snapshot record.
-
-**Recommended improvement:** investigate capture/agent availability and make sure the configured capture schedule covers the full 16:00–04:00 service window.
-
-**Confidence:** high for the timestamp gap; cause requires technical diagnosis.
-
-### 3. Preserve truth boundaries in the client report
-**Issue:** the structured restaurant section currently has zeros because no images were processed.
-
-**Evidence:** 0 restaurant visual observations despite 610 captured snapshots.
-
-**Impact:** zero values could be misread as zero customers or zero activity.
-
-**Recommended improvement:** keep the report explicitly labelled coverage-limited and treat missing analytics as unknown until processing is complete.
-
-**Confidence:** high.
-
-## 8. Security incidents / exceptions
-No incident record was generated from the available event stream for this service day.
-
-This should be read as **no recorded incident in the currently processed event data**, not as proof that no noteworthy event occurred. The underlying 610 images remain visually unanalyzed.
-
-## 9. Coverage & truth statement
-This is **not a complete business-performance report** for the service day.
-
-It is a truthful publication of the evidence currently available:
-- raw image capture exists across all 8 cameras;
-- the capture window is incomplete;
-- visual analysis is still pending;
-- missing analysis is not zero activity.
-
-## 10. Traceability
-- Portal report ID: `87bef1e8-a82c-4d6f-89a8-11382965eea6`
-- Service date: `2026-09-27`
-- Raw snapshots: `610`
-- Pending visual reviews: `610`
-- Restaurant visual observations: `0`
-- Configured service window: `16:00–04:00 Asia/Karachi`
+The strongest conclusions are therefore about **demand timing, table use, service-flow continuity, closing behaviour, presentation, access control and camera-view quality**.

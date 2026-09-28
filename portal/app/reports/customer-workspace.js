@@ -28,7 +28,7 @@ function AnalyticsQuality({quality}){
   if(!Number(q.scored_frames||0)&&!cameras.length){
     return <section className={styles.qualityShell}>
       <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Camera geometry and image quality determine how trustworthy customer/table analytics can be.</p></div></div>
-      <div className={styles.qualityWaiting}><b>Quality scoring is waiting for processed restaurant frames.</b><span>WatchLog will measure glare, overexposure, occlusion, obstruction, camera angle, visible-diner count confidence and movable-table tracking confidence. It will not publish a customer-count accuracy percentage until representative Floor 1 and Floor 2 frames are manually validated.</span></div>
+      <div className={styles.qualityWaiting}><b>Camera-quality insights are not available for this period yet.</b><span>WatchLog only publishes visibility and counting-confidence guidance when it can support the result. A customer-count accuracy percentage is never shown without representative manual validation.</span></div>
     </section>;
   }
   return <section className={styles.qualityShell}>
@@ -66,9 +66,9 @@ function RestaurantOperations({data,periodLabel}){
   const observations=Number(quality.camera_observations||0),tableObservations=Number(quality.table_observations||0),coverage=num(quality.business_analytics_coverage_ratio);
   if(observations===0&&tableObservations===0){
     return <section className={styles.restaurantShell}>
-      <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>Visual business analytics is configured.</h2><p>WatchLog is waiting for structured visual observations before showing restaurant figures. No estimates are being fabricated from unprocessed snapshots.</p></div><span className={styles.processingPill}>Processing</span></div>
+      <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>Business analytics are not available for this period yet.</h2><p>WatchLog will only show diner, table and service figures when the available evidence is strong enough to support them.</p></div><span className={styles.processingPill}>Not available</span></div>
       <AnalyticsQuality quality={data.analytics_quality}/>
-      <div className={styles.truthNote}><b>Measurement boundary:</b> current cameras can report visible diners and table activity, but not true unique customer footfall. A clean customer-entry counting line is required for footfall.</div>
+      <div className={styles.truthNote}><b>Measurement boundary:</b> the current dining views can support visible diner and table activity, but not true unique customer footfall. A dedicated entrance counting line is required for footfall.</div>
     </section>;
   }
 
@@ -151,7 +151,7 @@ function RestaurantPeriodReport({data,days}){
       </div>
     </div>
 
-    {observed===0?<div className={styles.restaurantEmpty}>No processed restaurant observations are available in this period yet. The layout is ready, but WatchLog will not fabricate demand, cover or service-time figures.</div>:<>
+    {observed===0?<div className={styles.restaurantEmpty}>No reliable restaurant business analytics are available for this period yet. WatchLog will not fabricate demand, cover or service-time figures.</div>:<>
       <div className={styles.periodMetrics}>
         <div className={styles.restaurantMetric}><strong>{val(summary.total_estimated_covers)}</strong><span>Estimated covers</span><small>Total camera-derived estimate for observed sessions</small></div>
         <div className={styles.restaurantMetric}><strong>{val(summary.avg_estimated_covers_per_observed_day)}</strong><span>Avg covers / observed day</span><small>Uses only service days with observations</small></div>
@@ -322,6 +322,7 @@ function InsightCards({items=[]}){
 function EvidenceReport({snapshot}){
   const p=snapshot?.payload||{},metrics=p.metrics||[],incidents=p.incidents||[],coverage=p.coverage||{},cameras=p.camera_coverage||[],insights=p.site_insights||[],actions=p.priority_actions||[];
   const summary=p.ai_summary||p.executive_summary||"No management summary is available for this report.";
+  const restaurant=p.site_type==="restaurant"||p.report_profile==="restaurant_business_owner_v1";
   return <div className={styles.report}>
     <section className={styles.hero}>
       <div className={styles.heroTop}><div className={styles.heroTitle}><div className={styles.heroMark}><Mark size={26}/></div><div><div className={styles.kicker}>Yesterday at a glance</div><h2>{p.title||"Report of Yesterday"}</h2></div></div><div className={styles.date}>{dateLabel(p.report_date||snapshot?.report_date)}</div></div>
@@ -331,13 +332,13 @@ function EvidenceReport({snapshot}){
 
     {metrics.length>0&&<section className={styles.metrics}>{metrics.map((m,i)=><div className={styles.metric} key={`${m.label}-${i}`}><div className={styles.metricValue}>{m.value}</div><div className={styles.metricLabel}>{m.label}</div>{m.note&&<div className={styles.metricNote}>{m.note}</div>}</div>)}</section>}
 
-    <section className={styles.section}><div className={styles.sectionHead}><div><h3>Security & incidents</h3><p>Anything that needed the owner’s attention yesterday.</p></div></div><InsightCards items={incidents}/></section>
+    <section className={styles.section}><div className={styles.sectionHead}><div><h3>Security & incidents</h3><p>{restaurant?"Security matters worth the owner’s attention.":"Anything that needed the owner’s attention yesterday."}</p></div></div><InsightCards items={incidents}/></section>
 
-    <section className={styles.section}><div className={styles.sectionHead}><div><h3>What happened yesterday</h3><p>The most useful things to know about staff presence and office use.</p></div></div><InsightCards items={insights}/></section>
+    <section className={styles.section}><div className={styles.sectionHead}><div><h3>{restaurant?"What happened in the business":"What happened yesterday"}</h3><p>{restaurant?"Demand, service flow, operating patterns and opportunities that matter to the owner.":"The most useful things to know about staff presence and office use."}</p></div></div><InsightCards items={insights}/></section>
 
-    <section className={styles.section}><div className={styles.sectionHead}><div><h3>Monitoring</h3><p>What WatchLog could see clearly, and what happened outside that window.</p></div></div><div className={styles.findings}><article className={styles.finding}><div className={styles.findingTop}><span className={styles.dot}/><b>{coverage.status||"Coverage overview"}</b></div><div className={styles.metricValue} style={{fontSize:20,marginTop:9}}>{coverage.period||"—"}</div><p>{coverage.summary||"Coverage information is not available."}</p></article>{coverage.note&&<article className={styles.finding}><div className={styles.findingTop}><span className={`${styles.dot} ${styles.dotAttention}`}/><b>What we could not see</b></div><p>{coverage.note}</p></article>}</div></section>
+    <section className={styles.section}><div className={styles.sectionHead}><div><h3>{restaurant?"Business observation window":"Monitoring"}</h3><p>{restaurant?"The period represented by this brief and the limits to how the customer figures should be read.":"What WatchLog could see clearly, and what happened outside that window."}</p></div></div><div className={styles.findings}><article className={styles.finding}><div className={styles.findingTop}><span className={styles.dot}/><b>{coverage.status||"Coverage overview"}</b></div><div className={styles.metricValue} style={{fontSize:20,marginTop:9}}>{coverage.period||"—"}</div><p>{coverage.summary||"Coverage information is not available."}</p></article>{coverage.note&&<article className={styles.finding}><div className={styles.findingTop}><span className={`${styles.dot} ${styles.dotAttention}`}/><b>{restaurant?"How to read the numbers":"What we could not see"}</b></div><p>{coverage.note}</p></article>}</div></section>
 
-    {cameras.length>0&&<section className={styles.section}><div className={styles.sectionHead}><div><h3>Key areas</h3><p>A simple view of the parts of the office that mattered yesterday.</p></div></div><div className={styles.cameraGrid}>{cameras.map((c,i)=><article className={styles.camera} key={`${c.camera}-${i}`}><div className={styles.cameraTop}><div className={styles.cameraName}>{c.camera}</div><span className={styles.channel}>{c.status||"Covered"}</span></div><div className={styles.cameraStats}><div className={styles.cameraStat}><span>When</span><b>{c.period||"—"}</b></div><div className={styles.cameraStat}><span>What it means</span><b>{c.management_view||"Routine"}</b></div></div><p className={styles.assessment}>{c.assessment}</p></article>)}</div></section>}
+    {cameras.length>0&&<section className={styles.section}><div className={styles.sectionHead}><div><h3>Key areas</h3><p>{restaurant?"How the important parts of the restaurant performed yesterday.":"A simple view of the parts of the office that mattered yesterday."}</p></div></div><div className={styles.cameraGrid}>{cameras.map((c,i)=><article className={styles.camera} key={`${c.camera}-${i}`}><div className={styles.cameraTop}><div className={styles.cameraName}>{c.camera}</div><span className={styles.channel}>{c.status||"Covered"}</span></div><div className={styles.cameraStats}><div className={styles.cameraStat}><span>When</span><b>{c.period||"—"}</b></div><div className={styles.cameraStat}><span>What it means</span><b>{c.management_view||"Routine"}</b></div></div><p className={styles.assessment}>{c.assessment}</p></article>)}</div></section>}
 
     {actions.length>0&&<section className={styles.section}><div className={styles.sectionHead}><div><h3>What needs attention</h3><p>Only the practical things worth following up.</p></div></div><div className={styles.actions}>{actions.map((a,i)=><div className={styles.action} key={i}>{a}</div>)}</div></section>}
   </div>
@@ -364,11 +365,14 @@ export default function CustomerReports(){
   let reportBody=null;
   if(r.isChaiWalaRestaurant){
     if(r.view==="daily"||r.view==="yesterday"){
-      reportBody=<>
-        <RestaurantOperations data={r.restaurant} periodLabel={r.view==="daily"?"Today":"Yesterday"}/>
-        <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Yesterday's management reading"}/>
-        {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved security/evidence report is available for this service day yet.</div>)}
-      </>;
+      const manualBusinessReport=r.view==="yesterday"&&r.snapshot?.payload?.manual_business_report===true;
+      reportBody=manualBusinessReport
+        ? <EvidenceReport snapshot={r.snapshot}/>
+        : <>
+            <RestaurantOperations data={r.restaurant} periodLabel={r.view==="daily"?"Today":"Yesterday"}/>
+            <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Yesterday's management reading"}/>
+            {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved business report is available for this service day yet.</div>)}
+          </>;
     }else if(r.view==="week"||r.view==="monthly"){
       const days=r.view==="week"?7:30;
       reportBody=<>
@@ -391,5 +395,5 @@ export default function CustomerReports(){
     reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
   }
 
-  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?"Chai Wala management report":r.isOffice?"Office management report":"Management report"}</h1><p>{r.isChaiWalaRestaurant?"Demand, table utilization, observed service timing, operating pressure and monitoring coverage.":r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
+  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?"Chai Wala management report":r.isOffice?"Office management report":"Management report"}</h1><p>{r.isChaiWalaRestaurant?"Demand, table use, service flow, kitchen/counter performance, security and practical improvements.":r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
 }

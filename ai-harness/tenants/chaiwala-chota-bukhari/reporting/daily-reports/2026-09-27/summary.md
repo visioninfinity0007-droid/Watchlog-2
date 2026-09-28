@@ -1,41 +1,42 @@
-# Chai Wala — Daily Management Summary
+# Chai Wala — Owner's Daily Business Brief
 
-## Report identity
-- Tenant/site: Chai Wala — Chota Bukhari
-- Site type: Restaurant
-- Business/service date: 2026-09-27
-- Configured service window: 16:00 on 27 Sep → 04:00 on 28 Sep 2026
-- Timezone: Asia/Karachi
-- Report status: Coverage-limited; visual review pending
+## Service day
+- Branch: Chota Bukhari, DHA Phase 6, Karachi
+- Service date: 27 September 2026
+- Business day: 4:00 PM → 4:00 AM
+- This brief covers the observed evening period from about 8:42 PM onward. Earlier service hours were not available, so customer-volume estimates below are not full-day totals.
 
-## What management needs to know
-- WatchLog captured **610 snapshots across all 8 configured camera views** during the later part of the service day.
-- Raw snapshot evidence spans approximately **20:42 to 03:22** local time.
-- Each configured camera contributed **75–77 snapshots**, so the captured evidence is balanced across Floor 1, Floor 2, Shop Front, Cash Counter, Kitchen, Back Entrance, Office View and Office Camera.
-- **All 610 visual-review jobs are still pending.** Structured restaurant analytics therefore contain no defensible diner, table, cover, service-time, kitchen-pressure or handoff-pressure metrics for this service day.
-- No incident record was generated from the available event stream. This is **not** proof that nothing noteworthy happened because the images have not yet been visually analyzed.
-- The main issue for this service day is incomplete and unanalyzed evidence, not a confirmed restaurant-operational problem.
+## Owner summary
+Yesterday had **two clear customer-demand waves**: a strong evening trade from roughly **8:45 PM–10:45 PM**, followed by a second late-night lift around **12:10 AM–1:15 AM**.
 
-## Key numbers
-- Snapshots captured: **610**
-- Camera views represented: **8 / 8**
-- Structured restaurant visual observations: **0**
-- Pending visual reviews: **610**
-- Earliest snapshot: **20:42**
-- Latest snapshot: **03:22**
+At the busiest points, the overlapping dining-floor views support a conservative estimate of about **18–22 concurrent visible diners** across roughly **6–8 occupied table groups**. A sizeable after-midnight party used combined tables, which reinforces the value of keeping a flexible large-group seating plan.
 
-## Attention & exceptions
-- The configured service day begins at 16:00, but raw snapshot evidence starts around 20:42.
-- Snapshot evidence ends around 03:22, before the configured 04:00 close.
-- Zero structured restaurant metrics must be read as **not analyzed**, not as zero activity.
-- Customer footfall, sales, revenue, order accuracy, food quality, identity and demographics are not inferred from the current evidence.
+The most important management finding is the **early transition into close-down**. Customer seating fell sharply after roughly 1:15–1:20 AM. Dining furniture began being consolidated from about 1:40 AM, most outdoor seating was cleared by roughly 2:40 AM, and the Shop Front was substantially shuttered around 2:45 AM. If Sunday service is expected to continue until 4:00 AM, the owner should review whether this was intentional or whether late-night trading capacity was being removed too early.
 
-## Recommended actions
-1. Process the 610 pending snapshots into structured restaurant visual observations before using diner, table, cover or service-time metrics.
-2. Investigate why raw snapshot evidence starts around 20:42 instead of the 16:00 service start and ends before the 04:00 close.
-3. Keep this service day labelled coverage-limited until visual analysis is complete; do not treat zero structured metrics as zero activity.
+## Business indicators
+- **Peak concurrent visible diners:** approximately 18–22
+- **Peak occupied table groups:** approximately 6–8
+- **Estimated covers in the observed evening:** approximately 45–60
+- **Strongest demand periods:** about 8:45–10:45 PM and 12:10–1:15 AM
+- **Large-party pattern:** combined tables were used successfully after midnight
+- **Service handoff:** waiter pickup / takeaway / car-side activity remained meaningful into the late night
+- **Cash counter:** generally attended through the main trading periods
+- **Kitchen:** activity broadly tracked customer demand and eased after about 2:10 AM
 
-## Confidence
-High confidence in the capture inventory and timestamps. Low confidence for restaurant activity conclusions because visual analysis has not been completed.
+The customer figures above are camera-derived business estimates. They are **not unique footfall or POS totals**, and Floor 1 / Floor 2 were de-duplicated because their views overlap.
 
-Source: `detailed-report.md` for camera-by-camera evidence and traceability.
+## Security & control
+- Both office views remained unoccupied and visually undisturbed during the observed period.
+- The Back Entrance was mostly quiet with intermittent normal service movement.
+- One utility vehicle was visible using the rear route during the evening.
+- During close-down, stacks of chairs and other closing materials narrowed the rear access route. The path remained usable, but it should be kept clearer during shutdown.
+
+## Business improvement opportunities
+1. **Validate closing discipline.** If Sunday trading should continue to 4:00 AM, review why seating teardown began around 1:40 AM and the Shop Front was largely shuttered around 2:45 AM.
+2. **Protect the midnight demand wave.** Keep a ready-to-combine large-party zone and make sure service coverage remains strong through at least the 12:10–1:15 AM period.
+3. **Treat car-side/takeaway as a real late-night channel.** Keep the Shop Front handoff area clear and maintain reliable waiter coverage through both demand peaks.
+4. **Tighten presentation.** Loose paper and street-edge litter were repeatedly visible around the Shop Front / till frontage; add a mid-shift and pre-close presentation check.
+5. **Improve visibility.** Reduce Floor 1 bulb glare, move the Floor 2 hanging obstruction out of the central sightline, and avoid storing chairs where they narrow the Back Entrance route.
+
+## Management reading
+The branch appears capable of handling both normal small-party trade and larger late-night groups, with kitchen, handoff and counter activity broadly matching the customer pattern. The clearest opportunity is not “more cameras”; it is **protecting late-night trading capacity, formalising large-party seating, and tightening close-down / frontage discipline**.
