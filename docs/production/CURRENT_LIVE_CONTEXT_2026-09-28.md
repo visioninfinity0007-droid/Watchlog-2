@@ -45,9 +45,9 @@ This repository owns:
 
 `main`
 
-Current authoritative main commit containing the combined installer/runtime work:
+Authoritative merged implementation commit containing the current installer/runtime hardening:
 
-`d141e392291c038c006a806f026e6fa11b4a8dd8`
+`a3fe605f51f06605355bf9133f8568b5a4a56491`
 
 Current source version:
 
@@ -61,7 +61,8 @@ This main branch now combines:
 - secure signed remote-update infrastructure;
 - Hikvision recorder readback improvements;
 - incident still/clip workers;
-- archive/recovery/runtime health logic.
+- archive/recovery/runtime health logic;
+- shutdown-before-replace transactional installer upgrades that stop the existing WatchLog launcher/UI/Agent before touching files.
 
 ### Field-proven baseline — Build 69
 
@@ -131,6 +132,40 @@ recorder discovery/login gates, eighth-subnet regression and installer checksum/
 **Build 83 is a controlled validation candidate, not the final fleet installer.**
 It does not contain the authoritative 5.0.22 combined remote-maintenance source.
 
+### Release-line upgrade-lock validation — Build 98
+
+The existing-site “Updating files” lock/hang failure was reproduced and hardened in the
+Windows release-line repository.
+
+Validation result:
+
+- Build:
+  **98**
+- product version:
+  **5.0.21**
+- source SHA:
+  `c653c6a38664491ee51788d0466e7338a1f3da53`
+- run id:
+  `36371718065`
+- artifact:
+  `WatchLog-Windows-98`
+- artifact id:
+  `10949248440`
+- artifact ZIP digest:
+  `sha256:c6a29f4b1642c1fab1d546749e6928e432b605ca564395499e8e2e0e5c76f30c`
+- installer SHA-256:
+  `06DFCC486EA15E123BA1E366A68A3DB83C996A6876CFAA0FDCA31BB4AAED2940`
+
+Release #98 passed the real Windows regression that starts WatchLog-owned processes, then proves
+the upgrade preflight stops the target Setup UI/Agent/launcher path, leaves an unrelated same-named
+process outside the install directory alone, verifies all payload files are unlocked/backed up,
+and restores the previous payload on rollback.
+
+The authoritative 5.0.22 source now includes this behavior through merged PR #67 /
+implementation commit `a3fe605f51f06605355bf9133f8568b5a4a56491`.
+
+Build 98 remains validation evidence, not the final authoritative 5.0.22 fleet installer.
+
 ### Current installer promotion boundary
 
 Do **not** replace a working Build-69 site simply because a newer build exists.
@@ -140,7 +175,7 @@ The next promotable installer must be an exact Windows artifact built from the a
 
 1. real Hikvision discovery/login/connectivity;
 2. real Dahua discovery/login/connectivity;
-3. in-place upgrade from Build 69 without forced rediscovery;
+3. in-place upgrade from Build 69 without forced rediscovery or file-lock/update stalls;
 4. Site Control command claim/completion;
 5. signed remote-update/rollback acceptance;
 6. bounded historical footage/archive proof where hardware supports it.
@@ -777,7 +812,10 @@ Do not integrate these wholesale without license/performance/field evaluation.
 - Never treat a green packaging workflow alone as field discovery proof; Build 74 is the counterexample.
 - Never reduce automatic discovery below Build 69's eight-/24 field baseline without explicit field evidence.
 - Never replace a working Build-69 site with a candidate build that has not passed physical field acceptance.
-- Never call Build 83 the authoritative 5.0.22 installer; it is a 5.0.21 release-line validation candidate.
+- Never call Build 83 or Build 98 the authoritative 5.0.22 installer; they are 5.0.21 release-line validation artifacts.
+- Never overwrite WatchLog payload files while that install's launcher, Setup UI or Agent is still running.
+- Never let the scheduled-task watchdog restart WatchLog during an installer file-replacement transaction.
+- Never broad-kill same-named processes outside the current WatchLog install path.
 - Never describe the Visual Worker as active without a fresh heartbeat + completed reviews.
 - Never share tenant AI chats across tenants.
 - Never silently broaden chats from per-user to tenant-wide.
