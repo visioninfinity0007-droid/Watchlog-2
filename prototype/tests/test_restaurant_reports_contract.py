@@ -3,12 +3,12 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 REPORT=(ROOT/"portal/app/reports/customer-workspace.js").read_text(encoding="utf-8")
 HOOK=(ROOT/"portal/app/reports/use-report.js").read_text(encoding="utf-8")
-MIGRATION=(ROOT/"prototype/supabase/migrations/0115_restaurant_visual_analytics.sql").read_text(encoding="utf-8")
+MIGRATION=(ROOT/"prototype/supabase/migrations/0120_restaurant_visual_analytics.sql").read_text(encoding="utf-8")
 CONFIG=(ROOT/"prototype/supabase/tenant-config/chaiwala_restaurant_analytics.sql").read_text(encoding="utf-8")
 WORKER=(ROOT/"prototype/supabase/functions/watchlog-vision-worker/index.ts").read_text(encoding="utf-8")
-RUNTIME=(ROOT/"prototype/supabase/migrations/0117_vision_worker_runtime_and_restaurant_service_day.sql").read_text(encoding="utf-8")
-SCHEDULE=(ROOT/"prototype/supabase/migrations/0118_schedule_vision_worker.sql").read_text(encoding="utf-8")
-PREOPEN=(ROOT/"prototype/supabase/migrations/0119_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")
+RUNTIME=(ROOT/"prototype/supabase/migrations/0121_vision_worker_runtime.sql").read_text(encoding="utf-8")
+SCHEDULE=(ROOT/"prototype/supabase/migrations/0122_schedule_vision_worker.sql").read_text(encoding="utf-8")
+PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")
 
 
 def test_restaurant_report_uses_real_service_day_rpc():
