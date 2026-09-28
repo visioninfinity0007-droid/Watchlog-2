@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -19,7 +20,6 @@ ROOT = Path(__file__).resolve().parents[2]
 AGENT = ROOT / "prototype" / "agent"
 sys.path.insert(0, str(AGENT))
 
-import analytics_agent  # noqa: E402
 import recovery_ai  # noqa: E402
 import watchlog_agent as wa  # noqa: E402
 
@@ -83,7 +83,7 @@ class ExistingSitePreflight(unittest.TestCase):
 
     def test_preflight_is_read_only_and_passes_valid_site(self):
         device = SimpleNamespace(vendor="hikvision", model="DS-7608NI-Q1", driver="hikvision-isapi")
-        with tempfile.TemporaryDirectory() as td,              patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
+        with tempfile.TemporaryDirectory() as td,              patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(wa.credential_store, "load_nvr_credential_readonly", return_value={"username": "admin", "password": "secret"}),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
             out = Path(td) / "preflight.json"
             code = wa.cmd_existing_site_preflight(FakeCfg(), result_path=str(out))
             self.assertEqual(code, 0)
@@ -98,7 +98,7 @@ class ExistingSitePreflight(unittest.TestCase):
         cfg = FakeCfg()
         cfg.update_public_key = ""
         device = SimpleNamespace(vendor="hikvision", model="NVR", driver="hikvision-isapi")
-        with patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
+        with patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(wa.credential_store, "load_nvr_credential_readonly", return_value={"username": "admin", "password": "secret"}),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
             code = wa.cmd_existing_site_preflight(cfg)
             self.assertEqual(code, 2)
 
@@ -128,7 +128,14 @@ class StagedPublicDefaults(unittest.TestCase):
                 "update_public_key = \n",
                 encoding="utf-8",
             )
-            with patch.object(wa, "base_dir", return_value=root):
+            with patch.dict(
+                    os.environ,
+                    {"WATCHLOG_UPDATE_URL": "", "WATCHLOG_UPDATE_PUBLIC_KEY": ""},
+                    clear=False,
+                 ), \
+                 patch.object(wa, "base_dir", return_value=root), \
+                 patch.object(wa.credential_store, "load_nvr_credential_readonly",
+                              return_value={"username": "admin", "password": "secret"}):
                 cfg = wa.Config(existing, read_only_credentials=True)
             self.assertEqual(cfg.update_url, "https://updates.example/watchlog/manifest.json")
             self.assertEqual(cfg.update_public_key, "TEST-PUBLIC-KEY")
@@ -136,10 +143,15 @@ class StagedPublicDefaults(unittest.TestCase):
 
 
 class ProductionWrapperContract(unittest.TestCase):
-    def test_analytics_config_accepts_core_staged_preflight_arguments(self):
-        sig = inspect.signature(analytics_agent.Config.__init__)
-        self.assertTrue(any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()))
-        self.assertTrue(any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()))
+    def test_connector_config_accepts_explicit_staged_preflight_arguments(self):
+        sig = inspect.signature(wa.Config.__init__)
+        self.assertIn("config_path", sig.parameters)
+        self.assertIn("read_only_credentials", sig.parameters)
+
+    def test_release_entrypoint_wraps_secure_remote_update_worker(self):
+        src = (ROOT / "prototype/agent/release_agent.py").read_text(encoding="utf-8")
+        self.assertIn("import remote_update", src)
+        self.assertIn("remote_update.wrap_cmd_run", src)
 
 
 class InstallerContract(unittest.TestCase):
@@ -180,15 +192,18 @@ class InstallerContract(unittest.TestCase):
 
     def test_full_setup_redirects_complete_existing_sites_before_stop(self):
         nsis = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text(encoding="utf-8")
-        redirect = nsis.index("use WatchLog-Repair-Upgrade.exe instead of the full installer")
+        redirect = nsis.index("WatchLog-Repair-Upgrade.exe")
         stop = nsis.index("-Stage preflight")
         self.assertLess(redirect, stop)
 
-    def test_full_setup_never_claims_rollback_restart_without_proof(self):
+    def test_full_setup_commit_dialog_never_claims_unproven_rollback(self):
         nsis = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text(encoding="utf-8")
-        self.assertIn("rollback restart not proven", nsis)
         self.assertIn("Agent restart was verified", nsis)
-        self.assertNotIn("so the previous working version has been restored", nsis)
+        self.assertIn("could not prove the old Agent restarted", nsis)
+        self.assertNotIn(
+            "new agent did not start correctly, so the previous working version has been restored",
+            nsis,
+        )
 
     def test_remote_update_health_marker_is_written_only_after_claim_rpc(self):
         src = (ROOT / "prototype/agent/remote_update.py").read_text(encoding="utf-8")
@@ -236,6 +251,19 @@ class InstallerContract(unittest.TestCase):
             self.assertIn(name, build)
             self.assertIn(name, workflow)
         self.assertIn("WatchLog-Repair-Upgrade.exe.sha256", workflow)
+
+    def test_production_update_bootstrap_manifest_is_valid_for_5024(self):
+        import base64
+        from urllib.parse import urlparse
+
+        manifest = json.loads(
+            (ROOT / "prototype/update/production.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest.get("schema"), "watchlog.update_bootstrap.v1")
+        self.assertEqual(manifest.get("channel"), "production")
+        self.assertEqual(manifest.get("min_remote_update_version"), "5.0.24")
+        self.assertEqual(urlparse(str(manifest.get("manifest_url") or "")).scheme, "https")
+        self.assertEqual(len(base64.b64decode(manifest.get("public_key_b64") or "", validate=True)), 32)
 
 
 if __name__ == "__main__":
