@@ -45,13 +45,13 @@ This repository owns:
 
 `main`
 
-Authoritative merged implementation commit containing the current installer/runtime hardening:
+Authoritative merged implementation commit containing the current installer/runtime/recovery hardening:
 
-`a3fe605f51f06605355bf9133f8568b5a4a56491`
+`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
 
 Current source version:
 
-**5.0.22**
+**5.0.23**
 
 This main branch now combines:
 
@@ -62,7 +62,10 @@ This main branch now combines:
 - Hikvision recorder readback improvements;
 - incident still/clip workers;
 - archive/recovery/runtime health logic;
-- shutdown-before-replace transactional installer upgrades that stop the existing WatchLog launcher/UI/Agent before touching files.
+- shutdown-before-replace transactional installer upgrades that stop the existing WatchLog launcher/UI/Agent before touching files;
+- Dahua/Hikvision archive footage recovery with bundled FFmpeg historical JPEG extraction;
+- recorder-liveness gap detection and durable spool-overflow reconciliation;
+- historical recovered snapshots on a 300-second default cadence with original footage timestamps.
 
 ### Field-proven baseline — Build 69
 
@@ -130,7 +133,7 @@ Build 83 passed the Windows release workflow, packaged setup-UI discovery self-t
 recorder discovery/login gates, eighth-subnet regression and installer checksum/version checks.
 
 **Build 83 is a controlled validation candidate, not the final fleet installer.**
-It does not contain the authoritative 5.0.22 combined remote-maintenance source.
+It does not contain the authoritative 5.0.23 combined remote-maintenance source.
 
 ### Release-line upgrade-lock validation — Build 98
 
@@ -161,26 +164,64 @@ the upgrade preflight stops the target Setup UI/Agent/launcher path, leaves an u
 process outside the install directory alone, verifies all payload files are unlocked/backed up,
 and restores the previous payload on rollback.
 
-The authoritative 5.0.22 source now includes this behavior through merged PR #67 /
+The authoritative 5.0.23 source now includes this behavior through merged PR #67 /
 implementation commit `a3fe605f51f06605355bf9133f8568b5a4a56491`.
 
-Build 98 remains validation evidence, not the final authoritative 5.0.22 fleet installer.
+Build 98 remains validation evidence, not the final authoritative 5.0.23 fleet installer.
+
+### Archive/gap recovery validation — Build 100
+
+Windows Release **100 / 5.0.23** validates the packaged historical-footage recovery runtime.
+
+- source SHA:
+  `377462fbd36d834d52864838803299a2a97eb7af`
+- run id:
+  `36373435504`
+- artifact:
+  `WatchLog-Windows-100`
+- artifact id:
+  `10950610443`
+- artifact ZIP digest:
+  `sha256:35e46bccd8549aa844932970d266c26badcc14ebe358cee50b1c375b73e86a9e`
+- installer SHA-256:
+  `D40C5622E6DB30BE064FD273624281A08F404112ADD274B7BACE851A558CD42B`
+
+The frozen Site Connector self-test explicitly proved the bundled FFmpeg could synthesize
+and decode video. The 5.0.23 product source then adds the full recovery semantics:
+
+- both Hikvision and Dahua archive adapters;
+- recovered visual checkpoint every 300 seconds by default across missed footage;
+- quiet frames retained as `recovered_snapshot`;
+- activity frames retained as `recovered_activity`;
+- recovered frames preserve original footage `device_ts`;
+- production `wl_ingest_events` now stores snapshot `captured_at` from that historical timestamp;
+- recovered snapshots enter the standard visual-review queue;
+- last-live uses actual recorder transport truth rather than cloud heartbeat;
+- local spool overflow persists a recovery interval before deleting old rows;
+- all-frame decode failure is marked partial/unknown rather than falsely recovered.
+
+Production migration `recovered_snapshot_timestamps` is already live.
+
+Hardware boundary: Dahua has prior archive/pilot evidence; the exact Chai Wala Hikvision
+DS-7608NI-Q1 still needs one live 5.0.23 archive/clip/gap test before that hardware path can
+be called physically proven.
 
 ### Current installer promotion boundary
 
 Do **not** replace a working Build-69 site simply because a newer build exists.
 
 The next promotable installer must be an exact Windows artifact built from the authoritative
-`Alkalid-security/Watchlog` main 5.0.22 source (or later) and must then pass:
+`Alkalid-security/Watchlog` main 5.0.23 source (or later) and must then pass:
 
 1. real Hikvision discovery/login/connectivity;
 2. real Dahua discovery/login/connectivity;
 3. in-place upgrade from Build 69 without forced rediscovery or file-lock/update stalls;
 4. Site Control command claim/completion;
 5. signed remote-update/rollback acceptance;
-6. bounded historical footage/archive proof where hardware supports it.
+6. bounded historical footage/archive proof on the actual Hikvision and Dahua pilot hardware;
+7. forced-gap recovery proving historical snapshots reappear at original timestamps.
 
-The authoritative 5.0.22 Windows artifact has **not yet been produced** because the current
+The authoritative 5.0.23 Windows artifact has **not yet been produced** because the current
 GitHub Actions jobs on `Alkalid-security/Watchlog` are terminating before executing any steps.
 
 See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` for the release ledger and promotion rules.
@@ -812,7 +853,7 @@ Do not integrate these wholesale without license/performance/field evaluation.
 - Never treat a green packaging workflow alone as field discovery proof; Build 74 is the counterexample.
 - Never reduce automatic discovery below Build 69's eight-/24 field baseline without explicit field evidence.
 - Never replace a working Build-69 site with a candidate build that has not passed physical field acceptance.
-- Never call Build 83 or Build 98 the authoritative 5.0.22 installer; they are 5.0.21 release-line validation artifacts.
+- Never call Build 83, Build 98 or Build 100 the authoritative 5.0.23 installer; they are 5.0.21 release-line validation artifacts.
 - Never overwrite WatchLog payload files while that install's launcher, Setup UI or Agent is still running.
 - Never let the scheduled-task watchdog restart WatchLog during an installer file-replacement transaction.
 - Never broad-kill same-named processes outside the current WatchLog install path.
