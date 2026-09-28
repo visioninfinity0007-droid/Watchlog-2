@@ -332,7 +332,7 @@ function restaurantPeriodFallback(prompt: string, ctx: Json, tools: Json) {
   const wrapped = tools?.restaurant_period;
   if (!wrapped?.ok || !wrapped.data?.enabled) return null;
   if (!/7 day|last 7|week|30 day|last 30|month/.test(p)) return null;
-  const d = wrapped.data || {}, s = d.summary || {}, c = d.comparison || {};
+  const d = wrapped.data || {}, s = d.summary || {}, c = d.comparison || {}, aq = d.analytics_quality || {};
   const days = Number(d.days || 0), observed = Number(s.observed_service_days || 0);
   if (!observed) {
     return {
@@ -353,8 +353,13 @@ function restaurantPeriodFallback(prompt: string, ctx: Json, tools: Json) {
   ].filter(Boolean);
   const comparison = c.estimated_covers_pct == null ? "" : ` Estimated covers changed ${Number(c.estimated_covers_pct)>0?"+":""}${c.estimated_covers_pct}% versus the previous ${days}-day period.`;
   const caution = coverage != null && coverage < 70 ? " Coverage is partial, so trend comparisons should be treated cautiously." : "";
+  const qualityRecs = Array.isArray(aq?.recommendations) ? aq.recommendations : [];
+  const highQualityIssues = qualityRecs.filter((x: Json) => x?.severity === "high").length;
+  const qualityText = highQualityIssues
+    ? ` There are ${highQualityIssues} high-priority camera-quality improvement${highQualityIssues===1?"":"s"} affecting how confidently the period can be interpreted.`
+    : "";
   return {
-    answer: `Across the last ${days} service days, ${bits.join(", ")}.${comparison}${caution}`,
+    answer: `Across the last ${days} service days, ${bits.join(", ")}.${comparison}${caution}${qualityText}`,
     cards: [{ type: "report", title: `${days}-day restaurant review`, data: { period: d.period, summary: s, comparison: c, busiest_day: s.busiest_day, busiest_hour: s.busiest_hour } }],
     suggestions: ["Which hours were busiest?", "Which tables were used most?", "How did service timing change?"],
     proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
@@ -368,7 +373,7 @@ function restaurantFallback(prompt: string, ctx: Json, tools: Json) {
   if (!/restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup/.test(p)) return null;
   const wrapped = tools?.restaurant_day;
   if (!wrapped?.ok || !wrapped.data?.enabled) return null;
-  const d = wrapped.data || {}, q = d.data_quality || {}, sessions = d.sessions || {};
+  const d = wrapped.data || {}, q = d.data_quality || {}, sessions = d.sessions || {}, aq = d.analytics_quality || {};
   const hourly = Array.isArray(d.hourly) ? d.hourly.filter((h: Json) => Number(h?.samples || 0) > 0) : [];
   const floors = Array.isArray(d.floors) ? d.floors.filter((x: Json) => Number(x?.samples || 0) > 0) : [];
   const coverage = q.business_analytics_coverage_ratio == null ? null : Number(q.business_analytics_coverage_ratio);
@@ -395,12 +400,17 @@ function restaurantFallback(prompt: string, ctx: Json, tools: Json) {
   const coverageText = coverage == null ? "" : coverage < 0.7
     ? " Coverage is partial, so comparisons should be treated cautiously."
     : "";
+  const qualityRecs = Array.isArray(aq?.recommendations) ? aq.recommendations : [];
+  const highQualityIssues = qualityRecs.filter((x: Json) => x?.severity === "high").length;
+  const qualityText = highQualityIssues
+    ? ` Camera analytics quality needs attention: ${highQualityIssues} high-priority camera improvement${highQualityIssues===1?"":"s"} are documented in the report, so count/service conclusions should be treated cautiously until those are addressed.`
+    : "";
   return {
-    answer: bits.length ? `For the ${serviceLabel} service day, ${bits.join(", ")}.${coverageText}`
-      : `Restaurant observations are available for the ${serviceLabel} service day, but a complete site-level dining composite is not available yet.${coverageText}`,
+    answer: bits.length ? `For the ${serviceLabel} service day, ${bits.join(", ")}.${coverageText}${qualityText}`
+      : `Restaurant observations are available for the ${serviceLabel} service day, but a complete site-level dining composite is not available yet.${coverageText}${qualityText}`,
     cards: [{ type: "report", title: "Restaurant operations", data: {
       service_date: d.service_date, hourly, floors, tables: d.tables || [], sessions,
-      data_quality: q,
+      data_quality: q, analytics_quality: aq,
       measurement_note: "Visible diners are concurrent visible people, estimated covers are camera-derived, and observed time to food is not POS order-to-serve time."
     } }],
     suggestions: ["Which floor was busiest?", "Which tables were used most?", "Was observed service time slow?"],
