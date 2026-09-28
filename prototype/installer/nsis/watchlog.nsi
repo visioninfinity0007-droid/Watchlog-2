@@ -63,26 +63,44 @@ Section "Install"
   InitPluginsDir
   File "/oname=$PLUGINSDIR\wl-upgrade.ps1" "wl-upgrade.ps1"
 
-  ; Detect an already-enrolled installation before replacing any binaries.
+  ; Two separate truths:
+  ;   $5 = ANY previous WatchLog payload/site state exists and must be stopped/unlocked first.
+  ;   $6 = previous site is fully enrolled, so setup/enrollment can be preserved.
+  ; A stale/partial install can still have a live launcher/UI/agent and locked files, so
+  ; preflight is intentionally NOT limited to fully enrolled sites.
+  StrCpy $5 "0"
   StrCpy $6 "0"
   ; $7 = Setup already started + heartbeat-proved the background connector.
   ; When true, do NOT restart it a second time later in this same NSIS run.
   StrCpy $7 "0"
-  IfFileExists "$INSTDIR\watchlog.ini" 0 +3
-  IfFileExists "${DATAROOT}\agent_state.json" 0 +2
-    StrCpy $6 "1"
 
-  ; UPGRADE PREFLIGHT: stop the task, stop ONLY the exact watchlog-agent.exe, wait for it to exit,
-  ; verify the binary is UNLOCKED, and back it up. $8 records that an upgrade is in progress so a
-  ; later failure can roll back. If we cannot free the binary we do NOT overwrite anything - the
-  ; existing agent is left installed and running (no half-upgrade, no false success).
+  ${If} ${FileExists} "$INSTDIR\watchlog-agent.exe"
+    StrCpy $5 "1"
+  ${ElseIf} ${FileExists} "$INSTDIR\watchlog-setup-ui.exe"
+    StrCpy $5 "1"
+  ${ElseIf} ${FileExists} "$INSTDIR\run-agent.ps1"
+    StrCpy $5 "1"
+  ${ElseIf} ${FileExists} "$INSTDIR\watchlog.ini"
+    StrCpy $5 "1"
+  ${EndIf}
+
+  ${If} ${FileExists} "$INSTDIR\watchlog.ini"
+    ${If} ${FileExists} "${DATAROOT}\agent_state.json"
+      StrCpy $6 "1"
+      StrCpy $5 "1"
+    ${EndIf}
+  ${EndIf}
+
+  ; UPGRADE PREFLIGHT: suspend the WatchLog watchdog/task, stop the exact launcher,
+  ; Setup UI and agent for THIS install, prove every replace-target file is unlocked,
+  ; and back up the previous payload. $8 records a rollback-capable existing install.
   StrCpy $8 "0"
-  ${If} $6 == "1"
+  ${If} $5 == "1"
     StrCpy $8 "1"
-    DetailPrint "Preparing the existing WatchLog agent for a safe upgrade..."
+    DetailPrint "Closing the existing WatchLog processes before updating files..."
     ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
     ${If} $9 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely stop the running agent to upgrade it, so nothing was changed. Your existing WatchLog is still installed and will keep running. Close anything that may be using WatchLog and run the installer again."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely close the existing installation, so no update files were replaced. Close any open WatchLog window and run the installer again."
       SetErrorLevel 2
       Quit
     ${EndIf}
