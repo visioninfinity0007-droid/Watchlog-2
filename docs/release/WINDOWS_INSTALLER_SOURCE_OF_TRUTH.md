@@ -475,7 +475,7 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - **Build 83 / 5.0.21** — discovery/setup validation candidate with exact artifact recorded above.
 - **Build 98 / 5.0.21** — running-file-lock/transactional-upgrade validation candidate; real Windows process test and packaged release passed.
 - **Build 100 / 5.0.23** — packaged FFmpeg + archive/gap-recovery validation candidate; historical decoder self-test and Windows Release passed.
-- **Authoritative source 5.0.23** — combined Build-69 reliability + remote maintenance/readback + transactional upgrades + dual-vendor archive/gap snapshot recovery; exact authoritative artifact/field acceptance still pending.
+- **Authoritative source 5.0.24** — Build-69 discovery reliability + dual-vendor archive/gap recovery + staged existing-site Repair/Upgrade + signed online-update bootstrap; exact 5.0.24 Windows artifact/field acceptance still pending.
 
 ---
 
