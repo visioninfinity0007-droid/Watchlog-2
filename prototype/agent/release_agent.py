@@ -29,6 +29,7 @@ import dahua_archive
 import hikvision_archive
 import incident_evidence
 import recording_current
+import remote_update
 from drivers.native_recorder import NativeDahuaDriver
 
 _ORIGINAL_SETUP = app.setup_wizard.run
@@ -96,6 +97,7 @@ def main() -> None:
         app.cmd_run = _setup_validation_complete
     else:
         runtime = incident_evidence.wrap_cmd_run(_ORIGINAL_RUN)
+        runtime = remote_update.wrap_cmd_run(runtime)
         app.cmd_run = connector_capabilities.wrap_cmd_run(runtime)
     app.main()
 
