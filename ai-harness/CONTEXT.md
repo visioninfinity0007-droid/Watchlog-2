@@ -41,6 +41,10 @@ Current verified production examples are documented in
 
 Harness site-type/tenant files define semantics, not live facts. Do not infer that a configured semantic capability produced evidence. Counts, coverage, table calibration rows, camera IDs, observations and incidents must still come from governed runtime data.
 
+### Vision-processing privacy boundary
+
+The cloud `watchlog-vision-worker` is only eligible to process a site when that site explicitly allows external model egress. A tenant/site with external egress disabled may legitimately accumulate pending snapshot reviews even while the cloud worker is healthy. Do not change that privacy setting merely to clear a backlog. Those sites require the private/local worker path (WatchLog-controlled runtime such as local Ollama/Coolify) for visual processing without external image egress.
+
 ## Implemented harness content (safe to reference)
 
 - `taxonomy/` — observations, activities, entities, incident-families, severity.

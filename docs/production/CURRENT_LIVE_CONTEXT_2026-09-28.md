@@ -641,19 +641,30 @@ Current intended day-summary version:
 
 `visual-day-v2-context`
 
-Important production status as of 2026-09-28:
+Important production status as of the live verification around 08:38–08:39 UTC on 2026-09-28:
 
-- no active `vision_worker_status` heartbeat was returned by the live verification
-- `snapshot_visual_reviews`:
-  - pending: **3,425**
-  - failed: **2,119**
-- no worker should be described as live/healthy until a fresh worker heartbeat
-  and new completed reviews are observed
+- `edge-vision-worker-v1` is alive and reporting `idle`;
+- latest worker heartbeat observed: `2026-09-28 08:38:00+00`;
+- latest successful visual review observed: `2026-09-28 08:21:01+00`;
+- worker model: `qwen/qwen3.8-27b`;
+- worker media backend: `snapshot_table`;
+- successful snapshot reviews observed: **60**;
+- the queue still contains more than **3,200 pending** reviews;
+- more than **2,100** rows marked failed are intentional legacy non-canonical ONVIF-profile skips, not real physical-camera review failures;
+- roughly **300+** current genuine failures are external vision-provider rate-limit (HTTP 429) failures;
+- no `visual_day_summaries` rows existed at the verification point, so daily visual summarization has not yet caught up;
+- saved `report_snapshots` were still limited to older Al-Khalid Main site reports at the verification point.
 
-The deployment blocker is operational/Coolify runtime, not the site-business-context schema.
+Privacy/runtime eligibility is intentional:
 
-Images should remain on WatchLog-controlled infrastructure.
-Do not turn on external CCTV image egress merely to bypass the local worker.
+- Al-Khalid Main site currently allows external model egress and is the only real active site receiving the cloud vision-worker processing path;
+- Chai Wala and HASCO Steel have external image egress disabled and therefore remain pending for this cloud worker;
+- do **not** enable external CCTV-image egress merely to drain those queues;
+- Chai Wala and HASCO require the private/local vision-worker path (Coolify/local Ollama/WatchLog-controlled infrastructure) if image analysis is to continue without changing tenant privacy policy.
+
+The remaining visual-intelligence gap is therefore **runtime processing capacity/private-worker availability**, not tenant-reporting structure, business-day semantics, or harness configuration.
+
+Images should remain on WatchLog-controlled infrastructure wherever the tenant has not explicitly enabled external processing.
 
 ---
 
