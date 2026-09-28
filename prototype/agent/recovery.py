@@ -82,6 +82,7 @@ class RecoveryRunner:
     def __init__(self, cloud, agent_id, agent_key, driver, on_event, *,
                  chunk_seconds: int = DEFAULT_CHUNK_SECONDS, throttle_seconds: float = 0.0,
                  live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
+                 snapshot_interval_seconds=recovery_ai.DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
                  log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
         self.driver, self.on_event = driver, on_event
@@ -94,6 +95,7 @@ class RecoveryRunner:
         self.detector = detector
         self.frame_provider = frame_provider
         self.ai_max_frames = ai_max_frames
+        self.snapshot_interval_seconds = max(30, int(snapshot_interval_seconds))
         self._log = log
 
     def report_outage(self, last_live, now, cameras=None):
@@ -131,17 +133,30 @@ class RecoveryRunner:
                     recovered += res.get("recovered", 0)
                 else:
                     any_unsupported = True
-                # (b) deep recovery: WatchLog AI over recovered FOOTAGE (historical frames), when a
-                # detector is wired. Emits recovered-intelligence events with historical timestamps
-                # + representative snapshots; shares the seen-set (distinct 'ai:' key namespace).
-                if self.detector is not None or self.frame_provider is not None:
-                    ai = recovery_ai.backfill_intelligence(
-                        self.driver, self.detector, ch, chunk_start, chunk_end, seen=seen,
-                        on_event=self.on_event, frame_provider=self.frame_provider,
-                        max_frames=self.ai_max_frames)
-                    if ai.get("status") == backfill.SUPPORTED:
-                        any_supported = True
-                        recovered += ai.get("recovered", 0)
+                # (b) visual backfill over recovered FOOTAGE. This ALWAYS runs when the
+                # archive supports segments: even with no detector, decoded historical frames
+                # are emitted as recovered_snapshot so a cloud/PC gap does not erase the visual
+                # timeline. When the detector is present, activity is classified on the same frames.
+                ai = recovery_ai.backfill_intelligence(
+                    self.driver, self.detector, ch, chunk_start, chunk_end, seen=seen,
+                    on_event=self.on_event, frame_provider=self.frame_provider,
+                    max_frames=self.ai_max_frames,
+                    snapshot_interval_seconds=self.snapshot_interval_seconds)
+                if ai.get("status") == backfill.SUPPORTED:
+                    any_supported = True
+                    recovered += ai.get("recovered", 0)
+                else:
+                    # Explicit segment UNSUPPORTED means this recorder only offers
+                    # native historical events; preserve that older capability
+                    # without falsely calling it a visual-recovery failure. But if
+                    # segments ARE supported and frames could not be decoded, the
+                    # interval is partial/unknown rather than falsely recovered.
+                    try:
+                        seg_cap = (self.driver.historical_capability() or {}).get("segments")
+                    except Exception:
+                        seg_cap = None
+                    if seg_cap != backfill.UNSUPPORTED:
+                        any_unsupported = True
             self._complete(iv["id"], "in_progress", recovered, seen, chunk_end)   # checkpoint per chunk
             if self.throttle_seconds:
                 import time
