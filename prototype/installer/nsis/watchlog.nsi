@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.23"
+  !define APPVERSION "5.0.24"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -91,6 +91,18 @@ Section "Install"
     ${EndIf}
   ${EndIf}
 
+  ; Complete modern existing sites must use the staged Repair/Upgrade path.
+  ; This check happens BEFORE any process is stopped or installed file is touched.
+  ${If} $6 == "1"
+    ${If} ${FileExists} "${DATAROOT}\Secrets\agent_key.dpapi"
+      ${If} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
+        MessageBox MB_ICONINFORMATION|MB_OK "WatchLog is already connected on this PC. Use WatchLog-Repair-Upgrade.exe for this existing site. It validates the new Agent before replacing anything and does not run recorder discovery again."
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
   ; UPGRADE PREFLIGHT: suspend the WatchLog watchdog/task, stop the exact launcher,
   ; Setup UI and agent for THIS install, prove every replace-target file is unlocked,
   ; and back up the previous payload. $8 records a rollback-capable existing install.
@@ -117,6 +129,7 @@ Section "Install"
   File "watchlog-setup-ui.exe"
   File "run-agent.ps1"
   File "register-service.ps1"
+  File "apply-remote-update.ps1"
   File "wl-upgrade.ps1"
   File "READ ME FIRST.txt"
   File "setup.ico"
@@ -256,7 +269,11 @@ Section "Install"
     ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage commit -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog installed the update but the new agent did not start correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "The new WatchLog Agent did not stay healthy. The previous working version was restored and its Agent restart was verified. No new version was kept."
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "The new WatchLog Agent did not stay healthy. Previous files were restored, but WatchLog could not prove the old Agent restarted. Do not uninstall anything. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+      ${EndIf}
       SetErrorLevel 2
       Quit
     ${EndIf}
@@ -298,6 +315,7 @@ Section "Uninstall"
   Delete "$INSTDIR\run-agent.ps1"
   Delete "$INSTDIR\run-agent.cmd"
   Delete "$INSTDIR\register-service.ps1"
+  Delete "$INSTDIR\apply-remote-update.ps1"
   Delete "$INSTDIR\READ ME FIRST.txt"
   Delete "$INSTDIR\watchlog.ini"
   Delete "$INSTDIR\setup.ico"
