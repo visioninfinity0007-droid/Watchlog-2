@@ -116,6 +116,9 @@ jobs:
             python prototype/tests/test_recorder_setup.py
             if ($LASTEXITCODE -ne 0) { throw "recorder login/connectivity contract failed" }
 
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/tests/test_upgrade_shutdown.ps1
+            if ($LASTEXITCODE -ne 0) { throw "running-agent upgrade shutdown/rollback regression failed" }
+
             python prototype/tests/test_hikvision_archive.py
             if ($LASTEXITCODE -ne 0) { throw "Hikvision archive/download contract failed" }
             python prototype/tests/test_recovery_wiring.py
