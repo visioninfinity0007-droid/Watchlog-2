@@ -50,7 +50,7 @@ Current combined source version:
 
 Relevant merged main commit:
 
-`d141e392291c038c006a806f026e6fa11b4a8dd8`
+`a3fe605f51f06605355bf9133f8568b5a4a56491`
 
 Current discovery behavior:
 
@@ -107,6 +107,30 @@ Passed gates:
 - checksum verification.
 
 Build 83 is **validation evidence**, not the final authoritative 5.0.22 installer.
+
+## Existing-site upgrade lock validation
+
+The “installer stuck while updating files because WatchLog is still running” class was validated
+separately in the Windows release-line repository by **Build 98 / 5.0.21**.
+
+- source SHA:
+  `c653c6a38664491ee51788d0466e7338a1f3da53`
+- run id:
+  `36371718065`
+- artifact:
+  `WatchLog-Windows-98`
+- artifact id:
+  `10949248440`
+- installer SHA-256:
+  `06DFCC486EA15E123BA1E366A68A3DB83C996A6876CFAA0FDCA31BB4AAED2940`
+
+The Windows regression proved the installer preflight can stop the target WatchLog Setup UI
+and Agent, handle the launcher path, keep unrelated same-named processes outside the install
+directory untouched, verify the payload is unlocked/backed up, and restore the previous payload
+on rollback.
+
+This shutdown-before-replace behavior is merged into authoritative 5.0.22 source at
+`a3fe605f51f06605355bf9133f8568b5a4a56491`.
 
 ## Current remaining gate
 
