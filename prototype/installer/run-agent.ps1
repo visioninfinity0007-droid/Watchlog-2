@@ -31,9 +31,15 @@ $data = Join-Path $env:ProgramData "WatchLog"
 $log = Join-Path $data "agent.log"
 $oldLog = "$log.old"
 $agent = Join-Path $InstallDir "watchlog-agent.exe"
+$launcherPidFile = Join-Path $data "run-agent.pid"
 
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 if (-not (Test-Path $agent)) { throw "WatchLog Site Agent is missing" }
+
+# Best-effort deterministic launcher identity for future upgrades. The upgrade
+# helper still verifies the process command line before trusting this PID, so a
+# stale/reused PID can never cause an unrelated process to be terminated.
+try { Set-Content -LiteralPath $launcherPidFile -Value ([string]$PID) -Encoding ASCII } catch {}
 
 function Write-AgentLog([string]$Text) {
   # Best-effort. A log write may never propagate an error into the supervision loop.
