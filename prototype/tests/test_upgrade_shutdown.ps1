@@ -63,7 +63,18 @@ $agent = Join-Path $PSScriptRoot "watchlog-agent.exe"
   $launcherScript = '"' + (Join-Path $Install "run-agent.ps1") + '"'
   $launcher = Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcherScript) -PassThru -WindowStyle Hidden
   $otherAgent = Start-Process -FilePath (Join-Path $Other "watchlog-agent.exe") -ArgumentList @('/d','/c','ping -t 127.0.0.1 >NUL') -PassThru -WindowStyle Hidden
-  $procs = @($setup,$launcher,$otherAgent)
+  # Reproduce the field failure: an AV/indexing-like process can retain an
+  # exclusive payload handle beyond the old hard-coded 10 second unlock window.
+  $lockTarget = Join-Path $Install "READ ME FIRST.txt"
+  $lockScript = @'
+$p = $args[0]
+$fs = [System.IO.File]::Open($p,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::None)
+try { Start-Sleep -Seconds 12 } finally { $fs.Dispose() }
+'@
+  $lockHolder = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    '-NoProfile','-ExecutionPolicy','Bypass','-Command',$lockScript,$lockTarget
+  ) -PassThru -WindowStyle Hidden
+  $procs = @($setup,$launcher,$otherAgent,$lockHolder)
 
   Start-Sleep -Seconds 2
   Assert ((ExactProcessCount (Join-Path $Install "watchlog-agent.exe")) -ge 1) "target agent child did not start through run-agent.ps1"
@@ -71,7 +82,7 @@ $agent = Join-Path $PSScriptRoot "watchlog-agent.exe"
   Assert (Alive $launcher) "target launcher did not start"
   Assert (Alive $otherAgent) "same-named outside agent did not start"
 
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage preflight -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 6 -DataRootOverride $Data
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage preflight -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 20 -DataRootOverride $Data
   Assert ($LASTEXITCODE -eq 0) "preflight returned $LASTEXITCODE"
 
   Start-Sleep -Milliseconds 500
@@ -79,6 +90,7 @@ $agent = Join-Path $PSScriptRoot "watchlog-agent.exe"
   Assert (-not (Alive $setup)) "target setup UI survived preflight"
   Assert (-not (Alive $launcher)) "target run-agent.ps1 launcher survived preflight"
   Assert (Alive $otherAgent) "preflight killed same-named process outside InstallDir"
+  Assert (-not (Alive $lockHolder)) "preflight did not wait for the delayed payload lock to release"
 
   $manifest = Join-Path $Data "upgrade-backup\manifest.json"
   Assert (Test-Path $manifest) "payload rollback manifest was not created"
