@@ -1,5 +1,5 @@
 -- Chai Wala / Chota Bukhari restaurant calibration.
--- Deliberately tenant-specific; the reusable schema is migration 0115.
+-- Deliberately tenant-specific; the reusable schema is migration 0120.
 -- Safe to re-run after camera IDs change because cameras are resolved by name.
 
 do $$
