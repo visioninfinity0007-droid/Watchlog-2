@@ -25,6 +25,22 @@ function Alive($p) {
   return $null -ne (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)
 }
 
+function TargetLauncherCount {
+  $needle = ([System.IO.Path]::GetFullPath((Join-Path $Install "run-agent.ps1"))).ToLowerInvariant()
+  try {
+    return @(
+      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.Name -in @("powershell.exe","pwsh.exe","cmd.exe") -and
+          $_.CommandLine -and
+          ([string]$_.CommandLine).ToLowerInvariant().Contains($needle)
+        }
+    ).Count
+  } catch {
+    return -1
+  }
+}
+
 try {
   New-Item -ItemType Directory -Force -Path $Install, $Other, $Data | Out-Null
 
@@ -52,6 +68,7 @@ try {
   Assert (Alive $agent) "target agent did not start"
   Assert (Alive $setup) "target setup UI did not start"
   Assert (Alive $launcher) "target launcher did not start"
+  Assert ((TargetLauncherCount) -ge 1) "target launcher was not visible in Win32_Process"
   Assert (Alive $otherAgent) "same-named outside agent did not start"
 
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage preflight -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 6 -DataRootOverride $Data
@@ -60,7 +77,7 @@ try {
   Start-Sleep -Milliseconds 500
   Assert (-not (Alive $agent)) "target agent survived preflight"
   Assert (-not (Alive $setup)) "target setup UI survived preflight"
-  Assert (-not (Alive $launcher)) "target launcher survived preflight"
+  Assert ((TargetLauncherCount) -eq 0) "a run-agent.ps1 launcher survived preflight"
   Assert (Alive $otherAgent) "preflight killed same-named process outside InstallDir"
 
   $manifest = Join-Path $Data "upgrade-backup\manifest.json"
