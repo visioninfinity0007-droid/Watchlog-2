@@ -24,7 +24,7 @@ Current authoritative source version:
 
 Current main commit containing the combined installer/runtime work:
 
-`d141e392291c038c006a806f026e6fa11b4a8dd8`
+`a3fe605f51f06605355bf9133f8568b5a4a56491`
 
 This main branch contains both:
 
@@ -220,18 +220,61 @@ Build 69 remains the live-site field baseline.
 
 ## 7. Existing-site upgrade rule
 
-For a working enrolled site such as Chai Wala:
+For a working enrolled site such as Chai Wala, **the installer must stop WatchLog before replacing files**.
 
-- do not force Search Network during a normal upgrade;
-- preserve the existing encrypted recorder address/credentials;
-- preserve enrollment identity;
-- stop the old agent before replacement;
-- verify ProductVersion/runtime version;
-- verify the new agent actually runs;
-- roll back to the previous binary if startup/health verification fails.
+Required upgrade sequence:
+
+1. suspend/disable the `WatchLog Agent` scheduled-task watchdog so it cannot restart the Agent during file replacement;
+2. stop only the current installation's `run-agent.ps1` / launcher process;
+3. close, then force-stop if required, only the current installation's `watchlog-setup-ui.exe`;
+4. stop, then force-stop if required, only the current installation's `watchlog-agent.exe`;
+5. verify every core payload file is exclusively writable before NSIS extracts anything;
+6. back up the complete existing payload;
+7. replace the full payload under checked/non-blocking overwrite semantics;
+8. preserve encrypted recorder credentials, enrollment identity and site configuration;
+9. verify the new file ProductVersion and runtime `--version`;
+10. re-register/start WatchLog and verify the new Agent remains running;
+11. if any stage fails, restore the complete previous payload and fail closed unless the previous Agent actually restarts.
+
+The installer must **never sit indefinitely on “Updating files” because WatchLog is still running**.
+It must either free the files and continue, or stop the upgrade and restore the previous working installation.
 
 The installer should only require recorder rediscovery when the stored recorder identity/
 credential material is missing or genuinely invalid.
+
+### Release-line proof for the running-file-lock fix
+
+The shutdown/rollback behavior was validated in the Windows release-line repository by
+**Windows Release #98 / run id `36371718065`**.
+
+Exact validation artifact:
+
+- source SHA:
+  `c653c6a38664491ee51788d0466e7338a1f3da53`
+- artifact:
+  `WatchLog-Windows-98`
+- artifact id:
+  `10949248440`
+- artifact ZIP digest:
+  `sha256:c6a29f4b1642c1fab1d546749e6928e432b605ca564395499e8e2e0e5c76f30c`
+- `WatchLog-Setup.exe` SHA-256:
+  `06DFCC486EA15E123BA1E366A68A3DB83C996A6876CFAA0FDCA31BB4AAED2940`
+- `watchlog-agent.exe` SHA-256:
+  `F91B77053E3F1BE8EA2C52E4230CD7746CCDCFEE07290E1ACF792166014F8994`
+- `watchlog-setup-ui.exe` SHA-256:
+  `C0702F8312F2CE4D9FD2A247C5D184B9F4ABA3949EDDD2D4B7BFBC587574DFC4`
+
+The Windows regression used real processes/file locks and proved that preflight:
+
+- stopped the target WatchLog Setup UI;
+- stopped the target WatchLog Agent;
+- handled the WatchLog launcher path;
+- left an unrelated same-named process outside the install directory alone;
+- proved the payload was unlocked and backed up before replacement;
+- restored the complete previous payload during rollback;
+- refused to claim rollback success when no enabled background task existed to restart the old Agent.
+
+Build 98 is still a **5.0.21 release-line validation artifact**, not the final authoritative 5.0.22 fleet installer.
 
 ---
 
@@ -319,6 +362,8 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - Never expose recorder passwords or signing secrets.
 - Never treat HTTP 200 alone as proof a recorder write succeeded.
 - Never remove rollback before the replacement agent has passed its health window.
+- Never replace WatchLog files while its launcher, Setup UI or Agent from that install are still running or holding the payload.
+- Never broad-kill same-named processes outside the current WatchLog install path during upgrade.
 
 ---
 
@@ -340,8 +385,9 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - **Build 76 / 5.0.21** — ONVIF physical-camera + Hikvision footage hardening, but inherited the same core discovery class.
 - **Build 77 / 5.0.21** — first bounded-discovery candidate.
 - **Build 82 / 5.0.21** — Build-69 eight-subnet parity candidate passed Windows Release.
-- **Build 83 / 5.0.21** — final release-line discovery/setup validation candidate with exact artifact recorded above.
-- **Authoritative source 5.0.22** — combined Build-69 reliability + remote maintenance/readback; final Windows artifact still pending.
+- **Build 83 / 5.0.21** — discovery/setup validation candidate with exact artifact recorded above.
+- **Build 98 / 5.0.21** — running-file-lock/transactional-upgrade validation candidate; real Windows process test and packaged release passed.
+- **Authoritative source 5.0.22** — combined Build-69 reliability + remote maintenance/readback + shutdown-before-replace upgrade hardening; final Windows artifact still pending.
 
 ---
 
