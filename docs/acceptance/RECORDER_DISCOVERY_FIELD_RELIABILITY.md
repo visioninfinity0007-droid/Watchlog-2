@@ -47,6 +47,36 @@ The candidate changes:
 - add packaged multi-NIC discovery proof to `--ui-selftest`;
 - gate Windows Release on `test_recorder_probe.py` and `test_recorder_setup.py`.
 
+## Current product integration — 5.0.24
+
+The original discovery candidate is historical validation evidence. Current product
+authority is now:
+
+- repository: `Alkalid-security/Watchlog`
+- branch: `main`
+- version: **5.0.24**
+- current product main at the installer-context update:
+  `7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
+- Repair/Upgrade implementation:
+  PR `#78` / merge `e74526affc4722daf5e14aab07e56b08f72c3d44`
+
+For **new sites**, the discovery requirements in this document still apply to
+`WatchLog-Setup.exe`.
+
+For **existing enrolled sites**, discovery is no longer part of the normal upgrade
+flow. The required path is `WatchLog-Repair-Upgrade.exe`, which validates the staged
+candidate against the existing config/DPAPI identity and recorder before replacing files.
+
+Current Windows validation branch:
+
+`visioninfinity0007-droid/Watchlog-2:fix/existing-site-repair-upgrader-v5`
+
+Head at this context update:
+
+`0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
+
+Do not force Search Network during a healthy-site upgrade.
+
 ## Promotion status
 
 Source fix: **MERGED** to `build/site-connector-v5-watchlog2` at
@@ -72,7 +102,7 @@ CI / packaged setup proof: **PASSED**.
 
 Physical field acceptance: **NOT YET PROVEN**.
 
-Build 77 is therefore a controlled **field candidate**, not a promoted fleet release.
+Build 77 is therefore historical controlled **field-candidate evidence**, not a promoted fleet release.
 Do not call it field-reliable until the physical Hikvision + Dahua acceptance above has been
 completed. Existing enrolled upgrades preserve the stored recorder configuration and do not
 re-run Search Network unless the encrypted recorder credential is missing.
@@ -98,3 +128,20 @@ Field-proven Windows Release Build 69 is the discovery/connectivity regression b
 A newer build may reorder/prioritize those probes and may bound concurrency/deadlines, but
 it must not silently reduce this field-proven reach. Build 69 itself remains the live-site
 reference until a successor passes physical Hikvision and Dahua acceptance.
+
+
+## Existing-site reliability rule added by 5.0.24
+
+A future release is not existing-site reliable unless the exact Repair/Upgrade artifact proves:
+
+1. passive candidate validation while the old Agent remains untouched;
+2. recorder validation before payload replacement;
+3. no forced rediscovery or recorder-password re-entry;
+4. exact-path process shutdown and file-unlock proof;
+5. full-payload rollback;
+6. old-Agent restart verification on rollback;
+7. new-version heartbeat + recorder contact;
+8. real updater polling before `remote_update_v1` is advertised.
+
+The recent Al-Khalid Head Office full-installer failure/rollback is the field reason for
+this rule. The site returned to 5.0.19, which still lacks active online-update capability.
