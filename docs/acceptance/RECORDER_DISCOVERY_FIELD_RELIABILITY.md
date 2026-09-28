@@ -1,3 +1,10 @@
+> **CURRENT 5.0.24 VALIDATION NOTE — 2026-09-28**  
+> This document retains the original discovery-field gate/history. The current branch
+> `fix/existing-site-repair-upgrader-v5` is validating the separate existing-site
+> `WatchLog-Repair-Upgrade.exe`. New-site discovery requirements below still apply to
+> `WatchLog-Setup.exe`; normal existing-site upgrades must not re-run Search Network.
+> See `docs/release/EXISTING_SITE_REPAIR_UPGRADE_VALIDATION_5_0_24.md`.
+
 # Windows Recorder Discovery Field Reliability Gate
 
 ## Why this exists
