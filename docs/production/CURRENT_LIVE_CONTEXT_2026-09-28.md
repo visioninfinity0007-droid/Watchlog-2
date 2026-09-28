@@ -619,6 +619,12 @@ Source implementation:
 
 `prototype/vision_worker`
 
+Deployed Edge Function/orchestrator source:
+
+`prototype/supabase/functions/watchlog-vision-worker/index.ts`
+
+The checked-in Edge Function source is synchronized byte-for-byte with the deployed `watchlog-vision-worker` version **6** as of 2026-09-28. It reads deployment credentials only from environment variables; no service key is stored in Git.
+
 Context-aware worker code exists and uses:
 
 - per-site business context;

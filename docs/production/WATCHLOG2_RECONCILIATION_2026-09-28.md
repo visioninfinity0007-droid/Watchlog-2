@@ -78,17 +78,20 @@ Live Supabase `watchlog-ai` version 21 and canonical checked-in `watchlog-ai` so
 - natural customer-facing fallbacks;
 - customer-boundary route auditing.
 
-### Outstanding source exception
+### Vision-worker source reconciliation
 
 `prototype/supabase/functions/watchlog-vision-worker/index.ts`
 
-Status:
-- live Edge Function exists and is deployed;
-- Watchlog-2 source exists;
-- connector blocks writing that provider/credential-handling source into canonical Git;
-- no literal secret should be copied manually to bypass the safety control.
+Status: **RECONCILED.**
 
-This is the only genuine file-level reconciliation exception remaining from the 48-hour Watchlog-2 audit.
+- deployed Supabase Edge Function version: 6;
+- deployed source length: 18,842 bytes;
+- Watchlog-2 build-branch source length: 18,842 bytes;
+- deployed source and mirror source were byte-for-byte identical;
+- source contains environment-variable references for `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, not hard-coded credentials;
+- the exact deployed source has now been added to canonical Git.
+
+There is no remaining file-level Watchlog-2 reconciliation exception from the audited 48-hour change set.
 
 
 ## Final blob-level audit on governance branch
@@ -102,7 +105,7 @@ Cumulative Watchlog-2 change set audited from Build 61 baseline `e7e8aa96` throu
 
 The 9 absent filenames resolve as:
 - 8 restaurant migration paths intentionally renumbered from mirror `0120–0127` to canonical `0121–0128` because canonical already owns `0120_recovered_snapshot_timestamps.sql`;
-- 1 genuine source exception: `prototype/supabase/functions/watchlog-vision-worker/index.ts`.
+- the former vision-worker source exception is now closed by adding the exact deployed v6 source to canonical Git.
 
 No other cumulative Watchlog-2 path from this audit is unaccounted for.
 
@@ -111,7 +114,7 @@ The byte-different set was reviewed by category:
 - portal report files are semantic merges that preserve canonical office/security behavior while adding restaurant + office reporting;
 - `analytics_agent.py` retains newer canonical behavior plus the required `config_snapshot_requests` capability;
 - test/CI files reflect newer canonical contracts or merged restaurant/reporting coverage;
-- live `watchlog-ai` was previously ahead of checked-in source. It has now been synchronized back into canonical source as part of the final reconciliation pass; the vision-worker file remains the only provider/credential-sensitive source exception.
+- live `watchlog-ai` was previously ahead of checked-in source and is now synchronized; the deployed v6 vision-worker Edge Function source is also now synchronized into canonical Git.
 
 ## Rule going forward
 
@@ -143,8 +146,18 @@ Production migration history now includes:
 - `office_reporting_context`
 - `business_day_evidence_window`
 
-The remaining genuine source reconciliation exception is still:
+The former vision-worker source exception is now closed. The exact deployed v6 source was copied only after verifying that it contains no literal credentials and matches the Watchlog-2 build-branch source byte-for-byte.
 
-`prototype/supabase/functions/watchlog-vision-worker/index.ts`
+Final reconciliation status: **no known Watchlog-2 file-level change from the audited period remains unaccounted for.**
 
-Do not bypass connector/provider safety controls by copying literal credentials or secret-bearing source manually.
+
+## Final mirror-head verification after PR #73
+
+A fresh branch-head check was performed after the reporting/notification closure:
+
+- `build/site-connector-v5-watchlog2` remains at `dfdabcbbe6172f62c253aecb1c0599e1627d1f5a`;
+- mirror `main` remains at `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b`;
+- the later mirror-main field handoff at `d3b2d0a` is already preserved in canonical as superseded context;
+- no newer mirror head displaced either audited reference.
+
+Canonical remains the only product source of truth.
