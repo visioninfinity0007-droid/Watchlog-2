@@ -100,16 +100,35 @@ function Get-LockedPayloadFiles {
   return @($locked)
 }
 
+function Convert-ProcessRecord($p) {
+  if ($null -eq $p) { return $null }
+  try {
+    $pidValue = [int]$p.ProcessId
+    if ($pidValue -le 0) { return $null }
+    return [pscustomobject]@{
+      ProcessId       = $pidValue
+      ParentProcessId = [int]$p.ParentProcessId
+      Name            = [string]$p.Name
+      ExecutablePath  = [string]$p.ExecutablePath
+      CommandLine     = [string]$p.CommandLine
+    }
+  } catch {
+    return $null
+  }
+}
+
 function Get-ExactExecutableProcesses([string]$Name, [string]$ExpectedPath) {
   try {
     $want = [System.IO.Path]::GetFullPath($ExpectedPath)
-    return @(
-      Get-CimInstance Win32_Process -Filter "Name='$Name'" -ErrorAction SilentlyContinue |
-        Where-Object {
-          $_.ExecutablePath -and
-          ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want)
-        }
-    )
+    $out = @()
+    foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='$Name'" -ErrorAction SilentlyContinue)) {
+      if (-not $p.ExecutablePath) { continue }
+      $actual = [System.IO.Path]::GetFullPath([string]$p.ExecutablePath)
+      if ($actual -ine $want) { continue }
+      $rec = Convert-ProcessRecord $p
+      if ($null -ne $rec) { $out += $rec }
+    }
+    return @($out)
   } catch {
     return @()
   }
@@ -127,26 +146,30 @@ function Get-AgentRuntimeLeaves {
   # PyInstaller one-file can expose a bootloader + child for the same exe.
   # Commit cares about logical runtimes, not bootloader process count.
   $mine = @(Get-AgentProcesses)
-  $parents = @($mine | ForEach-Object { $_.ParentProcessId })
-  $leaves = @($mine | Where-Object { $parents -notcontains $_.ProcessId })
-  if ($leaves.Count -gt 0) { return $leaves }
-  return $mine
+  $parents = @($mine | ForEach-Object { [int]$_.ParentProcessId })
+  $leaves = @($mine | Where-Object { $parents -notcontains [int]$_.ProcessId })
+  if ($leaves.Count -gt 0) { return @($leaves) }
+  return @($mine)
 }
 
 function Get-LauncherProcesses {
   # Stop ONLY PowerShell/cmd launchers whose command line points to THIS
-  # WatchLog install directory. Never broad-kill powershell.exe/cmd.exe.
-  $wantPs1 = [regex]::Escape($RunnerPs1)
-  $wantCmd = [regex]::Escape($RunnerCmd)
+  # WatchLog install directory. Normalize CIM objects before returning them:
+  # Build 84 proved raw CIM results could reach the stop routine without a usable PID.
+  $wantPs1 = [System.IO.Path]::GetFullPath($RunnerPs1).ToLowerInvariant()
+  $wantCmd = [System.IO.Path]::GetFullPath($RunnerCmd).ToLowerInvariant()
   try {
-    return @(
-      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object {
-          $_.Name -in @("powershell.exe","pwsh.exe","cmd.exe") -and
-          $_.CommandLine -and
-          (($_.CommandLine -match $wantPs1) -or ($_.CommandLine -match $wantCmd))
-        }
-    )
+    $out = @()
+    foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+      $name = ([string]$p.Name).ToLowerInvariant()
+      if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { continue }
+      $line = ([string]$p.CommandLine).ToLowerInvariant()
+      if (-not $line) { continue }
+      if (-not ($line.Contains($wantPs1) -or $line.Contains($wantCmd))) { continue }
+      $rec = Convert-ProcessRecord $p
+      if ($null -ne $rec) { $out += $rec }
+    }
+    return @($out)
   } catch {
     return @()
   }
@@ -154,12 +177,18 @@ function Get-LauncherProcesses {
 
 function Stop-Pids([array]$Processes, [string]$Label, [switch]$Force) {
   foreach ($p in @($Processes)) {
-    Write-Stage "stopping $Label pid=$($p.ProcessId)"
+    $pidValue = 0
+    try { $pidValue = [int]$p.ProcessId } catch { $pidValue = 0 }
+    if ($pidValue -le 0) {
+      Write-Stage "refusing malformed $Label process record with no valid PID"
+      continue
+    }
+    Write-Stage "stopping $Label pid=$pidValue path=$([string]$p.ExecutablePath)"
     try {
       if ($Force) {
-        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
       } else {
-        Stop-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+        Stop-Process -Id $pidValue -ErrorAction SilentlyContinue
       }
     } catch {}
   }
@@ -197,7 +226,8 @@ function Resume-Task([bool]$WasPresent, [bool]$WasEnabled) {
 
 function Stop-WatchLogRuntime {
   # 1) launcher first, otherwise its restart loop can resurrect the agent.
-  Stop-Pids (Get-LauncherProcesses) "WatchLog launcher"
+  # It is a stateless restart loop, so terminate this exact launcher immediately.
+  Stop-Pids (Get-LauncherProcesses) "WatchLog launcher" -Force
 
   # 2) ask an open Setup UI to close, then kill only the exact packaged UI if it stays.
   foreach ($p in @(Get-SetupProcesses)) {
