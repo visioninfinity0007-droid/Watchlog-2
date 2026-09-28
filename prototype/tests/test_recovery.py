@@ -217,6 +217,38 @@ class DeepRecoveryRun(unittest.TestCase):
             self.assertLess(datetime.fromisoformat(e["device_ts"]), T0 + timedelta(hours=3))
         self.assertEqual(out[0]["recovered"], 6)          # 3 replay + 3 AI
 
+    def test_visual_backfill_runs_without_detector(self):
+        cloud = FakeCloud([interval()])
+        drv = DeepArchiveDriver(self._segments())
+        events = []
+        runner = recovery.RecoveryRunner(
+            cloud, "agent", "key", drv, events.append,
+            chunk_seconds=3600, detector=None,
+            frame_provider=lambda d, c, ts: b"JPEGFRAME",
+            snapshot_interval_seconds=300,
+            log=lambda *a: None)
+        out = runner.run_once(limit=1)
+        visual = [e for e in events if e.get("source") == "recovered"]
+        self.assertEqual(len(visual), 3)
+        self.assertTrue(all(e["event_type"] == "recovered_snapshot" for e in visual))
+        self.assertTrue(all(e.get("snapshot_b64") for e in visual))
+        self.assertEqual(out[0]["status"], "recovered")
+
+    def test_segment_archive_with_zero_decodable_frames_is_partial(self):
+        cloud = FakeCloud([interval()])
+        drv = DeepArchiveDriver(self._segments())
+        events = []
+        runner = recovery.RecoveryRunner(
+            cloud, "agent", "key", drv, events.append,
+            chunk_seconds=3600, detector=None,
+            frame_provider=lambda d, c, ts: None,
+            log=lambda *a: None)
+        out = runner.run_once(limit=1)
+        # Native archive replay recovered evidence, but the visual timeline did not.
+        self.assertEqual(out[0]["status"], "partial")
+        self.assertTrue(any(e.get("source") == "recorder_archive" for e in events))
+        self.assertFalse(any(e.get("source") == "recovered" for e in events))
+
     def test_partial_when_only_ai_supported(self):
         # events unsupported but segments supported -> partial (recovered SOME, not all sources)
         class OnlySegments(DeepArchiveDriver):
