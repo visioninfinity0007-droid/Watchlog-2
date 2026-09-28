@@ -115,8 +115,14 @@ function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) {
     "-InstallDir",$InstallDir,
     "-TaskName",$TaskName
   ) + $Extra
-  & powershell.exe @args
-  return $LASTEXITCODE
+  $output = & powershell.exe @args 2>&1
+  $rc = $LASTEXITCODE
+  foreach ($line in @($output)) {
+    if ($null -ne $line -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
+      Write-Repair ("upgrade-helper: " + [string]$line)
+    }
+  }
+  return $rc
 }
 
 function Restore-Previous([string]$Why) {
