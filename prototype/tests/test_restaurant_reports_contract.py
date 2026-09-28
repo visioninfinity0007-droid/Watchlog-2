@@ -8,7 +8,7 @@ CONFIG=(ROOT/"prototype/supabase/tenant-config/chaiwala_restaurant_analytics.sql
 WORKER=(ROOT/"prototype/supabase/functions/watchlog-vision-worker/index.ts").read_text(encoding="utf-8")
 RUNTIME=(ROOT/"prototype/supabase/migrations/0121_vision_worker_runtime.sql").read_text(encoding="utf-8")
 SCHEDULE=(ROOT/"prototype/supabase/migrations/0122_schedule_vision_worker.sql").read_text(encoding="utf-8")
-PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")
+PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")\nCAPTURE=(ROOT/"prototype/supabase/migrations/0124_restaurant_server_capture_scheduler.sql").read_text(encoding="utf-8")\nAGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
 
 
 def test_restaurant_report_uses_real_service_day_rpc():
@@ -107,3 +107,19 @@ def test_restaurant_rpcs_are_not_anonymous():
     assert "revoke execute on function public.wl_restaurant_day(uuid,date) from anon,public" in PREOPEN
     assert "revoke execute on function public.wl_restaurant_site_config(uuid) from anon,public" in PREOPEN
     assert "grant execute on function public.wl_restaurant_day(uuid,date) to authenticated,service_role" in PREOPEN
+
+
+def test_restaurant_server_capture_requires_explicit_agent_support():
+    assert '"config_snapshot_requests"' in AGENT
+    assert "? 'config_snapshot_requests'" in CAPTURE
+    assert "a.last_seen_at>now()-interval '5 minutes'" in CAPTURE
+    assert "request_source='restaurant_analytics'" in CAPTURE
+    assert "'source','restaurant_requested_snapshot'" in CAPTURE
+
+
+def test_restaurant_server_capture_respects_camera_mode_and_hours():
+    assert "p.sampling_mode in ('interval','hybrid')" in CAPTURE
+    assert "where rn<=2" in CAPTURE
+    assert "'30 seconds'" in CAPTURE
+    assert "rp.sampling_mode='event'" in CAPTURE
+    assert "coalesce(ev.payload->>'source','')='periodic_snapshot'" in CAPTURE
