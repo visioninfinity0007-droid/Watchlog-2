@@ -1,4 +1,5 @@
 "use client";
+import {useState} from "react";
 import RichText from "../rich-text";
 import {Nav} from "../shell";
 import {withSite} from "../site-context";
@@ -319,6 +320,83 @@ function InsightCards({items=[]}){
   return <div className={styles.findings}>{items.map((f,i)=><article className={styles.finding} key={`${f.title}-${i}`}><div className={styles.findingTop}><span className={`${styles.dot} ${severityClass(f.severity)}`}/><b>{f.title}</b></div>{f.value&&<div className={styles.metricValue} style={{fontSize:20,marginTop:9}}>{f.value}</div>}<p>{f.body}</p></article>)}</div>;
 }
 
+function DemandTimeline({points=[]}){
+  const rows=(points||[]).filter(x=>x&&x.time);
+  const[active,setActive]=useState(0);
+  if(!rows.length)return null;
+  const selected=rows[Math.min(active,rows.length-1)]||rows[0];
+  return <section className={styles.demandSection}>
+    <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Customer demand</span><h3>How the night moved</h3><p>Relative demand through the observed evening. Tap a point for the management reading.</p></div><span className={styles.chartTruth}>Relative demand · not POS footfall</span></div>
+    <div className={styles.demandChartWrap}>
+      <div className={styles.demandScale}><span>High</span><span>Low</span></div>
+      <div className={styles.demandBars}>
+        {rows.map((p,i)=>{
+          const level=Math.max(0,Math.min(4,Number(p.level||0)));
+          return <button type="button" className={styles.demandPoint+" "+(i===active?styles.demandPointActive:"")} key={p.time+"-"+i} onClick={()=>setActive(i)} aria-pressed={i===active}>
+            <span className={styles.demandBarZone}><span className={styles.demandBar} style={{height:String(18+level*19)+"%"}}/></span>
+            <span className={styles.demandTime}>{p.time}</span>
+          </button>;
+        })}
+      </div>
+    </div>
+    <div className={styles.chartReading}><div><b>{selected.label||"Observed pattern"}</b><span>{selected.detail||""}</span></div>{selected.status&&<em>{selected.status}</em>}</div>
+  </section>;
+}
+
+function ReviewedRestaurantReport({snapshot}){
+  const p=snapshot?.payload||{};
+  const metrics=p.metrics||[];
+  const highlights=p.highlights||[];
+  const timeline=p.demand_timeline||[];
+  const operations=p.operations||[];
+  const security=p.incidents||[];
+  const actionItems=p.action_items||[];
+  const actions=p.priority_actions||[];
+  const coverage=p.coverage||{};
+  const visibility=p.visibility_notes||[];
+  const summary=p.narrative_summary||p.ai_summary||p.executive_summary||"";
+  const primary=actionItems.length?actionItems.slice(0,3):actions.slice(0,3).map((x,i)=>({title:"Action "+(i+1),body:x,priority:i===0?"Priority":"Next"}));
+  const more=actionItems.length?actionItems.slice(3):actions.slice(3).map((x,i)=>({title:"Additional action "+(i+4),body:x,priority:"Next"}));
+  return <div className={styles.reviewedReport}>
+    <section className={styles.reportIntro}>
+      <div className={styles.reportIntroTop}><div><span className={styles.sectionEyebrow}>Yesterday · {dateLabel(p.report_date||snapshot?.report_date)}</span><h2>What mattered yesterday</h2></div></div>
+      {summary&&<p className={styles.reportLead}>{summary}</p>}
+      {highlights.length>0&&<ul className={styles.reportPointers}>{highlights.map((x,i)=><li key={i}>{x}</li>)}</ul>}
+    </section>
+
+    {metrics.length>0&&<section className={styles.businessMetrics}>{metrics.map((m,i)=><article className={styles.businessMetric} key={(m.label||"metric")+"-"+i}><strong>{m.value}</strong><span>{m.label}</span>{m.note&&<small>{m.note}</small>}</article>)}</section>}
+
+    <DemandTimeline points={timeline}/>
+
+    {operations.length>0&&<section className={styles.cleanSection}>
+      <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Operations</span><h3>How the restaurant ran</h3><p>The parts of the operation that mattered to customer experience and revenue opportunity.</p></div></div>
+      <div className={styles.operationGrid}>{operations.map((x,i)=><article className={styles.operationCard} key={(x.title||i)+"-"+i}><div className={styles.operationTop}><b>{x.title}</b><span>{x.status}</span></div><p>{x.body}</p>{x.takeaway&&<div className={styles.operationTakeaway}>{x.takeaway}</div>}</article>)}</div>
+    </section>}
+
+    {security.length>0&&<section className={styles.cleanSection}>
+      <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Security & control</span><h3>Anything that needs attention</h3><p>Only security or access matters that are useful to management.</p></div></div>
+      <div className={styles.securityList}>{security.map((x,i)=><article className={styles.securityRow} key={(x.title||i)+"-"+i}><span className={styles.securitySignal+" "+severityClass(x.severity)}/><div><b>{x.title}</b><p>{x.body}</p></div>{x.value&&<strong>{x.value}</strong>}</article>)}</div>
+    </section>}
+
+    {primary.length>0&&<section className={styles.actionSection}>
+      <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Next actions</span><h3>What I would follow up</h3><p>Short, practical actions tied directly to yesterday’s operating pattern.</p></div></div>
+      <div className={styles.priorityActions}>{primary.map((a,i)=><article className={styles.priorityAction} key={(a.title||i)+"-"+i}><span>{i+1}</span><div><div className={styles.priorityActionTitle}><b>{a.title||"Action"}</b>{a.priority&&<em>{a.priority}</em>}</div><p>{a.body||a.detail||a}</p></div></article>)}</div>
+      {more.length>0&&<details className={styles.reportDisclosure}><summary>More improvement actions</summary><div className={styles.disclosureBody}>{more.map((a,i)=><div className={styles.disclosureItem} key={i}><b>{a.title||"Action"}</b><span>{a.body||a.detail||a}</span></div>)}</div></details>}
+    </section>}
+
+    <div className={styles.reportDetailsGrid}>
+      <details className={styles.reportDisclosure}>
+        <summary>How to read the figures</summary>
+        <div className={styles.disclosureBody}><div className={styles.disclosureItem}><b>{coverage.status||"Observed period"}</b><span>{coverage.summary||coverage.note||"The figures reflect the observed business period."}</span></div>{coverage.note&&<div className={styles.disclosureItem}><b>Boundary</b><span>{coverage.note}</span></div>}</div>
+      </details>
+      {visibility.length>0&&<details className={styles.reportDisclosure}>
+        <summary>Visibility improvements</summary>
+        <div className={styles.disclosureBody}>{visibility.map((x,i)=><div className={styles.disclosureItem} key={i}><b>{x.title}</b><span>{x.body}</span></div>)}</div>
+      </details>}
+    </div>
+  </div>;
+}
+
 function EvidenceReport({snapshot}){
   const p=snapshot?.payload||{},metrics=p.metrics||[],incidents=p.incidents||[],coverage=p.coverage||{},cameras=p.camera_coverage||[],insights=p.site_insights||[],actions=p.priority_actions||[];
   const summary=p.ai_summary||p.executive_summary||"No management summary is available for this report.";
@@ -367,7 +445,7 @@ export default function CustomerReports(){
     if(r.view==="daily"||r.view==="yesterday"){
       const manualBusinessReport=r.view==="yesterday"&&r.snapshot?.payload?.manual_business_report===true;
       reportBody=manualBusinessReport
-        ? <EvidenceReport snapshot={r.snapshot}/>
+        ? <ReviewedRestaurantReport snapshot={r.snapshot}/>
         : <>
             <RestaurantOperations data={r.restaurant} periodLabel={r.view==="daily"?"Today":"Yesterday"}/>
             <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Yesterday's management reading"}/>
@@ -395,5 +473,5 @@ export default function CustomerReports(){
     reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
   }
 
-  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?"Chai Wala management report":r.isOffice?"Office management report":"Management report"}</h1><p>{r.isChaiWalaRestaurant?"Demand, table use, service flow, kitchen/counter performance, security and practical improvements.":r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
+  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="yesterday"&&r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Demand, customers, service flow, security and next actions.":"Demand, customers, service flow, security and next actions."):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
 }

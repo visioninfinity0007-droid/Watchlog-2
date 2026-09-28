@@ -2,6 +2,8 @@
 
 Use this method whenever a model is asked to create a restaurant report from stored camera snapshots.
 
+For the client-facing report composition and portal UX, also follow `ai-harness/skills/restaurant-daily-business-report.md`.
+
 ## 1. Resolve the reporting window first
 
 Read tenant context before images.
@@ -108,14 +110,19 @@ A completed human/manual visual review may be used as the authoritative daily bu
 
 ## 10. Reporting order
 
-1. Owner summary and management significance.
-2. Business KPIs that are visually defensible.
-3. Demand and table/customer pattern.
-4. Service handoff, kitchen and counter operations.
-5. Security/access exceptions.
-6. Customer-facing presentation and camera-view limitations where they affect decisions.
-7. Practical improvement actions.
-8. Plain-language evidence-window caveat only where needed.
+Use the dedicated restaurant report skill for the rendered client experience.
+
+For Chai Wala the default order is:
+1. Site name + service date.
+2. What mattered: 2–3 business pointers.
+3. Maximum four business KPIs.
+4. Interactive demand/service visual when the evidence supports a trend.
+5. Dining and service operations grouped by business function, not by camera.
+6. Security/control exceptions.
+7. Top three actions.
+8. Expandable secondary actions, evidence-window notes and visibility/camera improvements.
+
+Do not repeat the same finding in multiple major sections. Do not place technical processing or coverage state above a completed business report.
 
 ## 11. Truth rules
 

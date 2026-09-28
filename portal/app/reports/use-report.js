@@ -170,7 +170,8 @@ export default function useReport(){
         if(!live)return;
         if(!report.error)setSnapshot(report.data||null);
         setRestaurant(report.data?(report.data?.payload?.restaurant||rest):rest);
-        if(chaiLayout||officeLayout){
+        const completedReviewedRestaurant=chaiLayout&&report.data?.payload?.manual_business_report===true;
+        if(!completedReviewedRestaurant&&(chaiLayout||officeLayout)){
           const prompt=chaiLayout?RESTAURANT_PROMPTS.yesterday:OFFICE_PROMPTS.yesterday;
           const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt,site_id:siteId,conversation_id:null}});
           if(!live)return;

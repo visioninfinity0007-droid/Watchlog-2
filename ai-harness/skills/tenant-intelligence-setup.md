@@ -20,7 +20,7 @@ Do not ask the user to repeat facts available from Git or the database.
 6. Create reporting/README.md, reporting/methods/visual-snapshot-analysis.md and reporting/daily-reports/README.md.
 7. Define Today, Yesterday, Last 7 days and Last 30 days. Yesterday always means the latest completed configured working/service day.
 8. Align site_business_context with the same semantic contract and report-layout profile.
-9. Align customer AI. It should read like a natural management brief, separate observed/estimated/unsupported facts, and surface repeated evidence-backed recommendations.
+9. Align customer AI. It should read like a natural management brief, separate observed/estimated/unsupported facts, and surface repeated evidence-backed recommendations. For restaurant daily reports, follow `ai-harness/skills/restaurant-daily-business-report.md` for client-facing hierarchy and UX.
 10. Validate authorization, report dates, camera inventory, portal tabs, migration numbering and coverage truth.
 11. Compare any mirror/handoff repo against canonical. Classify each difference as ported, already present/newer, or intentionally superseded.
 
@@ -45,6 +45,7 @@ Never publish an accuracy percentage from model confidence alone. Accuracy requi
 - report-window semantics;
 - aligned runtime context;
 - customer-facing report profile;
+- report experience rules for hierarchy, charts, progressive disclosure and client/internal separation;
 - recommendations in reports;
 - canonical Git reconciliation record.
 
@@ -64,5 +65,7 @@ Do not call setup complete until:
 - portal uses the intended four windows for the tenant type;
 - the AI prompt/context contains the tenant semantic contract;
 - recommendations are visible in reporting, not only chat;
+- completed reviewed reports do not expose processing/waiting UI or internal implementation details;
+- the report hierarchy is scannable and avoids duplicated card dumps;
 - authorization and coverage-truth checks pass;
 - mirror/canonical reconciliation is documented.

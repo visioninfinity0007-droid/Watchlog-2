@@ -38,6 +38,13 @@ This file is for WatchLog operators / future AI sessions. It must not be rendere
 ## Internal processing note
 The production vision worker is active but the Chai Wala site is not currently eligible for the configured external-vision path because no site external-egress permission record is present. Automated structured restaurant rows therefore did not represent this service day. This technical condition is internal and must never be exposed in the owner-facing report.
 
+## Persisted review state
+- All 610 review rows for the available service-day evidence are now marked `done`.
+- Review mode: `manual-business-review`.
+- Analysis version: `manual-business-review-v1`.
+- The visual day summary for service date 2026-09-27 is stored as `complete` with 610/610 reviewed.
+- Per-frame structured restaurant extraction was not fabricated; the business conclusions remain in the reviewed report and this internal audit.
+
 ## Public report authority for this service date
 The saved report snapshot and the Summary/Detailed Report under `daily-reports/2026-09-27/` are the owner-facing business report. For this date, prefer the completed manual visual review over an empty automated-processing state.
 
