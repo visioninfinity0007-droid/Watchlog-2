@@ -193,7 +193,8 @@ Windows Release **100 / 5.0.23** validates the packaged historical-footage recov
   `D40C5622E6DB30BE064FD273624281A08F404112ADD274B7BACE851A558CD42B`
 
 The frozen Site Connector self-test explicitly proved the bundled FFmpeg could synthesize
-and decode video. The 5.0.23 product source then adds the full recovery semantics:
+and decode video. The 5.0.23 recovery implementation added the full recovery semantics,
+which remain part of current 5.0.24:
 
 - both Hikvision and Dahua archive adapters;
 - recovered visual checkpoint every 300 seconds by default across missed footage;
@@ -209,7 +210,7 @@ and decode video. The 5.0.23 product source then adds the full recovery semantic
 Production migration `recovered_snapshot_timestamps` is already live.
 
 Hardware boundary: Dahua has prior archive/pilot evidence; the exact Chai Wala Hikvision
-DS-7608NI-Q1 still needs one live 5.0.23 archive/clip/gap test before that hardware path can
+DS-7608NI-Q1 still needs one live promoted 5.0.24 archive/clip/gap test before that hardware path can
 be called physically proven.
 
 ### Current installer promotion boundary
@@ -743,7 +744,7 @@ Build 76 includes the next Hikvision compatibility implementation:
 
 This still requires field acceptance on the actual recorder.
 
-Do not claim Chai Wala video extraction is field-proven until an accepted authoritative 5.0.23 (or later) artifact returns real bounded footage from that physical NVR.
+Do not claim Chai Wala video extraction is field-proven until an accepted 5.0.24 (or later) artifact returns real bounded footage from that physical NVR.
 
 ### Multi-camera incident design
 
@@ -898,7 +899,7 @@ Live `watchlog-ai` is version **21**. Structured reporting, visual-day lookup an
 
 Customer language is governed by `ai-harness/core/customer-language.md`: natural Pakistan English, management-first wording, no internal implementation jargon, explicit uncertainty where coverage is missing, and evidence-backed recommendations in both the daily summary and detailed report.
 
-Post-PR #71 Watchlog-2 commit `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b` was also reconciled. Its Build-76 field handoff is preserved only as superseded mirror context; canonical 5.0.23 release/source documents remain authoritative.
+Post-PR #71 Watchlog-2 commit `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b` was also reconciled. Its Build-76 field handoff is preserved only as superseded mirror context; canonical 5.0.24 release/source documents remain authoritative.
 
 ---
 
@@ -909,13 +910,16 @@ Post-PR #71 Watchlog-2 commit `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b` was als
    - process a controlled current-site batch;
    - verify context-aware outputs before draining the backlog.
 
-2. **Authoritative 5.0.23 Windows artifact + field acceptance**
-   - produce the Windows installer from `Alkalid-security/Watchlog` main;
-   - verify its SHA-256/artifact identity in Git;
-   - upgrade one Build-69 Hikvision pilot in-place without forced rediscovery;
-   - install/upgrade one Dahua pilot;
+2. **Authoritative 5.0.24 Repair/Upgrade artifact + field acceptance**
+   - finish Windows Release from the reviewed 5.0.24 validation lineage;
+   - verify Repair/Upgrade SHA-256/artifact identity in Git;
+   - bootstrap one existing Hikvision site without forced rediscovery/re-login;
+   - bootstrap one existing Dahua site the same way;
+   - prove passive staged preflight before old-Agent shutdown;
+   - prove recorder staged preflight before payload replacement;
    - prove Site Control command claim/completion;
-   - prove signed remote-update rollback path;
+   - prove signed remote-update polling + rollback path;
+   - prove `remote_update_v1` appears only after actual updater polling;
    - prove camera inventory remains physical/canonical;
    - prove bounded historical clip/archive retrieval on the actual recorder where supported;
    - prove gap/recovery behavior.
