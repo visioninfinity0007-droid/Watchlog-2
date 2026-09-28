@@ -15,6 +15,7 @@ on:
   push:
     branches:
       - 'build/site-connector-v5-watchlog2'
+      - 'fix/existing-site-repair-upgrader-v5'
     tags:
       - 'v*'
     paths-ignore:
