@@ -138,7 +138,7 @@ def main():
             and "last_push >= (verification_after - timedelta(seconds=5))" in agent
             and "Configure first" in agent,
         "failed upgrade rollback verifies the previous agent is running again":
-            "rollback complete: previous agent restored AND running" in text("prototype/installer/nsis/wl-upgrade.ps1")
+            "rollback complete: previous WatchLog payload restored AND agent running" in text("prototype/installer/nsis/wl-upgrade.ps1")
             and "Fail 14" in text("prototype/installer/nsis/wl-upgrade.ps1"),
         "installer-child terminal failure closes all windows and returns nonzero":
             "def _terminal_installer_failure" in gui
@@ -256,9 +256,9 @@ def main():
         "failed upgrade rolls back to the previous working agent":
             "-Stage rollback" in nsis and "rollback" in upgrade and "wlbak" in upgrade,
         "helper stops ONLY WatchLog processes from the exact install path (no broad kill)":
-            "Name='watchlog-agent.exe'" in upgrade
+            "Get-ExactExecutableProcesses" in upgrade
+            and 'Get-ExactExecutableProcesses "watchlog-agent.exe" $AgentExe' in upgrade
             and "ExecutablePath" in upgrade
-            and "Get-ExactExecutableProcesses" in upgrade
             and "Get-LauncherProcesses" in upgrade
             and "-Force -ErrorAction SilentlyContinue" in upgrade,
         "service registration does not broad-kill same-named agents":
