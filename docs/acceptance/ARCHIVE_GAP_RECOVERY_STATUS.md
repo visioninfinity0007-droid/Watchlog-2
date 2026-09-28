@@ -6,11 +6,15 @@ Authoritative repository: `Alkalid-security/Watchlog`
 
 Authoritative branch: `main`
 
-Current recovery source version: **5.0.23**
+Current recovery source version: **5.0.24**
 
-Merged implementation commit:
+Recovery implementation merge:
 
 `eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
+
+Current product main at this context update:
+
+`7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
 
 Production database migration:
 
@@ -67,8 +71,8 @@ Implemented:
 
 Evidence boundary:
 
-Dahua archive retrieval has prior pilot/field evidence, but the exact 5.0.23 installer must
-still pass the current field acceptance before fleet promotion.
+Dahua archive retrieval has prior pilot/field evidence, but the exact promoted 5.0.24 Windows
+candidate must still pass the current field acceptance before fleet promotion.
 
 ### Hikvision
 
@@ -86,7 +90,7 @@ Implemented:
 
 Evidence boundary:
 
-The 5.0.23 code and packaged decoder are validated, but the exact Chai Wala
+The recovery code and 5.0.23 packaged decoder are validated, but the exact promoted 5.0.24 candidate on Chai Wala
 `DS-7608NI-Q1` has **not yet physically proven** the new archive-download path.
 Build 69's older path returned unsupported. Do not convert packaged proof into a false
 hardware claim.
@@ -167,7 +171,7 @@ Live monitoring has priority over archive backfill.
 
 ### Hikvision pilot
 
-Use the exact 5.0.23 candidate on a Hikvision NVR and prove:
+Use the exact promoted 5.0.24 Windows candidate on a Hikvision NVR and prove:
 
 - archive search returns the requested channel/time;
 - bounded clip bytes are returned;
@@ -196,13 +200,34 @@ Also prove:
 
 ---
 
+## 5.0.24 installer/upgrade integration
+
+The archive/gap-recovery contract itself was completed in 5.0.23 and remains part of 5.0.24.
+
+For existing enrolled sites, the recovery runtime must now be delivered through the staged
+`WatchLog-Repair-Upgrade.exe` path rather than the full setup/discovery wizard.
+
+This matters because the promoted field candidate must prove both:
+- the recorder/archive path still works after upgrade; and
+- the candidate was validated against that recorder before installed files were replaced.
+
+Current Windows validation branch:
+
+`visioninfinity0007-droid/Watchlog-2:fix/existing-site-repair-upgrader-v5`
+
+Head at this context update:
+
+`0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
+
+No 5.0.24 Repair/Upgrade artifact is yet promoted in this document.
+
 ## Promotion rule
 
 Software implementation + packaged decoder: **COMPLETE**
 
 Production timestamp/cloud queue path: **LIVE**
 
-Exact Hikvision and Dahua 5.0.23 hardware acceptance: **REQUIRED BEFORE FLEET PROMOTION**
+Exact Hikvision and Dahua 5.0.24 hardware acceptance: **REQUIRED BEFORE FLEET PROMOTION**
 
 Build 69 remains the live discovery/connectivity reference until the successor passes the
 full field matrix. Do not replace a working Build-69 site merely to satisfy a version number.
