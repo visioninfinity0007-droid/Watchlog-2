@@ -154,41 +154,50 @@ function Get-AgentRuntimeLeaves {
 }
 
 function Get-LauncherProcesses {
-  # Stop ONLY PowerShell/cmd launchers whose command line points to THIS
-  # WatchLog install directory. Prefer the verified PID file when present, then
-  # scan all processes as a fallback for Build 69/older launchers.
+  # Stop ONLY PowerShell/cmd launchers belonging to THIS WatchLog install.
+  #
+  # Evidence paths, strongest first:
+  #   1. ParentProcessId of the exact installed watchlog-agent.exe. This works
+  #      even when Windows/WMI withholds CommandLine for a SYSTEM-owned process.
+  #   2. Verified run-agent.pid (still requires the command line to match).
+  #   3. Command-line scan fallback for Build 69/older launchers between restarts.
   $wantPs1 = [System.IO.Path]::GetFullPath($RunnerPs1).ToLowerInvariant()
   $wantCmd = [System.IO.Path]::GetFullPath($RunnerCmd).ToLowerInvariant()
-  $out = @()
-  $seen = @{}
+  $parentPids = @{}
+  foreach ($agentProc in @(Get-AgentProcesses)) {
+    $ppid = [int]$agentProc.ParentProcessId
+    if ($ppid -gt 0) { $parentPids[[string]$ppid] = $true }
+  }
 
-  function Normalize-Launcher($p) {
-    if ($null -eq $p) { return $null }
-    $name = ([string]$p.Name).ToLowerInvariant()
-    if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { return $null }
-    $line = ([string]$p.CommandLine).ToLowerInvariant()
-    if (-not $line) { return $null }
-    if (-not ($line.Contains($wantPs1) -or $line.Contains($wantCmd))) { return $null }
-    return (Convert-ProcessRecord $p)
+  $pidFileValue = 0
+  if (Test-Path -LiteralPath $LauncherPidFile) {
+    $pidText = ""
+    try { $pidText = (Get-Content -LiteralPath $LauncherPidFile -Raw).Trim() } catch {}
+    [void][int]::TryParse($pidText, [ref]$pidFileValue)
   }
 
   try {
-    if (Test-Path -LiteralPath $LauncherPidFile) {
-      $pidText = ""
-      try { $pidText = (Get-Content -LiteralPath $LauncherPidFile -Raw).Trim() } catch {}
-      $pidValue = 0
-      if ([int]::TryParse($pidText, [ref]$pidValue) -and $pidValue -gt 0) {
-        $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-        $rec = Normalize-Launcher $p
-        if ($null -ne $rec) {
-          $seen[[string]$rec.ProcessId] = $true
-          $out += $rec
-        }
-      }
-    }
-
+    $out = @()
+    $seen = @{}
     foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
-      $rec = Normalize-Launcher $p
+      $name = ([string]$p.Name).ToLowerInvariant()
+      if ($name -notin @("powershell.exe","pwsh.exe","cmd.exe")) { continue }
+
+      $pidValue = 0
+      try { $pidValue = [int]$p.ProcessId } catch { $pidValue = 0 }
+      if ($pidValue -le 0) { continue }
+
+      $line = ([string]$p.CommandLine).ToLowerInvariant()
+      $lineMatch = $false
+      if ($line) {
+        $lineMatch = $line.Contains($wantPs1) -or $line.Contains($wantCmd)
+      }
+
+      $isAgentParent = $parentPids.ContainsKey([string]$pidValue)
+      $isVerifiedPidFile = ($pidFileValue -eq $pidValue -and $lineMatch)
+      if (-not ($isAgentParent -or $lineMatch -or $isVerifiedPidFile)) { continue }
+
+      $rec = Convert-ProcessRecord $p
       if ($null -eq $rec) { continue }
       $key = [string]$rec.ProcessId
       if ($seen.ContainsKey($key)) { continue }
