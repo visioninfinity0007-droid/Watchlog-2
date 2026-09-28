@@ -98,7 +98,7 @@ begin
     v_total_sessions:=v_total_sessions+v_day_sessions;
     v_sum_coverage:=v_sum_coverage+coalesce(v_day_coverage,0);
 
-    select coalesce(v_times || jsonb_agg((i->>'observed_time_to_food_minutes')::numeric),'[]'::jsonb)
+    select v_times || coalesce(jsonb_agg((i->>'observed_time_to_food_minutes')::numeric),'[]'::jsonb)
       into v_times
       from jsonb_array_elements(coalesce(v_day->'sessions'->'items','[]'::jsonb)) i
      where nullif(i->>'observed_time_to_food_minutes','') is not null;
@@ -148,7 +148,7 @@ begin
     v_prev_total_sessions:=v_prev_total_sessions+v_day_sessions;
     v_prev_sum_coverage:=v_prev_sum_coverage+coalesce(v_day_coverage,0);
 
-    select coalesce(v_prev_times || jsonb_agg((i->>'observed_time_to_food_minutes')::numeric),'[]'::jsonb)
+    select v_prev_times || coalesce(jsonb_agg((i->>'observed_time_to_food_minutes')::numeric),'[]'::jsonb)
       into v_prev_times
       from jsonb_array_elements(coalesce(v_day->'sessions'->'items','[]'::jsonb)) i
      where nullif(i->>'observed_time_to_food_minutes','') is not null;
