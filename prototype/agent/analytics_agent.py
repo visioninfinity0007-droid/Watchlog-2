@@ -42,7 +42,8 @@ ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, r
 # usable before a compatible agent reports it. This is runtime capability, NOT field-proven hardware.
 RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
                         "operations_evidence_still", "operations_evidence_clip",
-                        "archive_processing", "multi_agent_fencing", "recorder_probe_v2"]
+                        "archive_processing", "multi_agent_fencing", "recorder_probe_v2",
+                        "config_snapshot_requests"]
 
 
 class Config(core.Config):
