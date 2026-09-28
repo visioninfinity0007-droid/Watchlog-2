@@ -17,6 +17,46 @@ function pctWidth(v,max){const n=num(v),m=num(max);if(n==null||!m)return 0;retur
 function coverageLabel(v){const n=num(v);return n==null?"—":Math.round(n*100)+"%"}
 function signed(v,suffix=""){const n=num(v);if(n==null)return"—";return(n>0?"+":"")+String(n)+suffix}
 function managementDate(v){return v?dateLabel(v):"selected service day"}
+function scorePct(v){const n=num(v);return n==null?null:Math.round(Math.max(0,Math.min(1,n))*100)}
+function roleLabel(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,m=>m.toUpperCase())}
+
+function AnalyticsQuality({quality}){
+  const q=quality||{},cameras=q.camera_quality||[],recs=[...(q.recommendations||[])].sort((a,b)=>(a.severity==="high"?0:1)-(b.severity==="high"?0:1));
+  const validation=q.accuracy_validation||{};
+  if(!Number(q.scored_frames||0)&&!cameras.length){
+    return <section className={styles.qualityShell}>
+      <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Camera geometry and image quality determine how trustworthy customer/table analytics can be.</p></div></div>
+      <div className={styles.qualityWaiting}><b>Quality scoring is waiting for processed restaurant frames.</b><span>WatchLog will measure glare, overexposure, occlusion, obstruction, camera angle, visible-diner count confidence and movable-table tracking confidence. It will not publish a customer-count accuracy percentage until representative Floor 1 and Floor 2 frames are manually validated.</span></div>
+    </section>;
+  }
+  return <section className={styles.qualityShell}>
+    <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Repeated camera-view problems are surfaced before WatchLog recommends operational changes.</p></div><span className={styles.qualityScored}>{val(q.scored_frames)} scored frames</span></div>
+    <div className={styles.qualityGrid}>{cameras.map(c=>{
+      const visibility=scorePct(c.visibility_quality),count=scorePct(c.people_count_confidence),tables=scorePct(c.table_tracking_confidence),glare=scorePct(c.glare_level),occ=scorePct(c.occlusion_level),angle=scorePct(c.camera_angle_adequacy);
+      return <article className={styles.qualityCard} key={c.camera_id||c.camera}>
+        <div className={styles.qualityCardHead}><div><b>{c.camera}</b><span>{roleLabel(c.role)}</span></div><strong>{visibility==null?"—":visibility+"%"}</strong></div>
+        <div className={styles.qualityTrack}><div className={styles.qualityFill} style={{width:String(visibility||0)+"%"}}/></div>
+        <div className={styles.qualityStats}>
+          <span><small>Visibility</small><b>{visibility==null?"—":visibility+"%"}</b></span>
+          {c.role==="dining_floor"&&<span><small>People count</small><b>{count==null?"—":count+"%"}</b></span>}
+          {c.role==="dining_floor"&&<span><small>Table tracking</small><b>{tables==null?"—":tables+"%"}</b></span>}
+          <span><small>Glare risk</small><b>{glare==null?"—":glare+"%"}</b></span>
+          <span><small>Occlusion</small><b>{occ==null?"—":occ+"%"}</b></span>
+          <span><small>Angle quality</small><b>{angle==null?"—":angle+"%"}</b></span>
+        </div>
+        {(c.blocked_regions||[]).length>0&&<div className={styles.blockedList}><small>Repeatedly blocked:</small>{c.blocked_regions.map((x,i)=><span key={i}>{x}</span>)}</div>}
+      </article>
+    })}</div>
+    <div className={styles.improvementList}>{recs.length?recs.map((r,i)=><article className={styles.improvementCard+" "+(r.severity==="high"?styles.improvementHigh:styles.improvementMedium)} key={(r.camera||"camera")+"-"+i}>
+      <div className={styles.improvementTop}><span>{String(r.severity||"medium").toUpperCase()}</span><b>{r.camera}</b></div>
+      <h4>{r.issue}</h4>
+      <p>{r.evidence}</p>
+      <div className={styles.improvementAction}><b>Recommended improvement</b><span>{r.recommendation}</span></div>
+      {(r.metrics_impacted||[]).length>0&&<small>Affects: {r.metrics_impacted.join(" · ")}</small>}
+    </article>):<div className={styles.qualityClear}>No repeated camera-quality problem has crossed the recommendation threshold in the analyzed frames.</div>}</div>
+    <div className={styles.accuracyNote}><b>Customer-count accuracy:</b> {validation.note||"Confidence is not the same as measured accuracy. Manual validation against representative Floor 1 and Floor 2 frames is required before publishing an accuracy percentage."}</div>
+  </section>;
+}
 
 function RestaurantOperations({data,periodLabel}){
   if(!data?.enabled)return null;
@@ -25,6 +65,7 @@ function RestaurantOperations({data,periodLabel}){
   if(observations===0&&tableObservations===0){
     return <section className={styles.restaurantShell}>
       <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>Visual business analytics is configured.</h2><p>WatchLog is waiting for structured visual observations before showing restaurant figures. No estimates are being fabricated from unprocessed snapshots.</p></div><span className={styles.processingPill}>Processing</span></div>
+      <AnalyticsQuality quality={data.analytics_quality}/>
       <div className={styles.truthNote}><b>Measurement boundary:</b> current cameras can report visible diners and table activity, but not true unique customer footfall. A clean customer-entry counting line is required for footfall.</div>
     </section>;
   }
@@ -46,6 +87,8 @@ function RestaurantOperations({data,periodLabel}){
       <div className={styles.restaurantMetric}><strong>{sessions.median_observed_time_to_food_minutes==null?"—":String(sessions.median_observed_time_to_food_minutes)+" min"}</strong><span>Median observed time to food</span><small>Seated to first food visible, not POS timing</small></div>
       <div className={styles.restaurantMetric}><strong>{coverageLabel(coverage)}</strong><span>Analytics coverage</span><small>Actual analyzed samples versus configured target</small></div>
     </div>
+
+    <AnalyticsQuality quality={data.analytics_quality}/>
 
     <div className={styles.restaurantGrid}>
       <div className={styles.restaurantPanel}>
@@ -122,6 +165,8 @@ function RestaurantPeriodReport({data,days}){
         <div><span>Median time-to-food change</span><b>{signed(cmp.median_time_to_food_delta_minutes," min")}</b><small>Current minus prior period; camera-observed</small></div>
         <div><span>Coverage change</span><b>{signed(cmp.coverage_delta_points," pts")}</b><small>Percentage-point change in analysis coverage</small></div>
       </div>
+
+      <AnalyticsQuality quality={data.analytics_quality}/>
 
       <div className={styles.periodGrid}>
         <div className={styles.restaurantPanel}>
