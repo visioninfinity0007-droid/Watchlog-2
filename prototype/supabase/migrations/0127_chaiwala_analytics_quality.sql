@@ -192,8 +192,8 @@ begin
 end $function$
 
 
-revoke execute on function public.wl_restaurant_quality_summary(uuid,timestamptz,timestamptz) from public,anon;
-grant execute on function public.wl_restaurant_quality_summary(uuid,timestamptz,timestamptz) to authenticated,service_role;
+revoke execute on function public.wl_restaurant_quality_summary(uuid,timestamptz,timestamptz) from public,anon,authenticated;
+grant execute on function public.wl_restaurant_quality_summary(uuid,timestamptz,timestamptz) to service_role;
 
 CREATE OR REPLACE FUNCTION public.wl_restaurant_day(p_site_id uuid, p_date date DEFAULT NULL::date)
  RETURNS jsonb
