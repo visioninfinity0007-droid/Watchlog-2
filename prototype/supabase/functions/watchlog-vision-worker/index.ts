@@ -26,7 +26,7 @@ Generic schema:
   "people": [{"location":"...","activity":"...","role_hint":"customer|staff|unknown|null"}]
 }
 
-If RESTAURANT_ANALYTICS.enabled is true, ALSO return top-level "restaurant" using the exact restaurant contract supplied in the prompt. "visible_customers" means concurrent visibly present customers, never unique footfall. "food_present" means visible food at a calibrated table and says nothing about quality or correctness. Use null when evidence is not reliable. For configured tables, return one row for every listed table_key so occupancy transitions can be measured. If adjacent movable tables are visibly joined into one party, give those table rows the same short combined_group value. Otherwise combined_group must be null.`;
+If RESTAURANT_ANALYTICS.enabled is true, ALSO return top-level "restaurant" using the exact restaurant contract supplied in the prompt. Use RESTAURANT_INTELLIGENCE_CONTEXT as the business meaning contract, never as evidence that a value occurred. "visible_customers" means concurrent visibly present customers, never unique footfall. "food_present" means visible food at a calibrated table and says nothing about quality or correctness. Use null when evidence is not reliable. Only populate fields supported by the current camera_role. For configured dining tables, return one row for every listed table_key so occupancy transitions can be measured. If adjacent movable tables are visibly joined into one party, give those table rows the same short combined_group value. Otherwise combined_group must be null.`;
 
 if (!URL || !SERVICE_KEY) throw new Error("missing Supabase runtime configuration");
 const sb = createClient(URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -110,8 +110,9 @@ function normalize(raw: Json, item: Json): Json {
   if (ra?.enabled === true) {
     const rr = isObject(raw.restaurant) ? raw.restaurant
       : isObject(raw.business?.restaurant) ? raw.business.restaurant : {};
-    const configured = Array.isArray(ra.tables) ? ra.tables : [];
-    const supplied = Array.isArray(rr.tables) ? rr.tables : [];
+    const role = String(ra.camera_role || "");
+    const configured = role === "dining_floor" && Array.isArray(ra.tables) ? ra.tables : [];
+    const supplied = role === "dining_floor" && Array.isArray(rr.tables) ? rr.tables : [];
     const byKey = new Map<string, any>();
     for (const row of supplied) {
       const key = cleanText(row?.table_key, 80);
@@ -134,14 +135,14 @@ function normalize(raw: Json, item: Json): Json {
       };
     });
     out.restaurant = {
-      schema_version: "restaurant-vision-v1",
-      visible_customers: asInt(rr.visible_customers),
+      schema_version: "restaurant-vision-v2",
+      visible_customers: role === "dining_floor" ? asInt(rr.visible_customers) : null,
       staff_count: asInt(rr.staff_count),
-      occupied_tables: asInt(rr.occupied_tables),
-      served_tables: asInt(rr.served_tables),
-      kitchen_load: as01(rr.kitchen_load),
-      handoff_load: as01(rr.handoff_load),
-      counter_active: asBool(rr.counter_active),
+      occupied_tables: role === "dining_floor" ? asInt(rr.occupied_tables) : null,
+      served_tables: role === "dining_floor" ? asInt(rr.served_tables) : null,
+      kitchen_load: role === "kitchen" ? as01(rr.kitchen_load) : null,
+      handoff_load: role === "service_handoff" ? as01(rr.handoff_load) : null,
+      counter_active: role === "cash_counter" ? asBool(rr.counter_active) : null,
       confidence: as01(rr.confidence),
       tables,
     };
@@ -160,6 +161,7 @@ function framePrompt(item: Json): string {
     `SITE_GUIDANCE: ${String(bc.ai_context_note || "")}`,
     `CAMERA_CONTEXT: ${JSON.stringify(bc.camera_context || {})}`,
     `OWNER_PRIORITIES: ${JSON.stringify(bc.owner_insight_priorities || [])}`,
+    `RESTAURANT_INTELLIGENCE_CONTEXT: ${JSON.stringify(bc.restaurant_intelligence_context || {})}`,
     `RESTAURANT_ANALYTICS: ${JSON.stringify(restaurant)}`,
     "Return the JSON review now.",
   ].join("\n");
