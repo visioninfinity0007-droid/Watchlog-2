@@ -1165,6 +1165,10 @@ def cmd_connector_selftest() -> int:
             problems.append("Hikvision archive search unavailable")
         if not callable(getattr(_hik_archive, "get_clip", None)):
             problems.append("Hikvision clip extraction unavailable")
+        import recovery_ai as _recovery_ai
+        dec = _recovery_ai.decoder_selftest()
+        if not dec.get("ok"):
+            problems.append("historical footage FFmpeg decoder unavailable: " + str(dec.get("reason") or "unknown"))
     except Exception as exc:  # noqa: BLE001
         problems.append(f"connector module load failed: {type(exc).__name__}")
 
