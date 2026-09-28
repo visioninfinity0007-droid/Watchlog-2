@@ -193,9 +193,14 @@ function Get-LauncherProcesses {
         $lineMatch = $line.Contains($wantPs1) -or $line.Contains($wantCmd)
       }
 
-      $isAgentParent = $parentPids.ContainsKey([string]$pidValue)
+      # Parent fallback is ONLY for the SYSTEM/WMI case where CommandLine is
+      # unavailable. If Windows gives us a command line and it is not run-agent,
+      # do not kill that PowerShell even if it manually launched the agent.
+      $isAgentParentFallback = (
+        $parentPids.ContainsKey([string]$pidValue) -and -not $line
+      )
       $isVerifiedPidFile = ($pidFileValue -eq $pidValue -and $lineMatch)
-      if (-not ($isAgentParent -or $lineMatch -or $isVerifiedPidFile)) { continue }
+      if (-not ($isAgentParentFallback -or $lineMatch -or $isVerifiedPidFile)) { continue }
 
       $rec = Convert-ProcessRecord $p
       if ($null -eq $rec) { continue }
