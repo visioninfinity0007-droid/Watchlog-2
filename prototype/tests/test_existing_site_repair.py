@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -127,7 +128,12 @@ class StagedPublicDefaults(unittest.TestCase):
                 "update_public_key = \n",
                 encoding="utf-8",
             )
-            with patch.object(wa, "base_dir", return_value=root), \
+            with patch.dict(
+                    os.environ,
+                    {"WATCHLOG_UPDATE_URL": "", "WATCHLOG_UPDATE_PUBLIC_KEY": ""},
+                    clear=False,
+                 ), \
+                 patch.object(wa, "base_dir", return_value=root), \
                  patch.object(wa.credential_store, "load_nvr_credential_readonly",
                               return_value={"username": "admin", "password": "secret"}):
                 cfg = wa.Config(existing, read_only_credentials=True)
