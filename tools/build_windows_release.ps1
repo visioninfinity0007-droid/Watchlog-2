@@ -117,6 +117,11 @@ try {
   # Public defaults only. Recorder credentials are collected/protected locally
   # by the graphical setup app and are never baked into a release artifact.
   $cfg = Read-DotEnv (Join-Path $root ".env")
+  $updateBootstrap = $null
+  $updateBootstrapPath = Join-Path $root "prototype\update\production.json"
+  if (Test-Path $updateBootstrapPath) {
+    $updateBootstrap = Get-Content -LiteralPath $updateBootstrapPath -Raw | ConvertFrom-Json
+  }
   $supaUrl = $SupabaseUrl
   if (-not $supaUrl) { $supaUrl = $env:SUPABASE_URL }
   if (-not $supaUrl) { $supaUrl = $cfg["SUPABASE_URL"] }
@@ -140,6 +145,7 @@ try {
   $updUrl = $UpdateUrl
   if (-not $updUrl) { $updUrl = $env:WATCHLOG_UPDATE_URL }
   if (-not $updUrl) { $updUrl = $cfg["WATCHLOG_UPDATE_URL"] }
+  if (-not $updUrl -and $updateBootstrap) { $updUrl = [string]$updateBootstrap.manifest_url }
   if ($null -eq $updUrl) { $updUrl = "" }
   $updUrl = ([string]$updUrl).Trim()
   if ($updUrl -and $updUrl -notmatch '^https://') {
@@ -149,6 +155,7 @@ try {
   $updKey = $UpdatePublicKey
   if (-not $updKey) { $updKey = $env:WATCHLOG_UPDATE_PUBLIC_KEY }
   if (-not $updKey) { $updKey = $cfg["WATCHLOG_UPDATE_PUBLIC_KEY"] }
+  if (-not $updKey -and $updateBootstrap) { $updKey = [string]$updateBootstrap.public_key_b64 }
   if ($null -eq $updKey) { $updKey = "" }
   $updKey = ([string]$updKey).Trim()
   if (($updUrl -and -not $updKey) -or ($updKey -and -not $updUrl)) {

@@ -23,7 +23,7 @@ on:
       - '.github/workflows/ci.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: windows-release-${{ github.ref }}
@@ -74,8 +74,21 @@ jobs:
           if ($env:SUPABASE_URL -notmatch '^https://') {
             throw 'WATCHLOG_SUPABASE_URL must be an https URL.'
           }
+
+          # Update endpoint + verification key are PUBLIC trust anchors. Repository
+          # variables may override them, but a versioned source file is the durable
+          # fallback so an unset GitHub variable cannot produce a non-updatable build.
+          $bootstrap = Get-Content '.\prototype\update\production.json' -Raw | ConvertFrom-Json
+          if (-not $env:WATCHLOG_UPDATE_URL) {
+            $env:WATCHLOG_UPDATE_URL = [string]$bootstrap.manifest_url
+            Add-Content -Path $env:GITHUB_ENV -Value "WATCHLOG_UPDATE_URL=$($env:WATCHLOG_UPDATE_URL)"
+          }
+          if (-not $env:WATCHLOG_UPDATE_PUBLIC_KEY) {
+            $env:WATCHLOG_UPDATE_PUBLIC_KEY = [string]$bootstrap.public_key_b64
+            Add-Content -Path $env:GITHUB_ENV -Value "WATCHLOG_UPDATE_PUBLIC_KEY=$($env:WATCHLOG_UPDATE_PUBLIC_KEY)"
+          }
           if (-not $env:WATCHLOG_UPDATE_URL -or -not $env:WATCHLOG_UPDATE_PUBLIC_KEY) {
-            throw 'WATCHLOG_UPDATE_URL and WATCHLOG_UPDATE_PUBLIC_KEY are required for 5.0.24+ Repair/Upgrade bootstrap releases.'
+            throw 'WatchLog production update bootstrap is incomplete.'
           }
           if ($env:WATCHLOG_UPDATE_URL -notmatch '^https://') {
             throw 'WATCHLOG_UPDATE_URL must be an https URL.'
@@ -336,6 +349,58 @@ jobs:
           Write-Host '---- RECORDED RELEASE HASHES (RC identity) ----'
           $manifestLines | ForEach-Object { Write-Host $_ }
           Write-Host '-----------------------------------------------'
+
+      - name: Publish production remote-update payload
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bootstrap = Get-Content '.\prototype\update\production.json' -Raw | ConvertFrom-Json
+          $tag = [string]$bootstrap.release_tag
+          if (-not $tag) { throw 'production update release_tag is missing' }
+
+          $version = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $version) { throw 'could not determine WatchLog version' }
+
+          $sourceAgent = Get-Item '.\prototype\dist\watchlog-agent.exe'
+          $assetName = "watchlog-agent-$version.exe"
+          $assetPath = Join-Path '.\dist-installer' $assetName
+          Copy-Item -LiteralPath $sourceAgent.FullName -Destination $assetPath -Force
+
+          $sha = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $assetPath).Length
+          $generated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $assetUrl = "https://github.com/visioninfinity0007-droid/Watchlog-2/releases/download/$tag/$assetName"
+
+          $payload = [ordered]@{
+            version = $version
+            url = $assetUrl
+            sha256 = $sha
+            size = $size
+            notes = "WatchLog $version production Site Connector"
+            generated_at = $generated
+            min_agent_version = [string]$bootstrap.min_remote_update_version
+          }
+          $payloadPath = '.\dist-installer\watchlog-update-payload.json'
+          $payload | ConvertTo-Json -Compress | Set-Content -LiteralPath $payloadPath -Encoding UTF8
+
+          gh release view $tag --repo visioninfinity0007-droid/Watchlog-2 *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo visioninfinity0007-droid/Watchlog-2 --target $env:GITHUB_SHA --title 'WatchLog Production Agent' --notes 'Stable release assets used by the signed WatchLog remote-update manifest.'
+            if ($LASTEXITCODE -ne 0) { throw 'could not create production update release' }
+          }
+
+          # Upload the versioned binary first and the pointer metadata LAST.
+          # During a partial upload the old metadata continues to reference an
+          # old immutable versioned asset; clients therefore fail closed.
+          gh release upload $tag $assetPath --repo visioninfinity0007-droid/Watchlog-2 --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'could not publish versioned WatchLog Agent asset' }
+          gh release upload $tag $payloadPath --repo visioninfinity0007-droid/Watchlog-2 --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'could not publish update metadata asset' }
+
+          Write-Host "Published remote-update payload: $assetName"
+          Write-Host "  sha256=$sha size=$size"
 
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
