@@ -26,6 +26,8 @@ param(
   [int]$StopTimeoutSec = 35,
   [int]$StartTimeoutSec = 30,
   [string]$TaskName = "WatchLog Agent",
+  [ValidateSet('full','repair')]
+  [string]$PayloadProfile = "full",
   [string]$DataRootOverride = ""
 )
 
@@ -47,9 +49,11 @@ $UpgradeLog = Join-Path $DataRoot "upgrade.log"
 $BackupRoot = Join-Path $DataRoot "upgrade-backup"
 $Manifest   = Join-Path $BackupRoot "manifest.json"
 
-# Every file NSIS replaces during the core payload extraction. Preflight proves
-# ALL of these are writable before NSIS is allowed to touch the installation.
-$PayloadFiles = @(
+# Scope lock/backup/rollback checks to the payload the caller actually replaces.
+# Full Setup replaces the Qt setup UI/readme/icon as well. Existing-site Repair/Upgrade
+# deliberately does not ship or replace those files, so an unrelated lock on one of them
+# must never block a repair.
+$FullPayloadFiles = @(
   "watchlog-agent.exe",
   "watchlog-setup-ui.exe",
   "run-agent.ps1",
@@ -60,9 +64,18 @@ $PayloadFiles = @(
   "setup.ico",
   "watchlog.defaults.ini"
 )
+$RepairPayloadFiles = @(
+  "watchlog-agent.exe",
+  "run-agent.ps1",
+  "register-service.ps1",
+  "apply-remote-update.ps1",
+  "wl-upgrade.ps1",
+  "watchlog.defaults.ini"
+)
+$PayloadFiles = if ($PayloadProfile -eq "repair") { @($RepairPayloadFiles) } else { @($FullPayloadFiles) }
 
 function Write-Stage([string]$msg) {
-  $line = "{0}  [{1}]  {2}" -f (Get-Date -Format o), $Stage, $msg
+  $line = "{0}  [{1}/{2}]  {3}" -f (Get-Date -Format o), $Stage, $PayloadProfile, $msg
   try {
     New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
     Add-Content -Path $UpgradeLog -Value $line
@@ -405,6 +418,7 @@ function Get-RuntimeVersion([string]$path) {
 
 switch ($Stage) {
   'preflight' {
+    Write-Stage "payload profile=$PayloadProfile files=$($PayloadFiles -join ', ')"
     Write-Stage "existing binary present=$([bool](Test-Path $AgentExe)) file_version=$(Get-FileProductVersion $AgentExe)"
     $taskSnapshot = Suspend-Task
 
@@ -431,8 +445,6 @@ switch ($Stage) {
           Write-Stage "waiting for payload lock release: $joined"
           $lastLocked = $joined
         }
-        # A legacy launcher/bootloader can finish teardown late. Re-drain exact
-        # WatchLog-owned processes without ever killing by process name globally.
         Stop-Pids (Get-LauncherProcesses) "late WatchLog launcher" -Force -Tree
         Stop-Pids (Get-SetupProcesses) "late WatchLog Setup UI" -Force
         Stop-Pids (Get-AgentProcesses) "late watchlog-agent.exe" -Force
