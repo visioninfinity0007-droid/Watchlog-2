@@ -23,7 +23,7 @@ param(
   [string]$Stage,
   [Parameter(Mandatory = $true)][string]$InstallDir,
   [string]$ExpectedVersion = "",
-  [int]$StopTimeoutSec = 20,
+  [int]$StopTimeoutSec = 35,
   [int]$StartTimeoutSec = 30,
   [string]$TaskName = "WatchLog Agent",
   [string]$DataRootOverride = ""
@@ -215,7 +215,7 @@ function Get-LauncherProcesses {
   }
 }
 
-function Stop-Pids([array]$Processes, [string]$Label, [switch]$Force) {
+function Stop-Pids([array]$Processes, [string]$Label, [switch]$Force, [switch]$Tree) {
   foreach ($p in @($Processes)) {
     $pidValue = 0
     try { $pidValue = [int]$p.ProcessId } catch { $pidValue = 0 }
@@ -225,7 +225,11 @@ function Stop-Pids([array]$Processes, [string]$Label, [switch]$Force) {
     }
     Write-Stage "stopping $Label pid=$pidValue path=$([string]$p.ExecutablePath)"
     try {
-      if ($Force) {
+      if ($Tree) {
+        # PID is admitted only after path/command-line ownership checks above.
+        # /T is therefore a targeted WatchLog process-tree kill, never a name-wide kill.
+        & "$env:SystemRoot\System32\taskkill.exe" /PID $pidValue /T /F 2>$null | Out-Null
+      } elseif ($Force) {
         Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
       } else {
         Stop-Process -Id $pidValue -ErrorAction SilentlyContinue
@@ -248,12 +252,25 @@ function Get-TaskStateSnapshot {
 function Suspend-Task {
   $snap = Get-TaskStateSnapshot
   $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if ($t) {
-    try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
-    try { Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
-    Start-Sleep -Milliseconds 500
+  if (-not $t) { return $snap }
+
+  try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
+  try { Disable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null } catch {
+    throw "could not disable scheduled task '$TaskName': $($_.Exception.Message)"
   }
-  return $snap
+
+  # Older field builds have a repeating watchdog trigger. Prove it is disabled
+  # before killing the launcher, otherwise it can resurrect the Agent mid-upgrade.
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $check = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($check -and [string]$check.State -eq "Disabled") {
+      Write-Stage "scheduled task '$TaskName' disabled and watchdog suppressed"
+      return $snap
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  throw "scheduled task '$TaskName' could not be proven Disabled"
 }
 
 function Resume-Task([bool]$WasPresent, [bool]$WasEnabled) {
@@ -267,7 +284,7 @@ function Resume-Task([bool]$WasPresent, [bool]$WasEnabled) {
 function Stop-WatchLogRuntime {
   # 1) launcher first, otherwise its restart loop can resurrect the agent.
   # It is a stateless restart loop, so terminate this exact launcher immediately.
-  Stop-Pids (Get-LauncherProcesses) "WatchLog launcher" -Force
+  Stop-Pids (Get-LauncherProcesses) "WatchLog launcher" -Force -Tree
 
   # 2) ask an open Setup UI to close, then kill only the exact packaged UI if it stays.
   foreach ($p in @(Get-SetupProcesses)) {
@@ -402,15 +419,29 @@ switch ($Stage) {
         Fail 10 "WatchLog processes are still running after bounded forced shutdown (agent=$agentCount setup=$setupCount launcher=$launcherCount)"
       }
 
-      $unlockDeadline = (Get-Date).AddSeconds([Math]::Min($StopTimeoutSec, 10))
+      # Antivirus/indexing and PyInstaller teardown can hold the just-stopped EXE
+      # for more than 10 seconds on older site PCs. Use the full bounded stop
+      # budget and keep draining only WatchLog-owned processes while waiting.
+      $unlockDeadline = (Get-Date).AddSeconds($StopTimeoutSec)
       $locked = @(Get-LockedPayloadFiles)
+      $lastLocked = ""
       while ($locked.Count -gt 0 -and (Get-Date) -lt $unlockDeadline) {
-        Start-Sleep -Milliseconds 250
+        $joined = ($locked -join ", ")
+        if ($joined -ne $lastLocked) {
+          Write-Stage "waiting for payload lock release: $joined"
+          $lastLocked = $joined
+        }
+        # A legacy launcher/bootloader can finish teardown late. Re-drain exact
+        # WatchLog-owned processes without ever killing by process name globally.
+        Stop-Pids (Get-LauncherProcesses) "late WatchLog launcher" -Force -Tree
+        Stop-Pids (Get-SetupProcesses) "late WatchLog Setup UI" -Force
+        Stop-Pids (Get-AgentProcesses) "late watchlog-agent.exe" -Force
+        Start-Sleep -Milliseconds 500
         $locked = @(Get-LockedPayloadFiles)
       }
       if ($locked.Count -gt 0) {
         Resume-Task ([bool]$taskSnapshot.present) ([bool]$taskSnapshot.enabled)
-        Fail 10 ("WatchLog update files are still locked: " + ($locked -join ", "))
+        Fail 10 ("WatchLog update files stayed locked for $StopTimeoutSec s: " + ($locked -join ", "))
       }
 
       Backup-Payload $taskSnapshot
