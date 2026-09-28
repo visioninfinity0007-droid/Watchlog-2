@@ -65,16 +65,42 @@ $agent = Join-Path $PSScriptRoot "watchlog-agent.exe"
   $otherAgent = Start-Process -FilePath (Join-Path $Other "watchlog-agent.exe") -ArgumentList @('/d','/c','ping -t 127.0.0.1 >NUL') -PassThru -WindowStyle Hidden
   # Reproduce the field failure: an AV/indexing-like process can retain an
   # exclusive payload handle beyond the old hard-coded 10 second unlock window.
+  # Use a real helper script + ready marker so this test proves the lock was
+  # acquired before preflight begins (inline -Command quoting was race-prone).
   $lockTarget = Join-Path $Install "READ ME FIRST.txt"
-  $lockScript = @'
-$p = $args[0]
-$fs = [System.IO.File]::Open($p,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::None)
-try { Start-Sleep -Seconds 12 } finally { $fs.Dispose() }
-'@
+  $lockReady = Join-Path $Root "payload-lock.ready"
+  $lockScriptPath = Join-Path $Root "hold-payload-lock.ps1"
+  @'
+param([string]$Path, [string]$Ready)
+$fs = [System.IO.File]::Open(
+  $Path,
+  [System.IO.FileMode]::Open,
+  [System.IO.FileAccess]::Read,
+  [System.IO.FileShare]::None
+)
+try {
+  Set-Content -LiteralPath $Ready -Value "locked" -Encoding ASCII
+  Start-Sleep -Seconds 12
+}
+finally {
+  $fs.Dispose()
+}
+'@ | Set-Content -LiteralPath $lockScriptPath -Encoding UTF8
+
   $lockHolder = Start-Process -FilePath "powershell.exe" -ArgumentList @(
-    '-NoProfile','-ExecutionPolicy','Bypass','-Command',$lockScript,$lockTarget
+    '-NoProfile','-ExecutionPolicy','Bypass','-File',
+    ('"{0}"' -f $lockScriptPath),
+    ('"{0}"' -f $lockTarget),
+    ('"{0}"' -f $lockReady)
   ) -PassThru -WindowStyle Hidden
   $procs = @($setup,$launcher,$otherAgent,$lockHolder)
+
+  $readyDeadline = (Get-Date).AddSeconds(5)
+  while (-not (Test-Path -LiteralPath $lockReady) -and (Get-Date) -lt $readyDeadline) {
+    Start-Sleep -Milliseconds 100
+  }
+  Assert (Test-Path -LiteralPath $lockReady) "delayed-lock fixture never acquired the payload file"
+  Assert (Alive $lockHolder) "delayed-lock fixture exited before preflight"
 
   Start-Sleep -Seconds 2
   Assert ((ExactProcessCount (Join-Path $Install "watchlog-agent.exe")) -ge 1) "target agent child did not start through run-agent.ps1"
@@ -82,15 +108,18 @@ try { Start-Sleep -Seconds 12 } finally { $fs.Dispose() }
   Assert (Alive $launcher) "target launcher did not start"
   Assert (Alive $otherAgent) "same-named outside agent did not start"
 
+  $preflightStarted = Get-Date
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage preflight -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 20 -DataRootOverride $Data
+  $preflightElapsed = ((Get-Date) - $preflightStarted).TotalSeconds
   Assert ($LASTEXITCODE -eq 0) "preflight returned $LASTEXITCODE"
+  Assert ($preflightElapsed -ge 8) "preflight did not actually wait for delayed payload lock ($([math]::Round($preflightElapsed,1))s)"
 
   Start-Sleep -Milliseconds 500
   Assert ((ExactProcessCount (Join-Path $Install "watchlog-agent.exe")) -eq 0) "target agent survived preflight"
   Assert (-not (Alive $setup)) "target setup UI survived preflight"
   Assert (-not (Alive $launcher)) "target run-agent.ps1 launcher survived preflight"
   Assert (Alive $otherAgent) "preflight killed same-named process outside InstallDir"
-  Assert (-not (Alive $lockHolder)) "preflight did not wait for the delayed payload lock to release"
+  Assert (-not (Alive $lockHolder)) "delayed lock holder should have exited after its 12-second hold"
 
   $manifest = Join-Path $Data "upgrade-backup\manifest.json"
   Assert (Test-Path $manifest) "payload rollback manifest was not created"
