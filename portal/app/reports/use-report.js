@@ -75,7 +75,7 @@ export default function useReport(){
         setBusy(false);
         if(report.error){setError(say(report.error));return}
         setSnapshot(report.data||null);
-        setRestaurant(rest||report.data?.payload?.restaurant||null);
+        setRestaurant(report.data ? (report.data?.payload?.restaurant||null) : rest);
         return;
       }
 
