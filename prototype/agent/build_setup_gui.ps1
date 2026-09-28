@@ -13,8 +13,19 @@ Set-Location $root
 # psutil is intentionally included because reliable multi-NIC discovery on the
 # customer PC must enumerate active adapters, not only the default internet route.
 Write-Host "Installing WatchLog setup UI build dependencies..." -ForegroundColor Cyan
-python -m pip install --disable-pip-version-check --quiet "pyinstaller==6.22.2" requests pyside6 psutil
-if ($LASTEXITCODE -ne 0) { throw "setup UI dependency install failed (exit $LASTEXITCODE)" }
+$depsOk = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  python -m pip install --disable-pip-version-check --quiet "pyinstaller==6.22.2" requests "PySide6==6.11.2" psutil
+  if ($LASTEXITCODE -eq 0) {
+    $depsOk = $true
+    break
+  }
+  if ($attempt -lt 3) {
+    Write-Warning "setup UI dependency install attempt $attempt failed; retrying in 8 seconds"
+    Start-Sleep -Seconds 8
+  }
+}
+if (-not $depsOk) { throw "setup UI dependency install failed after 3 attempts" }
 python -m pip show pyinstaller requests pyside6 psutil | Select-String '^(Name|Version):' | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
 
 $icon = Join-Path $root "installer\setup.ico"
