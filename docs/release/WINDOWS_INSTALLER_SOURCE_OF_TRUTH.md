@@ -1,173 +1,363 @@
-# Windows installer source of truth
+# WatchLog Windows Installer — Source of Truth
 
-For current live tenant/site/runtime context, also read `docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`.
+For current live tenant/site/runtime context, also read:
 
-**Purpose:** prevent release work, support analysis, or AI-assisted changes from
-patching the wrong WatchLog repository.
+`docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`
 
-## Current authoritative successful Windows baseline
+This document is the release authority for Windows installer work.
 
-As of 2026-09-28, the latest successful Windows installer is:
+---
 
-- Product: WatchLog Windows Site Connector
-- Build: **76**
-- Product version: **5.0.21**
-- Authoritative repository: `visioninfinity0007-droid/Watchlog-2`
-- Authoritative branch: `build/site-connector-v5-watchlog2`
-- Source commit: `26b036a654446b3e8c262b2f476118f2e2f41916`
-- Windows Release workflow: **#76**, run id `36346424676`
-- Workflow conclusion: **success**
-- Artifact: `WatchLog-Windows-76`
-- Artifact id: `10941445308`
-- Artifact size: `66579742` bytes
-- GitHub artifact digest:
-  `sha256:0fdf73bc6421291e58413330ac73b439a6256f59c95227cc4dfd1e4c6eea54b5`
+## 1. Authoritative source
+
+Authoritative repository:
+
+`Alkalid-security/Watchlog`
+
+Authoritative branch:
+
+`main`
+
+Current authoritative source version:
+
+**5.0.22**
+
+Current main commit containing the combined installer/runtime work:
+
+`d141e392291c038c006a806f026e6fa11b4a8dd8`
+
+This main branch contains both:
+
+- the Build-69-derived discovery/connectivity reliability work; and
+- the newer Site Control / secure remote-update / Hikvision readback work.
+
+The separate `visioninfinity0007-droid/Watchlog-2` repository is no longer the
+product source of truth. It remains useful as a Windows release-line validation
+repository because Builds 69–83 were produced there and provide exact field/release evidence.
+
+---
+
+## 2. Field-proven baseline — Build 69
+
+**Build 69 / product version 5.0.17 is the current field-proven discovery/connectivity baseline.**
+
+Exact identity:
+
+- source SHA:
+  `811d378e3a7556047f294bb128b8caf45a295469`
+- Windows Release run:
+  **#69**
+- run id:
+  `36238903083`
+- artifact:
+  `WatchLog-Windows-69`
+- artifact id:
+  `10905576478`
+- artifact ZIP digest:
+  `sha256:6f84aa14b10eb245f66b9a344524fa39490817bb1882c89daa1954da266809d1`
 - `WatchLog-Setup.exe` SHA-256:
-  `3A5102570B24E55062800D28FEE78A5E16028105420A10310FA7BCD90FAFD8C0`
+  `A5428B33A9789056D8156F445FE099F73CC926E5903C4162F96746D7C90E1B5E`
 - `watchlog-agent.exe` SHA-256:
-  `466EE6894214DD4FA427161D92EB24CC31FF0F9701DFFFC79C4D343219A9FBC8`
+  `24EEAC5826CF104DC41770A66A69F53F83960443B73D9D3CEEC997B39BFDD5F4`
 - `watchlog-setup-ui.exe` SHA-256:
-  `CDEB876DC7429D535E8A33FBB2E1F253BC23B64211DF8FDB291D7FC0853F5862`
-- Packaged setup-UI lifecycle/selection self-test: **passed**
-- Packaged connector self-test and version truth: **passed**
-- Installer checksum verification: **passed**
-- Hikvision archive/download + recovery contracts: **passed**
-- Recorder-push parser/liveness contracts: **passed**
-- Generic Dahua AlarmServer safety contract: **passed**
-- Durable spool-overflow-to-archive-recovery contract: **passed**
-- Packaged file/runtime version truth: **5.0.21 / 5.0.21**
+  `C5B732F1D28F0D2FB54EBC4ACD00C4BBFF3EC654960F3BA3C82AA8E48007F8E6`
 
-Build 76 supersedes Build 72 for new field installs. It carries forward the
-Build-72 first-pass discovery and recorder-login fixes and adds the two fixes
-required by the current live sites:
+### Why Build 69 matters
 
-1. ONVIF camera inventory is normalized by physical video source so recorder
-   MainStream/SubStream encoding profiles are not exposed as separate cameras.
-   The cloud sync remains backward-compatible with older deployed agents and
-   preserves historical transport-profile rows rather than deleting evidence.
-2. Hikvision incident footage retrieval now searches recorded media first and
-   uses the recorder-returned playback URI, with bounded GET/POST compatibility
-   for firmware families that differ on `/ISAPI/ContentMgmt/download`.
+Build 69 has real field evidence of successful recorder discovery/connectivity on a live site.
 
-The successful artifact and its exact source commit determine installer authority.
-This repository (`Alkalid-security/Watchlog`) remains product/database/portal/
-push-bridge context, not the Windows installer source.
+Its discovery behavior covered up to eight local /24 networks and included the common
+Hikvision/Dahua/RTSP/web ports.
 
-## Why Build 50 supersedes Build 49
+Build 69 therefore remains the **golden regression baseline** until a later exact artifact
+passes physical Hikvision and Dahua acceptance.
 
-Build 49 prevented a false green: the installer could not say Ready unless the
-SYSTEM-launched background process had both reached WatchLog and identified the
-recorder. Build 50 addresses the remaining field failure itself: **Hikvision was
-connected but was not producing usable WatchLog camera data and independent
-background recorder sessions could mark the NVR unreachable.**
+Do not replace this baseline with a newer build merely because CI or packaging is green.
 
-Build 50 therefore:
+---
 
-1. keeps Hikvision native alert monitoring in bounded 45-second slices;
-2. captures one rotating camera still between slices using the **same**
-   authenticated recorder session;
-3. uploads that still as a `visual_sample`, which enters the existing
-   server-side snapshot visual-review queue;
-4. makes Hikvision health reuse fresh live-collector truth instead of opening a
-   competing Digest-auth recorder session;
-5. only gives positive per-camera health after a real JPEG sample has been
-   obtained for that camera;
-6. disables unvalidated Hikvision archive recovery so it cannot create another
-   simultaneous recorder session beside live monitoring;
-7. preserves Build 49's recorder-backed installation-readiness gate and all
-   earlier UI/login/Step-06 fixes.
+## 3. Build 74 field failure
 
-The broader repository CI still has an unrelated native-NVR AI/backend contract
-failure after the recorder regression/compile stages pass. Windows Release #50
-itself passed and produced the artifact above.
+Build 74 is the counterexample to “green build = reliable installer”.
 
-## Field-validation boundary
+Real field behavior:
 
-Build 76 is the correct field installer for both Dahua and Hikvision.
+- setup remained on `Search Network`;
+- no recorder IP was surfaced;
+- the installer could keep loading instead of recovering cleanly.
 
-- **Dahua:** live event monitoring + local durable spool + recorder archive
-  search/download + automatic gap recovery are the production path. Generic
-  Dahua `AlarmServer` is a proprietary alarm-centre interface, not a generic
-  HTTP webhook, so WatchLog intentionally does **not** rewrite it for PC-off
-  delivery. A Dahua site may only claim direct PC-off cloud push if that exact
-  firmware exposes a separately proven HTTP callback mechanism.
-- **Hikvision:** the package includes live ISAPI monitoring, bounded archive/video
-  retrieval, automatic gap recovery and HTTP-host push configuration requesting
-  30-second NVR heartbeats plus broken-link retransmission. End-to-end PC-off
-  status is only verified after a fresh recorder POST reaches WatchLog.
-- **Any site:** a physical field acceptance still has to prove one bounded
-  historical retrieval and one induced gap/recovery cycle on the actual recorder.
+The discovery implementation could scan several local /24s across physical and
+virtual/VPN adapters with no product-level deadline in the setup UI.
 
+This failure created a permanent release rule:
 
-## Historical lineage
+> **Discovery/connectivity is a field acceptance gate, not only a packaging gate.**
 
-- **Build 37 / 5.0.0** — frozen historical lineage anchor:
-  source `cffd32a47c70fc1141efef7e30315a5c4c844c57`, Windows Release
-  #37 / `35695121845`.
+Any successor must preserve Build 69's useful network reach while preventing Build 74's
+spinner-forever failure class.
+
+---
+
+## 4. Discovery/connectivity hardening now in authoritative 5.0.22
+
+The authoritative main source now implements:
+
+- up to **8 local /24s**, preserving Build 69 reach;
+- physical Ethernet/Wi-Fi before virtual/VPN/Hyper-V/Docker/VMware/WSL/Tailscale/WireGuard adapters;
+- bounded discovery;
+- **32-second backend discovery budget**;
+- **40-second setup-UI discovery watchdog**;
+- **256 bounded workers**, instead of Build 69's much larger socket burst;
+- fast ports:
+  - Dahua `37777`
+  - Hikvision `8000`
+  - HTTP `80`
+  - HTTPS `443`
+- deeper compatibility ports including:
+  - RTSP `554`
+  - Dahua `37778`
+  - `8080`, `8443`, `81`, `82`, `88`, `8081`, `8888`
+  - `34567`
+- preservation of multiple recorder candidates across ranked LANs;
+- manual IP usable while automatic discovery is still running;
+- “Use this IP” safely invalidates the old discovery worker generation;
+- same-endpoint recorder auth fallback before wasting time on alternate endpoints;
+- targeted web-port rescue when a native recorder port is found;
+- recorder rediscovery by stored device identity after DHCP/IP changes.
+
+Recorder login timing remains aligned with the proven field behavior:
+
+- **5 seconds per recorder probe**
+- **18 seconds backend login deadline**
+- **30 seconds UI login watchdog**
+
+---
+
+## 5. Release-line validation candidate — Build 83
+
+The discovery/setup hardening was validated in the Windows release-line repository:
+
+`visioninfinity0007-droid/Watchlog-2`
+
+Branch:
+
+`build/site-connector-v5-watchlog2`
+
+Exact Build 83 identity:
+
+- Build:
+  **83**
+- product version:
+  **5.0.21**
+- source SHA:
+  `dfc3ec5bc1229a88c510f8057cd9ac898f8cf848`
+- Windows Release run id:
+  `36351875478`
+- artifact:
+  `WatchLog-Windows-83`
+- artifact id:
+  `10942702630`
+- artifact ZIP digest:
+  `sha256:0abf05c447abfa74277f4355f86da2a66f7d75788d29bba815b9413898eb871d`
+- `WatchLog-Setup.exe` SHA-256:
+  `EEBA56F5879306CDA0662E6CCA5DBDA2D85AA66D0463D09B21D4F90E54B6F8EC`
+- `watchlog-agent.exe` SHA-256:
+  `6593168ED008D36467772948C909888CE58380BBC4CE5D3B7657C26563024576`
+- `watchlog-setup-ui.exe` SHA-256:
+  `F345DC7C247741C6643BD7021EB285FCC9796881AF213DECF204431B2DF5853D`
+
+Build 83 passed:
+
+- Windows packaging;
+- packaged setup UI self-test;
+- multi-NIC discovery simulation;
+- manual-IP escape behavior;
+- discovery watchdog behavior;
+- recorder discovery regression tests;
+- recorder login/vendor routing tests;
+- eighth-subnet regression;
+- ProductVersion/runtime checks;
+- checksum verification.
+
+### Important boundary
+
+Build 83 is a **validation candidate**, not the final authoritative installer.
+
+It is version **5.0.21** and does not represent the full authoritative 5.0.22
+remote-maintenance/runtime source.
+
+Do not call Build 83 the final production installer.
+
+---
+
+## 6. Authoritative 5.0.22 installer status
+
+The authoritative `Alkalid-security/Watchlog` main source is version **5.0.22** and includes:
+
+- Build-69 discovery/connectivity parity;
+- Site Control runtime;
+- truthful runtime capability reporting;
+- secure signed remote-update infrastructure;
+- transactional update rollback;
+- Hikvision recorder identity/channel/clock/storage/analytics readback;
+- Hikvision native-AI provenance;
+- incident still/clip workers;
+- archive/recovery;
+- health/status/runtime protections.
+
+### Current blocker
+
+The final authoritative **5.0.22 Windows artifact has not yet been produced**.
+
+The repository's GitHub Actions jobs are currently terminating before checkout/execution:
+all jobs show **zero executed steps**. This is runner/infrastructure failure, not evidence
+that the 5.0.22 source failed its tests.
+
+Until an exact Windows artifact is produced from authoritative main and recorded here,
+Build 69 remains the live-site field baseline.
+
+---
+
+## 7. Existing-site upgrade rule
+
+For a working enrolled site such as Chai Wala:
+
+- do not force Search Network during a normal upgrade;
+- preserve the existing encrypted recorder address/credentials;
+- preserve enrollment identity;
+- stop the old agent before replacement;
+- verify ProductVersion/runtime version;
+- verify the new agent actually runs;
+- roll back to the previous binary if startup/health verification fails.
+
+The installer should only require recorder rediscovery when the stored recorder identity/
+credential material is missing or genuinely invalid.
+
+---
+
+## 8. Secure remote-update direction
+
+The 5.0.22 source contains the permanent remote-maintenance architecture:
+
+- outbound-only Agent polling;
+- no inbound Windows management port;
+- cloud cannot send arbitrary shell commands;
+- cloud cannot choose arbitrary binaries;
+- agent fetches its own configured HTTPS signed release manifest;
+- Ed25519 manifest verification;
+- SHA-256 payload verification;
+- package-size verification;
+- staged replacement between agent runs;
+- previous binary retained for rollback;
+- health window before success is finalized;
+- early-start failure restores the previous agent;
+- runtime capability advertised only after successful remote-update polling.
+
+This solves the long-term requirement that future field upgrades should not require repeated site visits.
+
+The bootstrap limitation remains: an already-installed old binary that does not poll the
+remote-update queue cannot be taught that worker purely from the cloud.
+
+---
+
+## 9. Mandatory physical field acceptance for the next promoted installer
+
+The first authoritative 5.0.22 (or later) Windows artifact must pass all of the following
+before replacing Build 69 as the fleet baseline.
+
+### Hikvision
+
+- automatic discovery;
+- manual-IP fallback;
+- correct native login;
+- channel inventory;
+- background Agent connectivity after setup closes;
+- Site Control claim/completion;
+- recorder inspection;
+- recording/storage/analytics readback;
+- one bounded historical clip/archive attempt;
+- upgrade/rollback behavior.
+
+### Dahua
+
+- automatic discovery;
+- manual-IP fallback;
+- native CGI authentication;
+- channel inventory;
+- background Agent connectivity after setup closes;
+- Site Control claim/completion;
+- recording/storage/analytics readback;
+- one bounded archive retrieval;
+- upgrade/rollback behavior.
+
+### Existing Build-69 site
+
+At least one Build-69 live site must be upgraded **in place** and prove:
+
+- no forced rediscovery;
+- existing recorder connectivity preserved;
+- Agent returns online;
+- heartbeat/event/snapshot path still works;
+- Site Control worker polls;
+- remote-update worker polls;
+- rollback remains available until the health window passes.
+
+Only after these tests should the new exact artifact replace Build 69 as the field baseline.
+
+---
+
+## 10. Do-not-regress rules
+
+- Never reduce automatic discovery below Build 69's eight-/24 reach without explicit field evidence.
+- Never allow automatic discovery to spinner forever.
+- Never block manual IP behind an automatic scan.
+- Never treat virtual/VPN adapters as higher priority than physical CCTV LANs.
+- Never treat CI/package success alone as field discovery proof.
+- Never call Build 83 the authoritative 5.0.22 installer.
+- Never replace a working Build-69 site with an unaccepted candidate.
+- Never claim Site Control/remote update from capability strings alone; require live poll proof.
+- Never expose recorder passwords or signing secrets.
+- Never treat HTTP 200 alone as proof a recorder write succeeded.
+- Never remove rollback before the replacement agent has passed its health window.
+
+---
+
+## 11. Historical lineage
+
+- **Build 37 / 5.0.0** — historical lineage anchor.
 - **Build 39 / 5.0.1** — recorder selection/UI regression successor.
-- **Build 41 / 5.0.2** — Step 06/login-watchdog successor.
-- **Build 46 / 5.0.3** — installer-child lifecycle and Hikvision integration
-  hardening predecessor to Build 49.
+- **Build 41 / 5.0.2** — Step-06/login-watchdog successor.
+- **Build 46 / 5.0.3** — installer-child lifecycle/Hikvision integration hardening.
 - **Build 49 / 5.0.6** — recorder-backed readiness predecessor.
-- **Build 50 / 5.0.7** — Hikvision single-session live-monitoring predecessor.
+- **Build 50 / 5.0.7** — Hikvision single-session monitoring predecessor.
 - **Build 56 / 5.0.8** — dual-vendor archive/recovery predecessor.
-- **Build 61 / 5.0.12** — production recovery wiring + safe PC-off semantics.
-- **Build 69 / 5.0.17** — fast native-auth/login regression baseline; intermittent near 30-second field timeout.
-- **Build 70 / 5.0.18** — duplicate-login/Step-06 fix; 24-second login watchdog proved too aggressive in field use.
-- **Build 71 / 5.0.19** — retryable login UI + shorter Dahua identity path; 22-second watchdog still false-timed out.
-- **Build 72 / 5.0.20** — deterministic first-pass discovery + bounded same-endpoint recorder auth fallback + visible progress.
-- **Build 76 / 5.0.21** — current successful Windows baseline; physical-camera ONVIF de-duplication + legacy-profile compatibility + Hikvision recorded-footage retrieval hardening.
+- **Build 61 / 5.0.12** — production recovery + PC-off safety semantics.
+- **Build 69 / 5.0.17** — **current field-proven golden baseline**.
+- **Build 70 / 5.0.18** — duplicate-login/Step-06 iteration.
+- **Build 71 / 5.0.19** — login retry/watchdog iteration.
+- **Build 72 / 5.0.20** — deterministic first-pass discovery iteration.
+- **Build 74** — **real field discovery failure; do not use as reliability evidence**.
+- **Build 76 / 5.0.21** — ONVIF physical-camera + Hikvision footage hardening, but inherited the same core discovery class.
+- **Build 77 / 5.0.21** — first bounded-discovery candidate.
+- **Build 82 / 5.0.21** — Build-69 eight-subnet parity candidate passed Windows Release.
+- **Build 83 / 5.0.21** — final release-line discovery/setup validation candidate with exact artifact recorded above.
+- **Authoritative source 5.0.22** — combined Build-69 reliability + remote maintenance/readback; final Windows artifact still pending.
 
-## Mandatory rule for future installer work
+---
 
-Before changing, diagnosing, or claiming a fix for the Windows installer:
+## 12. Mandatory rule for future installer work
 
-1. identify the exact artifact/build the customer is running;
-2. resolve that artifact to repository, branch, source SHA and Windows Release run;
-3. make the fix in that authoritative Watchlog-2 lineage;
-4. produce a successful Windows Release artifact;
-5. record the new artifact name/id/digest and executable hashes here;
-6. only then mirror relevant context or code into this main repository.
+Before changing, diagnosing, recommending, or promoting a WatchLog Windows installer:
 
-Do **not** infer installer authority from repository name, branch recency, a similar
-file path, or a source commit that has not produced a successful Windows artifact.
+1. identify the exact build/artifact currently installed;
+2. resolve it to source SHA, workflow run, artifact ID and hashes;
+3. treat Build 69 as the current field-proven discovery/connectivity baseline;
+4. make product-source changes in `Alkalid-security/Watchlog` main or a PR targeting main;
+5. use release-line builds only as validation evidence, not as product authority;
+6. produce an exact Windows artifact from authoritative source;
+7. record artifact ID/digest and executable hashes here;
+8. pass packaged setup/discovery/login tests;
+9. pass physical Hikvision + Dahua acceptance;
+10. only then promote the build to live sites/fleet.
 
-## CI note
-
-Windows Release #76 passed all Windows packaging/release gates. The repository's
-broader CI can still be red for unrelated product/backend tests; that does not turn
-a failed Windows Release into a success, and it does not invalidate a successful
-Windows Release artifact. Treat the Windows Release workflow and its artifact
-identity as the installer release authority.
-
-
-## Push-bridge production handoff (carried forward through Build 76)
-
-The Windows installer source is Watchlog-2, but the **live Coolify push bridge**
-is built from this repository's `main` branch, `/prototype/bridge`.
-
-Bridge hardening source commit:
-`d57e600ff57eec0c849c6a818a8087802024d06e`.
-
-That main-repo change treats Hikvision `heartBeat` as liveness only, records
-token-authenticated recorder liveness before vendor event parsing, retains
-Dahua payload parsing for firmware/gateways that truly POST HTTP, and contains
-the production `wl_agent_push_status` migration source. The live database RPC
-was applied on 2026-09-25.
-
-**Deployment is still a separate gate.** The Coolify runbook states there is no
-GitHub auto-deploy. Hikvision PC-off direct heartbeat must not be called
-production-active until `watchlog-push-bridge` is redeployed from main and a
-fresh recorder POST advances `push_sources.last_push_at`.
-
-Field acceptance for Build 76:
-1. install/upgrade one Dahua and one Hikvision site with Build 76;
-2. prove both recorders connect and a recent bounded historical retrieval works;
-3. create an Internet/PC/recorder connectivity gap and prove missed data is
-   recovered/backfilled after connectivity returns;
-4. redeploy the Coolify push bridge from main;
-5. on Hikvision, turn the Windows PC off and prove the NVR-originated heartbeat
-   continues to advance the recorder-push virtual agent;
-6. on generic Dahua, do **not** modify AlarmServer for WatchLog. PC-off direct
-   push remains unsupported unless that firmware's HTTP callback is separately
-   hardware-proven.
+Do not infer authority from repository age, branch recency, build number or a green package workflow alone.
