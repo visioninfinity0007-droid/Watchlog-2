@@ -16,6 +16,8 @@ param(
   [string]$SupabaseUrl = "",
   [string]$SupabasePublishableKey = "",
   [string]$PushBridgeUrl = "",
+  [string]$UpdateUrl = "",
+  [string]$UpdatePublicKey = "",
   [switch]$Lean,
   [switch]$Production,
   [string]$SignPfx = "",
@@ -103,12 +105,14 @@ try {
   $inst = Join-Path $root "prototype\installer"
   Copy-Item $agentExe (Join-Path $stage "watchlog-agent.exe")
   Copy-Item $setupUiExe (Join-Path $stage "watchlog-setup-ui.exe")
-  foreach ($f in @("run-agent.ps1","register-service.ps1","READ ME FIRST.txt","setup.ico")) {
+  foreach ($f in @("run-agent.ps1","register-service.ps1","apply-remote-update.ps1","READ ME FIRST.txt","setup.ico")) {
     Copy-Item (Join-Path $inst $f) (Join-Path $stage $f)
   }
   # transactional upgrade orchestrator (lives beside the .nsi, staged for File "wl-upgrade.ps1")
   Copy-Item (Join-Path $inst "nsis\wl-upgrade.ps1") (Join-Path $stage "wl-upgrade.ps1")
   Copy-Item (Join-Path $inst "nsis\watchlog.nsi") (Join-Path $stage "watchlog.nsi")
+  Copy-Item (Join-Path $inst "wl-repair-upgrade.ps1") (Join-Path $stage "wl-repair-upgrade.ps1")
+  Copy-Item (Join-Path $inst "nsis\watchlog-repair.nsi") (Join-Path $stage "watchlog-repair.nsi")
 
   # Public defaults only. Recorder credentials are collected/protected locally
   # by the graphical setup app and are never baked into a release artifact.
@@ -129,6 +133,26 @@ try {
   $pushUrl = ([string]$pushUrl).Trim()
   if ($pushUrl -and $pushUrl -notmatch '^https://') {
     throw "PushBridgeUrl is not an https URL: '$pushUrl' (argument-binding leak?)"
+  }
+
+  # Signed remote-update public configuration. This build is the bootstrap that
+  # makes future existing-site releases remotely maintainable, so fail closed.
+  $updUrl = $UpdateUrl
+  if (-not $updUrl) { $updUrl = $env:WATCHLOG_UPDATE_URL }
+  if (-not $updUrl) { $updUrl = $cfg["WATCHLOG_UPDATE_URL"] }
+  if ($null -eq $updUrl) { $updUrl = "" }
+  $updUrl = ([string]$updUrl).Trim()
+  if ($updUrl -and $updUrl -notmatch '^https://') {
+    throw "UpdateUrl is not an https URL: '$updUrl'"
+  }
+
+  $updKey = $UpdatePublicKey
+  if (-not $updKey) { $updKey = $env:WATCHLOG_UPDATE_PUBLIC_KEY }
+  if (-not $updKey) { $updKey = $cfg["WATCHLOG_UPDATE_PUBLIC_KEY"] }
+  if ($null -eq $updKey) { $updKey = "" }
+  $updKey = ([string]$updKey).Trim()
+  if (($updUrl -and -not $updKey) -or ($updKey -and -not $updUrl)) {
+    throw "remote update requires BOTH UpdateUrl and UpdatePublicKey"
   }
 
   $pubKey = $SupabasePublishableKey
@@ -154,6 +178,10 @@ supabase_publishable_key = $pubKey
 enrollment_code = $Code
 nvr_driver = auto
 push_bridge_url = $pushUrl
+update_url = $updUrl
+update_public_key = $updKey
+update_require_signature = true
+update_channel = production
 "@ | Set-Content -Path $defaultsPath -Encoding UTF8
 
   # Parse the STAGED file back and assert EXACT equality with the intended
@@ -188,12 +216,24 @@ push_bridge_url = $pushUrl
   } else {
     Write-Host "NOTE: no PushBridgeUrl supplied - PC-free reporting will be unavailable in this build." -ForegroundColor Yellow
   }
-  Write-Host "Staged public config verified: exact match on supabase_url / publishable_key / enrollment_code / push_bridge_url." -ForegroundColor Green
+  if ($stagedMap['update_url'] -ne $updUrl) {
+    throw "staged update_url '$($stagedMap['update_url'])' != intended '$updUrl'"
+  }
+  if ($stagedMap['update_public_key'] -ne $updKey) {
+    throw "staged update_public_key does not equal intended public key"
+  }
+  if ($updUrl -and $updKey) {
+    Write-Host "Signed remote update enabled: $updUrl" -ForegroundColor Green
+  } else {
+    throw "5.0.24+ releases require WATCHLOG_UPDATE_URL and WATCHLOG_UPDATE_PUBLIC_KEY. Refusing to build a Repair/Upgrade that cannot bootstrap online updates."
+  }
+  Write-Host "Staged public config verified: exact match on Supabase / enrollment / push / update settings." -ForegroundColor Green
 
   # 4) Compile the final installer with NSIS.
   $out = Join-Path $root "dist-installer"
   New-Item -ItemType Directory -Force -Path $out | Out-Null
   $setup = Join-Path $out "WatchLog-Setup.exe"
+  $repair = Join-Path $out "WatchLog-Repair-Upgrade.exe"
   $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
   if (-not $makensis) {
     foreach ($p in @("$env:ProgramFiles\NSIS\makensis.exe","${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
@@ -224,16 +264,36 @@ push_bridge_url = $pushUrl
   # invalid $PROGRAMDATA paths shipped in 0.3.3.
   $nsisWarnings = ($nsisOut -split "`r?`n") | Where-Object { $_ -match 'warning \d+:' }
   if ($nsisWarnings) { throw "NSIS emitted warnings (fatal for a release build):`n$($nsisWarnings -join "`n")" }
-  Write-Host "  NSIS compiled with zero warnings." -ForegroundColor Green
+  Write-Host "  Full Setup NSIS compiled with zero warnings." -ForegroundColor Green
+
+  Write-Host "Compiling WatchLog-Repair-Upgrade.exe with NSIS..." -ForegroundColor Cyan
+  $repairArgs = @("/DICON=setup.ico", "/DOUTFILE=$repair", "/DAPPVERSION=$appVersion")
+  Push-Location $stage
+  try {
+    $repairOut = & $makensis @repairArgs "watchlog-repair.nsi" 2>&1 | Out-String
+    $repairRc = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
+  Write-Host $repairOut
+  if ($repairRc -ne 0 -or -not (Test-Path $repair)) { throw "repair makensis failed (exit $repairRc)" }
+  $repairWarnings = ($repairOut -split "`r?`n") | Where-Object { $_ -match 'warning \d+:' }
+  if ($repairWarnings) { throw "Repair NSIS emitted warnings (fatal):`n$($repairWarnings -join "`n")" }
+  Write-Host "  Repair/Upgrade NSIS compiled with zero warnings." -ForegroundColor Green
 
   $setupBytes = (Get-Item $setup).Length
+  $repairBytes = (Get-Item $repair).Length
   $minimumSetupBytes = if ($Lean) { 5MB } else { 10MB }
   if ($setupBytes -lt $minimumSetupBytes) {
     throw "WatchLog-Setup.exe is suspiciously small ($setupBytes bytes); refusing to publish a stub/incomplete installer"
   }
+  if ($repairBytes -lt $minimumAgentBytes -or $repairBytes -ge $setupBytes) {
+    throw "WatchLog-Repair-Upgrade.exe size is implausible ($repairBytes bytes); it must contain the connector but remain smaller than full Setup"
+  }
 
-  # 5) Sign final installer, then calculate checksum of the exact distributed bytes.
+  # 5) Sign final artifacts, then calculate checksums of the exact distributed bytes.
   Sign-WatchLogArtifact $setup
+  Sign-WatchLogArtifact $repair
   # Two explicit modes. Production MUST be signed (Sign-WatchLogArtifact already
   # verifies the Authenticode status is Valid, or throws). RC/internal builds
   # may be unsigned but are clearly labelled below.
@@ -244,13 +304,18 @@ push_bridge_url = $pushUrl
     throw "PRODUCTION release requires -PublisherUrl (verified publisher metadata)."
   }
   $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
+  $repairHash = (Get-FileHash $repair -Algorithm SHA256).Hash
   Set-Content -Path "$setup.sha256" -Value "$hash  WatchLog-Setup.exe" -Encoding ascii
+  Set-Content -Path "$repair.sha256" -Value "$repairHash  WatchLog-Repair-Upgrade.exe" -Encoding ascii
   $mb = [math]::Round($setupBytes / 1MB, 1)
+  $repairMb = [math]::Round($repairBytes / 1MB, 1)
   Write-Host ""
   Write-Host "Built $setup ($mb MB)" -ForegroundColor Green
+  Write-Host "Built $repair ($repairMb MB) - existing sites only; no Qt Setup UI" -ForegroundColor Green
   Write-Host "  Site Connector $([math]::Round($agentBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  Setup UI $([math]::Round($setupUiBytes / 1MB, 1)) MB" -ForegroundColor Gray
-  Write-Host "  FINAL SHA256 $hash" -ForegroundColor Green
+  Write-Host "  SETUP SHA256  $hash" -ForegroundColor Green
+  Write-Host "  REPAIR SHA256 $repairHash" -ForegroundColor Green
   if ($SignPfx) { Write-Host "  Site Connector + setup UI + installer signatures verified." -ForegroundColor Green }
   else { Write-Host "  *** UNSIGNED TEST BUILD - not for production distribution (supply -SignPfx). ***" -ForegroundColor Yellow }
   if ($PublisherUrl) { Write-Host "  Publisher URL $PublisherUrl" -ForegroundColor Gray }
