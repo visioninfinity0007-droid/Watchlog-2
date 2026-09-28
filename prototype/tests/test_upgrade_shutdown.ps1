@@ -82,7 +82,9 @@ try {
   Remove-Item (Join-Path $Install "setup.ico") -Force
 
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage rollback -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 6 -DataRootOverride $Data
-  Assert ($LASTEXITCODE -eq 0) "rollback returned $LASTEXITCODE"
+  # This isolated test deliberately has no Scheduled Task. Rollback must restore
+  # every file but return 14 rather than falsely claiming the old service is running.
+  Assert ($LASTEXITCODE -eq 14) "rollback without task should fail closed with 14, got $LASTEXITCODE"
 
   Assert ((Get-Content (Join-Path $Install "READ ME FIRST.txt") -Raw).Trim() -eq "OLD README") "README was not restored"
   Assert ((Get-Content (Join-Path $Install "run-agent.ps1") -Raw).Trim() -eq "Start-Sleep -Seconds 300") "runner was not restored"
