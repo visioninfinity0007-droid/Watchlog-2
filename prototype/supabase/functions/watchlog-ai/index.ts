@@ -259,21 +259,27 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const lastCompletedBusinessDate = businessDateResult?.ok && businessDateResult.data ? String(businessDateResult.data) : calendarYesterday;
   const yesterdayIntent = /\byesterday\b|last completed|last working day|previous working day|last service day/.test(p);
   const overnightIntent = /overnight|last night/.test(p);
+  const siteType = String(ctx?.business_context?.site_type || "").toLowerCase();
+  const overnightServiceDayIntent =
+    overnightIntent &&
+    siteType === "restaurant" &&
+    ctx?.business_context?.overnight === true;
+  const serviceDayIntent = yesterdayIntent || overnightServiceDayIntent;
   const out: Json = {
     site_local_date: today,
     last_completed_business_date: lastCompletedBusinessDate,
-    requested_window: yesterdayIntent ? "last_completed_business_day" : overnightIntent ? "overnight_window" : "current",
+    requested_window: serviceDayIntent ? "last_completed_business_day" : overnightIntent ? "overnight_window" : "current",
     setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null,
     business_day_monitoring: null,
     restaurant_day: null, restaurant_period: null, restaurant_config: null,
     office_period: null, report_config: null
   };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
-  if (yesterdayIntent) {
+  if (serviceDayIntent) {
     out.business_day_monitoring = await rpcOptional(sb, "wl_my_business_day_monitoring", { p_site_id: siteId, p_date: lastCompletedBusinessDate });
   }
-  if (yesterdayIntent || overnightIntent || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
-    if (yesterdayIntent) out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: lastCompletedBusinessDate });
+  if (serviceDayIntent || overnightIntent || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
+    if (serviceDayIntent) out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: lastCompletedBusinessDate });
     else if (overnightIntent) out.daily_intelligence = {
       interpretation: "overnight_window",
       yesterday: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: calendarYesterday }),
@@ -281,9 +287,8 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     };
     else out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today });
   }
-  const siteType = String(ctx?.business_context?.site_type || "").toLowerCase();
   const reportIntent = /report|management brief|daily brief|pdf|executive summary/.test(p);
-  if (reportIntent || yesterdayIntent || /7 day|30 day|week|month/.test(p)) {
+  if (reportIntent || serviceDayIntent || /7 day|30 day|week|month/.test(p)) {
     out.report_config = await rpcOptional(sb, "wl_site_report_config", { p_site_id: siteId });
   }
   const restaurantIntent = siteType === "restaurant" && /restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup|management brief|daily brief|report|what happened|today|yesterday|last night|overnight|last completed/.test(p);
@@ -291,7 +296,7 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     const periodDays = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
     if (periodDays) out.restaurant_period = await rpcOptional(sb, "wl_restaurant_period", { p_site_id: siteId, p_days: periodDays, p_end_date: null });
     else {
-      const restaurantDate = yesterdayIntent ? lastCompletedBusinessDate : null;
+      const restaurantDate = serviceDayIntent ? lastCompletedBusinessDate : null;
       out.restaurant_day = await rpcOptional(sb, "wl_restaurant_day", { p_site_id: siteId, p_date: restaurantDate });
     }
     out.restaurant_config = await rpcOptional(sb, "wl_restaurant_site_config", { p_site_id: siteId });
@@ -303,11 +308,11 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   }
   const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief|last completed/.test(p);
   if (visualIntent) {
-    const visualDate = yesterdayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
+    const visualDate = serviceDayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
     out.visual_day = await rpcOptional(sb, "wl_my_visual_day", { p_site_id: siteId, p_date: visualDate });
   }
-  if (reportIntent || yesterdayIntent) {
-    const reportDate = yesterdayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
+  if (reportIntent || serviceDayIntent) {
+    const reportDate = serviceDayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
     out.frozen_report = await rpcOptional(sb, "wl_my_report_snapshot", { p_site_id: siteId, p_date: reportDate });
   }
   if (/analytics|trend|visitor flow|vehicle flow|occupancy|busiest|dwell|traffic/.test(p)) {
@@ -538,18 +543,18 @@ function businessDayMonitoringFallback(prompt: string, ctx: Json, tools: Json) {
 
   const observedPeriod = String(saved?.period || "").trim();
   const reviewedComplete = visual?.review_complete === true || String(visual?.status || "").toLowerCase() === "complete";
-  const reviewedCount = Number(visual?.snapshots_analyzed || 0);
-  const totalCount = Number(visual?.snapshots_total || 0);
+  const siteType = String(ctx?.business_context?.site_type || "").toLowerCase();
+  const dayLabel = siteType === "restaurant" ? "service day" : "business day";
 
   let answer = fully
-    ? `Yes. The last completed service day was fully monitored from ${customerTime(win.from, tz)} to ${customerTime(win.to, tz)}.`
-    : `No. The last completed Chai Wala service day was not fully monitored. Verified monitoring covered about ${pct == null ? "part of" : pct + "% of"} the configured ${customerTime(win.from, tz)}–${customerTime(win.to, tz)} service window.`;
+    ? `Yes. The last completed ${dayLabel} was fully monitored from ${customerTime(win.from, tz)} to ${customerTime(win.to, tz)}.`
+    : `No. The last completed ${dayLabel} was not fully monitored. WatchLog could verify about ${pct == null ? "part of" : pct + "% of"} the configured ${customerTime(win.from, tz)}–${customerTime(win.to, tz)} window.`;
 
   if (!fully && gapText.length) answer += ` The unverified periods were approximately ${gapText.join(" and ")}.`;
-  if (reviewedComplete && totalCount > 0) {
+  if (reviewedComplete) {
     answer += observedPeriod
-      ? ` The completed visual review covers the available evidence from ${observedPeriod}; all ${reviewedCount || totalCount} available snapshots in that reviewed set were processed.`
-      : ` The visual review is complete for the available evidence: ${reviewedCount || totalCount} of ${totalCount} snapshots were reviewed.`;
+      ? ` The completed reviewed report covers the available evidence from ${observedPeriod}.`
+      : " The available evidence for that day has been fully reviewed.";
   }
   answer += " Unverified time means WatchLog cannot confirm what happened during those periods; it is not treated as no activity.";
 
@@ -665,7 +670,7 @@ function sanitizeResult(value: any) {
 // events. Only called on a MODEL route for an evidence-intent prompt — a NO_MODEL question never
 // touches the evidence workspace.
 async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json, tools: Json): Promise<Json | null> {
-  const businessDayIntent = /\byesterday\b|last completed|last working day|previous working day|last service day/i.test(prompt);
+  const businessDayIntent = tools?.requested_window === "last_completed_business_day" || /\byesterday\b|last completed|last working day|previous working day|last service day/i.test(prompt);
   if (businessDayIntent) {
     const businessDate = String(tools?.last_completed_business_date || "").trim();
     const win = await rpcOptional(sb, "wl_my_business_day_window", {

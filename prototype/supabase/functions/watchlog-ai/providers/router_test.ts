@@ -84,6 +84,9 @@ Deno.test("noModelIntent: canonical status = true; reasoning/setup = false", () 
   eq(noModelIntent("Are my cameras online?"), true, "camera status");
   eq(noModelIntent("how many cameras do I have"), true, "canonical count");
   eq(noModelIntent("show monitoring coverage"), true, "coverage");
+  eq(noModelIntent("Was yesterday fully monitored?"), true, "completed service-day monitoring is canonical status");
+  eq(noModelIntent("Was last night fully monitored?"), true, "overnight monitoring status is canonical");
+  eq(noModelIntent("What happened overnight?"), false, "overnight activity still needs business/evidence reasoning");
   eq(noModelIntent("Explain the monitoring coverage and why it dropped"), false, "explain -> model");
   eq(noModelIntent("help me set up line crossing"), false, "setup -> model");
   eq(noModelIntent("what should I monitor for a retail site"), false, "recommend -> model");

@@ -114,7 +114,7 @@ export function noModelIntent(prompt: string): boolean {
   if (/\b(explain|why|recommend|suggest|advise|should i|how do i|help me|set ?up|configure|what can|plan|draft|write|compare|summar)/.test(s)) {
     return false; // wants reasoning / generation — keep the model
   }
-  return /\b(online|offline|not recording|are (my|the) cameras|which cameras|cameras (are )?(down|offline)|camera health|site health|health status|system status|is the site (online|up|healthy)|monitoring coverage|unverified time|recovered (time|footage)|how many (cameras|incidents|sites|events)|recorder model|what recorder|is .+ (online|offline|recording))\b/.test(s);
+  return /\b(online|offline|not recording|are (my|the) cameras|which cameras|cameras (are )?(down|offline)|camera health|site health|health status|system status|is the site (online|up|healthy)|monitoring coverage|fully monitored|unverified time|recovered (time|footage)|how many (cameras|incidents|sites|events)|recorder model|what recorder|is .+ (online|offline|recording))\b/.test(s);
 }
 
 // ---------------------------------------------------------------------
