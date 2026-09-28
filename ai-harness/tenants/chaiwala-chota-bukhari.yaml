@@ -1,0 +1,96 @@
+version: 1
+id: chaiwala_chota_bukhari
+status: IMPLEMENTED
+kind: tenant_site_overlay
+site_type: restaurant
+inherits:
+  - ../site-types/restaurant.yaml
+
+identity:
+  display_name: Chai Wala - Chota Bukhari
+  branch: Chota Bukhari, DHA Phase 6, Karachi
+  business_type: late-night chai cafe and casual restaurant
+  service_style: waiter-led outdoor dine-in with takeaway, delivery and car-side service
+
+service_day:
+  canonical_open: "16:00"
+  canonical_close: "04:00"
+  overnight: true
+  days_iso: [1, 2, 3, 4, 5, 6, 7]
+  authority: configured_watchlog_context
+
+camera_role_map:
+  Floor 1: {role: dining_floor, target_sampling_seconds: 60}
+  Floor 2: {role: dining_floor, target_sampling_seconds: 60}
+  Shop Front:
+    role: service_handoff
+    target_sampling_seconds: 90
+    note: not the customer entrance
+  Kitchen: {role: kitchen, target_sampling_seconds: 120}
+  Cash Counter:
+    role: cash_counter
+    target_sampling_seconds: 180
+    note: customer queue is mostly outside frame
+  Back Entrance: {role: service_access, sampling: event}
+  Office View: {role: office_security, sampling: event}
+  Office Camera: {role: office_security, sampling: event}
+
+table_model:
+  floor_1_calibrated_anchors: 13
+  floor_2_calibrated_anchors: 10
+  total_calibrated_anchors: 23
+  nominal_anchor_capacity: 4
+  movable: true
+  can_combine: true
+  rule: >
+    Preserve table keys when adjacent tables are joined. Use the same combined_group
+    for one larger party. If movement leaves the calibrated zone, lower table-tracking
+    confidence and recommend recalibration instead of inventing identity.
+
+customer_counting:
+  primary_metric: visible_diners
+  unique_footfall_available: false
+  reason: no configured camera currently provides a clean customer-entry counting line
+  accuracy_status: not_calibrated_against_human_ground_truth
+  validation_required: >
+    Compare representative Floor 1 and Floor 2 frames against manual visible-diner
+    counts before publishing an accuracy percentage.
+
+known_review_focus:
+  - id: dining_floor_front_lights
+    status: owner_reported_unverified
+    applies_to: [Floor 1, Floor 2]
+    concern: bright lights in front of the floor cameras may create glare or overexposure
+    required_evidence: repeated analytics_quality scores from processed frames
+    action_if_confirmed: >
+      Re-angle the camera or redirect/shield the light source, then revalidate after dark.
+
+owner_priorities:
+  - visible diner activity and peak periods
+  - occupied tables and table utilization by floor and table
+  - estimated table sessions and estimated covers
+  - observed seated-to-first-food-visible timing
+  - served versus occupied table sessions
+  - Shop Front handoff pressure
+  - Cash Counter activity and unattended periods
+  - Kitchen continuity and relative pressure
+  - Back Entrance service/delivery activity
+  - office and after-hours security context
+  - monitoring coverage and analytics quality
+  - glare, occlusion, obstruction, camera angle and count/table confidence
+
+report_profile:
+  id: chaiwala_restaurant_ops_v1
+  tabs: [Today, Yesterday, Last 7 days, Last 30 days]
+  today:
+    focus: [coverage, analytics quality, restaurant KPIs, hourly demand, floors, tables, service timing, pressure, exceptions, improvements]
+  yesterday:
+    focus: [completed service day, analytics quality, restaurant KPIs, security evidence, improvements]
+  last_7_days:
+    focus: [previous-period comparison, daily trend, demand by hour, floors, tables, service timing, quality issues, improvements]
+  last_30_days:
+    focus: [previous-period comparison, weekly trend, weekday pattern, demand by hour, tables, service timing, recurring quality issues, improvements]
+
+runtime_facts:
+  source: watchlog_database
+  do_not_duplicate_here: [tenant_uuid, site_uuid, camera_uuid, live_observations, live_coverage, current_events, current_agent_version, current_ai_egress_permission]

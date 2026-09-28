@@ -38,7 +38,8 @@ logic lives in code (`functions/watchlog-ai/providers/router.ts`), not in these 
 | `taxonomy/` | ontology primitives — observations, activities, entities, incident-families, severity | IMPLEMENTED |
 | `schemas/` | JSON Schemas for machine actions — `incident.schema.json` | IMPLEMENTED (other schemas PLANNED) |
 | `device-knowledge/` | 47-model Dahua/Hikvision capability registry | IMPLEMENTED |
-| `site-types/` | per-vertical policy (camera roles, schedules, sensitive areas) | **PLANNED** |
+| `site-types/` | per-vertical policy (camera roles, schedules, metric semantics, quality rules) | IMPLEMENTED (`restaurant.yaml`; more verticals can be added) |
+| `tenants/` | stable tenant/site semantic overlays that inherit a site type; never duplicates live IDs/evidence | IMPLEMENTED (`chaiwala-chota-bukhari.yaml`) |
 | `risk-profiles/` | risk overlays (e.g. high-security, armory) composed onto a site type | **PLANNED** |
 | `incidents/` | the micro-level incident catalogue grouped by family | **PLANNED** |
 | `skills/` | AI skill manifests (tracking, vision, journey-correlation, …) | **PLANNED** |
@@ -58,5 +59,5 @@ logic lives in code (`functions/watchlog-ai/providers/router.ts`), not in these 
 
 1. WatchLog database (governed RPCs) — the sole factual authority for sites/cameras/health/events/
    incidents/coverage/capability. Tools are thin, tenant-scoped passthroughs over these.
-2. This harness — product definitions (ontology + device-knowledge today; site-types / incidents PLANNED).
+2. This harness — product definitions (ontology + device-knowledge + implemented site-type/tenant semantic overlays; incidents remain PLANNED).
 3. The model — reasoning *within* 1 and 2, never outside them.

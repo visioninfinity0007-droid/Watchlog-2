@@ -10,22 +10,39 @@ const PROMPTS={
   monthly:`Summarize the last 30 days for management. Cover meaningful security patterns, recurring operational observations, restricted-area concerns, coverage confidence and the most important management actions. ${REPORT_STYLE}`,
   executive:`Give me a concise executive summary for leadership. State the security position, important operational patterns, anything requiring attention and the highest-priority action. ${REPORT_STYLE}`
 };
-const VALID_VIEWS=new Set(["daily","yesterday","monthly","executive"]);
+const RESTAURANT_PROMPTS={
+  daily:"Give me today's restaurant management report. Cover customer demand, occupied tables, estimated covers, observed time to food, service pressure, analytics quality, improvement recommendations, monitoring coverage and any security attention. Keep visible diners separate from unique footfall.",
+  yesterday:"Give me yesterday's restaurant management report. Cover customer demand, occupied tables, estimated covers, observed time to food, service pressure, analytics quality, improvement recommendations, monitoring coverage and any security attention. Keep visible diners separate from unique footfall.",
+  week:"Summarize the last 7 restaurant service days for management. Focus on demand patterns, floor and table utilization, estimated covers, observed time to food, handoff and kitchen pressure, analytics quality, coverage, repeated issues and practical improvements.",
+  monthly:"Summarize the last 30 restaurant service days for management. Focus on weekly and weekday trends, demand by hour, floor and table utilization, estimated covers, observed time to food, service pressure, analytics quality, coverage, recurring issues and practical improvements."
+};
+const VALID_VIEWS=new Set(["daily","yesterday","week","monthly","executive"]);
 
-function yesterdayInKarachi(){
-  const d=new Date(Date.now()-86400000);
-  const parts=new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Karachi",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(d);
-  const v=Object.fromEntries(parts.filter(x=>x.type!=="literal").map(x=>[x.type,x.value]));
-  return `${v.year}-${v.month}-${v.day}`;
+function dateInZone(timeZone,offsetDays=0){
+  const now=new Date(Date.now()+offsetDays*86400000);
+  try{
+    const parts=new Intl.DateTimeFormat("en-US",{timeZone:timeZone||"Asia/Karachi",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(now);
+    const v=Object.fromEntries(parts.filter(x=>x.type!=="literal").map(x=>[x.type,x.value]));
+    return `${v.year}-${v.month}-${v.day}`;
+  }catch{return now.toISOString().slice(0,10)}
+}
+function shiftDate(iso,days){
+  const d=new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate()+days);
+  return d.toISOString().slice(0,10);
 }
 function allowedSite(list,id){return Boolean(id)&&list.some(s=>String(s.id)===String(id))}
 
 export default function useReport(){
   const[email,setEmail]=useState("");
   const[siteId,setSiteId]=useState("");
+  const[site,setSite]=useState(null);
   const[view,setView]=useState("yesterday");
   const[answer,setAnswer]=useState("");
   const[snapshot,setSnapshot]=useState(null);
+  const[restaurant,setRestaurant]=useState(null);
+  const[restaurantPeriod,setRestaurantPeriod]=useState(null);
+  const[restaurantConfig,setRestaurantConfig]=useState(null);
   const[busy,setBusy]=useState(true);
   const[error,setError]=useState("");
 
@@ -42,9 +59,9 @@ export default function useReport(){
     const requestedSite=params.get("site")||selectedSiteId()||"";
     const resolvedSite=allowedSite(sites,requestedSite)?requestedSite:(sites[0]?.id||"");
     if(!resolvedSite){setError("No site is available for this account yet.");setBusy(false);return}
-    const resolved=sites.find(s=>s.id===resolvedSite);
+    const resolved=sites.find(s=>String(s.id)===String(resolvedSite))||null;
     rememberSite(resolvedSite,resolved?.name||"");
-    setSiteId(resolvedSite);
+    setSiteId(resolvedSite);setSite(resolved);
     if(requestedSite!==resolvedSite){
       params.set("site",resolvedSite);
       if(!params.get("view"))params.set("view",requestedView||"yesterday");
@@ -56,24 +73,91 @@ export default function useReport(){
     if(!siteId)return;
     let live=true;
     (async()=>{
-      setBusy(true);setAnswer("");setSnapshot(null);setError("");
-      if(view==="yesterday"){
-        const r=await supabase().rpc("wl_my_report_snapshot",{p_site_id:siteId,p_date:yesterdayInKarachi()});
+      setBusy(true);setAnswer("");setSnapshot(null);setRestaurant(null);setRestaurantPeriod(null);setError("");
+      const sb=supabase();
+      const cfg=await sb.rpc("wl_restaurant_site_config",{p_site_id:siteId});
+      if(!live)return;
+      const restaurantEnabled=!cfg.error&&cfg.data?.enabled===true;
+      const config=restaurantEnabled?(cfg.data||null):null;
+      setRestaurantConfig(config);
+      const chaiLayout=config?.report_layout_profile==="chaiwala_restaurant_ops_v1";
+
+      if(chaiLayout&&view==="week"){
+        const period=await sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:7,p_end_date:null});
+        if(!live)return;
+        if(period.error){setBusy(false);setError(say(period.error));return}
+        setRestaurantPeriod(period.data||null);
+        const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.week,site_id:siteId,conversation_id:null}});
         if(!live)return;
         setBusy(false);
-        if(r.error){setError(say(r.error));return}
-        if(!r.data){setError("Yesterday's report is not available yet.");return}
-        setSnapshot(r.data);
+        if(ai.error||ai.data?.error){setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
+        setAnswer(ai.data?.answer||"");
         return;
       }
-      const r=await supabase().functions.invoke("watchlog-ai",{body:{prompt:PROMPTS[view],site_id:siteId,conversation_id:null}});
+
+      if(chaiLayout&&view==="monthly"){
+        const period=await sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:30,p_end_date:null});
+        if(!live)return;
+        if(period.error){setBusy(false);setError(say(period.error));return}
+        setRestaurantPeriod(period.data||null);
+        const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.monthly,site_id:siteId,conversation_id:null}});
+        if(!live)return;
+        setBusy(false);
+        if(ai.error||ai.data?.error){setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
+        setAnswer(ai.data?.answer||"");
+        return;
+      }
+
+      if(view==="yesterday"){
+        let date=dateInZone(site?.timezone||"Asia/Karachi",-1),rest=null;
+        if(restaurantEnabled){
+          const current=await sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:null});
+          if(!live)return;
+          if(!current.error&&current.data?.service_date){
+            date=shiftDate(current.data.service_date,-1);
+            const rr=await sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:date});
+            if(!live)return;
+            if(!rr.error)rest=rr.data||null;
+          }
+        }
+        const report=await sb.rpc("wl_my_report_snapshot",{p_site_id:siteId,p_date:date});
+        if(!live)return;
+        if(report.error){setBusy(false);setError(say(report.error));return}
+        setSnapshot(report.data||null);
+        setRestaurant(report.data?(report.data?.payload?.restaurant||rest):rest);
+        if(chaiLayout){
+          const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.yesterday,site_id:siteId,conversation_id:null}});
+          if(!live)return;
+          if(ai.error||ai.data?.error){setBusy(false);setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
+          setAnswer(ai.data?.answer||"");
+        }
+        setBusy(false);
+        return;
+      }
+
+      if(chaiLayout&&view==="daily"){
+        const rr=await sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:null});
+        if(!live)return;
+        if(rr.error){setBusy(false);setError(say(rr.error));return}
+        setRestaurant(rr.data||null);
+        const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.daily,site_id:siteId,conversation_id:null}});
+        if(!live)return;
+        setBusy(false);
+        if(ai.error||ai.data?.error){setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
+        setAnswer(ai.data?.answer||"");
+        return;
+      }
+
+      const prompt=PROMPTS[view]||PROMPTS.daily;
+      const r=await sb.functions.invoke("watchlog-ai",{body:{prompt,site_id:siteId,conversation_id:null}});
       if(!live)return;
       setBusy(false);
       if(r.error||r.data?.error){setError(r.data?.message||say(r.error)||"WatchLog could not load this report.");return}
       setAnswer(r.data.answer||"");
     })();
     return()=>{live=false};
-  },[siteId,view]);
+  },[siteId,site?.timezone,view]);
 
-  return{email,siteId,view,setView,answer,snapshot,busy,error};
+  const isChaiWalaRestaurant=restaurantConfig?.report_layout_profile==="chaiwala_restaurant_ops_v1";
+  return{email,siteId,site,view,setView,answer,snapshot,restaurant,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,busy,error};
 }

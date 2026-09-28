@@ -1,0 +1,208 @@
+version: 1
+id: restaurant
+status: IMPLEMENTED
+kind: site_type
+purpose: >
+  Reusable semantic and reporting policy for restaurants and cafes where WatchLog
+  uses camera evidence for business-operations intelligence in addition to security.
+
+authority:
+  factual_state: watchlog_database
+  semantic_policy: ai_harness
+  rule: >
+    The harness defines what a metric means and when it is allowed. The database
+    supplies the actual site, camera, calibration, coverage, event and observation facts.
+
+service_day:
+  supports_overnight: true
+  naming_rule: >
+    An overnight service day is named by the calendar date on which the configured
+    opening time occurs. After midnight, activity remains in that service day until
+    the configured close/pre-open boundary says otherwise.
+
+camera_roles:
+  dining_floor:
+    purpose: customer seating and table-service analytics
+    allowed_outputs:
+      - visible_diners
+      - occupied_tables
+      - table_utilization_pct
+      - estimated_table_sessions
+      - estimated_covers
+      - served_table_sessions
+      - observed_time_to_food_minutes
+      - minimum_observed_dwell_minutes
+      - staff_presence
+    forbidden_outputs:
+      - unique_footfall_without_entry_line
+      - sales
+      - revenue
+      - order_accuracy
+      - food_quality
+      - customer_identity
+      - customer_demographics
+  service_handoff:
+    purpose: waiter/pickup/service handoff pressure
+    allowed_outputs:
+      - handoff_load
+      - staff_waiting
+      - ready_item_dwell
+      - service_congestion
+    forbidden_outputs:
+      - customer_footfall
+      - exact_order_backlog
+      - sales
+  cash_counter:
+    purpose: till/workstation activity
+    allowed_outputs:
+      - counter_active
+      - staff_presence
+      - unattended_periods
+      - visible_counter_interactions
+    forbidden_outputs:
+      - customer_queue_length_unless_geometry_supports_it
+      - transaction_count
+      - sales
+      - revenue
+  kitchen:
+    purpose: back-of-house operational pressure
+    allowed_outputs:
+      - kitchen_load
+      - staff_presence
+      - station_activity
+      - congestion
+      - visible_output
+      - cleaning_reset
+    forbidden_outputs:
+      - food_quality
+      - order_accuracy
+      - health_diagnosis
+      - staff_productivity
+      - confirmed_fire_without_incident_evidence
+  service_access:
+    purpose: staff/service/delivery access
+    allowed_outputs:
+      - service_access
+      - delivery_activity
+      - vehicle_dwell
+      - after_hours_movement
+    forbidden_outputs:
+      - customer_footfall
+  office_security:
+    purpose: security and management context
+    allowed_outputs:
+      - presence
+      - unusual_access
+      - after_hours_presence
+    forbidden_outputs:
+      - customer_volume
+      - restaurant_service_performance
+
+metrics:
+  visible_diners:
+    evidence_class: observed
+    definition: concurrent customers visibly present on dining-floor cameras at a sample time
+    never_call:
+      - footfall
+      - unique_customers
+  occupied_tables:
+    evidence_class: observed
+    definition: calibrated table anchors visibly occupied at a sample time
+  table_utilization_pct:
+    evidence_class: estimated
+    definition: occupied valid observations divided by valid observations for a calibrated table
+    caveat: coverage gaps, movable furniture and occlusion reduce representativeness
+  estimated_table_sessions:
+    evidence_class: estimated
+    definition: >
+      a session starts when a calibrated table changes from empty/unknown to occupied,
+      or occupancy resumes after a configured observation gap
+  estimated_covers:
+    evidence_class: estimated
+    definition: peak visible party size counted once per estimated table session
+    never_call:
+      - unique_customer_count
+      - POS_covers
+  served_table_sessions:
+    evidence_class: observed_derived
+    definition: estimated table sessions where food becomes visibly present at least once
+    never_call:
+      - completed_orders
+      - correct_orders
+      - paid_orders
+  observed_time_to_food_minutes:
+    evidence_class: observed_derived
+    definition: first visibly occupied/seated evidence to first frame where food is visibly present
+    never_call:
+      - POS_order_to_serve
+      - kitchen_ticket_time
+  minimum_observed_dwell_minutes:
+    evidence_class: observed_derived
+    definition: first occupied observation to last observed occupied frame
+    caveat: lower bound only
+  kitchen_load:
+    evidence_class: estimated
+    range: 0_to_1
+    definition: relative visible operational pressure
+    never_call:
+      - orders_per_hour
+      - production_quantity
+      - staff_productivity
+  handoff_load:
+    evidence_class: estimated
+    range: 0_to_1
+    definition: relative visible service-handoff pressure
+    never_call:
+      - exact_order_backlog
+      - customer_queue_length_without_geometry
+  customer_footfall:
+    evidence_class: geometry_dependent
+    rule: >
+      Footfall is unavailable unless a configured camera provides a clean, validated
+      customer-entry counting line. Visible diners or estimated covers must never be relabelled as footfall.
+
+movable_tables:
+  enabled: true
+  identity_model: calibrated_anchor_or_zone
+  combining_rule: >
+    Preserve underlying table keys. When adjacent movable tables are visibly joined
+    for one party, assign the same combined_group to those table rows for session reasoning.
+  movement_rule: >
+    Normal movement inside a calibrated zone is allowed. When a table moves too far
+    from its expected zone, lower table-tracking confidence and recommend recalibration
+    rather than inventing identity.
+
+analytics_quality:
+  principle: measurement_quality_precedes_business_advice
+  scores:
+    visibility_quality: {range: 0_to_1, direction: higher_is_better}
+    people_count_confidence: {range: 0_to_1, direction: higher_is_better, roles: [dining_floor]}
+    table_tracking_confidence: {range: 0_to_1, direction: higher_is_better, roles: [dining_floor]}
+    glare_level: {range: 0_to_1, direction: higher_is_worse}
+    overexposure_level: {range: 0_to_1, direction: higher_is_worse}
+    occlusion_level: {range: 0_to_1, direction: higher_is_worse}
+    obstruction_level: {range: 0_to_1, direction: higher_is_worse}
+    camera_angle_adequacy: {range: 0_to_1, direction: higher_is_better}
+    lighting_uniformity: {range: 0_to_1, direction: higher_is_better}
+  accuracy_rule: >
+    Model confidence is not measured accuracy. Never publish a customer-count accuracy
+    percentage until representative frames have been manually counted and compared with WatchLog.
+  recommendation_rule: >
+    Camera/lighting/recalibration recommendations require repeated evidence across frames.
+    A single poor frame is not a trend.
+
+report_windows:
+  today:
+    purpose: current service-day operations
+  yesterday:
+    purpose: completed prior service-day operations plus saved security/evidence report when available
+  last_7_days:
+    purpose: short-term pattern and previous-period comparison
+  last_30_days:
+    purpose: management trend, weekday/weekly pattern and improvement review
+
+truth_boundaries:
+  - missing observation time is missing coverage, not zero activity
+  - a single frame is an observation, not a trend
+  - site-wide dining totals require a complete composite across configured dining-floor cameras
+  - recommendations about staffing, service or layout require repeated observations and adequate coverage

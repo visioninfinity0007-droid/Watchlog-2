@@ -20,8 +20,9 @@ never by a model: `tenant → site → allowed cameras → allowed date/time →
 
 ## Live site/business context
 
-The harness content folders `site-types/` and `skills/` are still planned content
-artifacts, but the **runtime site/business context is already live** through
+The harness now includes an implemented restaurant semantic layer in
+`site-types/restaurant.yaml` and a stable Chai Wala overlay in
+`tenants/chaiwala-chota-bukhari.yaml`. The **runtime factual site/business context** remains live through
 `site_business_context` and `wl_ai_context`.
 
 The Watch AI Edge Function injects a customer-safe `SITE OPERATING CONTEXT`
@@ -39,9 +40,7 @@ Current verified production examples are documented in
 - HASCO Steel Head Office — office;
 - Chai Wala - Chota Bukhari — restaurant.
 
-Do not interpret the absence of `ai-harness/site-types/` YAML files as meaning
-the runtime lacks business context. Conversely, do not invent site-type skills
-that are not backed by configured analytics/evidence.
+Harness site-type/tenant files define semantics, not live facts. Do not infer that a configured semantic capability produced evidence. Counts, coverage, table calibration rows, camera IDs, observations and incidents must still come from governed runtime data.
 
 ## Implemented harness content (safe to reference)
 
@@ -49,13 +48,15 @@ that are not backed by configured analytics/evidence.
 - `core/` — `truth.md`, `confidence.md`, `retention.yaml` (mirrors `0107`).
 - `schemas/incident.schema.json`.
 - `device-knowledge/` — 47-model recorder capability registry (see `DEVICE_KNOWLEDGE` doc).
+- `site-types/restaurant.yaml` — reusable restaurant metric, camera-role, movable-table, reporting and analytics-quality policy.
+- `tenants/chaiwala-chota-bukhari.yaml` — Chai Wala stable site overlay; live IDs/evidence remain database-owned.
 
 ## PLANNED content (NOT yet implemented — do not depend on these)
 
 The following are the Phase-2 incident-intelligence content layer and **do not exist yet**. The router
 must not depend on them; they are the roadmap, not the runtime:
 
-- `site-types/`, `risk-profiles/` — site-type + risk-overlay definitions (PLANNED).
+- Additional `site-types/` beyond restaurant and `risk-profiles/` — vertical/risk definitions (PLANNED).
 - `incidents/` — the micro-level incident catalogue (PLANNED).
 - `skills/` — reusable skills e.g. journey-correlation (PLANNED).
 - `playbooks/` — per-intent playbooks e.g. site-health / investigate-incident / recorder-change (PLANNED).
