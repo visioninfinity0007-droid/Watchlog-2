@@ -326,7 +326,7 @@ function visualDayFallback(tools: Json) {
 function restaurantFallback(prompt: string, ctx: Json, tools: Json) {
   const p = prompt.toLowerCase();
   if (String(ctx?.business_context?.site_type || "").toLowerCase() !== "restaurant") return null;
-  if (!/restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup|management brief|daily brief|report|what happened|today|yesterday|last night|overnight/.test(p)) return null;
+  if (!/restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup/.test(p)) return null;
   const wrapped = tools?.restaurant_day;
   if (!wrapped?.ok || !wrapped.data?.enabled) return null;
   const d = wrapped.data || {}, q = d.data_quality || {}, sessions = d.sessions || {};
