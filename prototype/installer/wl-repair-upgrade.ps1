@@ -28,7 +28,10 @@ $CandidateDir = [IO.Path]::GetFullPath($CandidateDir).TrimEnd('\')
 $InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
 $DataRoot = Join-Path $env:ProgramData "WatchLog"
 $LogPath = Join-Path $DataRoot "repair-upgrade.log"
+$ResultPath = Join-Path $DataRoot "repair-upgrade-result.ini"
 $HealthPath = Join-Path $DataRoot "Secrets\runtime-health.json"
+$script:CurrentStage = "initial checks"
+$script:RecoveryState = "Your installed WatchLog has not been replaced."
 $ConfigPath = Join-Path $InstallDir "watchlog.ini"
 $StatePath = Join-Path $DataRoot "agent_state.json"
 $AgentKeyPath = Join-Path $DataRoot "Secrets\agent_key.dpapi"
@@ -57,8 +60,33 @@ function Write-Repair([string]$Message) {
   Write-Host $line
 }
 
+function Clean-IniValue([string]$Value) {
+  if ($null -eq $Value) { return "" }
+  $clean = ([string]$Value).Replace("`r"," ").Replace("`n"," ").Trim()
+  # Keep the support result single-line and INI-safe. Detailed diagnostics remain in repair-upgrade.log.
+  return $clean.Replace("=","-")
+}
+
+function Write-Result([string]$Status, [int]$Code, [string]$Stage, [string]$Message, [string]$Recovery) {
+  try {
+    New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
+    $tmp = $ResultPath + ".tmp"
+    @(
+      "[repair]",
+      "status=$(Clean-IniValue $Status)",
+      "code=$Code",
+      "stage=$(Clean-IniValue $Stage)",
+      "message=$(Clean-IniValue $Message)",
+      "recovery=$(Clean-IniValue $Recovery)",
+      "log=$(Clean-IniValue $LogPath)"
+    ) | Set-Content -LiteralPath $tmp -Encoding ASCII
+    Move-Item -LiteralPath $tmp -Destination $ResultPath -Force
+  } catch {}
+}
+
 function Fail([int]$Code, [string]$Message) {
-  Write-Repair "FAILURE($Code): $Message"
+  Write-Repair "FAILURE($Code) stage=$($script:CurrentStage): $Message"
+  Write-Result "failed" $Code $script:CurrentStage $Message $script:RecoveryState
   exit $Code
 }
 
@@ -113,7 +141,8 @@ function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) {
     "-File",$UpgradeHelper,
     "-Stage",$Stage,
     "-InstallDir",$InstallDir,
-    "-TaskName",$TaskName
+    "-TaskName",$TaskName,
+    "-PayloadProfile","repair"
   ) + $Extra
   $output = & powershell.exe @args 2>&1
   $rc = $LASTEXITCODE
@@ -126,12 +155,15 @@ function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) {
 }
 
 function Restore-Previous([string]$Why) {
+  $script:CurrentStage = "automatic recovery"
   Write-Repair "restoring previous WatchLog: $Why"
   $rc = Invoke-UpgradeHelper "rollback"
   if ($rc -ne 0) {
+    $script:RecoveryState = "Automatic recovery could not be proven. Do not uninstall WatchLog; use the support log."
     Write-Repair "ROLLBACK FAILURE($rc): previous payload restore/restart could not be proven"
     return $false
   }
+  $script:RecoveryState = "The previous WatchLog was restored and its Agent restart was verified."
   Write-Repair "previous WatchLog restored and running"
   return $true
 }
@@ -206,7 +238,10 @@ function Wait-NewRuntimeHealth([datetime]$StartedAtUtc) {
 }
 
 try {
+  Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
   Write-Repair "WatchLog Repair/Upgrade target=$ExpectedVersion candidate=$CandidateDir install=$InstallDir"
+
+  $script:CurrentStage = "existing-site readiness checks"
 
   foreach ($path in @($ConfigPath,$StatePath,$AgentKeyPath,$RecorderCredentialPath)) {
     if (-not (Test-Path -LiteralPath $path)) {
@@ -219,6 +254,7 @@ try {
     }
   }
 
+  $script:CurrentStage = "candidate integrity and version checks"
   Protect-CandidateDirectory
 
   $fileVer = File-Version $CandidateAgent
@@ -228,6 +264,7 @@ try {
     Fail 22 "candidate executable version does not match this Repair/Upgrade release"
   }
 
+  $script:CurrentStage = "passive compatibility validation"
   Write-Repair "phase 1/2: passive candidate validation while current WatchLog remains untouched"
   $result = Run-Candidate-AsSystem
   if (-not $result -or -not [bool]$result.ok) {
@@ -237,11 +274,14 @@ try {
 
   Write-Repair "passive preflight PASSED: identity + DPAPI + cloud + decoder + signed updater; current WatchLog still running"
 
+  $script:CurrentStage = "pause and unlock current WatchLog"
   $rc = Invoke-UpgradeHelper "preflight"
   if ($rc -ne 0) {
     Fail 23 "candidate passed passive checks, but current WatchLog could not be safely paused/unlocked; no payload files were replaced"
   }
 
+  $script:RecoveryState = "The previous WatchLog payload is backed up and can be restored automatically."
+  $script:CurrentStage = "recorder and channel validation"
   Write-Repair "phase 2/2: current WatchLog paused/backed up; validating recorder/channels before replacing files"
   $recorderResult = Run-RecorderCandidate
   if (-not $recorderResult -or -not [bool]$recorderResult.ok) {
@@ -253,6 +293,7 @@ try {
 
   Write-Repair "recorder preflight PASSED; beginning atomic payload replacement"
 
+  $script:CurrentStage = "install candidate files"
   try {
     Install-CandidatePayload
   } catch {
@@ -261,6 +302,7 @@ try {
     Fail 32 "could not install candidate payload; previous WatchLog restored"
   }
 
+  $script:CurrentStage = "verify installed version"
   $rc = Invoke-UpgradeHelper "verify-version" @("-ExpectedVersion",$ExpectedVersion)
   if ($rc -ne 0) {
     $restored = Restore-Previous "installed version verification failed"
@@ -268,6 +310,7 @@ try {
     Fail 34 "installed candidate version could not be verified; previous WatchLog restored"
   }
 
+  $script:CurrentStage = "start updated WatchLog"
   $started = [DateTime]::UtcNow
   try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $RegisterService -InstallDir $InstallDir
@@ -278,6 +321,7 @@ try {
     Fail 36 "new WatchLog could not start; previous WatchLog restored"
   }
 
+  $script:CurrentStage = "prove updated WatchLog health"
   Write-Repair "new WatchLog started; waiting for cloud + recorder + online-update health proof"
   $health = Wait-NewRuntimeHealth $started
   if (-not $health) {
@@ -286,6 +330,7 @@ try {
     Fail 38 "new WatchLog did not become fully healthy; previous WatchLog restored"
   }
 
+  $script:CurrentStage = "final commit verification"
   $rc = Invoke-UpgradeHelper "commit" @("-ExpectedVersion",$ExpectedVersion)
   if ($rc -ne 0) {
     $restored = Restore-Previous "final commit verification failed"
@@ -293,8 +338,15 @@ try {
     Fail 40 "final verification failed; previous WatchLog restored"
   }
 
+  $script:CurrentStage = "complete"
+  $script:RecoveryState = "WatchLog $ExpectedVersion is installed and healthy."
   Write-Repair "SUCCESS: WatchLog $ExpectedVersion healthy; cloud heartbeat + recorder + remote-update polling proven"
+  Write-Result "success" 0 $script:CurrentStage "WatchLog $ExpectedVersion updated successfully." $script:RecoveryState
   exit 0
+}
+catch {
+  $msg = "unexpected Repair/Upgrade error: " + $_.Exception.Message
+  Fail 49 $msg
 }
 finally {
   try { Remove-Item -LiteralPath $PreflightResult -Force -ErrorAction SilentlyContinue } catch {}

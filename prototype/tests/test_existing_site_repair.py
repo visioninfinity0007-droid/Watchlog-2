@@ -197,6 +197,38 @@ class InstallerContract(unittest.TestCase):
         self.assertLess(claim, marker)
         self.assertIn("update_runtime_health", src)
 
+    def test_repair_shutdown_helper_only_checks_files_the_repair_replaces(self):
+        helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
+        repair = (ROOT / "prototype/installer/wl-repair-upgrade.ps1").read_text(encoding="utf-8")
+        self.assertIn("[ValidateSet('full','repair')]", helper)
+        self.assertIn('$RepairPayloadFiles = @(', helper)
+        self.assertIn('"watchlog-agent.exe"', helper)
+        self.assertIn('"watchlog.defaults.ini"', helper)
+        self.assertIn('$PayloadFiles = if ($PayloadProfile -eq "repair")', helper)
+        self.assertIn('"-PayloadProfile","repair"', repair)
+
+    def test_repair_failure_exits_cleanly_and_surfaces_real_stage(self):
+        nsis = (ROOT / "prototype/installer/nsis/watchlog-repair.nsi").read_text(encoding="utf-8")
+        self.assertIn('repair-upgrade-result.ini', nsis)
+        self.assertIn('ReadINIStr $7', nsis)
+        self.assertIn('ReadINIStr $8', nsis)
+        self.assertIn('ReadINIStr $6', nsis)
+        self.assertIn('SetErrorLevel $9', nsis)
+        self.assertIn('Quit', nsis)
+        self.assertNotIn('Abort "WatchLog Repair/Upgrade failed safely"', nsis)
+
+    def test_repair_orchestrator_persists_failure_stage_and_traps_unexpected_errors(self):
+        ps = (ROOT / "prototype/installer/wl-repair-upgrade.ps1").read_text(encoding="utf-8")
+        self.assertIn('repair-upgrade-result.ini', ps)
+        self.assertIn('function Write-Result', ps)
+        self.assertIn('stage=$(Clean-IniValue $Stage)', ps)
+        self.assertIn('message=$(Clean-IniValue $Message)', ps)
+        self.assertIn('recovery=$(Clean-IniValue $Recovery)', ps)
+        self.assertIn('$script:CurrentStage = "pause and unlock current WatchLog"', ps)
+        self.assertIn('$script:CurrentStage = "prove updated WatchLog health"', ps)
+        self.assertIn('catch {', ps)
+        self.assertIn('Fail 49 $msg', ps)
+
     def test_build_outputs_and_hashes_both_installers(self):
         build = (ROOT / "tools/build_windows_release.ps1").read_text(encoding="utf-8")
         workflow = (ROOT / ".github/workflows/windows-release.yml").read_text(encoding="utf-8")

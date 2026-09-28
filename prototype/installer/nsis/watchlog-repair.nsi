@@ -5,13 +5,14 @@ Unicode true
 
 !define APPNAME "WatchLog Repair/Upgrade"
 !ifndef APPVERSION
-  !define APPVERSION "5.0.24"
+  !define APPVERSION "5.0.25"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
 !define DATAROOT "$COMMONPROGRAMDATA\WatchLog"
 !define ARPKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WatchLog"
 !define CANDIDATE "${DATAROOT}\repair-candidate"
+!define RESULTFILE "${DATAROOT}\repair-upgrade-result.ini"
 
 Name "${APPNAME}"
 !ifndef OUTFILE
@@ -55,19 +56,23 @@ FunctionEnd
 Section "Repair/Upgrade"
   ${IfNot} ${FileExists} "$INSTDIR\watchlog.ini"
     MessageBox MB_ICONSTOP|MB_OK "This PC does not have a complete existing WatchLog site. Use WatchLog-Setup.exe for a new installation."
-    Abort "Existing WatchLog config not found"
+    SetErrorLevel 20
+    Quit
   ${EndIf}
   ${IfNot} ${FileExists} "${DATAROOT}\agent_state.json"
     MessageBox MB_ICONSTOP|MB_OK "This WatchLog site is not fully enrolled. Use WatchLog-Setup.exe to repair the site first."
-    Abort "Existing WatchLog identity not found"
+    SetErrorLevel 20
+    Quit
   ${EndIf}
   ${IfNot} ${FileExists} "${DATAROOT}\Secrets\agent_key.dpapi"
     MessageBox MB_ICONSTOP|MB_OK "The encrypted WatchLog site identity is incomplete. No files were changed. Use the full WatchLog installer."
-    Abort "Agent key not found"
+    SetErrorLevel 20
+    Quit
   ${EndIf}
   ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
     MessageBox MB_ICONSTOP|MB_OK "This older installation has not yet migrated its recorder credential to the secure store. No files were changed. Use the full WatchLog installer once."
-    Abort "Recorder credential not repair-upgrade ready"
+    SetErrorLevel 20
+    Quit
   ${EndIf}
 
   DetailPrint "Staging WatchLog ${APPVERSION} without changing the installed version..."
@@ -88,16 +93,27 @@ Section "Repair/Upgrade"
 
   ${If} $9 != 0
     RMDir /r "${CANDIDATE}"
-    ${If} $9 == 30
-      MessageBox MB_ICONSTOP|MB_OK "This update did not pass the existing-site compatibility check. Your current WatchLog was not stopped or replaced. No new version was installed."
-    ${ElseIf} $9 == 38
-      MessageBox MB_ICONSTOP|MB_OK "The new WatchLog started but did not prove cloud, recorder and online-update health in time. The previous working WatchLog was restored and restarted."
-    ${ElseIf} $9 >= 31
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not prove a safe automatic recovery. Do not uninstall anything. Contact WatchLog support and provide C:\ProgramData\WatchLog\repair-upgrade.log."
-    ${Else}
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely perform this Repair/Upgrade. The installed WatchLog was not replaced. See C:\ProgramData\WatchLog\repair-upgrade.log."
+
+    ; The orchestrator writes a human-readable result outside the staged candidate.
+    ; Read it before exiting so a field operator sees the real failed stage instead
+    ; of getting stranded on NSIS's generic "Installation Aborted" page.
+    ReadINIStr $7 "${RESULTFILE}" "repair" "stage"
+    ReadINIStr $8 "${RESULTFILE}" "repair" "message"
+    ReadINIStr $6 "${RESULTFILE}" "repair" "recovery"
+
+    ${If} $7 == ""
+      StrCpy $7 "Repair/Upgrade validation"
     ${EndIf}
-    Abort "WatchLog Repair/Upgrade failed safely"
+    ${If} $8 == ""
+      StrCpy $8 "WatchLog could not safely complete this update."
+    ${EndIf}
+    ${If} $6 == ""
+      StrCpy $6 "Do not uninstall WatchLog. The detailed support log is preserved."
+    ${EndIf}
+
+    MessageBox MB_ICONSTOP|MB_OK "WatchLog update stopped.$\r$\n$\r$\n$8$\r$\n$\r$\nStage: $7$\r$\n$6$\r$\n$\r$\nSupport log: C:\ProgramData\WatchLog\repair-upgrade.log$\r$\nError code: $9"
+    SetErrorLevel $9
+    Quit
   ${EndIf}
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"

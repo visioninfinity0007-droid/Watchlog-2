@@ -194,11 +194,11 @@ Do not call Build 83 the final production installer.
 
 ---
 
-## 6. Authoritative 5.0.24 installer / upgrade status
+## 6. Authoritative 5.0.25 installer / upgrade status
 
-The authoritative `Alkalid-security/Watchlog` main source is version **5.0.24**.
+The authoritative `Alkalid-security/Watchlog` main source is version **5.0.25**.
 
-5.0.24 preserves the 5.0.23 archive/gap-recovery work and adds the permanent
+5.0.25 preserves the 5.0.23 archive/gap-recovery work and the 5.0.24 staged bootstrap, and adds field repair hardening: clean failure exit, exact-stage diagnostics, and repair-only lock/rollback scope. It retains the permanent
 **existing-site Repair/Upgrade bootstrap**.
 
 ### Two Windows paths are now mandatory
@@ -217,7 +217,7 @@ transition onto permanent signed online updates.
 The Repair/Upgrade path intentionally excludes the Qt discovery/setup UI. It must
 not re-run Search Network for a healthy enrolled site.
 
-### 5.0.24 staged safety contract
+### 5.0.25 staged safety contract
 
 Phase 1 — passive candidate validation while the old WatchLog remains running:
 
@@ -268,7 +268,7 @@ Head at this context update:
 
 `0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
 
-That branch currently contains the 5.0.24 Repair/Upgrade port including:
+That validation branch currently contains the prior 5.0.24 Repair/Upgrade port. After this canonical 5.0.25 patch merges, the validation line must be refreshed from canonical source before producing the next Windows artifact. The repair stack includes:
 
 - separate Repair/Upgrade NSIS + PowerShell orchestrator;
 - read-only DPAPI staged preflight;
@@ -285,7 +285,7 @@ That branch currently contains the 5.0.24 Repair/Upgrade port including:
 
 ### Current blocker
 
-**No 5.0.24 Windows Repair/Upgrade artifact is promoted yet.**
+**No 5.0.25 Windows Repair/Upgrade artifact is promoted yet.**
 
 The next step is to complete and run the exact Windows Release on the validation
 branch, record the artifact IDs/hashes, then perform controlled Al-Khalid field
@@ -358,7 +358,7 @@ full-payload backup/restore and fail-closed rollback behavior.
 
 ## 8. Secure remote-update direction
 
-The 5.0.24 source contains the permanent remote-maintenance architecture:
+The 5.0.25 source contains the permanent remote-maintenance architecture:
 
 - outbound-only Agent polling;
 - no inbound Windows management port;
@@ -384,7 +384,7 @@ remote-update queue cannot be taught that worker purely from the cloud. That is 
 
 ## 9. Mandatory physical field acceptance for the next promoted installer
 
-The first authoritative 5.0.24 (or later) Windows artifact must pass all of the following
+The first authoritative 5.0.25 (or later) Windows artifact must pass all of the following
 before replacing Build 69 as the fleet baseline.
 
 ### Hikvision
@@ -438,7 +438,7 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - Never block manual IP behind an automatic scan.
 - Never treat virtual/VPN adapters as higher priority than physical CCTV LANs.
 - Never treat CI/package success alone as field discovery proof.
-- Never call Build 83, Build 98 or Build 100 the authoritative 5.0.24 installer.
+- Never call Build 83, Build 98 or Build 100 the authoritative 5.0.25 installer.
 - Never replace a working site with an unaccepted candidate.
 - Never use the full discovery/setup wizard as the default upgrade path for a complete enrolled site.
 - Never stop the installed Agent before passive staged Repair/Upgrade validation succeeds.
@@ -475,7 +475,7 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - **Build 83 / 5.0.21** — discovery/setup validation candidate with exact artifact recorded above.
 - **Build 98 / 5.0.21** — running-file-lock/transactional-upgrade validation candidate; real Windows process test and packaged release passed.
 - **Build 100 / 5.0.23** — packaged FFmpeg + archive/gap-recovery validation candidate; historical decoder self-test and Windows Release passed.
-- **Authoritative source 5.0.24** — Build-69 discovery reliability + dual-vendor archive/gap recovery + staged existing-site Repair/Upgrade + signed online-update bootstrap; exact 5.0.24 Windows artifact/field acceptance still pending.
+- **Authoritative source 5.0.25** — Build-69 discovery reliability + dual-vendor archive/gap recovery + staged existing-site Repair/Upgrade + signed online-update bootstrap; exact 5.0.25 Windows artifact/field acceptance still pending.
 
 ---
 
