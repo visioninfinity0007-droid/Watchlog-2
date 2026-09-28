@@ -1,5 +1,6 @@
 -- Align Chai Wala tenant meaning across customer AI, restaurant reporting and vision extraction.
 -- The business-intelligence context is semantic guidance; observed values still come only from analyzed evidence.
+-- restaurant-day-v2 adds role-gated metrics, complete-floor site totals, floor summaries and per-camera coverage.
 
 update public.restaurant_camera_profiles p
 set interval_seconds = case p.analytics_role
@@ -516,7 +517,7 @@ begin
   ) into v_sessions from named n;
 
   return jsonb_build_object(
-    'enabled',true,'schema','restaurant-day-v1','service_date',v_date,'timezone',v_site.timezone,
+    'enabled',true,'schema','restaurant-day-v2','service_date',v_date,'timezone',v_site.timezone,
     'window',jsonb_build_object('start',v_start,'end',v_end),
     'hourly',coalesce(v_hourly,'[]'::jsonb),
     'floors',coalesce(v_floors,'[]'::jsonb),
@@ -536,6 +537,186 @@ begin
         'Site-level diner/table totals require a complete same-minute composite across all configured dining-floor cameras.'
       )
     )
+  );
+end $function$
+
+
+CREATE OR REPLACE FUNCTION public.wl_generate_daily_report(p_site_id uuid, p_date date DEFAULT NULL::date, p_force boolean DEFAULT false)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_site public.sites;
+  v_ctx public.site_business_context;
+  v_is_restaurant boolean;
+  v_local_now timestamp;
+  v_date date;
+  v_existing uuid;
+  v_payload jsonb;
+  v_inf text;
+  v_id uuid;
+  v_rev int;
+begin
+  select * into v_site from public.sites where id=p_site_id;
+  if v_site.id is null then raise exception 'no such site' using errcode='22023'; end if;
+  select * into v_ctx from public.site_business_context where site_id=p_site_id;
+  v_is_restaurant:=coalesce(v_ctx.site_type,v_site.site_type,'other')='restaurant';
+  v_local_now:=now() at time zone v_site.timezone;
+
+  if p_date is not null then
+    v_date:=p_date;
+  elsif v_is_restaurant
+    and coalesce(v_ctx.overnight,false)
+    and v_ctx.open_time is not null
+    and v_ctx.close_time is not null
+    and v_ctx.close_time<=v_ctx.open_time
+    and v_local_now::time<v_ctx.open_time then
+      v_date:=v_local_now::date-1;
+  else
+    v_date:=v_local_now::date;
+  end if;
+
+  select id into v_existing
+    from public.report_snapshots
+   where site_id=p_site_id and report_date=v_date;
+  if v_existing is not null and not p_force then
+    return (select jsonb_build_object(
+      'report_id',id,'frozen',true,'revision',revision,
+      'generated_at',generated_at,'payload',payload)
+      from public.report_snapshots where id=v_existing);
+  end if;
+
+  v_payload:=public.wl_daily_intelligence(p_site_id,v_date,true);
+  if v_is_restaurant then
+    v_payload:=v_payload||jsonb_build_object(
+      'restaurant',public.wl_restaurant_day(p_site_id,v_date)
+    );
+  end if;
+
+  select version into v_inf
+    from public.inference_config
+   where site_id=p_site_id or site_id is null
+   order by (site_id is not null) desc
+   limit 1;
+
+  insert into public.report_snapshots(
+    tenant_id,site_id,report_date,payload,payload_schema,versions,coverage_ratio
+  )
+  values(
+    v_site.tenant_id,p_site_id,v_date,v_payload,v_payload->>'schema',
+    jsonb_build_object(
+      'inference',coalesce(v_inf,'inference-v1'),
+      'journeys','topology-v2',
+      'day_state','state-machine-v1',
+      'intelligence',v_payload->>'schema',
+      'restaurant',case when v_is_restaurant then 'restaurant-day-v2' else null end
+    ),
+    (v_payload->'coverage'->>'coverage_ratio')::numeric
+  )
+  on conflict(site_id,report_date) do update
+     set payload=excluded.payload,
+         payload_schema=excluded.payload_schema,
+         versions=excluded.versions,
+         coverage_ratio=excluded.coverage_ratio,
+         generated_at=now(),
+         revision=public.report_snapshots.revision+1,
+         delivery_status='pending',
+         pdf_sha256=null,
+         pdf_bytes=null
+  returning id,revision into v_id,v_rev;
+
+  return jsonb_build_object(
+    'report_id',v_id,'frozen',false,'revision',v_rev,
+    'generated_at',now(),'payload',v_payload
+  );
+end $function$
+
+
+CREATE OR REPLACE FUNCTION public.wl_ai_context(p_site_id uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_tenant uuid := wl_assert_my_site(p_site_id);
+  v_site sites;
+  v_diag jsonb;
+  v_ctx jsonb;
+  v_onboarding jsonb;
+  v_recent jsonb;
+  v_camera_rows jsonb;
+begin
+  select * into v_site from sites where id=p_site_id and tenant_id=v_tenant;
+  v_diag := wl_my_site_diagnosis(p_site_id);
+  v_ctx := wl_my_site_context(p_site_id);
+  v_onboarding := wl_onboarding_status(p_site_id);
+
+  select coalesce(jsonb_agg(to_jsonb(r) order by r.device_ts desc),'[]'::jsonb) into v_recent
+    from (
+      select e.id as event_id,e.event_type,e.device_ts,e.received_at,
+             case
+               when c.name ~* '^(Legacy )?MediaProfile_Channel[0-9]+_(MainStream|SubStream)'
+                 then 'Camera '||coalesce(c.physical_channel,c.channel)
+               else c.name
+             end as camera,
+             coalesce(c.physical_channel,c.channel) as channel,
+             coalesce(e.payload->>'source','live') as source,
+             case lower(trim(coalesce(e.payload->>'recovered','false')))
+               when 'true' then true when 't' then true when '1' then true when 'yes' then true
+               else false
+             end as recovered
+        from events e
+        left join cameras c on c.id=e.camera_id
+       where e.site_id=p_site_id
+       order by e.device_ts desc
+       limit 20
+    ) r;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id',c.id,
+      'channel',coalesce(c.physical_channel,c.channel),
+      'name',case
+        when c.name ~* '^(Legacy )?MediaProfile_Channel[0-9]+_(MainStream|SubStream)'
+          then 'Camera '||coalesce(c.physical_channel,c.channel)
+        else c.name
+      end,
+      'purpose',c.purpose,
+      'monitor',c.is_configured,
+      'analytics_enabled',coalesce(c.analytics_enabled,false),
+      'health_state',coalesce(h.health_state::text,'unknown'),
+      'recording_state',coalesce(h.recording_state::text,'unknown')
+    ) order by
+      case when coalesce(c.physical_channel,c.channel) ~ '^[0-9]+$'
+           then coalesce(c.physical_channel,c.channel)::int else 2147483647 end,
+      coalesce(c.physical_channel,c.channel)
+    ),'[]'::jsonb) into v_camera_rows
+    from cameras c
+    left join camera_health h on h.camera_id=c.id
+   where c.site_id=p_site_id
+     and coalesce(c.is_canonical,true);
+
+  return jsonb_build_object(
+    'facts_version','watchlog-ai-context-v4',
+    'generated_at',now(),
+    'site',jsonb_build_object('id',v_site.id,'name',v_site.name,'timezone',v_site.timezone),
+    'business_context',v_ctx,
+    'onboarding',v_onboarding,
+    'recorder',v_diag->'recorder',
+    'connectivity',v_diag->'connectivity',
+    'capabilities',v_diag->'capabilities',
+    'capability_known',v_diag->'capability_known',
+    'cameras',v_camera_rows,
+    'faults',v_diag->'faults',
+    'coverage',v_diag->'coverage',
+    'permissions',v_diag->'tiers',
+    'recent_events',v_recent,
+    'safety',jsonb_build_object(
+      'recorder_credentials_leave_site',false,
+      'recorder_writes_require_approval',true,
+      'unknown_capability_must_not_be_assumed',true)
   );
 end $function$
 
