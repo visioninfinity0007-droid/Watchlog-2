@@ -46,11 +46,15 @@ Branch:
 
 Current combined source version:
 
-**5.0.23**
+**5.0.24**
 
-Relevant merged main commit:
+Current product main at this context update:
 
-`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
+`7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
+
+Existing-site Repair/Upgrade implementation:
+
+PR `#78` / merge `e74526affc4722daf5e14aab07e56b08f72c3d44`
 
 Current discovery behavior:
 
@@ -106,7 +110,7 @@ Passed gates:
 - executable ProductVersion/runtime checks;
 - checksum verification.
 
-Build 83 is **validation evidence**, not the final authoritative 5.0.23 installer.
+Build 83 is **validation evidence**, not the final authoritative 5.0.24 installer.
 
 ## Existing-site upgrade lock validation
 
@@ -129,20 +133,48 @@ and Agent, handle the launcher path, keep unrelated same-named processes outside
 directory untouched, verify the payload is unlocked/backed up, and restore the previous payload
 on rollback.
 
-This shutdown-before-replace behavior is merged into authoritative 5.0.23 source at
+This shutdown-before-replace behavior is merged into authoritative 5.0.24 source at
 `a3fe605f51f06605355bf9133f8568b5a4a56491`.
 
 ## Current remaining gate
 
-The final authoritative 5.0.23 Windows artifact has not yet been produced because
-`Alkalid-security/Watchlog` GitHub Actions currently terminates all jobs before any step executes.
+Discovery source hardening remains merged, but the **current existing-site promotion
+target is 5.0.24 Repair/Upgrade**, not the full Setup wizard.
 
-Until that exact artifact exists and passes physical hardware acceptance:
+Windows validation repository:
 
-- keep Build 69 as the live-site discovery/connectivity baseline;
-- do not replace a working Build-69 site solely because a newer candidate exists;
-- do not call Build 83/98/100 the final fleet release;
-- require one physical Hikvision and one physical Dahua 5.0.23 archive/gap recovery acceptance before fleet promotion.
+`visioninfinity0007-droid/Watchlog-2`
+
+Validation branch:
+
+`fix/existing-site-repair-upgrader-v5`
+
+Head at this context update:
+
+`0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
+
+That branch contains:
+- the separate Repair/Upgrade artifact;
+- passive staged SYSTEM preflight;
+- recorder staged preflight before replacement;
+- read-only DPAPI credential handling;
+- signed remote-update worker + transactional apply/rollback;
+- protected runtime-health proof;
+- evidence-based `site_control_runtime` / `remote_update_v1`;
+- full-Setup redirect for complete enrolled sites.
+
+The exact 5.0.24 Windows artifact still requires Windows Release + field acceptance.
+
+Until then:
+- keep Build 69 as the field-proven discovery/connectivity baseline;
+- do not replace a working site merely because a newer version exists;
+- do not call Builds 83/98/100 the final 5.0.24 fleet release;
+- do not use full Setup as the default upgrade path for a complete enrolled site.
+
+Recent Al-Khalid Head Office field evidence:
+- full-installer candidate failed health and rolled back to 5.0.19;
+- 5.0.19 has no active `remote_update_v1`;
+- therefore one successful 5.0.24 Repair/Upgrade bootstrap is still required.
 
 ## Physical acceptance required before promotion
 
@@ -168,16 +200,20 @@ Until that exact artifact exists and passes physical hardware acceptance:
 - recorder inspection/readback;
 - upgrade/rollback behavior.
 
-### Existing Build-69 upgrade
+### Existing-site Repair/Upgrade
 
-At least one live Build-69 site must prove:
+At least one live enrolled site must prove:
 
+- passive staged candidate validation passes while the old Agent remains running;
+- recorder identity/channels are proven before installed files are replaced;
 - no forced rediscovery;
-- existing encrypted recorder connection preserved;
-- Agent returns online after upgrade;
+- no recorder-password re-entry;
+- existing encrypted recorder connection is preserved;
+- Agent returns online after replacement;
 - heartbeat/events/snapshots continue;
 - Site Control worker polls;
 - remote-update worker polls;
+- `remote_update_v1` appears only after that real poll;
 - rollback remains available until health verification succeeds.
 
 ## Permanent release rule
@@ -191,4 +227,5 @@ It is reliable only when the exact artifact:
 3. keeps manual IP available;
 4. passes packaged discovery/login tests;
 5. passes real Hikvision + Dahua field acceptance;
-6. has its source SHA, artifact ID/digest and executable hashes recorded in Git.
+6. has its source SHA, artifact ID/digest and executable hashes recorded in Git;
+7. for existing sites, uses the staged Repair/Upgrade path instead of re-running discovery.
