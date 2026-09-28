@@ -1,25 +1,169 @@
-# WatchLog 0.4.3 Recorder Discovery Hotfix Status
+# WatchLog Recorder Discovery Field Reliability Status
 
-## Problem
-0.4.2 can miss a recorder on a multi-homed Windows site PC when the default internet route is on Wi-Fi but CCTV is connected through a separate Ethernet interface.
+This file supersedes the old 0.4.3-only discovery note.
 
-## Implemented fix
-- Enumerate active IPv4 adapters, preferring the default-route interface first.
-- Package `psutil` in the setup UI for reliable Windows adapter discovery, with stdlib fallback.
-- Deduplicate and scan each represented private/link-local `/24`, bounded to eight automatic subnets.
-- Never automatically sweep a public `/24`.
-- Preserve explicit-subnet and manual recorder-IP paths.
-- Keep direct recorder probing and vendor drivers unchanged.
-- Pin PyInstaller 6.22.2 and explicitly include recorder discovery/vendor driver modules in the frozen setup executable.
-- Add regression coverage to the existing recorder-hardening test suite.
-- Bump release identity to 0.4.3.
+## Golden field baseline
 
-## Evidence state
-Source fix: IMPLEMENTED.
-GitHub CI: NOT EXECUTED. Hosted Actions creates all six jobs but assigns no runner and executes zero steps; repeated runs show the same infrastructure-level failure.
-Frozen 0.4.3 Windows installer: NOT BUILT.
-Same-PC field verification: NOT RUN.
-Public release: NOT AUTHORIZED BY EVIDENCE YET.
+Build **69 / 5.0.17** is the current field-proven Windows discovery/connectivity baseline.
 
-## Release gate
-Do not publish 0.4.3 until GitHub hosted Actions runs normally and the Windows setup/build/release gates pass. After that, install the exact generated artifact on the same client PC that failed with 0.4.2 and prove Search Network detects the recorder, credentials validate, and channels enumerate.
+Source SHA:
+
+`811d378e3a7556047f294bb128b8caf45a295469`
+
+Build 69 successfully proved real recorder discovery/connectivity on site and therefore defines
+the minimum acceptable reach for future builds.
+
+Field baseline characteristics that must not regress:
+
+- up to **8 local /24 networks**;
+- Hikvision native/control discovery;
+- Dahua native/control discovery;
+- RTSP/web compatibility ports;
+- manual recorder-IP path;
+- bounded recorder authentication.
+
+## Build 74 field failure
+
+Build 74 passed packaging but failed real field discovery.
+
+Observed field behavior:
+
+- Search Network could remain loading;
+- no recorder IP was surfaced;
+- the operator could be trapped behind automatic discovery.
+
+This proved that packaging success alone is not a discovery acceptance result.
+
+## Current authoritative fix
+
+Repository:
+
+`Alkalid-security/Watchlog`
+
+Branch:
+
+`main`
+
+Current combined source version:
+
+**5.0.22**
+
+Relevant merged main commit:
+
+`d141e392291c038c006a806f026e6fa11b4a8dd8`
+
+Current discovery behavior:
+
+- preserves Build 69's **8-/24** reach;
+- physical Ethernet/Wi-Fi before VPN/Hyper-V/Docker/VMware/WSL/Tailscale/WireGuard adapters;
+- **32-second backend discovery budget**;
+- **40-second UI watchdog**;
+- bounded **256-worker** pool;
+- fast ports:
+  - Dahua `37777`
+  - Hikvision `8000`
+  - HTTP `80`
+  - HTTPS `443`
+- deeper compatibility scan remains available within the time budget;
+- multiple recorder candidates across ranked LANs are preserved;
+- manual IP stays usable while automatic search runs;
+- choosing manual IP safely abandons/invalidate the old discovery generation;
+- explicit regression proves a recorder on the **8th subnet** is still found;
+- recorder rediscovery supports DHCP/IP changes using stored device identity.
+
+Recorder-login timing:
+
+- 5 seconds per probe;
+- 18-second backend deadline;
+- 30-second UI watchdog.
+
+## Packaged validation evidence
+
+The discovery/setup implementation was validated in the Windows release-line repository with:
+
+**Build 83 / 5.0.21**
+
+- source SHA:
+  `dfc3ec5bc1229a88c510f8057cd9ac898f8cf848`
+- run id:
+  `36351875478`
+- artifact:
+  `WatchLog-Windows-83`
+- artifact id:
+  `10942702630`
+- installer SHA-256:
+  `EEBA56F5879306CDA0662E6CCA5DBDA2D85AA66D0463D09B21D4F90E54B6F8EC`
+
+Passed gates:
+
+- Windows packaging;
+- packaged setup-UI discovery self-test;
+- multi-NIC simulated discovery;
+- manual-IP escape;
+- discovery watchdog;
+- recorder login/vendor routing;
+- eighth-subnet regression;
+- executable ProductVersion/runtime checks;
+- checksum verification.
+
+Build 83 is **validation evidence**, not the final authoritative 5.0.22 installer.
+
+## Current remaining gate
+
+The final authoritative 5.0.22 Windows artifact has not yet been produced because
+`Alkalid-security/Watchlog` GitHub Actions currently terminates all jobs before any step executes.
+
+Until that exact artifact exists and passes physical hardware acceptance:
+
+- keep Build 69 as the live-site discovery/connectivity baseline;
+- do not replace a working Build-69 site solely because a newer candidate exists;
+- do not call Build 83 the final fleet release.
+
+## Physical acceptance required before promotion
+
+### Hikvision
+
+- auto-discovery;
+- manual-IP path;
+- native login;
+- camera/channel inventory;
+- background Agent remains connected;
+- Site Control claim/completion;
+- recorder inspection/readback;
+- upgrade/rollback behavior.
+
+### Dahua
+
+- auto-discovery;
+- manual-IP path;
+- native CGI login;
+- camera/channel inventory;
+- background Agent remains connected;
+- Site Control claim/completion;
+- recorder inspection/readback;
+- upgrade/rollback behavior.
+
+### Existing Build-69 upgrade
+
+At least one live Build-69 site must prove:
+
+- no forced rediscovery;
+- existing encrypted recorder connection preserved;
+- Agent returns online after upgrade;
+- heartbeat/events/snapshots continue;
+- Site Control worker polls;
+- remote-update worker polls;
+- rollback remains available until health verification succeeds.
+
+## Permanent release rule
+
+A Windows installer is not “reliable” because CI is green.
+
+It is reliable only when the exact artifact:
+
+1. preserves or exceeds Build 69 discovery reach;
+2. cannot spinner indefinitely;
+3. keeps manual IP available;
+4. passes packaged discovery/login tests;
+5. passes real Hikvision + Dahua field acceptance;
+6. has its source SHA, artifact ID/digest and executable hashes recorded in Git.
