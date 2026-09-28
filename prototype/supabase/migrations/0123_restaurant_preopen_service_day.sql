@@ -229,3 +229,9 @@ begin
   );
 end $function$
 ;
+
+
+revoke execute on function public.wl_restaurant_day(uuid,date) from anon,public;
+revoke execute on function public.wl_restaurant_site_config(uuid) from anon,public;
+grant execute on function public.wl_restaurant_day(uuid,date) to authenticated,service_role;
+grant execute on function public.wl_restaurant_site_config(uuid) to authenticated,service_role;
