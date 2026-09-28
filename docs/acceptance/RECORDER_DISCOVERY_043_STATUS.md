@@ -46,11 +46,11 @@ Branch:
 
 Current combined source version:
 
-**5.0.22**
+**5.0.23**
 
 Relevant merged main commit:
 
-`a3fe605f51f06605355bf9133f8568b5a4a56491`
+`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
 
 Current discovery behavior:
 
@@ -106,7 +106,7 @@ Passed gates:
 - executable ProductVersion/runtime checks;
 - checksum verification.
 
-Build 83 is **validation evidence**, not the final authoritative 5.0.22 installer.
+Build 83 is **validation evidence**, not the final authoritative 5.0.23 installer.
 
 ## Existing-site upgrade lock validation
 
@@ -129,19 +129,20 @@ and Agent, handle the launcher path, keep unrelated same-named processes outside
 directory untouched, verify the payload is unlocked/backed up, and restore the previous payload
 on rollback.
 
-This shutdown-before-replace behavior is merged into authoritative 5.0.22 source at
+This shutdown-before-replace behavior is merged into authoritative 5.0.23 source at
 `a3fe605f51f06605355bf9133f8568b5a4a56491`.
 
 ## Current remaining gate
 
-The final authoritative 5.0.22 Windows artifact has not yet been produced because
+The final authoritative 5.0.23 Windows artifact has not yet been produced because
 `Alkalid-security/Watchlog` GitHub Actions currently terminates all jobs before any step executes.
 
 Until that exact artifact exists and passes physical hardware acceptance:
 
 - keep Build 69 as the live-site discovery/connectivity baseline;
 - do not replace a working Build-69 site solely because a newer candidate exists;
-- do not call Build 83 the final fleet release.
+- do not call Build 83/98/100 the final fleet release;
+- require one physical Hikvision and one physical Dahua 5.0.23 archive/gap recovery acceptance before fleet promotion.
 
 ## Physical acceptance required before promotion
 
