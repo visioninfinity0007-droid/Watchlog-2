@@ -107,6 +107,19 @@ def load_nvr_credential(config_ini_path: Path | None = None) -> dict | None:
         return read_json_secret(path)
     return None
 
+def load_nvr_credential_readonly() -> dict | None:
+    """Read the authoritative recorder credential without modifying/migrating anything.
+
+    The existing-site Repair/Upgrade staged candidate uses this to prove it can
+    decrypt the machine-bound DPAPI credential before any installed WatchLog
+    payload is touched.
+    """
+    path = nvr_credential_path()
+    if not path.exists():
+        return None
+    return read_json_secret(path)
+
+
 
 def migrate_legacy_if_needed(config_ini_path: Path | None) -> bool:
     """Migrate a legacy plaintext / old-DPAPI recorder credential into the split
