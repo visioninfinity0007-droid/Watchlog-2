@@ -107,6 +107,19 @@ def load_nvr_credential(config_ini_path: Path | None = None) -> dict | None:
         return read_json_secret(path)
     return None
 
+def load_nvr_credential_readonly() -> dict | None:
+    """Read the authoritative recorder credential without migrating or modifying anything.
+
+    Existing-site staged upgrade validation uses this so a candidate build can prove
+    it can decrypt the machine's DPAPI credential BEFORE any installed file/config
+    is touched. Legacy/plaintext-only sites deliberately return None and must use
+    the full installer migration path.
+    """
+    path = nvr_credential_path()
+    if not path.exists():
+        return None
+    return read_json_secret(path)
+
 
 def migrate_legacy_if_needed(config_ini_path: Path | None) -> bool:
     """Migrate a legacy plaintext / old-DPAPI recorder credential into the split

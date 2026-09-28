@@ -67,11 +67,14 @@ def runtime_capabilities(cfg) -> list[str]:
 
 
 class Config(core.Config):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        # Preserve the core Config constructor contract. Existing-site staged
+        # preflight passes an explicit installed watchlog.ini path plus
+        # read_only_credentials=True through the frozen production entrypoint.
+        super().__init__(*args, **kwargs)
         section = {}
         ini = configparser.ConfigParser()
-        ini_path = core.base_dir() / "watchlog.ini"
+        ini_path = getattr(self, "_ini_path", core.base_dir() / "watchlog.ini")
         if ini_path.exists():
             try:
                 ini.read(ini_path, encoding="utf-8-sig")

@@ -120,6 +120,9 @@ jobs:
             python prototype/tests/test_recorder_setup.py
             if ($LASTEXITCODE -ne 0) { throw "recorder login/connectivity contract failed" }
 
+            python prototype/tests/test_existing_site_repair.py
+            if ($LASTEXITCODE -ne 0) { throw "existing-site Repair/Upgrade contract failed" }
+
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/tests/test_upgrade_shutdown.ps1
             if ($LASTEXITCODE -ne 0) { throw "running-agent upgrade shutdown/rollback regression failed" }
           }
@@ -134,7 +137,9 @@ jobs:
           $agent = Get-Item '.\prototype\dist\watchlog-agent.exe'
           $setupUi = Get-Item '.\prototype\dist\watchlog-setup-ui.exe'
           $setup = Get-Item '.\dist-installer\WatchLog-Setup.exe'
+          $repair = Get-Item '.\dist-installer\WatchLog-Repair-Upgrade.exe'
           $checksumPath = '.\dist-installer\WatchLog-Setup.exe.sha256'
+          $repairChecksumPath = '.\dist-installer\WatchLog-Repair-Upgrade.exe.sha256'
 
           if ($agent.Length -lt 5MB) {
             throw "watchlog-agent.exe is too small ($($agent.Length) bytes); refusing a stub/incomplete release."
@@ -145,7 +150,11 @@ jobs:
           if ($setup.Length -lt 10MB) {
             throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
           }
+          if ($repair.Length -lt $agent.Length -or $repair.Length -ge $setup.Length) {
+            throw "WatchLog-Repair-Upgrade.exe size is invalid ($($repair.Length) bytes); it must contain the Agent but remain smaller than full Setup."
+          }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
+          if (-not (Test-Path $repairChecksumPath)) { throw 'repair checksum file is missing' }
 
           # Packaged setup-UI proof: execute the exact frozen EXE against the
           # multi-NIC discovery race, manual-IP escape and installer-child lifecycle.
@@ -262,23 +271,30 @@ jobs:
           # Authoritative version proof: PE VERSIONINFO ProductVersion on all three
           # executables must equal wl_version.py — no windowed-console tricks.
           $wlVer = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          foreach ($item in @($agent, $setupUi, $setup)) {
+          foreach ($item in @($agent, $setupUi, $setup, $repair)) {
             $pv = "$($item.VersionInfo.ProductVersion)".Trim()
             Write-Host "  $($item.Name) ProductVersion = '$pv'"
             if ($pv -ne $wlVer) { throw "$($item.Name) ProductVersion '$pv' != wl_version '$wlVer'" }
           }
-          Write-Host "All three executables report ProductVersion $wlVer."
+          Write-Host "Agent, setup UI, full Setup and Repair/Upgrade all report ProductVersion $wlVer."
 
           $expected = ((Get-Content $checksumPath -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
           $actual = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
           if ($expected -ne $actual) {
-            throw "SHA-256 mismatch: expected $expected, actual $actual"
+            throw "Setup SHA-256 mismatch: expected $expected, actual $actual"
+          }
+          $repairExpected = ((Get-Content $repairChecksumPath -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
+          $repairActual = (Get-FileHash $repair.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($repairExpected -ne $repairActual) {
+            throw "Repair SHA-256 mismatch: expected $repairExpected, actual $repairActual"
           }
 
           Write-Host "Verified real agent: $([math]::Round($agent.Length / 1MB, 1)) MB"
           Write-Host "Verified setup UI: $([math]::Round($setupUi.Length / 1MB, 1)) MB"
-          Write-Host "Verified installer: $([math]::Round($setup.Length / 1MB, 1)) MB"
-          Write-Host "Verified SHA-256: $actual"
+          Write-Host "Verified full installer: $([math]::Round($setup.Length / 1MB, 1)) MB"
+          Write-Host "Verified Repair/Upgrade: $([math]::Round($repair.Length / 1MB, 1)) MB"
+          Write-Host "Verified Setup SHA-256: $actual"
+          Write-Host "Verified Repair SHA-256: $repairActual"
 
           # RECORDED RELEASE IDENTITY (RC hashes): emit a CI-attested manifest of the
           # INNER agent exe, the setup UI exe and the installer. The installer .sha256
@@ -296,7 +312,8 @@ jobs:
             "workflow_ref=$env:GITHUB_REF",
             "watchlog-agent.exe.sha256=$agentHash",
             "watchlog-setup-ui.exe.sha256=$setupUiHash",
-            "WatchLog-Setup.exe.sha256=$actual"
+            "WatchLog-Setup.exe.sha256=$actual",
+            "WatchLog-Repair-Upgrade.exe.sha256=$repairActual"
           )
           $manifestPath = '.\dist-installer\WatchLog-Release.hashes.txt'
           Set-Content -Path $manifestPath -Encoding ASCII -Value $manifestLines
@@ -311,6 +328,8 @@ jobs:
           path: |
             dist-installer/WatchLog-Setup.exe
             dist-installer/WatchLog-Setup.exe.sha256
+            dist-installer/WatchLog-Repair-Upgrade.exe
+            dist-installer/WatchLog-Repair-Upgrade.exe.sha256
             dist-installer/WatchLog-Release.hashes.txt
           if-no-files-found: error
           retention-days: 30

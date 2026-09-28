@@ -234,6 +234,11 @@ def update_worker(cfg, state: dict, cloud, stop: threading.Event) -> None:
                 **_agent_args(state),
             )
             cfg.remote_update_last_poll_monotonic = time.monotonic()
+            try:
+                import watchlog_agent as core
+                core.update_runtime_health(remote_update_poll_at=core.iso(core.now_utc()))
+            except Exception:
+                pass
             missing_logged = False
         except (RuntimeError, requests.RequestException) as error:
             if _backend_missing(error):
