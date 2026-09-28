@@ -40,7 +40,15 @@ CUSTOMER COMMUNICATION
 - If the customer writes casually, you may be slightly conversational while remaining professional. Do not use slang, jokes, emojis, hype, or exaggerated reassurance.
 - Acknowledge concerns naturally when useful, but do not over-apologize.
 - Keep most answers to 1-3 short paragraphs or a compact bullet list.
-- For a business owner, prioritize the site's actual operating context. Offices may care about opening/closing, reception, visitors, restricted areas and after-hours access. Restaurants may care about customer-area activity, service pressure, counter queues, kitchen activity, access points and late-night exceptions.
+- For a business owner, prioritize the site's actual operating context. Offices may care about opening/closing, reception, visitors, restricted areas and after-hours access. Restaurants may care about customer-area demand, occupied tables, table utilization, observed service timing, handoff/kitchen pressure, access points and late-night exceptions.
+- For restaurant sites, the tenant's restaurant_intelligence_context defines what each metric means. It is a semantic contract, not evidence that a value occurred.
+- For restaurant numbers, prefer the structured restaurant service-day result or an already-saved report. Never derive business KPIs from raw detector/event counts.
+- "Visible diners" means concurrent diners visible on dining-floor cameras; never rename it footfall or unique customers.
+- "Estimated covers" and "estimated table sessions" are camera-derived estimates and must stay labelled as estimates.
+- "Observed time to food" means first visible seated/occupied evidence to first visible food; never call it POS order-to-serve time.
+- Site-wide visible-diner and occupied-table totals are valid only when the structured result says the dining-floor composite is complete. Floor-level numbers may still be reported separately.
+- Kitchen/handoff scores are relative visual pressure indicators, not order volume, productivity, sales or revenue.
+- A single frame is an observation, not a trend. Recommendations about staffing, service or layout require repeated observations and adequate coverage.
 - When verified WatchLog evidence supports a direct answer, state it clearly. Do not add cautionary language merely for tone. Use uncertainty only when the evidence is partial or genuinely uncertain.
 - Avoid flooding the customer with event counts, detector counts, confidence percentages, or technical health details unless they explicitly ask and the detail is genuinely useful.
 
@@ -239,7 +247,7 @@ async function rpcOptional(sb: any, name: string, args: Json) {
 async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const p = prompt.toLowerCase(), tz = ctx?.site?.timezone || "UTC";
   const today = dateInZone(tz), yesterday = dateInZone(tz, -1);
-  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null };
+  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null, restaurant_day: null, restaurant_config: null };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
   const overnight = /overnight|last night|yesterday/.test(p);
   if (overnight || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
@@ -248,6 +256,13 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
       yesterday: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: yesterday }),
       today: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today }),
     } : await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today });
+  }
+  const siteType = String(ctx?.business_context?.site_type || "").toLowerCase();
+  const restaurantIntent = siteType === "restaurant" && /restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup|management brief|daily brief|report|what happened|today|yesterday|last night|overnight/.test(p);
+  if (restaurantIntent) {
+    const restaurantDate = /yesterday|last night/.test(p) ? yesterday : null;
+    out.restaurant_day = await rpcOptional(sb, "wl_restaurant_day", { p_site_id: siteId, p_date: restaurantDate });
+    out.restaurant_config = await rpcOptional(sb, "wl_restaurant_site_config", { p_site_id: siteId });
   }
   const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief/.test(p);
   if (visualIntent) {
@@ -308,6 +323,53 @@ function visualDayFallback(tools: Json) {
   };
 }
 
+function restaurantFallback(prompt: string, ctx: Json, tools: Json) {
+  const p = prompt.toLowerCase();
+  if (String(ctx?.business_context?.site_type || "").toLowerCase() !== "restaurant") return null;
+  if (!/restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup|management brief|daily brief|report|what happened|today|yesterday|last night|overnight/.test(p)) return null;
+  const wrapped = tools?.restaurant_day;
+  if (!wrapped?.ok || !wrapped.data?.enabled) return null;
+  const d = wrapped.data || {}, q = d.data_quality || {}, sessions = d.sessions || {};
+  const hourly = Array.isArray(d.hourly) ? d.hourly.filter((h: Json) => Number(h?.samples || 0) > 0) : [];
+  const floors = Array.isArray(d.floors) ? d.floors.filter((x: Json) => Number(x?.samples || 0) > 0) : [];
+  const coverage = q.business_analytics_coverage_ratio == null ? null : Number(q.business_analytics_coverage_ratio);
+  const observations = Number(q.camera_observations || 0);
+  if (!observations) {
+    return {
+      answer: "Restaurant analytics is configured, but there are no processed restaurant observations for this service day yet, so I won’t invent customer, table or service figures.",
+      cards: [{ type: "report", title: "Restaurant operations", data: { service_date: d.service_date, coverage: q, status: "waiting_for_observations" } }],
+      suggestions: ["Check camera coverage", "Open Reports", "What can these cameras measure?"],
+      proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+      mode: "guided_fallback",
+    };
+  }
+  const peakVisible = hourly.reduce((m: number, h: Json) => Math.max(m, Number(h?.peak_visible_customers || 0)), 0);
+  const peakTables = hourly.reduce((m: number, h: Json) => Math.max(m, Number(h?.peak_occupied_tables || 0)), 0);
+  const serviceLabel = d.service_date ? customerDate(String(d.service_date) + "T12:00:00Z", ctx?.site?.timezone) : "the selected";
+  const bits = [
+    hourly.length ? `peak visible diners ${peakVisible}` : null,
+    hourly.length ? `peak occupied tables ${peakTables}` : null,
+    sessions.estimated_covers != null ? `estimated covers ${sessions.estimated_covers}` : null,
+    sessions.served_sessions != null ? `served table sessions ${sessions.served_sessions}` : null,
+    sessions.median_observed_time_to_food_minutes != null ? `median observed time to food ${sessions.median_observed_time_to_food_minutes} min` : null,
+  ].filter(Boolean);
+  const coverageText = coverage == null ? "" : coverage < 0.7
+    ? " Coverage is partial, so comparisons should be treated cautiously."
+    : "";
+  return {
+    answer: bits.length ? `For the ${serviceLabel} service day, ${bits.join(", ")}.${coverageText}`
+      : `Restaurant observations are available for the ${serviceLabel} service day, but a complete site-level dining composite is not available yet.${coverageText}`,
+    cards: [{ type: "report", title: "Restaurant operations", data: {
+      service_date: d.service_date, hourly, floors, tables: d.tables || [], sessions,
+      data_quality: q,
+      measurement_note: "Visible diners are concurrent visible people, estimated covers are camera-derived, and observed time to food is not POS order-to-serve time."
+    } }],
+    suggestions: ["Which floor was busiest?", "Which tables were used most?", "Was observed service time slow?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+    mode: "guided_fallback",
+  };
+}
+
 function dailyFallback(tools: Json) {
   const daily = tools?.daily_intelligence;
   if (!daily) return null;
@@ -341,6 +403,8 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
     return { answer: next ? `The next setup step is ${String(next.label || next.key).toLowerCase()}.` : "The main setup is complete. I can help you fine-tune the cameras, monitoring and reports for this site.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
   }
+  const restaurant = restaurantFallback(prompt, ctx, tools);
+  if (restaurant) return restaurant;
   const visual = visualDayFallback(tools);
   if (visual && /overnight|last night|yesterday|what happened|today|incident|activity|people|visitor|staff|opening|closing|restricted|armory|dwell/.test(p)) return visual;
   const daily = dailyFallback(tools);
@@ -387,9 +451,10 @@ function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[
   const siteNote = String(reporting?.ai_context_note || "");
   const priorities = Array.isArray(reporting?.owner_insight_priorities)
     ? reporting.owner_insight_priorities.slice(0, 12) : [];
+  const restaurantContract = reporting?.restaurant_intelligence_context || {};
   return [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}` },
+    { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}\nRestaurant intelligence contract: ${JSON.stringify(restaurantContract)}` },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
     ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
