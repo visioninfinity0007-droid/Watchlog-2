@@ -247,7 +247,7 @@ async function rpcOptional(sb: any, name: string, args: Json) {
 async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const p = prompt.toLowerCase(), tz = ctx?.site?.timezone || "UTC";
   const today = dateInZone(tz), yesterday = dateInZone(tz, -1);
-  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null, restaurant_day: null, restaurant_config: null };
+  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null, restaurant_day: null, restaurant_period: null, restaurant_config: null };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
   const overnight = /overnight|last night|yesterday/.test(p);
   if (overnight || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
@@ -260,8 +260,12 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const siteType = String(ctx?.business_context?.site_type || "").toLowerCase();
   const restaurantIntent = siteType === "restaurant" && /restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup|management brief|daily brief|report|what happened|today|yesterday|last night|overnight/.test(p);
   if (restaurantIntent) {
-    const restaurantDate = /yesterday|last night/.test(p) ? yesterday : null;
-    out.restaurant_day = await rpcOptional(sb, "wl_restaurant_day", { p_site_id: siteId, p_date: restaurantDate });
+    const periodDays = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
+    if (periodDays) out.restaurant_period = await rpcOptional(sb, "wl_restaurant_period", { p_site_id: siteId, p_days: periodDays, p_end_date: null });
+    else {
+      const restaurantDate = /yesterday|last night/.test(p) ? yesterday : null;
+      out.restaurant_day = await rpcOptional(sb, "wl_restaurant_day", { p_site_id: siteId, p_date: restaurantDate });
+    }
     out.restaurant_config = await rpcOptional(sb, "wl_restaurant_site_config", { p_site_id: siteId });
   }
   const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief/.test(p);
@@ -319,6 +323,41 @@ function visualDayFallback(tools: Json) {
     }],
     suggestions: ["Were there any serious incidents?", "Show me the Armory activity", "Summarize staff presence"],
     proposed_actions: [],
+    mode: "guided_fallback",
+  };
+}
+
+function restaurantPeriodFallback(prompt: string, ctx: Json, tools: Json) {
+  const p = prompt.toLowerCase();
+  const wrapped = tools?.restaurant_period;
+  if (!wrapped?.ok || !wrapped.data?.enabled) return null;
+  if (!/7 day|last 7|week|30 day|last 30|month/.test(p)) return null;
+  const d = wrapped.data || {}, s = d.summary || {}, c = d.comparison || {};
+  const days = Number(d.days || 0), observed = Number(s.observed_service_days || 0);
+  if (!observed) {
+    return {
+      answer: `There are no processed restaurant observations in this ${days}-day window yet, so I won’t invent demand, cover or service-time trends.`,
+      cards: [{ type: "report", title: `${days}-day restaurant review`, data: { period: d.period, summary: s, status: "waiting_for_observations" } }],
+      suggestions: ["Check monitoring coverage", "What can these cameras measure?", "Open Reports"],
+      proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+      mode: "guided_fallback",
+    };
+  }
+  const coverage = s.avg_coverage_ratio == null ? null : Math.round(Number(s.avg_coverage_ratio) * 100);
+  const bits = [
+    `estimated covers ${s.total_estimated_covers ?? "—"}`,
+    `average ${s.avg_estimated_covers_per_observed_day ?? "—"} per observed service day`,
+    `served table sessions ${s.served_sessions ?? "—"}`,
+    s.median_observed_time_to_food_minutes == null ? null : `median observed time to food ${s.median_observed_time_to_food_minutes} min`,
+    coverage == null ? null : `average analytics coverage ${coverage}%`,
+  ].filter(Boolean);
+  const comparison = c.estimated_covers_pct == null ? "" : ` Estimated covers changed ${Number(c.estimated_covers_pct)>0?"+":""}${c.estimated_covers_pct}% versus the previous ${days}-day period.`;
+  const caution = coverage != null && coverage < 70 ? " Coverage is partial, so trend comparisons should be treated cautiously." : "";
+  return {
+    answer: `Across the last ${days} service days, ${bits.join(", ")}.${comparison}${caution}`,
+    cards: [{ type: "report", title: `${days}-day restaurant review`, data: { period: d.period, summary: s, comparison: c, busiest_day: s.busiest_day, busiest_hour: s.busiest_hour } }],
+    suggestions: ["Which hours were busiest?", "Which tables were used most?", "How did service timing change?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
     mode: "guided_fallback",
   };
 }
@@ -403,6 +442,8 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
     return { answer: next ? `The next setup step is ${String(next.label || next.key).toLowerCase()}.` : "The main setup is complete. I can help you fine-tune the cameras, monitoring and reports for this site.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
   }
+  const restaurantPeriod = restaurantPeriodFallback(prompt, ctx, tools);
+  if (restaurantPeriod) return restaurantPeriod;
   const restaurant = restaurantFallback(prompt, ctx, tools);
   if (restaurant) return restaurant;
   const visual = visualDayFallback(tools);

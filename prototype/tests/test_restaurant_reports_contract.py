@@ -10,7 +10,7 @@ RUNTIME=(ROOT/"prototype/supabase/migrations/0121_vision_worker_runtime.sql").re
 SCHEDULE=(ROOT/"prototype/supabase/migrations/0122_schedule_vision_worker.sql").read_text(encoding="utf-8")
 PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")
 CAPTURE=(ROOT/"prototype/supabase/migrations/0124_restaurant_server_capture_scheduler.sql").read_text(encoding="utf-8")
-ALIGN=(ROOT/"prototype/supabase/migrations/0125_chaiwala_ai_context_alignment.sql").read_text(encoding="utf-8")
+ALIGN=(ROOT/"prototype/supabase/migrations/0125_chaiwala_ai_context_alignment.sql").read_text(encoding="utf-8")\nPERIOD=(ROOT/"prototype/supabase/migrations/0126_chaiwala_report_windows.sql").read_text(encoding="utf-8")
 AGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
 CHAT=(ROOT/"prototype/supabase/functions/watchlog-ai/index.ts").read_text(encoding="utf-8")
 
@@ -194,3 +194,70 @@ def test_customer_ai_uses_restaurant_day_and_shared_metric_meaning():
     assert '"Observed time to food" means first visible seated/occupied evidence' in CHAT
     assert "function restaurantFallback" in CHAT
     assert "Restaurant analytics is configured, but there are no processed restaurant observations" in CHAT
+
+
+def test_chaiwala_has_four_tenant_specific_report_windows():
+    assert 'RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]]' in REPORT
+    assert 'report_layout_profile==="chaiwala_restaurant_ops_v1"' in HOOK
+    assert 'wl_restaurant_period' in HOOK
+    assert 'p_days:7' in HOOK
+    assert 'p_days:30' in HOOK
+
+
+def test_restaurant_period_contract_contains_management_dimensions():
+    assert "CREATE OR REPLACE FUNCTION public.wl_restaurant_period" in PERIOD
+    assert "'schema','restaurant-period-v1'" in PERIOD
+    for key in (
+        "'daily',v_days",
+        "'hour_profile'",
+        "'floor_profile'",
+        "'table_profile'",
+        "'weekday_profile'",
+        "'weekly_trend'",
+        "'service_time_distribution'",
+        "'previous_period'",
+        "'comparison'",
+    ):
+        assert key in PERIOD
+    assert "p_days<2 or p_days>31" in PERIOD
+    assert "wl_assert_my_site(p_site_id)" in PERIOD
+
+
+def test_period_report_truth_and_previous_period_comparison():
+    assert "Visible diners are concurrent visible people on dining-floor cameras, not unique footfall." in PERIOD
+    assert "Estimated covers and table sessions are camera-derived estimates." in PERIOD
+    assert "Observed time to food is seated/occupied to first food visible, not POS order-to-serve time." in PERIOD
+    assert "Missing observation periods are missing coverage, not zero business activity." in PERIOD
+    assert "'estimated_covers_pct'" in PERIOD
+    assert "'served_sessions_pct'" in PERIOD
+    assert "'median_time_to_food_delta_minutes'" in PERIOD
+    assert "'coverage_delta_points'" in PERIOD
+
+
+def test_chaiwala_report_layout_has_day_week_and_month_sections():
+    for text in (
+        "Peak visible diners",
+        "Peak occupied tables",
+        "Estimated covers",
+        "Analytics coverage",
+        "Floor comparison",
+        "Table utilization",
+        "7-day operations review",
+        "30-day management review",
+        "Demand by hour",
+        "Weekday pattern",
+        "Observed service-time distribution",
+        "Most-used calibrated tables",
+        "Lower-utilization tables",
+    ):
+        assert text in REPORT
+    assert "Missing observation periods are missing coverage, not zero activity." in REPORT
+    assert "Period-to-period changes should only be acted on when coverage is sufficiently comparable." in REPORT
+
+
+def test_period_ai_is_grounded_in_period_rpc():
+    assert 'restaurant_period: null' in CHAT
+    assert 'rpcOptional(sb, "wl_restaurant_period"' in CHAT
+    assert "function restaurantPeriodFallback" in CHAT
+    assert "Across the last" in CHAT
+    assert "Coverage is partial, so trend comparisons should be treated cautiously." in CHAT
