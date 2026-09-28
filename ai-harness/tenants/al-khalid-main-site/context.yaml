@@ -1,0 +1,67 @@
+version: 1
+id: al_khalid_main_site
+status: IMPLEMENTED
+kind: tenant_site_overlay
+site_type: office
+inherits:
+  - ../../site-types/office.yaml
+
+identity:
+  tenant: Al-Khalid Security Services
+  display_name: Main site
+  timezone: Asia/Karachi
+
+working_day:
+  open: "08:00"
+  close: "19:00"
+  overnight: false
+  days_iso: [1, 2, 3, 4, 5]
+
+camera_identity:
+  physical_camera_count: 8
+  canonical_only: true
+  legacy_transport_profiles_hidden: true
+  mapping_status: needs_physical_view_reconfirmation
+  rule: >
+    Do not bind Reception, Directors Office, Armory Gate or Admin Entrance to a specific camera
+    until the current physical view is visually re-confirmed. Legacy ONVIF profile labels conflicted.
+
+known_operational_areas:
+  - Reception
+  - Directors Office
+  - Armory Gate
+  - Admin Entrance
+
+owner_priorities:
+  - office opening and closing activity
+  - reception and visitor flow after physical mapping confirmation
+  - director/management-office after-hours presence after mapping confirmation
+  - armory/restricted-area access after mapping confirmation
+  - admin entrance activity after mapping confirmation
+  - unusual dwell or access outside business hours
+  - camera, recorder, recording and monitoring health
+  - camera mapping and image-quality improvement opportunities
+
+report_profile:
+  id: office_ops_v1
+  tabs: [Today, Yesterday, Last 7 days, Last 30 days]
+
+truth_boundaries:
+  - role-specific conclusions require current physical camera mapping
+  - activity detections are not unique people
+  - hidden historical ONVIF transport profiles are not extra physical cameras
+  - missing monitoring is missing evidence, not no activity
+
+
+reporting_contract:
+  archive: ./reporting/daily-reports/
+  visual_method: ./reporting/methods/visual-snapshot-analysis.md
+  daily_summary_name: summary.md
+  daily_detailed_name: detailed-report.md
+  rule: >
+    Generate the report only after the required evidence pass is complete. Store it under
+    daily-reports/<business-or-service-date>/ using the configured business/service-day key.
+
+runtime_facts:
+  source: watchlog_database
+  do_not_duplicate_here: [tenant_uuid, site_uuid, camera_uuid, live_events, live_incidents, live_coverage, current_agent_version]

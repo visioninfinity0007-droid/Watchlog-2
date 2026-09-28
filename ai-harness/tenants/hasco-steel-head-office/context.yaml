@@ -1,0 +1,78 @@
+version: 1
+id: hasco_steel_head_office
+status: IMPLEMENTED
+kind: tenant_site_overlay
+site_type: office
+inherits:
+  - ../../site-types/office.yaml
+
+identity:
+  tenant: HASCO Steel
+  display_name: Head Office
+  timezone: Asia/Karachi
+
+working_day:
+  open: "08:00"
+  close: "19:00"
+  overnight: false
+  days_iso: [1, 2, 3, 4, 5]
+
+camera_role_map:
+  Entrance Corridor:
+    role: entrance
+    watch_for: [arrival/departure activity, after-hours movement, unusual corridor dwell]
+  Reception:
+    role: reception
+    watch_for: [visitor arrivals, waiting/dwell, reception occupancy, unattended periods]
+  Private Office:
+    role: management_office
+    watch_for: [occupancy, unusual access, after-hours presence]
+  Office Interior:
+    role: general_office
+    watch_for: [office activity level, busy/quiet periods, after-hours presence]
+  Manager Office:
+    role: management_office
+    watch_for: [management-office occupancy, unusual access, after-hours presence]
+  Parking:
+    role: parking
+    watch_for: [vehicle arrival/departure activity, prolonged vehicle presence, after-hours parking]
+  Internal Corridor:
+    role: corridor
+    watch_for: [movement flow, after-hours activity, unusual dwell]
+  External Entrance:
+    role: perimeter
+    watch_for: [arrival/departure flow, after-hours access, entrance dwell, external access]
+
+owner_priorities:
+  - office opening and closing activity
+  - visitor arrival and reception waiting
+  - after-hours activity in private and manager offices
+  - entrance and corridor access patterns
+  - parking and vehicle activity
+  - unusual dwell or access
+  - camera, recorder, recording and monitoring health
+  - camera angle, obstruction and coverage improvements
+
+report_profile:
+  id: office_ops_v1
+  tabs: [Today, Yesterday, Last 7 days, Last 30 days]
+
+truth_boundaries:
+  - do not infer employee identity, visitor identity, employment status or wrongdoing from appearance
+  - detections and episodes are not unique people
+  - visitor language requires reception/entrance context
+  - missing monitoring is missing evidence, not no activity
+
+
+reporting_contract:
+  archive: ./reporting/daily-reports/
+  visual_method: ./reporting/methods/visual-snapshot-analysis.md
+  daily_summary_name: summary.md
+  daily_detailed_name: detailed-report.md
+  rule: >
+    Generate the report only after the required evidence pass is complete. Store it under
+    daily-reports/<business-or-service-date>/ using the configured business/service-day key.
+
+runtime_facts:
+  source: watchlog_database
+  do_not_duplicate_here: [tenant_uuid, site_uuid, camera_uuid, live_events, live_incidents, live_coverage, current_agent_version]

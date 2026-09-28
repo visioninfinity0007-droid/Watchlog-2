@@ -9,6 +9,7 @@ import useReport from "./use-report";
 
 const VIEWS=[["daily","Today"],["yesterday","Yesterday"],["monthly","30 days"],["executive","Executive"]];
 const RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]];
+const OFFICE_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]];
 function dateLabel(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {weekday:"long",month:"long",day:"numeric",year:"numeric"})}
 function shortDate(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {month:"short",day:"numeric"})}
 function severityClass(v){return v==="critical"?styles.dotCritical:v==="attention"?styles.dotAttention:v==="none"||v==="clear"?styles.dotGood:""}
@@ -225,6 +226,89 @@ function RestaurantPeriodReport({data,days}){
   </section>;
 }
 
+function OfficeDayReport({data,periodLabel}){
+  if(!data)return <div className={ui.emptyCard}>No structured office intelligence is available for this working day yet.</div>;
+  const office=data.office||{},attn=data.attention||{},coverage=data.coverage||{},bounds=data.day_boundaries||{},meta=data.meta||{};
+  const byArea=office.by_area||[],restricted=data.restricted||[],incidents=data.incidents||[];
+  const activity=Number(office?.coverage?.person_events||0);
+  const afterHours=Number(data?.after_hours?.count??office.after_hours_total??0);
+  const cov=num(coverage.coverage_ratio);
+  const maxArea=Math.max(1,...byArea.map(x=>Number(x.events||0)));
+  return <section className={styles.periodShell}>
+    <div className={styles.periodHero}>
+      <div><div className={styles.kicker}>Office operations · {periodLabel}</div><h2>{meta.date?dateLabel(meta.date):periodLabel}</h2><p>Security, operating-day activity and monitoring reliability. Activity detections are not unique people.</p></div>
+      <div className={styles.periodHeroFacts}><span><b>{coverageLabel(cov)}</b> coverage</span><span><b>{activity}</b> activity detections</span></div>
+    </div>
+    <div className={styles.periodMetrics}>
+      <div className={styles.restaurantMetric}><strong>{val(attn.incidents_total)}</strong><span>Attention items</span><small>{val(attn.critical)} critical · {val(attn.warning)} warning</small></div>
+      <div className={styles.restaurantMetric}><strong>{activity}</strong><span>Activity detections</span><small>Camera detections, not unique people</small></div>
+      <div className={styles.restaurantMetric}><strong>{afterHours}</strong><span>After-hours observations</span><small>Outside configured working hours</small></div>
+      <div className={styles.restaurantMetric}><strong>{office?.peak_hour?.hour==null?"—":String(office.peak_hour.hour).padStart(2,"0")+":00"}</strong><span>Peak activity hour</span><small>{val(office?.peak_hour?.count)} detections in peak hour</small></div>
+      <div className={styles.restaurantMetric}><strong>{bounds.opening_at||"—"}</strong><span>Observed opening</span><small>Coverage/mapping dependent</small></div>
+      <div className={styles.restaurantMetric}><strong>{bounds.closing_at||"—"}</strong><span>Observed closing</span><small>Coverage/mapping dependent</small></div>
+    </div>
+
+    <div className={styles.periodGrid}>
+      <div className={styles.restaurantPanel}>
+        <div className={styles.sectionHead}><div><h3>Activity by monitored area</h3><p>Detection volume by camera/area. This is not a unique-person count.</p></div></div>
+        <div className={styles.hourChart}>{byArea.length?byArea.map((a,i)=><div className={styles.hourRow} key={(a.camera||"area")+"-"+i}>
+          <span className={styles.hourLabel}>{a.camera||"Area"}</span>
+          <div className={styles.hourTrack}><div className={styles.hourFill} style={{width:String(pctWidth(a.events,maxArea))+"%"}}/></div>
+          <b>{val(a.events)}</b>
+        </div>):<div className={styles.restaurantEmpty}>No office-area activity detections are available for this day.</div>}</div>
+      </div>
+      <div className={styles.restaurantPanel}>
+        <div className={styles.sectionHead}><div><h3>Security & restricted-area attention</h3><p>Only mapped/verified evidence is shown as role-specific activity.</p></div></div>
+        <div className={styles.floorCards}>
+          <div className={styles.floorCard}><div className={styles.floorName}>Incidents / alerts</div><div className={styles.floorStats}><span><b>{val(attn.incidents_total)}</b> total</span><span><b>{val(attn.critical)}</b> critical</span><span><b>{val(attn.warning)}</b> warning</span></div></div>
+          <div className={styles.floorCard}><div className={styles.floorName}>Restricted-area episodes</div><div className={styles.floorStats}><span><b>{restricted.reduce((n,x)=>n+Number(x.episodes||0),0)}</b> episodes</span><span><b>{restricted.reduce((n,x)=>n+Number(x.after_hours||0),0)}</b> after-hours</span><span><b>{incidents.length}</b> incident records</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div className={styles.truthNote}><b>How to read this:</b> activity detections are not a headcount or unique visitor count. Role-specific office conclusions require confirmed physical camera mapping. Missing monitoring is missing evidence, not zero activity.</div>
+  </section>;
+}
+
+function OfficePeriodReport({data,days}){
+  if(!data?.enabled)return <div className={ui.emptyCard}>No structured office period data is available yet.</div>;
+  const s=data.summary||{},p=data.previous_period||{},c=data.comparison||{},daily=data.daily||[];
+  const maxActivity=Math.max(1,...daily.map(x=>Number(x.activity_detections||0)));
+  const coverage=num(s.avg_coverage_ratio);
+  const working=daily.filter(x=>x.working_day),nonWorking=daily.filter(x=>!x.working_day);
+  const sum=(rows,key)=>rows.reduce((n,x)=>n+Number(x[key]||0),0);
+  return <section className={styles.periodShell}>
+    <div className={styles.periodHero}>
+      <div><div className={styles.kicker}>Office intelligence</div><h2>{days===7?"7 completed working days":"30-day management review"}</h2><p>{shortDate(data.period?.start_date)} – {shortDate(data.period?.end_date)} · {data.window_type==="completed_working_days"?"working days only":"working and non-working days separated"}</p></div>
+      <div className={styles.periodHeroFacts}><span><b>{val(s.observed_days)}</b> observed days</span><span><b>{coverageLabel(coverage)}</b> avg coverage</span></div>
+    </div>
+    <div className={styles.periodMetrics}>
+      <div className={styles.restaurantMetric}><strong>{val(s.incidents_total)}</strong><span>Attention / incident items</span><small>{val(s.critical_total)} critical</small></div>
+      <div className={styles.restaurantMetric}><strong>{val(s.after_hours_total)}</strong><span>After-hours observations</span><small>Across the selected period</small></div>
+      <div className={styles.restaurantMetric}><strong>{val(s.activity_detections)}</strong><span>Activity detections</span><small>Not unique people</small></div>
+      <div className={styles.restaurantMetric}><strong>{coverageLabel(coverage)}</strong><span>Average coverage</span><small>Missing coverage is unknown activity</small></div>
+      <div className={styles.restaurantMetric}><strong>{days===30?sum(working,"activity_detections"):val(s.days)}</strong><span>{days===30?"Working-day detections":"Working days reviewed"}</span><small>{days===30?working.length+" working days":"Completed configured working days"}</small></div>
+      <div className={styles.restaurantMetric}><strong>{days===30?sum(nonWorking,"activity_detections"):val(p.activity_detections)}</strong><span>{days===30?"Non-working-day detections":"Prior-period detections"}</span><small>{days===30?nonWorking.length+" non-working days":"Comparison baseline"}</small></div>
+    </div>
+
+    <div className={styles.compareStrip}>
+      <div><span>Attention items vs prior period</span><b>{signed(c.incidents_delta)}</b><small>Current minus previous comparable period</small></div>
+      <div><span>Critical attention vs prior</span><b>{signed(c.critical_delta)}</b><small>Current minus previous comparable period</small></div>
+      <div><span>After-hours vs prior</span><b>{signed(c.after_hours_delta)}</b><small>Observed after-hours items</small></div>
+      <div><span>Coverage change</span><b>{signed(c.coverage_delta_points," pts")}</b><small>Percentage-point change</small></div>
+    </div>
+
+    <div className={styles.restaurantPanel}>
+      <div className={styles.sectionHead}><div><h3>Office activity trend</h3><p>Activity detections by report day. Counts are not unique people.</p></div></div>
+      <div className={styles.trendChart}>{daily.length?daily.map((d,i)=><div className={styles.trendRow} key={(d.date||i)+"-"+i}>
+        <span>{shortDate(d.date)}</span><div className={styles.hourTrack}><div className={styles.trendFill} style={{width:String(pctWidth(d.activity_detections,maxActivity))+"%"}}/></div><b>{val(d.activity_detections)}</b>
+      </div>):<div className={styles.restaurantEmpty}>No comparable office activity trend is available yet.</div>}</div>
+    </div>
+
+    <div className={styles.truthNote}><b>Management boundary:</b> detections are not unique staff/visitors. Compare periods only when coverage is reasonably comparable, and only make area-specific claims where camera mapping is confirmed.</div>
+  </section>;
+}
+
 function ManagementReading({answer,label}){
   if(!answer)return null;
   return <section className={styles.managementReading}><div className={styles.kicker}>WatchLog management reading</div><h3>{label||"What the period suggests"}</h3><p>{answer}</p></section>;
@@ -261,7 +345,7 @@ function EvidenceReport({snapshot}){
 
 export default function CustomerReports(){
   const r=useReport();
-  const views=r.isChaiWalaRestaurant?RESTAURANT_VIEWS:VIEWS;
+  const views=r.isChaiWalaRestaurant?RESTAURANT_VIEWS:r.isOffice?OFFICE_VIEWS:VIEWS;
   const label=views.find(([k])=>k===r.view)?.[1]||"Report";
   const prompts={
     daily:"Explain today's Chai Wala restaurant operations. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.",
@@ -269,7 +353,13 @@ export default function CustomerReports(){
     week:"Explain the last 7 Chai Wala service days. Identify repeated demand, table-utilization and observed service-time patterns, and practical improvements supported by the evidence.",
     monthly:"Explain the last 30 Chai Wala service days. Identify weekly, weekday and hourly patterns, floor/table utilization, observed service-time trends and practical improvements supported by the evidence."
   };
-  const prompt=r.isChaiWalaRestaurant?(prompts[r.view]||prompts.daily):(r.view==="yesterday"?"Explain the Report of Yesterday for this site. Include restaurant operations when available, distinguish visible diners from unique footfall, and distinguish observed service timing from POS order-to-serve time.":"Explain this management report and tell me the priority action.");
+  const officePrompts={
+    daily:"Explain today's office report in natural management language. Lead with what needs attention, monitoring confidence and practical improvements. Do not call activity detections unique people.",
+    yesterday:"Explain the last completed working-day office report. Lead with security attention, office activity, after-hours exceptions, coverage and practical improvements.",
+    week:"Explain the last 7 completed working days for this office. Identify repeated security/activity/coverage patterns and practical improvements.",
+    monthly:"Explain the last 30 completed calendar days for this office, separating working and non-working patterns and surfacing repeated improvements."
+  };
+  const prompt=r.isChaiWalaRestaurant?(prompts[r.view]||prompts.daily):r.isOffice?(officePrompts[r.view]||officePrompts.daily):(r.view==="yesterday"?"Explain the last completed business-day report for this site.":"Explain this management report and tell me the priority action.");
 
   let reportBody=null;
   if(r.isChaiWalaRestaurant){
@@ -286,9 +376,20 @@ export default function CustomerReports(){
         <ManagementReading answer={r.answer} label={days===7?"What the last 7 days suggest":"What the last 30 days suggest"}/>
       </>;
     }
+  }else if(r.isOffice){
+    if(r.view==="daily"||r.view==="yesterday"){
+      reportBody=<>
+        <OfficeDayReport data={r.officeDay} periodLabel={r.view==="daily"?"Today":"Last completed working day"}/>
+        <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Last completed working-day reading"}/>
+        {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for this working day yet.</div>)}
+      </>;
+    }else{
+      const days=r.view==="week"?7:30;
+      reportBody=<><OfficePeriodReport data={r.officePeriod} days={days}/><ManagementReading answer={r.answer} label={days===7?"What the last 7 working days suggest":"What the last 30 days suggest"}/></>;
+    }
   }else{
-    reportBody=r.view==="yesterday"?<><RestaurantOperations data={r.restaurant} periodLabel="Yesterday"/>{r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for this service day yet.</div>}</>:<><section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>{r.view==="daily"&&<RestaurantOperations data={r.restaurant} periodLabel="Today"/>}</>;
+    reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
   }
 
-  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?"Chai Wala management report":"Management report"}</h1><p>{r.isChaiWalaRestaurant?"Demand, table utilization, observed service timing, operating pressure and monitoring coverage.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
+  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?"Chai Wala management report":r.isOffice?"Office management report":"Management report"}</h1><p>{r.isChaiWalaRestaurant?"Demand, table utilization, observed service timing, operating pressure and monitoring coverage.":r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
 }

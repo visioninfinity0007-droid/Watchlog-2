@@ -106,7 +106,7 @@ jobs:
       - name: Analytics Studio report rendering tests
         run: python prototype/tests/test_analytics_reporting.py
       - name: Reports preview truth contract
-        run: python prototype/tests/test_reports_preview_truth.py
+        run: python prototype/tests/test_reports_preview_truth.py && python prototype/tests/test_restaurant_reports_contract.py && python prototype/tests/test_tenant_reporting_governance.py
       - name: Analytics portal alignment contract
         run: python prototype/tests/test_analytics_portal_contract.py
       - name: Portal + installer alignment contract

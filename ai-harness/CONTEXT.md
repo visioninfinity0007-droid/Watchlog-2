@@ -20,10 +20,7 @@ never by a model: `tenant → site → allowed cameras → allowed date/time →
 
 ## Live site/business context
 
-The harness now includes an implemented restaurant semantic layer in
-`site-types/restaurant.yaml` and a stable Chai Wala overlay in
-`tenants/chaiwala-chota-bukhari.yaml`. The **runtime factual site/business context** remains live through
-`site_business_context` and `wl_ai_context`.
+The harness now includes reusable `site-types/restaurant.yaml` and `site-types/office.yaml` policies. Tenant-specific stable context lives in tenant folders such as `tenants/chaiwala-chota-bukhari/context.yaml`, `tenants/al-khalid-main-site/context.yaml`, and `tenants/hasco-steel-head-office/context.yaml`. Each tenant folder can also hold a governed `reporting/` archive and visual-analysis method. The **runtime factual site/business context** remains live through `site_business_context` and `wl_ai_context`.
 
 The Watch AI Edge Function injects a customer-safe `SITE OPERATING CONTEXT`
 containing:
@@ -45,11 +42,15 @@ Harness site-type/tenant files define semantics, not live facts. Do not infer th
 ## Implemented harness content (safe to reference)
 
 - `taxonomy/` — observations, activities, entities, incident-families, severity.
-- `core/` — `truth.md`, `confidence.md`, `retention.yaml` (mirrors `0107`).
+- `core/` — `truth.md`, `confidence.md`, `retention.yaml`, `customer-language.md`.
 - `schemas/incident.schema.json`.
 - `device-knowledge/` — 47-model recorder capability registry (see `DEVICE_KNOWLEDGE` doc).
 - `site-types/restaurant.yaml` — reusable restaurant metric, camera-role, movable-table, reporting and analytics-quality policy.
-- `tenants/chaiwala-chota-bukhari.yaml` — Chai Wala stable site overlay; live IDs/evidence remain database-owned.
+- `site-types/office.yaml` — reusable office working-day, camera-role, reporting and coverage policy.
+- `tenants/*/context.yaml` — stable tenant/site overlays; live IDs/evidence remain database-owned.
+- `tenants/*/reporting/` — governed daily report archive + reproducible analysis methods.
+- `skills/tenant-intelligence-setup.md` — repeatable tenant setup/customization procedure.
+- `core/customer-language.md` — natural customer-facing management language + report recommendation policy.
 
 ## PLANNED content (NOT yet implemented — do not depend on these)
 
@@ -58,7 +59,7 @@ must not depend on them; they are the roadmap, not the runtime:
 
 - Additional `site-types/` beyond restaurant and `risk-profiles/` — vertical/risk definitions (PLANNED).
 - `incidents/` — the micro-level incident catalogue (PLANNED).
-- `skills/` — reusable skills e.g. journey-correlation (PLANNED).
+- Additional `skills/` beyond the implemented tenant-intelligence setup skill, e.g. journey-correlation (PLANNED).
 - `playbooks/` — per-intent playbooks e.g. site-health / investigate-incident / recorder-change (PLANNED).
 - `models/` — model routing/qualification metadata (PLANNED).
 - `evals/` — harness eval sets (the runnable benchmark lives at `tools/ai_eval/` today).
@@ -72,7 +73,7 @@ must not depend on them; they are the roadmap, not the runtime:
 | "What incidents today?" | `playbooks/today-summary.yaml` | YES — NO_MODEL count |
 | "What happened around <area> last night?" | `playbooks/investigate-incident.yaml` | evidence two-stage (implemented in `router.ts`) |
 | "Enable human/vehicle detection on camera X" | `playbooks/recorder-change.yaml` | Site Control propose→approve; **never** raw CGI |
-| "Give me today's report" | `playbooks/daily-report.yaml` | frozen snapshot RPC |
+| "Give me today's report" | tenant reporting contract is IMPLEMENTED under `tenants/*/reporting/`; a standalone `playbooks/daily-report.yaml` wrapper is still PLANNED | governed daily/period RPCs + report UI |
 
 ## Output discipline
 
