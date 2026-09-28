@@ -20,11 +20,11 @@ Authoritative branch:
 
 Current authoritative source version:
 
-**5.0.22**
+**5.0.23**
 
 Authoritative merged implementation commit containing the current installer/runtime hardening:
 
-`a3fe605f51f06605355bf9133f8568b5a4a56491`
+`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
 
 This main branch contains both:
 
@@ -98,7 +98,7 @@ spinner-forever failure class.
 
 ---
 
-## 4. Discovery/connectivity hardening now in authoritative 5.0.22
+## 4. Discovery/connectivity hardening now in authoritative 5.0.23
 
 The authoritative main source now implements:
 
@@ -183,7 +183,7 @@ Build 83 passed:
 
 Build 83 is a **validation candidate**, not the final authoritative installer.
 
-It is version **5.0.21** and does not represent the full authoritative 5.0.22
+It is version **5.0.21** and does not represent the full authoritative 5.0.23
 remote-maintenance/runtime source.
 
 Do not call Build 83 the final production installer.
@@ -274,13 +274,57 @@ The Windows regression used real processes/file locks and proved that preflight:
 - restored the complete previous payload during rollback;
 - refused to claim rollback success when no enabled background task existed to restart the old Agent.
 
-Build 98 is still a **5.0.21 release-line validation artifact**, not the final authoritative 5.0.22 fleet installer.
+Build 98 is still a **5.0.21 release-line validation artifact**, not the final authoritative 5.0.23 fleet installer.
+
+### Archive/gap recovery packaged validation — Build 100
+
+Windows Release **100 / 5.0.23** validates the historical-footage decoder and recovered-snapshot runtime:
+
+- release-line source SHA:
+  `377462fbd36d834d52864838803299a2a97eb7af`
+- run id:
+  `36373435504`
+- artifact:
+  `WatchLog-Windows-100`
+- artifact id:
+  `10950610443`
+- artifact ZIP digest:
+  `sha256:35e46bccd8549aa844932970d266c26badcc14ebe358cee50b1c375b73e86a9e`
+- `watchlog-agent.exe` SHA-256:
+  `1EC1C2C685E24907822CA4550FEB057D2D49996159B33C6740683A43AE313B84`
+- `watchlog-setup-ui.exe` SHA-256:
+  `4C88206420F97AC1BDF28A824F4B0F1CAE675F374E1791C1D163911E3CC5F297`
+- `WatchLog-Setup.exe` SHA-256:
+  `D40C5622E6DB30BE064FD273624281A08F404112ADD274B7BACE851A558CD42B`
+
+Release #100 passed the frozen connector self-test that explicitly invokes
+`recovery_ai.decoder_selftest()`; therefore the packaged Windows Agent contains a
+working bundled FFmpeg capable of synthesizing video and decoding a JPEG.
+
+5.0.23 recovery contract:
+
+- Dahua + Hikvision archive segments feed one bounded recovery path;
+- recovered visual checkpoints default to every **300 seconds** across a missed recording;
+- quiet/no-detector frames are preserved as `recovered_snapshot`;
+- detected activity is preserved as `recovered_activity`;
+- recovered JPEGs are bounded to 1280px / 3 MiB;
+- original footage timestamps are retained end-to-end;
+- recorder liveness, not cloud heartbeat, defines the missing interval;
+- spool overflow records a durable lost-observation interval and reconciles it from NVR archive;
+- all-frame decode failure is partial/unknown, never falsely recovered.
+
+Production migration `0120_recovered_snapshot_timestamps.sql` is live and makes
+`snapshots.captured_at` use the recovered event's historical `device_ts`, so downstream
+visual review sees the original footage time.
+
+Build 100 is release-line validation evidence. The exact Hikvision DS-7608NI-Q1 archive
+download remains a physical field acceptance gate until 5.0.23 is installed on that hardware.
 
 ---
 
 ## 8. Secure remote-update direction
 
-The 5.0.22 source contains the permanent remote-maintenance architecture:
+The 5.0.23 source contains the permanent remote-maintenance architecture:
 
 - outbound-only Agent polling;
 - no inbound Windows management port;
@@ -305,7 +349,7 @@ remote-update queue cannot be taught that worker purely from the cloud.
 
 ## 9. Mandatory physical field acceptance for the next promoted installer
 
-The first authoritative 5.0.22 (or later) Windows artifact must pass all of the following
+The first authoritative 5.0.23 (or later) Windows artifact must pass all of the following
 before replacing Build 69 as the fleet baseline.
 
 ### Hikvision
@@ -356,7 +400,7 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - Never block manual IP behind an automatic scan.
 - Never treat virtual/VPN adapters as higher priority than physical CCTV LANs.
 - Never treat CI/package success alone as field discovery proof.
-- Never call Build 83 the authoritative 5.0.22 installer.
+- Never call Build 83 the authoritative 5.0.23 installer.
 - Never replace a working Build-69 site with an unaccepted candidate.
 - Never claim Site Control/remote update from capability strings alone; require live poll proof.
 - Never expose recorder passwords or signing secrets.
@@ -387,7 +431,8 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - **Build 82 / 5.0.21** — Build-69 eight-subnet parity candidate passed Windows Release.
 - **Build 83 / 5.0.21** — discovery/setup validation candidate with exact artifact recorded above.
 - **Build 98 / 5.0.21** — running-file-lock/transactional-upgrade validation candidate; real Windows process test and packaged release passed.
-- **Authoritative source 5.0.22** — combined Build-69 reliability + remote maintenance/readback + shutdown-before-replace upgrade hardening; final Windows artifact still pending.
+- **Build 100 / 5.0.23** — packaged FFmpeg + archive/gap-recovery validation candidate; historical decoder self-test and Windows Release passed.
+- **Authoritative source 5.0.23** — combined Build-69 reliability + remote maintenance/readback + transactional upgrades + dual-vendor archive/gap snapshot recovery; exact authoritative artifact/field acceptance still pending.
 
 ---
 
