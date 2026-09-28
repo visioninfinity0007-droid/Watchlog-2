@@ -20,11 +20,15 @@ Authoritative branch:
 
 Current authoritative source version:
 
-**5.0.23**
+**5.0.24**
 
-Authoritative merged implementation commit containing the current installer/runtime hardening:
+Current authoritative `main` at this context update:
 
-`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
+`7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
+
+Existing-site Repair/Upgrade implementation merge:
+
+PR `#78` / merge commit `e74526affc4722daf5e14aab07e56b08f72c3d44`
 
 This main branch contains both:
 
@@ -98,7 +102,7 @@ spinner-forever failure class.
 
 ---
 
-## 4. Discovery/connectivity hardening now in authoritative 5.0.23
+## 4. Discovery/connectivity hardening now in authoritative 5.0.24
 
 The authoritative main source now implements:
 
@@ -183,148 +187,178 @@ Build 83 passed:
 
 Build 83 is a **validation candidate**, not the final authoritative installer.
 
-It is version **5.0.21** and does not represent the full authoritative 5.0.23
+It is version **5.0.21** and does not represent the full authoritative 5.0.24
 remote-maintenance/runtime source.
 
 Do not call Build 83 the final production installer.
 
 ---
 
-## 6. Authoritative 5.0.22 installer status
+## 6. Authoritative 5.0.24 installer / upgrade status
 
-The authoritative `Alkalid-security/Watchlog` main source is version **5.0.22** and includes:
+The authoritative `Alkalid-security/Watchlog` main source is version **5.0.24**.
 
-- Build-69 discovery/connectivity parity;
-- Site Control runtime;
-- truthful runtime capability reporting;
-- secure signed remote-update infrastructure;
-- transactional update rollback;
-- Hikvision recorder identity/channel/clock/storage/analytics readback;
-- Hikvision native-AI provenance;
-- incident still/clip workers;
-- archive/recovery;
-- health/status/runtime protections.
+5.0.24 preserves the 5.0.23 archive/gap-recovery work and adds the permanent
+**existing-site Repair/Upgrade bootstrap**.
+
+### Two Windows paths are now mandatory
+
+**`WatchLog-Setup.exe` — new site / new PC only**
+
+Use for first installation, recorder discovery/login, camera setup and enrollment.
+A fully enrolled existing site must be redirected away from this path before any
+WatchLog process is stopped or installed file is replaced.
+
+**`WatchLog-Repair-Upgrade.exe` — existing enrolled sites**
+
+Use for normal upgrades, repair/bootstrap from older versions and the one-time
+transition onto permanent signed online updates.
+
+The Repair/Upgrade path intentionally excludes the Qt discovery/setup UI. It must
+not re-run Search Network for a healthy enrolled site.
+
+### 5.0.24 staged safety contract
+
+Phase 1 — passive candidate validation while the old WatchLog remains running:
+
+- stage the candidate outside the live install;
+- run the candidate as Windows SYSTEM;
+- point it explicitly at the existing `watchlog.ini`;
+- read the machine-bound DPAPI recorder credential without migration/mutation;
+- prove candidate runtime dependencies load;
+- prove existing Agent identity/state can be read;
+- authenticate through the dedicated read-only `wl_agent_preflight_auth` RPC;
+- require valid signed remote-update configuration;
+- failure here leaves the installed WatchLog untouched.
+
+Phase 2 — recorder validation before replacement:
+
+- only after passive preflight succeeds, safely suspend/stop the old runtime;
+- back up the existing payload;
+- run the staged candidate against the actual saved recorder credential;
+- prove recorder authentication/identity and channel enumeration;
+- if recorder validation fails, do not install the candidate and restore/restart
+  the prior runtime.
+
+Phase 3 — atomic replacement and health commit:
+
+- replace only after both staged validations pass;
+- verify exact ProductVersion/runtime version;
+- re-register/start WatchLog;
+- require fresh protected runtime-health proof;
+- commit only if the exact new version reports:
+  - fresh cloud `heartbeat_at`;
+  - fresh `recorder_seen_at`;
+  - fresh `remote_update_poll_at` written only after the updater successfully
+    reaches the production update-claim RPC;
+- a merely-running process is not success;
+- any failed health gate triggers full rollback and old-Agent restart verification.
+
+### Current Windows validation branch
+
+Repository:
+
+`visioninfinity0007-droid/Watchlog-2`
+
+Branch:
+
+`fix/existing-site-repair-upgrader-v5`
+
+Head at this context update:
+
+`0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
+
+That branch currently contains the 5.0.24 Repair/Upgrade port including:
+
+- separate Repair/Upgrade NSIS + PowerShell orchestrator;
+- read-only DPAPI staged preflight;
+- protected runtime-health proof;
+- evidence-based Site Control capability reporting;
+- secure remote-update worker;
+- transactional `apply-remote-update.ps1`;
+- launcher handoff/rollback;
+- Ed25519/cryptography packaging;
+- update URL/public-key release inputs;
+- Windows release gates for the existing-site repair contract;
+- full-installer redirect for complete enrolled sites;
+- truthful rollback messaging.
 
 ### Current blocker
 
-The final authoritative **5.0.22 Windows artifact has not yet been produced**.
+**No 5.0.24 Windows Repair/Upgrade artifact is promoted yet.**
 
-The repository's GitHub Actions jobs are currently terminating before checkout/execution:
-all jobs show **zero executed steps**. This is runner/infrastructure failure, not evidence
-that the 5.0.22 source failed its tests.
+The next step is to complete and run the exact Windows Release on the validation
+branch, record the artifact IDs/hashes, then perform controlled Al-Khalid field
+acceptance.
 
-Until an exact Windows artifact is produced from authoritative main and recorded here,
-Build 69 remains the live-site field baseline.
+Until that exact artifact passes field acceptance, Build 69 remains the
+discovery/connectivity golden baseline and working sites must not be replaced
+merely to satisfy a version number.
 
 ---
 
 ## 7. Existing-site upgrade rule
 
-For a working enrolled site such as Chai Wala, **the installer must stop WatchLog before replacing files**.
+For a working enrolled site, the default upgrade path is now
+**`WatchLog-Repair-Upgrade.exe`**, not the full Setup wizard.
 
-Required upgrade sequence:
+The operator must not be forced through recorder rediscovery or re-entry of NVR
+credentials during a normal upgrade.
 
-1. suspend/disable the `WatchLog Agent` scheduled-task watchdog so it cannot restart the Agent during file replacement;
-2. stop only the current installation's `run-agent.ps1` / launcher process;
-3. close, then force-stop if required, only the current installation's `watchlog-setup-ui.exe`;
-4. stop, then force-stop if required, only the current installation's `watchlog-agent.exe`;
-5. verify every core payload file is exclusively writable before NSIS extracts anything;
-6. back up the complete existing payload;
-7. replace the full payload under checked/non-blocking overwrite semantics;
-8. preserve encrypted recorder credentials, enrollment identity and site configuration;
-9. verify the new file ProductVersion and runtime `--version`;
-10. re-register/start WatchLog and verify the new Agent remains running;
-11. if any stage fails, restore the complete previous payload and fail closed unless the previous Agent actually restarts.
+Required invariants:
 
-The installer must **never sit indefinitely on “Updating files” because WatchLog is still running**.
-It must either free the files and continue, or stop the upgrade and restore the previous working installation.
+1. passive staged validation runs before the old installation is stopped;
+2. passive failure changes nothing on the installed site;
+3. recorder validation happens before any installed payload is replaced;
+4. scheduled-task watchdog is suspended during the replacement transaction;
+5. only processes belonging to the current WatchLog install path are stopped;
+6. all replace-target files are proven unlocked;
+7. the complete old payload is backed up;
+8. machine-bound enrollment + DPAPI recorder credentials are preserved;
+9. the new exact version must prove cloud heartbeat, recorder contact and real
+   remote-update polling before commit;
+10. rollback success may be claimed only when the previous Agent restart is proven.
 
-The installer should only require recorder rediscovery when the stored recorder identity/
-credential material is missing or genuinely invalid.
+The older full-installer shutdown-before-replace contract remains valid as a
+fallback safety layer and was Windows-validated by Build 98, but complete modern
+enrolled sites should be redirected to Repair/Upgrade before the full installer
+touches them.
+
+### Al-Khalid field incident that drove this design
+
+A recent Al-Khalid Head Office upgrade attempt with the full installer reached
+the new-Agent health check, failed to remain healthy and rolled back to the
+previous working **5.0.19** Agent.
+
+That field event exposed two product requirements now locked into 5.0.24:
+
+- do not replace the installed Agent before a staged candidate proves compatibility;
+- never display “previous working version restored” unless old-Agent restart is
+  actually verified.
+
+The restored 5.0.19 Agent does **not** advertise `remote_update_v1` and has not
+claimed an online-update request. It therefore still requires one successful
+5.0.24 Repair/Upgrade bootstrap before future updates can become remote.
 
 ### Release-line proof for the running-file-lock fix
 
-The shutdown/rollback behavior was validated in the Windows release-line repository by
-**Windows Release #98 / run id `36371718065`**.
+The lower-level shutdown/rollback mechanics were validated by Windows Release
+**#98 / run id `36371718065`**:
 
-Exact validation artifact:
-
-- source SHA:
-  `c653c6a38664491ee51788d0466e7338a1f3da53`
-- artifact:
-  `WatchLog-Windows-98`
-- artifact id:
-  `10949248440`
-- artifact ZIP digest:
+- source SHA `c653c6a38664491ee51788d0466e7338a1f3da53`
+- artifact `WatchLog-Windows-98`
+- artifact id `10949248440`
+- artifact ZIP digest
   `sha256:c6a29f4b1642c1fab1d546749e6928e432b605ca564395499e8e2e0e5c76f30c`
-- `WatchLog-Setup.exe` SHA-256:
+- `WatchLog-Setup.exe` SHA-256
   `06DFCC486EA15E123BA1E366A68A3DB83C996A6876CFAA0FDCA31BB4AAED2940`
-- `watchlog-agent.exe` SHA-256:
-  `F91B77053E3F1BE8EA2C52E4230CD7746CCDCFEE07290E1ACF792166014F8994`
-- `watchlog-setup-ui.exe` SHA-256:
-  `C0702F8312F2CE4D9FD2A247C5D184B9F4ABA3949EDDD2D4B7BFBC587574DFC4`
 
-The Windows regression used real processes/file locks and proved that preflight:
-
-- stopped the target WatchLog Setup UI;
-- stopped the target WatchLog Agent;
-- handled the WatchLog launcher path;
-- left an unrelated same-named process outside the install directory alone;
-- proved the payload was unlocked and backed up before replacement;
-- restored the complete previous payload during rollback;
-- refused to claim rollback success when no enabled background task existed to restart the old Agent.
-
-Build 98 is still a **5.0.21 release-line validation artifact**, not the final authoritative 5.0.23 fleet installer.
-
-### Archive/gap recovery packaged validation — Build 100
-
-Windows Release **100 / 5.0.23** validates the historical-footage decoder and recovered-snapshot runtime:
-
-- release-line source SHA:
-  `377462fbd36d834d52864838803299a2a97eb7af`
-- run id:
-  `36373435504`
-- artifact:
-  `WatchLog-Windows-100`
-- artifact id:
-  `10950610443`
-- artifact ZIP digest:
-  `sha256:35e46bccd8549aa844932970d266c26badcc14ebe358cee50b1c375b73e86a9e`
-- `watchlog-agent.exe` SHA-256:
-  `1EC1C2C685E24907822CA4550FEB057D2D49996159B33C6740683A43AE313B84`
-- `watchlog-setup-ui.exe` SHA-256:
-  `4C88206420F97AC1BDF28A824F4B0F1CAE675F374E1791C1D163911E3CC5F297`
-- `WatchLog-Setup.exe` SHA-256:
-  `D40C5622E6DB30BE064FD273624281A08F404112ADD274B7BACE851A558CD42B`
-
-Release #100 passed the frozen connector self-test that explicitly invokes
-`recovery_ai.decoder_selftest()`; therefore the packaged Windows Agent contains a
-working bundled FFmpeg capable of synthesizing video and decoding a JPEG.
-
-5.0.23 recovery contract:
-
-- Dahua + Hikvision archive segments feed one bounded recovery path;
-- recovered visual checkpoints default to every **300 seconds** across a missed recording;
-- quiet/no-detector frames are preserved as `recovered_snapshot`;
-- detected activity is preserved as `recovered_activity`;
-- recovered JPEGs are bounded to 1280px / 3 MiB;
-- original footage timestamps are retained end-to-end;
-- recorder liveness, not cloud heartbeat, defines the missing interval;
-- spool overflow records a durable lost-observation interval and reconciles it from NVR archive;
-- all-frame decode failure is partial/unknown, never falsely recovered.
-
-Production migration `0120_recovered_snapshot_timestamps.sql` is live and makes
-`snapshots.captured_at` use the recovered event's historical `device_ts`, so downstream
-visual review sees the original footage time.
-
-Build 100 is release-line validation evidence. The exact Hikvision DS-7608NI-Q1 archive
-download remains a physical field acceptance gate until 5.0.23 is installed on that hardware.
-
----
+The real Windows regression proved exact-path process shutdown, file unlock,
+full-payload backup/restore and fail-closed rollback behavior.
 
 ## 8. Secure remote-update direction
 
-The 5.0.23 source contains the permanent remote-maintenance architecture:
+The 5.0.24 source contains the permanent remote-maintenance architecture:
 
 - outbound-only Agent polling;
 - no inbound Windows management port;
@@ -343,13 +377,14 @@ The 5.0.23 source contains the permanent remote-maintenance architecture:
 This solves the long-term requirement that future field upgrades should not require repeated site visits.
 
 The bootstrap limitation remains: an already-installed old binary that does not poll the
-remote-update queue cannot be taught that worker purely from the cloud.
+remote-update queue cannot be taught that worker purely from the cloud. That is why the
+5.0.24 Repair/Upgrade exists: it is the one-time safe bootstrap onto the self-updating runtime.
 
 ---
 
 ## 9. Mandatory physical field acceptance for the next promoted installer
 
-The first authoritative 5.0.23 (or later) Windows artifact must pass all of the following
+The first authoritative 5.0.24 (or later) Windows artifact must pass all of the following
 before replacing Build 69 as the fleet baseline.
 
 ### Hikvision
@@ -379,14 +414,17 @@ before replacing Build 69 as the fleet baseline.
 
 ### Existing Build-69 site
 
-At least one Build-69 live site must be upgraded **in place** and prove:
+At least one existing live site must be upgraded with **WatchLog-Repair-Upgrade.exe** and prove:
 
+- passive staged preflight passes while the old Agent remains untouched;
+- recorder staged preflight passes before file replacement;
 - no forced rediscovery;
 - existing recorder connectivity preserved;
 - Agent returns online;
 - heartbeat/event/snapshot path still works;
 - Site Control worker polls;
-- remote-update worker polls;
+- remote-update worker polls and produces fresh `remote_update_poll_at`;
+- `remote_update_v1` appears only after that real poll;
 - rollback remains available until the health window passes.
 
 Only after these tests should the new exact artifact replace Build 69 as the field baseline.
@@ -400,8 +438,13 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - Never block manual IP behind an automatic scan.
 - Never treat virtual/VPN adapters as higher priority than physical CCTV LANs.
 - Never treat CI/package success alone as field discovery proof.
-- Never call Build 83 the authoritative 5.0.23 installer.
-- Never replace a working Build-69 site with an unaccepted candidate.
+- Never call Build 83, Build 98 or Build 100 the authoritative 5.0.24 installer.
+- Never replace a working site with an unaccepted candidate.
+- Never use the full discovery/setup wizard as the default upgrade path for a complete enrolled site.
+- Never stop the installed Agent before passive staged Repair/Upgrade validation succeeds.
+- Never replace installed files before staged recorder validation succeeds.
+- Never commit an upgrade because the process is merely alive; require fresh heartbeat + recorder + updater-poll proof.
+- Never claim rollback success unless the previous Agent restart is proven.
 - Never claim Site Control/remote update from capability strings alone; require live poll proof.
 - Never expose recorder passwords or signing secrets.
 - Never treat HTTP 200 alone as proof a recorder write succeeded.
