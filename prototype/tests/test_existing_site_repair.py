@@ -214,6 +214,19 @@ class InstallerContract(unittest.TestCase):
             self.assertIn(name, workflow)
         self.assertIn("WatchLog-Repair-Upgrade.exe.sha256", workflow)
 
+    def test_production_update_bootstrap_manifest_is_valid_for_5024(self):
+        import base64
+        from urllib.parse import urlparse
+
+        manifest = json.loads(
+            (ROOT / "prototype/update/production.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest.get("schema"), "watchlog.update_bootstrap.v1")
+        self.assertEqual(manifest.get("channel"), "production")
+        self.assertEqual(manifest.get("min_remote_update_version"), "5.0.24")
+        self.assertEqual(urlparse(str(manifest.get("manifest_url") or "")).scheme, "https")
+        self.assertEqual(len(base64.b64decode(manifest.get("public_key_b64") or "", validate=True)), 32)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
