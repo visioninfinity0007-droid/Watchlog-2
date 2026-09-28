@@ -8,7 +8,11 @@ CONFIG=(ROOT/"prototype/supabase/tenant-config/chaiwala_restaurant_analytics.sql
 WORKER=(ROOT/"prototype/supabase/functions/watchlog-vision-worker/index.ts").read_text(encoding="utf-8")
 RUNTIME=(ROOT/"prototype/supabase/migrations/0121_vision_worker_runtime.sql").read_text(encoding="utf-8")
 SCHEDULE=(ROOT/"prototype/supabase/migrations/0122_schedule_vision_worker.sql").read_text(encoding="utf-8")
-PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")\nCAPTURE=(ROOT/"prototype/supabase/migrations/0124_restaurant_server_capture_scheduler.sql").read_text(encoding="utf-8")\nAGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
+PREOPEN=(ROOT/"prototype/supabase/migrations/0123_restaurant_preopen_service_day.sql").read_text(encoding="utf-8")
+CAPTURE=(ROOT/"prototype/supabase/migrations/0124_restaurant_server_capture_scheduler.sql").read_text(encoding="utf-8")
+ALIGN=(ROOT/"prototype/supabase/migrations/0125_chaiwala_ai_context_alignment.sql").read_text(encoding="utf-8")
+AGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
+CHAT=(ROOT/"prototype/supabase/functions/watchlog-ai/index.ts").read_text(encoding="utf-8")
 
 
 def test_restaurant_report_uses_real_service_day_rpc():
@@ -123,3 +127,70 @@ def test_restaurant_server_capture_respects_camera_mode_and_hours():
     assert "'30 seconds'" in CAPTURE
     assert "rp.sampling_mode='event'" in CAPTURE
     assert "coalesce(ev.payload->>'source','')='periodic_snapshot'" in CAPTURE
+
+
+def test_chaiwala_shared_intelligence_contract_is_structured():
+    assert '"schema": "restaurant-intelligence-context-v2"' in ALIGN or '"schema":"restaurant-intelligence-context-v2"' in ALIGN
+    for metric in (
+        "visible_diners",
+        "occupied_tables",
+        "table_utilization_pct",
+        "estimated_table_sessions",
+        "estimated_covers",
+        "served_table_sessions",
+        "observed_time_to_food_minutes",
+        "minimum_observed_dwell_minutes",
+        "kitchen_load",
+        "handoff_load",
+        "counter_active",
+        "customer_footfall",
+    ):
+        assert metric in ALIGN
+    assert '"total_table_anchors": 23' in ALIGN or '"total_table_anchors":23' in ALIGN
+    assert '"available": false' in ALIGN or '"available":false' in ALIGN
+    assert "unique customer count" in ALIGN
+    assert "POS order-to-serve" in ALIGN
+
+
+def test_chaiwala_capture_cadence_matches_request_capacity():
+    assert "'dining_floor' then 60" in ALIGN
+    assert "'service_handoff' then 90" in ALIGN
+    assert "'kitchen' then 120" in ALIGN
+    assert "'cash_counter' then 180" in ALIGN
+    assert "(v_kitchen,v_tenant,v_site,'kitchen','interval',120,true" in CONFIG
+    assert "(v_front,v_tenant,v_site,'service_handoff','hybrid',90,true" in CONFIG
+    assert "(v_cash,v_tenant,v_site,'cash_counter','hybrid',180,true" in CONFIG
+
+
+def test_vision_worker_consumes_shared_contract_and_role_gates_metrics():
+    assert "RESTAURANT_INTELLIGENCE_CONTEXT" in WORKER
+    assert "restaurant_intelligence_context" in ALIGN
+    assert 'role === "dining_floor" ? asInt(rr.visible_customers) : null' in WORKER
+    assert 'role === "dining_floor" ? asInt(rr.occupied_tables) : null' in WORKER
+    assert 'role === "kitchen" ? as01(rr.kitchen_load) : null' in WORKER
+    assert 'role === "service_handoff" ? as01(rr.handoff_load) : null' in WORKER
+    assert 'role === "cash_counter" ? asBool(rr.counter_active) : null' in WORKER
+    assert "v_profile.analytics_role <> 'dining_floor'" in ALIGN
+    assert "v_profile.analytics_role <> 'kitchen'" in ALIGN
+    assert "v_profile.analytics_role <> 'service_handoff'" in ALIGN
+    assert "v_profile.analytics_role <> 'cash_counter'" in ALIGN
+
+
+def test_restaurant_day_has_floor_totals_and_coverage_truth():
+    assert "'floors',coalesce(v_floors,'[]'::jsonb)" in ALIGN
+    assert "'business_analytics_coverage_ratio',v_business_coverage" in ALIGN
+    assert "'camera_coverage',coalesce(v_camera_coverage,'[]'::jsonb)" in ALIGN
+    assert "site_total_requires_all_dining_floors" in ALIGN
+    assert "having count(*)=(" in ALIGN
+    assert "o.camera_role='dining_floor'" in ALIGN
+
+
+def test_customer_ai_uses_restaurant_day_and_shared_metric_meaning():
+    assert 'rpcOptional(sb, "wl_restaurant_day"' in CHAT
+    assert 'rpcOptional(sb, "wl_restaurant_site_config"' in CHAT
+    assert "restaurant_intelligence_context" in CHAT
+    assert '"Visible diners" means concurrent diners visible on dining-floor cameras' in CHAT
+    assert '"Estimated covers" and "estimated table sessions"' in CHAT
+    assert '"Observed time to food" means first visible seated/occupied evidence' in CHAT
+    assert "function restaurantFallback" in CHAT
+    assert "Restaurant analytics is configured, but there are no processed restaurant observations" in CHAT
