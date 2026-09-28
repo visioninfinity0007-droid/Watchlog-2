@@ -261,6 +261,7 @@ jobs:
           Copy-Item prototype\installer\nsis\watchlog.nsi (Join-Path $stage "watchlog.nsi")
           Copy-Item prototype\installer\run-agent.ps1 (Join-Path $stage "run-agent.ps1")
           Copy-Item prototype\installer\register-service.ps1 (Join-Path $stage "register-service.ps1")
+          Copy-Item prototype\installer\apply-remote-update.ps1 (Join-Path $stage "apply-remote-update.ps1")
           Copy-Item prototype\installer\nsis\wl-upgrade.ps1 (Join-Path $stage "wl-upgrade.ps1")
           Copy-Item "prototype\installer\READ ME FIRST.txt" (Join-Path $stage "READ ME FIRST.txt")
           Copy-Item prototype\installer\setup.ico (Join-Path $stage "setup.ico")
