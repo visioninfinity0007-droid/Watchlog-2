@@ -17,3 +17,9 @@ ultralytics>=8.2
 # Interface enumeration for recorder discovery (multi-NIC sweep). Optional import in
 # discover.py, but a build without it loses multi-adapter discovery silently.
 psutil>=5.9
+
+
+# Historical footage -> JPEG recovery for outage backfill. The production
+# PyInstaller build bundles imageio-ffmpeg's static FFmpeg binary so recovered
+# Dahua/Hikvision clips can be decoded without relying on site-PC software.
+imageio-ffmpeg>=0.5

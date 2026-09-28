@@ -28,6 +28,11 @@ create table if not exists spool (
   payload     text not null,
   created_at  text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+create table if not exists spool_recovery_gap (
+  singleton   integer primary key check(singleton=1),
+  started_at  text not null,
+  ended_at    text not null
+);
 """
 
 
@@ -72,16 +77,62 @@ class Spool:
                 ids)
 
     def trim(self) -> int:
-        """Drop the oldest rows past the configured cap. Returns how many were dropped."""
+        """Bound disk usage without turning overflow into permanent data loss.
+
+        Before deleting oldest rows, persist the dropped observation interval in the
+        same SQLite database. The recovery worker later opens that interval against
+        the recorder archive once cloud + recorder connectivity are available again.
+        Repeated overflow merges into one durable interval.
+        """
         with self._lock:
             n = self.db.execute("select count(*) from spool").fetchone()[0]
             if n <= self.max_rows:
                 return 0
             excess = n - self.max_rows
+            times = self.db.execute(
+                "select created_at from spool order by id limit ?", (excess,)
+            ).fetchall()
+            if times:
+                started, ended = times[0][0], times[-1][0]
+                current = self.db.execute(
+                    "select started_at, ended_at from spool_recovery_gap where singleton=1"
+                ).fetchone()
+                if current:
+                    started = min(started, current[0])
+                    ended = max(ended, current[1])
+                self.db.execute(
+                    "insert into spool_recovery_gap(singleton,started_at,ended_at) "
+                    "values(1,?,?) "
+                    "on conflict(singleton) do update set "
+                    "started_at=excluded.started_at, ended_at=excluded.ended_at",
+                    (started, ended),
+                )
             self.db.execute(
                 "delete from spool where id in "
                 "(select id from spool order by id limit ?)", (excess,))
             return excess
+
+    def pending_recovery_gap(self):
+        """Return the durable spool-overflow interval, if any."""
+        with self._lock:
+            row = self.db.execute(
+                "select started_at, ended_at from spool_recovery_gap where singleton=1"
+            ).fetchone()
+        return tuple(row) if row else None
+
+    def clear_recovery_gap(self, started_at: str, ended_at: str) -> bool:
+        """Clear only the exact interval we successfully handed to the cloud.
+
+        If new overflow extended the interval while recovery was being opened, the
+        equality guard preserves the newer/wider marker for the next pass.
+        """
+        with self._lock:
+            cur = self.db.execute(
+                "delete from spool_recovery_gap where singleton=1 "
+                "and started_at=? and ended_at=?",
+                (started_at, ended_at),
+            )
+            return cur.rowcount > 0
 
     def close(self) -> None:
         with self._lock:

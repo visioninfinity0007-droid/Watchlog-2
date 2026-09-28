@@ -225,6 +225,10 @@ class Config:
         # recorder-native event replay). Bounded per chunk; degrades honestly when no frame/codec.
         self.recovery_ai_enabled = str(get("recovery_ai_enabled") or "true").strip().lower() == "true"
         self.recovery_ai_max_frames = int(get("recovery_ai_max_frames") or 40)
+        # Restore one historical visual checkpoint per camera every N seconds
+        # across a missed interval. 300s gives useful coverage without hammering
+        # the recorder; recovery remains bounded by recovery_ai_max_frames/chunk.
+        self.recovery_snapshot_seconds = int(get("recovery_snapshot_seconds") or 300)
         # In-app updates (0.4.4 §13/§14). Check-for-updates is READ-ONLY and never auto-applies.
         # update_public_key authenticates the signed release manifest; with no key configured an
         # update is refused (trust nothing) unless update_require_signature is explicitly false.
@@ -548,6 +552,12 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
         auth_error = False
         try:
             driver, info = open_driver(cfg)
+            if holder is not None:
+                holder["live_driver"] = driver
+                holder["recorder_live_at"] = time.monotonic()
+                holder["recorder_live_wall"] = now_utc()
+                holder["recorder_vendor"] = info.vendor
+                holder["recorder_model"] = info.model
             log(f"driver {driver.name}: {info.vendor} {info.model or ''} "
                 f"fw={info.firmware or '?'}".rstrip())
             if not driver.verified_against_hardware:
@@ -559,6 +569,9 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                if holder is not None:
+                    holder["recorder_live_at"] = time.monotonic()
+                    holder["recorder_live_wall"] = now_utc()
 
                 # The image is best-effort and strictly secondary. A
                 # camera that hangs, refuses auth or returns junk must
@@ -635,6 +648,8 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             log(f"ERROR: driver crashed: {type(e).__name__}: {e}")
         finally:
             if driver:
+                if holder is not None and holder.get("live_driver") is driver:
+                    holder.pop("live_driver", None)
                 driver.close()
         if not stop.is_set():
             auth_failures = auth_failures + 1 if auth_error else 0
@@ -1072,13 +1087,28 @@ def cmd_selftest() -> int:
         retained = bool(k2 and d2)
 
     print(det.summary())
-    if det.available and keep is False:
-        extra = "" if retained is None else f"; real-object retained={retained}"
-        print(f"RESULT: PASS (ONNX runtime + model loaded, inference ran, "
-              f"junk frame discarded{extra})")
-        return 0
-    print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
-    return 2
+    if not (det.available and keep is False):
+        print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
+        return 2
+
+    # Recovery is part of the production contract: prove the frozen executable
+    # also contains a working FFmpeg capable of turning historical recorder
+    # footage into a JPEG checkpoint. This catches "recovery code exists but
+    # codec was not packaged" before an installer can ship.
+    try:
+        import recovery_ai
+        dec = recovery_ai.decoder_selftest()
+    except Exception as exc:  # noqa: BLE001
+        dec = {"ok": False, "reason": type(exc).__name__}
+    print(f"archive recovery decoder -> ok={dec.get('ok')} reason={dec.get('reason') or '-'}")
+    if not dec.get("ok"):
+        print("RESULT: FAIL (historical footage decoder NOT packaged/working)")
+        return 2
+
+    extra = "" if retained is None else f"; real-object retained={retained}"
+    print(f"RESULT: PASS (ONNX runtime + model + archive FFmpeg decoder packaged; "
+          f"junk frame discarded{extra})")
+    return 0
 
 
 def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
@@ -1832,7 +1862,7 @@ def cmd_probe(cfg: Config) -> None:
 
 
 def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
-                    spool, channels=None) -> None:
+                    spool, channels=None, holder=None) -> None:
     """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
     yields the missed interval, reported as a PENDING recovery interval. Then it claims pending
     intervals and backfills each from the recorder archive in bounded, resumable, idempotent
@@ -1843,7 +1873,14 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
-    cams = [str(c.channel) for c in (channels or [])] or None
+    def _channel_id(item):
+        if isinstance(item, dict):
+            return item.get("channel")
+        return getattr(item, "channel", None)
+
+    cams = [str(ch) for ch in (_channel_id(c) for c in (channels or []))
+            if ch is not None] or None
+    holder = holder if holder is not None else {}
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
     # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
@@ -1855,25 +1892,57 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         except Exception as e:                           # noqa: BLE001
             log(f"recovery: detector unavailable ({type(e).__name__}); event-replay only")
 
-    # Startup outage detection: a last-live from a previous run older than the threshold is an outage.
-    try:
-        last_live = rec.read_last_live(cfg.last_live_path)
-        outage = rec.detect_outage(last_live, now_utc(), cfg.recovery_threshold_seconds)
-        if outage:
-            cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
-                       p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
-                       p_ended_at=iso(outage[1]), p_cameras=[])
-            log(f"recovery: detected outage {iso(outage[0])}..{iso(outage[1])}; opened recovery candidate")
-    except Exception as e:                               # noqa: BLE001
-        log(f"recovery: startup detect skipped: {type(e).__name__}")
+    def recorder_is_live() -> bool:
+        drv = holder.get("live_driver")
+        activity = float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0)
+        if activity and time.monotonic() - activity < 150.0:
+            return True
+        seen = float(holder.get("recorder_live_at") or 0.0)
+        return bool(seen and time.monotonic() - seen < 150.0)
 
     while not stop.is_set():
+        # A very long Internet outage can fill the bounded local spool. trim() records
+        # exactly which local-observation interval had to be evicted; convert that durable
+        # marker into the same recorder-archive recovery pipeline once the NVR is live.
+        try:
+            overflow_gap = spool.pending_recovery_gap()
+            if overflow_gap and recorder_is_live():
+                cloud.call("wl_open_recovery_interval",
+                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                           p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
+                           p_cameras=cams or [])
+                if spool.clear_recovery_gap(*overflow_gap):
+                    log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
+                        "opened recorder-archive reconciliation")
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
+
+        # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
+        # interval after the recorder is live again; while it is still down there is
+        # nothing to backfill and no reason to hammer it.
+        try:
+            if recorder_is_live():
+                last_live = rec.read_last_live(cfg.last_live_path)
+                now = now_utc()
+                outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
+                if outage:
+                    cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
+                               p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
+                               p_ended_at=iso(outage[1]), p_cameras=cams or [])
+                    rec.persist_last_live(cfg.last_live_path, now)
+                    log(f"recovery: detected recorder gap {iso(outage[0])}..{iso(outage[1])}; "
+                        "opened resumable archive recovery")
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: gap detector skipped: {type(e).__name__}")
+
         try:
             driver, _info = open_driver(cfg)
             try:
                 import dahua_archive
-                dahua_archive.install()                  # ensure the historical iface on the driver
-            except Exception:                            # noqa: BLE001
+                import hikvision_archive
+                dahua_archive.install()
+                hikvision_archive.install()             # both vendors expose bounded archive reads
+            except Exception:                           # noqa: BLE001
                 pass
             try:
                 runner = rec.RecoveryRunner(
@@ -1883,6 +1952,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     throttle_seconds=cfg.recovery_throttle_seconds,
                     live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
                     detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                    snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
                     log=log)
                 runner.run_once(limit=1)
             finally:
@@ -1949,7 +2019,8 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                                daemon=True, name="sitecontrol")
     sitectl.start()
     # Automatic NVR outage recovery (§1/§2). Read-only; yields to live; OFF only if disabled in ini.
-    recov = threading.Thread(target=recovery_worker, args=(cfg, state, cloud, stop, spool, channels),
+    recov = threading.Thread(target=recovery_worker,
+                             args=(cfg, state, cloud, stop, spool, channels, holder),
                              daemon=True, name="recovery")
     recov.start()
 
@@ -1986,12 +2057,19 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as e:
                     log(f"ERROR: heartbeat failed, will retry: "
                         f"{str(e).splitlines()[0][:200]}")
-                # Persist the last-live marker on the heartbeat cadence: the Agent is alive and
-                # observing now, so the NEXT startup can detect an outage as (this time -> restart).
+                # Persist RECORDER observation, not merely PC/cloud liveness. If the
+                # recorder is unreachable while the agent still heartbeats, this clock
+                # intentionally stops so the missing interval is recovered when contact returns.
                 if cfg.recovery_enabled:
                     try:
-                        import recovery as _rec
-                        _rec.persist_last_live(cfg.last_live_path, now_utc())
+                        drv = holder.get("live_driver")
+                        activity = float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0)
+                        seen = float(holder.get("recorder_live_at") or 0.0)
+                        fresh = ((activity and time.monotonic() - activity < 150.0)
+                                 or (seen and time.monotonic() - seen < 150.0))
+                        if fresh:
+                            import recovery as _rec
+                            _rec.persist_last_live(cfg.last_live_path, now_utc())
                     except Exception:                    # noqa: BLE001
                         pass
             time.sleep(1)

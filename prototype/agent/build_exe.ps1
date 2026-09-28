@@ -79,12 +79,13 @@ if ($WithAI) {
   yolo export model=yolov8n.pt format=onnx
 then copy it there."
     }
-    Write-Host "Installing production dependencies (psutil, onnxruntime, numpy, pillow, tzdata, cryptography)..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata cryptography
+    Write-Host "Installing production dependencies (AI + bundled FFmpeg archive decoder)..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata cryptography imageio-ffmpeg
     $ai = @(
         "--hidden-import","numpy",
         "--hidden-import","onnxruntime","--collect-all","onnxruntime",
         "--hidden-import","PIL.Image",
+        "--hidden-import","imageio_ffmpeg","--collect-all","imageio_ffmpeg",
         "--add-data","$model;."
     )
     Write-Host "Freezing WatchLog agent + Analytics Studio runtime..." -ForegroundColor Cyan
