@@ -65,7 +65,31 @@ Do not call setup complete until:
 - portal uses the intended four windows for the tenant type;
 - the AI prompt/context contains the tenant semantic contract;
 - recommendations are visible in reporting, not only chat;
+- actionable recommendations use stable `action_items[].id` values so client feedback can be persisted;
+- client-facing recommendations provide quick response choices, optional comments and a direct Discuss with WatchLog path;
+- recommendation responses feed the internal WatchLog follow-up queue rather than disappearing into chat;
 - completed reviewed reports do not expose processing/waiting UI or internal implementation details;
 - the report hierarchy is scannable and avoids duplicated card dumps;
 - authorization and coverage-truth checks pass;
 - mirror/canonical reconciliation is documented.
+
+
+## Recommendation feedback requirement
+
+For any tenant report that gives actionable recommendations, prefer structured `action_items` over unkeyed text-only action lists.
+
+Each actionable item should include:
+- stable `id`;
+- concise title;
+- evidence-backed body;
+- priority where useful.
+
+Where the portal supports recommendation feedback, expose the same response loop used by the restaurant reference implementation:
+- We'll do this;
+- Need help;
+- Not now;
+- Not relevant;
+- optional client comment;
+- Discuss with WatchLog.
+
+A saved response must remain attached to the exact report/recommendation and must be available to the WatchLog platform team for follow-up. Internal team notes remain private.

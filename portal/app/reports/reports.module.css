@@ -95,3 +95,24 @@
 
 @media(max-width:1020px){.executiveSummary{grid-template-columns:1fr}.executivePointers{border-left:0;border-top:1px solid #e7ebef;padding:12px 0 0}.analyticsSplit{grid-template-columns:1fr}.kpiStrip{grid-template-columns:1fr 1fr}.kpiCell:nth-child(2){border-right:0}.kpiCell:nth-child(-n+2){border-bottom:1px solid #e7ebef}.securityFocusGrid{grid-template-columns:1fr}}
 @media(max-width:720px){.reportControlBar{align-items:flex-start;flex-direction:column}.reportModeTabs{width:100%}.reportModeTabs button{flex:1}.executiveSummary{padding:20px}.executiveCopy h2,.sectionIntroV3 h2{font-size:24px}.kpiStrip{grid-template-columns:1fr}.kpiCell{border-right:0;border-bottom:1px solid #e7ebef}.kpiCell:last-child{border-bottom:0}.kpiCell:nth-child(2){border-bottom:1px solid #e7ebef}.footerDetails{grid-template-columns:1fr}.visibilityRows{grid-template-columns:1fr}.visibilityRows>div{border-right:0;border-bottom:1px solid #edf0f3;margin:0;padding-right:0}.visibilityRows>div:last-child{border-bottom:0}.securityEventRow{grid-template-columns:8px minmax(0,1fr)}.securityEventRow strong{grid-column:2}.dataBoundary{display:none}}
+
+
+/* Recommendation feedback loop */
+.recommendationFeedback{margin-top:10px;border-top:1px solid #edf0f3;padding-top:10px}
+.feedbackPrompt{color:#596574;font-size:9.7px;font-weight:750;margin-bottom:7px}
+.feedbackChoices{display:flex;gap:6px;flex-wrap:wrap}
+.feedbackChoices button{appearance:none;border:1px solid #e0e5ec;background:#fff;color:#5f6a78;border-radius:999px;padding:6px 9px;font-size:8.8px;font-weight:720;cursor:pointer;transition:.15s ease}
+.feedbackChoices button:hover{border-color:#b9c7e7;color:#3159bf;background:#f8faff}
+.feedbackChoices button:focus-visible{outline:2px solid #3159bf;outline-offset:2px}
+.feedbackChoices .feedbackChoiceActive{border-color:#91a8df;background:#eef3ff;color:#244ea9}
+.feedbackTools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.feedbackTextButton{appearance:none;border:0;background:transparent;padding:0;color:#5f6f8f;font-size:8.8px;font-weight:750;cursor:pointer}
+.feedbackDiscuss{color:#3159bf;text-decoration:none;font-size:8.8px;font-weight:780}.feedbackDiscuss:hover{text-decoration:underline}
+.feedbackSaved{color:#43815e;font-size:8.5px;font-weight:720}
+.feedbackNote{width:100%;margin-top:8px;min-height:72px;resize:vertical;border:1px solid #dfe5ed;border-radius:10px;background:#fff;padding:9px 10px;color:#303b49;font:inherit;font-size:9.8px;line-height:1.5}
+.feedbackNote:focus{outline:2px solid #dce6ff;border-color:#91a8df}
+.feedbackFooter{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:8px}
+.feedbackSave{appearance:none;border:0;border-radius:8px;background:#3159bf;color:#fff;padding:7px 10px;font-size:8.8px;font-weight:800;cursor:pointer}.feedbackSave:disabled{opacity:.45;cursor:not-allowed}
+.feedbackMessage{color:#667180;font-size:8.7px;line-height:1.4}.feedbackLoadError{border:1px solid #f0d9a9;background:#fff9eb;color:#8a651f;border-radius:9px;padding:8px 10px;font-size:9px;margin-bottom:8px}
+.moreActionRows{display:grid;border-top:1px solid #edf0f3;margin-top:4px}.actionRowCompact{display:grid;grid-template-columns:30px minmax(0,1fr);gap:11px;padding:12px 0;border-bottom:1px solid #edf0f3}.actionRowCompact>span{width:26px;height:26px;border-radius:8px;background:#f2f4f8;color:#697483;display:grid;place-items:center;font-size:10px;font-weight:850}.actionRowCompact p{margin:4px 0 0;color:#687381;font-size:10.4px;line-height:1.52}
+@media(max-width:640px){.feedbackChoices{display:grid;grid-template-columns:1fr 1fr}.feedbackChoices button{width:100%}.feedbackFooter{align-items:flex-start;flex-direction:column}}

@@ -9,6 +9,7 @@ const TABS = [
   ["Operations", "/admin/operations/"],
   ["Commercial", "/admin/billing/"],
   ["Support", "/admin/support/"],
+  ["Feedback", "/admin/feedback/"],
   ["Audit", "/admin/audit/"],
   ["Admins", "/admin/admins/"],
   ["AI & Models", "/admin/ai/"],

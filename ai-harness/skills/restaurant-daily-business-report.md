@@ -215,3 +215,60 @@ Examples:
 - camera glare/occlusion → weaker confidence in customer/security analytics.
 
 Do not turn the report into a surveillance-system health page. Technical device health belongs elsewhere unless it directly changes confidence in a business/security conclusion.
+
+
+## Recommendation feedback loop
+
+Recommendations are not finished when they are merely displayed.
+
+Every actionable recommendation in a saved report must have a stable machine-readable `id` in `action_items`. The ID must remain stable across wording changes for the same recommendation concept within that report revision lineage.
+
+For each recommendation, the client-facing report should provide:
+
+- **We'll do this** — the client accepts the recommendation.
+- **Need help** — the client wants WatchLog / the service team to help implement or clarify it.
+- **Not now** — the recommendation is understood but deferred.
+- **Not relevant** — the recommendation does not fit the client's operation.
+- **Add comment** — optional free-text context from the client.
+- **Discuss with WatchLog** — opens Watch AI with the specific recommendation prefilled so the client can ask why it matters, what options exist, or how to implement it.
+
+Client responses must be persisted against:
+- the exact report;
+- report revision;
+- site and tenant;
+- stable recommendation ID;
+- authenticated client user;
+- response code;
+- optional client comment;
+- timestamp.
+
+Do not bury this feedback mechanism in a generic form at the bottom of the report. Put it directly beneath the recommendation being discussed.
+
+### Internal follow-up
+
+Recommendation responses must feed an internal WatchLog queue.
+
+The team workflow is:
+1. **New** — client response received and awaiting review.
+2. **In progress** — a WatchLog team member is following up.
+3. **Resolved** — the requested support/change has been handled.
+4. **Closed** — no further action is required.
+
+Internal team notes are private and must never be exposed in the client portal.
+
+Accepted recommendations and requests for help should be treated as implementation signals. "Not relevant" and client comments are product/context feedback and should inform future tenant recommendations so the same unsuitable advice is not repeatedly surfaced without new evidence.
+
+### Report payload requirement
+
+Preferred `action_items` shape:
+
+```json
+{
+  "id": "stable-recommendation-id",
+  "title": "Short recommendation title",
+  "priority": "Priority",
+  "body": "Evidence-backed action in plain business language."
+}
+```
+
+Do not publish a new interactive recommendation without a stable `id`; otherwise the saved response cannot be safely attached to the recommendation.

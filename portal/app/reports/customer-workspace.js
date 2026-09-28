@@ -1,8 +1,9 @@
 "use client";
-import {useState} from "react";
+import {useEffect,useState} from "react";
 import RichText from "../rich-text";
 import {Nav} from "../shell";
 import {withSite} from "../site-context";
+import {supabase,say} from "../../lib/supabase";
 import Mark from "../mark";
 import ui from "../portal.module.css";
 import styles from "./reports.module.css";
@@ -379,16 +380,106 @@ function OperationRows({items=[]}){
   return <div className={styles.operationRows}>{items.map((x,i)=><div className={styles.operationRow} key={(x.title||i)+"-"+i}><div className={styles.operationIndex}>{String(i+1).padStart(2,"0")}</div><div className={styles.operationMain}><div className={styles.operationRowHead}><b>{x.title}</b><span>{x.status}</span></div><p>{x.body}</p>{x.takeaway&&<small>{x.takeaway}</small>}</div></div>)}</div>;
 }
 
-function PriorityActions({items=[],fallback=[]}){
-  const rows=items.length?items:fallback.map((x,i)=>({title:"Action "+(i+1),body:x,priority:i===0?"Priority":"Next"}));
+const RECOMMENDATION_RESPONSES=[
+  ["accepted","We'll do this"],
+  ["need_help","Need help"],
+  ["not_now","Not now"],
+  ["not_relevant","Not relevant"],
+];
+const RECOMMENDATION_TEAM_STATUS={
+  new:"Sent to WatchLog",
+  in_progress:"WatchLog is following up",
+  resolved:"Follow-up resolved",
+  closed:"Closed",
+};
+
+function RecommendationFeedback({action,existing,siteId,reportId,onSaved}){
+  const[choice,setChoice]=useState(existing?.response_code||"");
+  const[note,setNote]=useState(existing?.client_note||"");
+  const[showNote,setShowNote]=useState(Boolean(existing?.client_note));
+  const[busy,setBusy]=useState(false);
+  const[message,setMessage]=useState("");
+
+  useEffect(()=>{
+    setChoice(existing?.response_code||"");
+    setNote(existing?.client_note||"");
+    setShowNote(Boolean(existing?.client_note));
+  },[existing?.response_code,existing?.client_note]);
+
+  if(!action?.id||!siteId||!reportId)return null;
+
+  const discussPrompt=`I want to discuss this recommendation from my WatchLog report: "${action.title}". Recommendation: ${action.body}. Explain why it matters, what practical options I have, and help me decide what to do next.`;
+
+  async function save(){
+    if(!choice){setMessage("Choose a response first.");return;}
+    setBusy(true);setMessage("");
+    const{data,error}=await supabase().rpc("wl_save_recommendation_feedback",{
+      p_site_id:siteId,
+      p_report_id:reportId,
+      p_recommendation_id:action.id,
+      p_response_code:choice,
+      p_client_note:note.trim()||null,
+    });
+    setBusy(false);
+    if(error){setMessage(say(error)||"Could not save your response.");return;}
+    onSaved?.(data);
+    setMessage("Response saved. WatchLog's team can now follow it up.");
+  }
+
+  return <div className={styles.recommendationFeedback}>
+    <div className={styles.feedbackPrompt}>What do you think about this recommendation?</div>
+    <div className={styles.feedbackChoices}>{RECOMMENDATION_RESPONSES.map(([code,label])=><button type="button" key={code} className={choice===code?styles.feedbackChoiceActive:""} onClick={()=>{setChoice(code);setMessage("");if(code==="need_help")setShowNote(true);}}>{label}</button>)}</div>
+    <div className={styles.feedbackTools}>
+      <button type="button" className={styles.feedbackTextButton} onClick={()=>setShowNote(v=>!v)}>{showNote?"Hide comment":"Add comment"}</button>
+      <a className={styles.feedbackDiscuss} href={withSite("/ai/?prompt="+encodeURIComponent(discussPrompt),siteId)}>Discuss with WatchLog</a>
+      {existing?.response_code&&<span className={styles.feedbackSaved}>Saved · {RECOMMENDATION_RESPONSES.find(x=>x[0]===existing.response_code)?.[1]||existing.response_code}{existing.team_status?" · "+(RECOMMENDATION_TEAM_STATUS[existing.team_status]||existing.team_status):""}</span>}
+    </div>
+    {showNote&&<textarea className={styles.feedbackNote} maxLength={2000} value={note} onChange={e=>setNote(e.target.value)} placeholder="Add context for the WatchLog team — what you agree with, what should change, or where you need help."/>}
+    <div className={styles.feedbackFooter}><button type="button" className={styles.feedbackSave} disabled={busy||!choice} onClick={save}>{busy?"Saving…":existing?.response_code?"Update response":"Send feedback"}</button>{message&&<span className={styles.feedbackMessage}>{message}</span>}</div>
+  </div>;
+}
+
+function RecommendationRow({action,index,existing,siteId,reportId,onSaved,compact=false}){
+  return <div className={compact?styles.actionRowCompact:styles.actionRowV3}>
+    <span>{index+1}</span>
+    <div>
+      <div className={styles.actionTitleV3}><b>{action.title||"Action"}</b>{action.priority&&<em>{action.priority}</em>}</div>
+      <p>{action.body||action.detail||action}</p>
+      <RecommendationFeedback action={action} existing={existing} siteId={siteId} reportId={reportId} onSaved={onSaved}/>
+    </div>
+  </div>;
+}
+
+function PriorityActions({items=[],fallback=[],siteId,reportId}){
+  const rows=items.length?items:fallback.map((x,i)=>({id:null,title:"Action "+(i+1),body:x,priority:i===0?"Priority":"Next"}));
+  const[feedback,setFeedback]=useState({});
+  const[loadError,setLoadError]=useState("");
+
+  useEffect(()=>{
+    let live=true;
+    if(!siteId||!reportId)return()=>{live=false};
+    (async()=>{
+      const{data,error}=await supabase().rpc("wl_my_recommendation_feedback",{p_site_id:siteId,p_report_id:reportId});
+      if(!live)return;
+      if(error){setLoadError(say(error)||"Could not load saved responses.");return;}
+      const map={};
+      for(const item of data?.items||[])map[item.recommendation_id]=item;
+      setFeedback(map);setLoadError("");
+    })();
+    return()=>{live=false};
+  },[siteId,reportId]);
+
+  function saved(item){if(!item?.recommendation_id)return;setFeedback(v=>({...v,[item.recommendation_id]:item}));}
+
   if(!rows.length)return null;
-  return <section className={styles.actionPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Next actions</span><h3>What management should follow up</h3><p>Prioritised from yesterday’s business and security observations.</p></div></div>
-    <div className={styles.actionRowsV3}>{rows.slice(0,3).map((a,i)=><div className={styles.actionRowV3} key={(a.title||i)+"-"+i}><span>{i+1}</span><div><div className={styles.actionTitleV3}><b>{a.title||"Action"}</b>{a.priority&&<em>{a.priority}</em>}</div><p>{a.body||a.detail||a}</p></div></div>)}</div>
-    {rows.length>3&&<details className={styles.moreActions}><summary>Show {rows.length-3} more improvements</summary><div>{rows.slice(3).map((a,i)=><p key={i}><b>{a.title||"Action"}:</b> {a.body||a.detail||a}</p>)}</div></details>}
+  return <section className={styles.actionPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Next actions</span><h3>What management should follow up</h3><p>Respond to any recommendation so the WatchLog team can incorporate your feedback and help with implementation.</p></div></div>
+    {loadError&&<div className={styles.feedbackLoadError}>{loadError}</div>}
+    <div className={styles.actionRowsV3}>{rows.slice(0,3).map((a,i)=><RecommendationRow key={(a.id||a.title||i)+"-"+i} action={a} index={i} existing={feedback[a.id]} siteId={siteId} reportId={reportId} onSaved={saved}/>)}</div>
+    {rows.length>3&&<details className={styles.moreActions}><summary>Show {rows.length-3} more improvements</summary><div className={styles.moreActionRows}>{rows.slice(3).map((a,i)=><RecommendationRow compact key={(a.id||a.title||i)+"-"+i} action={a} index={i+3} existing={feedback[a.id]} siteId={siteId} reportId={reportId} onSaved={saved}/>)}</div></details>}
   </section>;
 }
 
-function ReviewedRestaurantReport({snapshot}){
+function ReviewedRestaurantReport({snapshot,siteId}){
   const p=snapshot?.payload||{};
   const[mode,setMode]=useState("overview");
   const metrics=p.metrics||[];
@@ -416,7 +507,7 @@ function ReviewedRestaurantReport({snapshot}){
       </section>
       <KpiStrip metrics={metrics}/>
       <div className={styles.analyticsSplit}><DemandAreaChart points={timeline}/><SecuritySnapshot items={security}/></div>
-      <PriorityActions items={actionItems} fallback={actions}/>
+      <PriorityActions items={actionItems} fallback={actions} siteId={siteId} reportId={snapshot?.report_id}/>
       <div className={styles.footerDetails}>
         <details><summary>How to read these figures</summary><p><b>{coverage.status||"Observed period"}.</b> {coverage.summary||""} {coverage.note||""}</p></details>
         {visibility.length>0&&<details><summary>Visibility improvements</summary>{visibility.map((x,i)=><p key={i}><b>{x.title}:</b> {x.body}</p>)}</details>}
@@ -428,7 +519,7 @@ function ReviewedRestaurantReport({snapshot}){
       <KpiStrip metrics={metrics}/>
       <DemandAreaChart points={timeline}/>
       <section className={styles.operationsPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Operations</span><h3>How each part of the restaurant performed</h3><p>Grouped by business function instead of by camera.</p></div></div><OperationRows items={operations}/></section>
-      <PriorityActions items={actionItems} fallback={actions}/>
+      <PriorityActions items={actionItems} fallback={actions} siteId={siteId} reportId={snapshot?.report_id}/>
     </>}
 
     {mode==="security"&&<>
@@ -443,8 +534,8 @@ function ReviewedRestaurantReport({snapshot}){
   </div>;
 }
 
-function EvidenceReport({snapshot}){
-  const p=snapshot?.payload||{},metrics=p.metrics||[],incidents=p.incidents||[],coverage=p.coverage||{},cameras=p.camera_coverage||[],insights=p.site_insights||[],actions=p.priority_actions||[];
+function EvidenceReport({snapshot,siteId}){
+  const p=snapshot?.payload||{},metrics=p.metrics||[],incidents=p.incidents||[],coverage=p.coverage||{},cameras=p.camera_coverage||[],insights=p.site_insights||[],actionItems=p.action_items||[],actions=p.priority_actions||[];
   const summary=p.ai_summary||p.executive_summary||"No management summary is available for this report.";
   const restaurant=p.site_type==="restaurant"||p.report_profile==="restaurant_business_owner_v1";
   return <div className={styles.report}>
@@ -464,7 +555,7 @@ function EvidenceReport({snapshot}){
 
     {cameras.length>0&&<section className={styles.section}><div className={styles.sectionHead}><div><h3>Key areas</h3><p>{restaurant?"How the important parts of the restaurant performed yesterday.":"A simple view of the parts of the office that mattered yesterday."}</p></div></div><div className={styles.cameraGrid}>{cameras.map((c,i)=><article className={styles.camera} key={`${c.camera}-${i}`}><div className={styles.cameraTop}><div className={styles.cameraName}>{c.camera}</div><span className={styles.channel}>{c.status||"Covered"}</span></div><div className={styles.cameraStats}><div className={styles.cameraStat}><span>When</span><b>{c.period||"—"}</b></div><div className={styles.cameraStat}><span>What it means</span><b>{c.management_view||"Routine"}</b></div></div><p className={styles.assessment}>{c.assessment}</p></article>)}</div></section>}
 
-    {actions.length>0&&<section className={styles.section}><div className={styles.sectionHead}><div><h3>What needs attention</h3><p>Only the practical things worth following up.</p></div></div><div className={styles.actions}>{actions.map((a,i)=><div className={styles.action} key={i}>{a}</div>)}</div></section>}
+    {(actionItems.length>0||actions.length>0)&&<PriorityActions items={actionItems} fallback={actions} siteId={siteId} reportId={snapshot?.report_id}/>}
   </div>
 }
 
@@ -491,11 +582,11 @@ export default function CustomerReports(){
     if(r.view==="daily"||r.view==="yesterday"){
       const manualBusinessReport=r.view==="yesterday"&&r.snapshot?.payload?.manual_business_report===true;
       reportBody=manualBusinessReport
-        ? <ReviewedRestaurantReport snapshot={r.snapshot}/>
+        ? <ReviewedRestaurantReport snapshot={r.snapshot} siteId={r.siteId}/>
         : <>
             <RestaurantOperations data={r.restaurant} periodLabel={r.view==="daily"?"Today":"Yesterday"}/>
             <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Yesterday's management reading"}/>
-            {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved business report is available for this service day yet.</div>)}
+            {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved business report is available for this service day yet.</div>)}
           </>;
     }else if(r.view==="week"||r.view==="monthly"){
       const days=r.view==="week"?7:30;
@@ -509,14 +600,14 @@ export default function CustomerReports(){
       reportBody=<>
         <OfficeDayReport data={r.officeDay} periodLabel={r.view==="daily"?"Today":"Last completed working day"}/>
         <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Last completed working-day reading"}/>
-        {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for this working day yet.</div>)}
+        {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved evidence report is available for this working day yet.</div>)}
       </>;
     }else{
       const days=r.view==="week"?7:30;
       reportBody=<><OfficePeriodReport data={r.officePeriod} days={days}/><ManagementReading answer={r.answer} label={days===7?"What the last 7 working days suggest":"What the last 30 days suggest"}/></>;
     }
   }else{
-    reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
+    reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
   }
 
   return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="yesterday"&&r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Demand, customers, service flow, security and next actions.":"Demand, customers, service flow, security and next actions."):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
