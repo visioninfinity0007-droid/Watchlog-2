@@ -1241,6 +1241,9 @@ def cmd_connector_selftest() -> int:
         import hikvision_archive as _hik_archive
         import recorder_probe as _probe
         import site_control as _site_control
+        import remote_update as _remote_update
+        import updater as _updater
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as _Ed25519PublicKey
         from drivers import hikvision as _hikvision
         if not callable(getattr(discover, "sweep", None)):
             problems.append("LAN sweep unavailable")
@@ -1254,6 +1257,12 @@ def cmd_connector_selftest() -> int:
             problems.append("recorder port fallback unavailable")
         if not hasattr(_site_control, "execute_read"):
             problems.append("site-control read plane unavailable")
+        if not callable(getattr(_remote_update, "update_worker", None)):
+            problems.append("remote-update worker unavailable")
+        if not callable(getattr(_updater, "verify_manifest_signature", None)):
+            problems.append("signed-update verifier unavailable")
+        if _Ed25519PublicKey is None:
+            problems.append("Ed25519 verifier unavailable")
         if getattr(_hikvision, "HIKVISION_STREAM_SLICE_SECONDS", None) != 30:
             problems.append("Hikvision bounded visual sampling unavailable")
         if not callable(getattr(_hik_archive, "search_recordings", None)):
