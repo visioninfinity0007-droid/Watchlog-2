@@ -101,3 +101,9 @@ def test_preopen_overnight_service_day_stays_on_previous_service():
     assert "v_local_now::time < v_ctx.open_time" in PREOPEN
     assert "v_local_now::time<v_ctx.open_time" in PREOPEN
     assert "v_local_now::time < v_ctx.close_time" not in PREOPEN
+
+
+def test_restaurant_rpcs_are_not_anonymous():
+    assert "revoke execute on function public.wl_restaurant_day(uuid,date) from anon,public" in PREOPEN
+    assert "revoke execute on function public.wl_restaurant_site_config(uuid) from anon,public" in PREOPEN
+    assert "grant execute on function public.wl_restaurant_day(uuid,date) to authenticated,service_role" in PREOPEN
