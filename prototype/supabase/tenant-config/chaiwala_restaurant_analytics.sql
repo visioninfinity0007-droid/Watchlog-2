@@ -93,6 +93,16 @@ $ctx$::jsonb,
          updated_at=now()
    where site_id=v_site and tenant_id=v_tenant;
 
+  update public.site_business_context
+     set reporting_prefs=jsonb_set(
+       reporting_prefs,
+       '{report_layout_profile}',
+       '"chaiwala_restaurant_ops_v1"'::jsonb,
+       true
+     ),
+     updated_at=now()
+   where site_id=v_site and tenant_id=v_tenant;
+
   update public.sites
      set analytics_config_version=analytics_config_version+1
    where id=v_site;
