@@ -221,6 +221,13 @@ def main():
             "InitPluginsDir" in nsis and 'File "/oname=$PLUGINSDIR\\wl-upgrade.ps1"' in nsis and 'File "wl-upgrade.ps1"' in nsis,
         "upgrade STOPS+verifies the agent BEFORE replacing the binary":
             "-Stage preflight" in nsis and nsis.index("-Stage preflight") < nsis.index('File "watchlog-agent.exe"'),
+        "preflight runs for any existing WatchLog payload, not only an enrolled site":
+            'StrCpy $5 "0"' in nsis
+            and '${If} ${FileExists} "$INSTDIR\\watchlog-agent.exe"' in nsis
+            and '${ElseIf} ${FileExists} "$INSTDIR\\watchlog-setup-ui.exe"' in nsis
+            and '${ElseIf} ${FileExists} "$INSTDIR\\run-agent.ps1"' in nsis
+            and '${If} $5 == "1"' in nsis
+            and '${If} $6 == "1"' in nsis,
         "upgrade preflight stops launcher + setup UI + agent from this install":
             "Get-LauncherProcesses" in upgrade
             and "Get-SetupProcesses" in upgrade
