@@ -413,8 +413,39 @@ switch ($Stage) {
       Resume-Task ([bool]$current.present) ([bool]$current.enabled)
     }
 
+    # Restoring files is not enough. If the prior installation did not have an
+    # enabled WatchLog task, or if that task cannot bring the previous agent back,
+    # rollback must fail closed instead of claiming the site is healthy.
+    $expectedTaskPresent = if ($meta) { [bool]$meta.task_present } else { [bool]$current.present }
+    $expectedTaskEnabled = if ($meta) { [bool]$meta.task_enabled } else { [bool]$current.enabled }
+    if (-not $expectedTaskPresent -or -not $expectedTaskEnabled) {
+      Clear-Backup
+      Fail 14 "previous WatchLog payload was restored but there is no enabled background task to restart it"
+    }
+
+    $rollbackDeadline = (Get-Date).AddSeconds([Math]::Max(10, $StartTimeoutSec))
+    while ((Get-Date) -lt $rollbackDeadline) {
+      if ((Get-AgentRuntimeLeaves).Count -ge 1) {
+        Start-Sleep -Seconds 2
+        if ((Get-AgentRuntimeLeaves).Count -ge 1) {
+          Clear-Backup
+          Write-Stage "rollback complete: previous WatchLog payload restored AND agent running"
+          exit 0
+        }
+      }
+      Start-Sleep -Milliseconds 500
+    }
+
+    # One final exact task nudge. The task name is fixed/known; no process-wide kill.
+    try { & "$env:SystemRoot\System32\schtasks.exe" /Run /TN "$TaskName" | Out-Null } catch {}
+    Start-Sleep -Seconds 3
+    if ((Get-AgentRuntimeLeaves).Count -ge 1) {
+      Clear-Backup
+      Write-Stage "rollback complete after task nudge: previous agent running"
+      exit 0
+    }
+
     Clear-Backup
-    Write-Stage "rollback complete: previous WatchLog runtime restored/restarted where applicable"
-    exit 0
+    Fail 14 "previous WatchLog payload was restored but the previous agent could not be restarted"
   }
 }
