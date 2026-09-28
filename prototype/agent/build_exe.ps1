@@ -21,6 +21,7 @@ $common = @(
     "--hidden-import","requests",
     "--hidden-import","psutil",
     "--hidden-import","zoneinfo",
+    "--hidden-import","imageio_ffmpeg","--collect-all","imageio_ffmpeg",
     "--collect-all","tzdata",
     "--exclude-module","torch","--exclude-module","ultralytics",
     "--exclude-module","matplotlib","--exclude-module","tkinter",
@@ -72,7 +73,7 @@ if ($WithAI) {
 }
 $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
 Write-Host "Installing Site Connector build dependencies..." -ForegroundColor Cyan
-python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata
+python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata imageio-ffmpeg
 Write-Host "Freezing WatchLog connectivity-first Site Connector..." -ForegroundColor Cyan
 python -m PyInstaller @common @lean $entry
 
