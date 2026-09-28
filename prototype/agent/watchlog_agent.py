@@ -225,6 +225,7 @@ class Config:
         # recorder-native event replay). Bounded per chunk; degrades honestly when no frame/codec.
         self.recovery_ai_enabled = str(get("recovery_ai_enabled") or "true").strip().lower() == "true"
         self.recovery_ai_max_frames = int(get("recovery_ai_max_frames") or 40)
+        self.recovery_snapshot_seconds = int(get("recovery_snapshot_seconds") or 300)
         # In-app updates (0.4.4 §13/§14). Check-for-updates is READ-ONLY and never auto-applies.
         # update_public_key authenticates the signed release manifest; with no key configured an
         # update is refused (trust nothing) unless update_require_signature is explicitly false.
@@ -1164,6 +1165,10 @@ def cmd_connector_selftest() -> int:
             problems.append("Hikvision archive search unavailable")
         if not callable(getattr(_hik_archive, "get_clip", None)):
             problems.append("Hikvision clip extraction unavailable")
+        import recovery_ai as _recovery_ai
+        dec = _recovery_ai.decoder_selftest()
+        if not dec.get("ok"):
+            problems.append("historical footage FFmpeg decoder unavailable: " + str(dec.get("reason") or "unknown"))
     except Exception as exc:  # noqa: BLE001
         problems.append(f"connector module load failed: {type(exc).__name__}")
 
@@ -1236,13 +1241,24 @@ def cmd_selftest() -> int:
         retained = bool(k2 and d2)
 
     print(det.summary())
-    if det.available and keep is False:
-        extra = "" if retained is None else f"; real-object retained={retained}"
-        print(f"RESULT: PASS (ONNX runtime + model loaded, inference ran, "
-              f"junk frame discarded{extra})")
-        return 0
-    print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
-    return 2
+    if not (det.available and keep is False):
+        print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
+        return 2
+
+    try:
+        import recovery_ai
+        dec = recovery_ai.decoder_selftest()
+    except Exception as exc:  # noqa: BLE001
+        dec = {"ok": False, "reason": type(exc).__name__}
+    print(f"archive recovery decoder -> ok={dec.get('ok')} reason={dec.get('reason') or '-'}")
+    if not dec.get("ok"):
+        print("RESULT: FAIL (historical footage decoder NOT packaged/working)")
+        return 2
+
+    extra = "" if retained is None else f"; real-object retained={retained}"
+    print(f"RESULT: PASS (ONNX runtime + model + archive FFmpeg decoder packaged; "
+          f"junk frame discarded{extra})")
+    return 0
 
 
 def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
@@ -2256,6 +2272,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     throttle_seconds=cfg.recovery_throttle_seconds,
                     live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
                     detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                    snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
                     log=log)
                 runner.run_once(limit=1)
             finally:

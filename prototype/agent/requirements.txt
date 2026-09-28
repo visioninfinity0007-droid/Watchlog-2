@@ -17,3 +17,7 @@ ultralytics>=8.2
 # Interface enumeration for recorder discovery (multi-NIC sweep). Optional import in
 # discover.py, but a build without it loses multi-adapter discovery silently.
 psutil>=5.9
+
+
+# Bundled historical recorder footage decoder for outage snapshot recovery.
+imageio-ffmpeg>=0.5

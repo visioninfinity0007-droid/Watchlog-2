@@ -115,11 +115,14 @@ class AnalyzeSegment(unittest.TestCase):
         self.assertEqual(status, "no_frame")
         self.assertIsNone(ev)
 
-    def test_quiet_when_detector_discards(self):
+    def test_quiet_detector_still_preserves_recovered_snapshot(self):
         status, ev = recovery_ai.analyze_segment(FakeDetector(keep=False), b"JPEG",
                                                  channel="1", ts=SEGS[0]["start"])
-        self.assertEqual(status, "quiet")
-        self.assertIsNone(ev)
+        self.assertEqual(status, "snapshot")
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev["event_type"], "recovered_snapshot")
+        self.assertFalse(ev["payload"]["activity_detected"])
+        self.assertEqual(base64.b64decode(ev["snapshot_b64"]), b"JPEG")
 
     def test_recovered_event_has_history_and_provenance(self):
         det = FakeDetector(keep=True, dets=[FakeDet("person")])
@@ -140,9 +143,10 @@ class AnalyzeSegment(unittest.TestCase):
         self.assertEqual([o["label"] for o in ev["payload"]["objects"]], ["person"])
         self.assertEqual(base64.b64decode(ev["snapshot_b64"]), b"JPEGBYTES")
 
-    def test_detector_absent_keeps_frame_without_labels(self):
+    def test_detector_absent_keeps_frame_as_recovered_snapshot(self):
         status, ev = recovery_ai.analyze_segment(None, b"JPEG", channel="1", ts=SEGS[0]["start"])
-        self.assertEqual(status, "recovered")
+        self.assertEqual(status, "snapshot")
+        self.assertEqual(ev["event_type"], "recovered_snapshot")
         self.assertEqual(ev["payload"]["objects"], [])
 
 
@@ -175,6 +179,30 @@ class BackfillIntelligence(unittest.TestCase):
         self.assertEqual(summary["no_frame"], 2)
         self.assertEqual(summary["recovered"], 0)
         self.assertEqual(got, [])
+
+    def test_recovers_visual_timeline_on_cadence_even_when_quiet(self):
+        long_seg = [{
+            "start": "2026-09-14T22:00:00+00:00",
+            "end": "2026-09-14T22:16:00+00:00",
+            "path": "/long.dav", "id": "seg-long",
+        }]
+        got = []
+        summary = recovery_ai.backfill_intelligence(
+            SegDriver(long_seg), FakeDetector(keep=False), "1",
+            "2026-09-14T22:00:00+00:00", "2026-09-14T22:20:00+00:00",
+            on_event=got.append, frame_provider=lambda d, c, t: b"JPEG",
+            snapshot_interval_seconds=300,
+        )
+        self.assertEqual(summary["status"], "supported")
+        self.assertEqual(summary["snapshots"], 4)
+        self.assertEqual(summary["activity"], 0)
+        self.assertEqual([e["device_ts"] for e in got], [
+            "2026-09-14T22:00:00+00:00",
+            "2026-09-14T22:05:00+00:00",
+            "2026-09-14T22:10:00+00:00",
+            "2026-09-14T22:15:00+00:00",
+        ])
+        self.assertTrue(all(e["event_type"] == "recovered_snapshot" for e in got))
 
     def test_dedupe_across_restart(self):
         det = FakeDetector(keep=True, dets=[FakeDet("person")])
