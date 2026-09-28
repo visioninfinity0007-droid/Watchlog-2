@@ -24,6 +24,9 @@ harness is not.
    Evidence → Report`. A person detected is not an incident. A vehicle is not suspicious. A
    correlated journey is not an identity.
 5. **Unknown stays Unknown.** No invented people, counts, times, health, identity, or capability.
+6. **Business-day windows stay consistent.** When a tenant defines a working/service day, reporting,
+   visual summaries and raw evidence retrieval must use the same database-resolved window. Never mix
+   midnight-to-midnight calendar evidence into a last-working-day or overnight-service-day answer.
 
 ## Folder map
 

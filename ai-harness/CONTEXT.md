@@ -13,6 +13,8 @@ in `index.ts`. It does not read this YAML tree; it enforces routing in code:
   config, configured fallback, and the verified-data `guided_fallback` floor.
 - **Two-stage evidence retrieval** (`retrieveEvidence`) for evidence-intent prompts: compact index →
   load only the relevant event bundles (`wl_ai_evidence_index` / `wl_ai_evidence_bundle`, `0107`).
+  For Yesterday / last working day / last service day, `wl_my_business_day_window` supplies the
+  tenant-configured evidence boundary so raw evidence and reporting use the same window.
 
 Authorized scope is always resolved by the **application** (`wl_my_tenant()` / `wl_assert_my_site`),
 never by a model: `tenant → site → allowed cameras → allowed date/time → allowed event/incident IDs`.

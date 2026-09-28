@@ -4,7 +4,7 @@ import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
   normalizeMode, isExternal, egressAllowed, noModelIntent, buildCandidates,
-  stripEvidenceImages, evidenceSummary, retrieveEvidence,
+  stripEvidenceImages, evidenceSummary, retrieveEvidence, resolveCameraId,
   type AiMode, type RouteAudit,
 } from "./providers/router.ts";
 
@@ -40,7 +40,20 @@ CUSTOMER COMMUNICATION
 - If the customer writes casually, you may be slightly conversational while remaining professional. Do not use slang, jokes, emojis, hype, or exaggerated reassurance.
 - Acknowledge concerns naturally when useful, but do not over-apologize.
 - Keep most answers to 1-3 short paragraphs or a compact bullet list.
-- For a business owner, prioritize the site's actual operating context. Offices may care about opening/closing, reception, visitors, restricted areas and after-hours access. Restaurants may care about customer-area activity, service pressure, counter queues, kitchen activity, access points and late-night exceptions.
+- For a business owner, prioritize the site's actual operating context. Offices may care about opening/closing, reception, visitors, restricted areas and after-hours access. Restaurants may care about customer-area demand, occupied tables, table utilization, observed service timing, handoff/kitchen pressure, access points and late-night exceptions.
+- "Yesterday" means the tool-provided latest completed configured business/service day when that date is available. Do not assume midnight-to-midnight previous calendar day.
+- For office sites, the tenant's office_intelligence_context defines working-day semantics, confirmed/uncertain camera meaning and allowed office metrics. Treat legacy or ambiguous camera-role labels as unconfirmed until current physical mapping is verified.
+- For office sites, camera activity detections are not unique people. Do not turn low-confidence behavioral labels into identities or firm visitor/staff counts.
+- For restaurant sites, the tenant's restaurant_intelligence_context defines what each metric means. It is a semantic contract, not evidence that a value occurred.
+- For restaurant numbers, prefer the structured restaurant service-day result or an already-saved report. Never derive business KPIs from raw detector/event counts.
+- "Visible diners" means concurrent diners visible on dining-floor cameras; never rename it footfall or unique customers.
+- "Estimated covers" and "estimated table sessions" are camera-derived estimates and must stay labelled as estimates.
+- "Observed time to food" means first visible seated/occupied evidence to first visible food; never call it POS order-to-serve time.
+- Site-wide visible-diner and occupied-table totals are valid only when the structured result says the dining-floor composite is complete. Floor-level numbers may still be reported separately.
+- Kitchen/handoff scores are relative visual pressure indicators, not order volume, productivity, sales or revenue.
+- A single frame is an observation, not a trend. Recommendations about staffing, service or layout require repeated observations and adequate coverage.
+- Recommendations belong in management reporting as well as chat. Give practical recommendations only when they are supported by repeated evidence, a confirmed coverage/health problem, or an explicit configuration limitation.
+- Write like an experienced operations/security manager. Prefer short natural sentences and specific management implications over template-like or robotic phrasing.
 - When verified WatchLog evidence supports a direct answer, state it clearly. Do not add cautionary language merely for tone. Use uncertainty only when the evidence is partial or genuinely uncertain.
 - Avoid flooding the customer with event counts, detector counts, confidence percentages, or technical health details unless they explicitly ask and the detail is genuinely useful.
 
@@ -238,24 +251,57 @@ async function rpcOptional(sb: any, name: string, args: Json) {
 }
 async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const p = prompt.toLowerCase(), tz = ctx?.site?.timezone || "UTC";
-  const today = dateInZone(tz), yesterday = dateInZone(tz, -1);
-  const out: Json = { site_local_date: today, setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null };
+  const today = dateInZone(tz), calendarYesterday = dateInZone(tz, -1);
+  const businessDateResult = await rpcOptional(sb, "wl_my_last_completed_business_date", { p_site_id: siteId });
+  const lastCompletedBusinessDate = businessDateResult?.ok && businessDateResult.data ? String(businessDateResult.data) : calendarYesterday;
+  const yesterdayIntent = /\byesterday\b|last completed|last working day|previous working day|last service day/.test(p);
+  const overnightIntent = /overnight|last night/.test(p);
+  const out: Json = {
+    site_local_date: today,
+    last_completed_business_date: lastCompletedBusinessDate,
+    requested_window: yesterdayIntent ? "last_completed_business_day" : overnightIntent ? "overnight_window" : "current",
+    setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null,
+    restaurant_day: null, restaurant_period: null, restaurant_config: null,
+    office_period: null, report_config: null
+  };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
-  const overnight = /overnight|last night|yesterday/.test(p);
-  if (overnight || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
-    out.daily_intelligence = overnight ? {
+  if (yesterdayIntent || overnightIntent || /what happened|today|incident|activity|people|visitor|staff|after.?hours|opening|closing|journey|restricted|dwell/.test(p)) {
+    if (yesterdayIntent) out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: lastCompletedBusinessDate });
+    else if (overnightIntent) out.daily_intelligence = {
       interpretation: "overnight_window",
-      yesterday: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: yesterday }),
+      yesterday: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: calendarYesterday }),
       today: await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today }),
-    } : await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today });
+    };
+    else out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: today });
   }
-  const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief/.test(p);
+  const siteType = String(ctx?.business_context?.site_type || "").toLowerCase();
+  const reportIntent = /report|management brief|daily brief|pdf|executive summary/.test(p);
+  if (reportIntent || yesterdayIntent || /7 day|30 day|week|month/.test(p)) {
+    out.report_config = await rpcOptional(sb, "wl_site_report_config", { p_site_id: siteId });
+  }
+  const restaurantIntent = siteType === "restaurant" && /restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup|management brief|daily brief|report|what happened|today|yesterday|last night|overnight|last completed/.test(p);
+  if (restaurantIntent) {
+    const periodDays = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
+    if (periodDays) out.restaurant_period = await rpcOptional(sb, "wl_restaurant_period", { p_site_id: siteId, p_days: periodDays, p_end_date: null });
+    else {
+      const restaurantDate = yesterdayIntent ? lastCompletedBusinessDate : null;
+      out.restaurant_day = await rpcOptional(sb, "wl_restaurant_day", { p_site_id: siteId, p_date: restaurantDate });
+    }
+    out.restaurant_config = await rpcOptional(sb, "wl_restaurant_site_config", { p_site_id: siteId });
+  }
+  const officeIntent = siteType === "office" && /office|security|opening|closing|visitor|reception|restricted|armory|admin|after.?hours|activity|incident|management brief|daily brief|report|today|yesterday|week|month|30 day|7 day/.test(p);
+  if (officeIntent) {
+    const periodDays = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
+    if (periodDays) out.office_period = await rpcOptional(sb, "wl_office_period", { p_site_id: siteId, p_days: periodDays, p_working_only: periodDays === 7 });
+  }
+  const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief|last completed/.test(p);
   if (visualIntent) {
-    const visualDate = /yesterday|last night|overnight/.test(p) ? yesterday : today;
+    const visualDate = yesterdayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
     out.visual_day = await rpcOptional(sb, "wl_my_visual_day", { p_site_id: siteId, p_date: visualDate });
   }
-  if (/report|management brief|daily brief|pdf|executive summary/.test(p)) {
-    out.frozen_report = await rpcOptional(sb, "wl_my_report_snapshot", { p_site_id: siteId, p_date: overnight ? yesterday : today });
+  if (reportIntent) {
+    const reportDate = yesterdayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
+    out.frozen_report = await rpcOptional(sb, "wl_my_report_snapshot", { p_site_id: siteId, p_date: reportDate });
   }
   if (/analytics|trend|visitor flow|vehicle flow|occupancy|busiest|dwell|traffic/.test(p)) {
     const days = /30 day|month/.test(p) ? 30 : /7 day|week/.test(p) ? 7 : 1;
@@ -308,6 +354,116 @@ function visualDayFallback(tools: Json) {
   };
 }
 
+function restaurantPeriodFallback(prompt: string, ctx: Json, tools: Json) {
+  const p = prompt.toLowerCase();
+  const wrapped = tools?.restaurant_period;
+  if (!wrapped?.ok || !wrapped.data?.enabled) return null;
+  if (!/7 day|last 7|week|30 day|last 30|month/.test(p)) return null;
+  const d = wrapped.data || {}, s = d.summary || {}, c = d.comparison || {}, aq = d.analytics_quality || {};
+  const days = Number(d.days || 0), observed = Number(s.observed_service_days || 0);
+  if (!observed) {
+    return {
+      answer: `There are no processed restaurant observations in this ${days}-day window yet, so I won’t invent demand, cover or service-time trends.`,
+      cards: [{ type: "report", title: `${days}-day restaurant review`, data: { period: d.period, summary: s, status: "waiting_for_observations" } }],
+      suggestions: ["Check monitoring coverage", "What can these cameras measure?", "Open Reports"],
+      proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+      mode: "guided_fallback",
+    };
+  }
+  const coverage = s.avg_coverage_ratio == null ? null : Math.round(Number(s.avg_coverage_ratio) * 100);
+  const bits = [
+    `estimated covers ${s.total_estimated_covers ?? "—"}`,
+    `average ${s.avg_estimated_covers_per_observed_day ?? "—"} per observed service day`,
+    `served table sessions ${s.served_sessions ?? "—"}`,
+    s.median_observed_time_to_food_minutes == null ? null : `median observed time to food ${s.median_observed_time_to_food_minutes} min`,
+    coverage == null ? null : `average analytics coverage ${coverage}%`,
+  ].filter(Boolean);
+  const comparison = c.estimated_covers_pct == null ? "" : ` Estimated covers changed ${Number(c.estimated_covers_pct)>0?"+":""}${c.estimated_covers_pct}% versus the previous ${days}-day period.`;
+  const caution = coverage != null && coverage < 70 ? " Coverage is partial, so trend comparisons should be treated cautiously." : "";
+  const qualityRecs = Array.isArray(aq?.recommendations) ? aq.recommendations : [];
+  const highQualityIssues = qualityRecs.filter((x: Json) => x?.severity === "high").length;
+  const qualityText = highQualityIssues
+    ? ` There are ${highQualityIssues} high-priority camera-quality improvement${highQualityIssues===1?"":"s"} affecting how confidently the period can be interpreted.`
+    : "";
+  return {
+    answer: `Across the last ${days} service days, ${bits.join(", ")}.${comparison}${caution}${qualityText}`,
+    cards: [{ type: "report", title: `${days}-day restaurant review`, data: { period: d.period, summary: s, comparison: c, busiest_day: s.busiest_day, busiest_hour: s.busiest_hour } }],
+    suggestions: ["Which hours were busiest?", "Which tables were used most?", "How did service timing change?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+    mode: "guided_fallback",
+  };
+}
+
+function restaurantFallback(prompt: string, ctx: Json, tools: Json) {
+  const p = prompt.toLowerCase();
+  if (String(ctx?.business_context?.site_type || "").toLowerCase() !== "restaurant") return null;
+  if (!/restaurant|table|diner|customer|cover|served|food|service|kitchen|handoff|counter|utili[sz]ation|busy|busiest|quiet|slow|wait|footfall|occup/.test(p)) return null;
+  const wrapped = tools?.restaurant_day;
+  if (!wrapped?.ok || !wrapped.data?.enabled) return null;
+  const d = wrapped.data || {}, q = d.data_quality || {}, sessions = d.sessions || {}, aq = d.analytics_quality || {};
+  const hourly = Array.isArray(d.hourly) ? d.hourly.filter((h: Json) => Number(h?.samples || 0) > 0) : [];
+  const floors = Array.isArray(d.floors) ? d.floors.filter((x: Json) => Number(x?.samples || 0) > 0) : [];
+  const coverage = q.business_analytics_coverage_ratio == null ? null : Number(q.business_analytics_coverage_ratio);
+  const observations = Number(q.camera_observations || 0);
+  if (!observations) {
+    return {
+      answer: "Restaurant analytics is configured, but there are no processed restaurant observations for this service day yet, so I won’t invent customer, table or service figures.",
+      cards: [{ type: "report", title: "Restaurant operations", data: { service_date: d.service_date, coverage: q, status: "waiting_for_observations" } }],
+      suggestions: ["Check camera coverage", "Open Reports", "What can these cameras measure?"],
+      proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+      mode: "guided_fallback",
+    };
+  }
+  const peakVisible = hourly.reduce((m: number, h: Json) => Math.max(m, Number(h?.peak_visible_customers || 0)), 0);
+  const peakTables = hourly.reduce((m: number, h: Json) => Math.max(m, Number(h?.peak_occupied_tables || 0)), 0);
+  const serviceLabel = d.service_date ? customerDate(String(d.service_date) + "T12:00:00Z", ctx?.site?.timezone) : "the selected";
+  const bits = [
+    hourly.length ? `peak visible diners ${peakVisible}` : null,
+    hourly.length ? `peak occupied tables ${peakTables}` : null,
+    sessions.estimated_covers != null ? `estimated covers ${sessions.estimated_covers}` : null,
+    sessions.served_sessions != null ? `served table sessions ${sessions.served_sessions}` : null,
+    sessions.median_observed_time_to_food_minutes != null ? `median observed time to food ${sessions.median_observed_time_to_food_minutes} min` : null,
+  ].filter(Boolean);
+  const coverageText = coverage == null ? "" : coverage < 0.7
+    ? " Coverage is partial, so comparisons should be treated cautiously."
+    : "";
+  const qualityRecs = Array.isArray(aq?.recommendations) ? aq.recommendations : [];
+  const highQualityIssues = qualityRecs.filter((x: Json) => x?.severity === "high").length;
+  const qualityText = highQualityIssues
+    ? ` Camera analytics quality needs attention: ${highQualityIssues} high-priority camera improvement${highQualityIssues===1?"":"s"} are documented in the report, so count/service conclusions should be treated cautiously until those are addressed.`
+    : "";
+  return {
+    answer: bits.length ? `For the ${serviceLabel} service day, ${bits.join(", ")}.${coverageText}${qualityText}`
+      : `Restaurant observations are available for the ${serviceLabel} service day, but a complete site-level dining composite is not available yet.${coverageText}${qualityText}`,
+    cards: [{ type: "report", title: "Restaurant operations", data: {
+      service_date: d.service_date, hourly, floors, tables: d.tables || [], sessions,
+      data_quality: q, analytics_quality: aq,
+      measurement_note: "Visible diners are concurrent visible people, estimated covers are camera-derived, and observed time to food is not POS order-to-serve time."
+    } }],
+    suggestions: ["Which floor was busiest?", "Which tables were used most?", "Was observed service time slow?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
+    mode: "guided_fallback",
+  };
+}
+
+function officePeriodFallback(prompt: string, ctx: Json, tools: Json) {
+  const p = prompt.toLowerCase(), wrapped = tools?.office_period;
+  if (!wrapped?.ok || !wrapped.data?.enabled) return null;
+  if (!/7 day|last 7|week|30 day|last 30|month/.test(p)) return null;
+  const d=wrapped.data||{},s=d.summary||{},c=d.comparison||{};
+  const days=Number(s.days||0),coverage=s.avg_coverage_ratio==null?null:Math.round(Number(s.avg_coverage_ratio)*100);
+  const coverageText=coverage==null?"coverage is unavailable":`average monitoring coverage was ${coverage}%`;
+  const change=c.coverage_delta_points==null?"":` Coverage changed ${Number(c.coverage_delta_points)>0?"+":""}${c.coverage_delta_points} points versus the previous comparable period.`;
+  const caution=coverage!=null&&coverage<70?" Coverage is limited, so activity and incident comparisons should be treated cautiously.":"";
+  return {
+    answer:`Across this ${days}-day office review, ${coverageText}, with ${s.incidents_total??0} alert/incident item${Number(s.incidents_total||0)===1?"":"s"}, ${s.critical_total??0} critical-attention item${Number(s.critical_total||0)===1?"":"s"}, and ${s.after_hours_total??0} after-hours observation${Number(s.after_hours_total||0)===1?"":"s"}.${change}${caution} Activity detections are not unique people, and role-specific conclusions still depend on confirmed physical camera mapping.`,
+    cards:[{type:"report",title:`Office ${days}-day review`,data:{period:d.period,summary:s,comparison:c,daily:d.daily}}],
+    suggestions:["Which days had the weakest coverage?","Were there after-hours exceptions?","What should management improve?"],
+    proposed_actions:[{kind:"navigate",label:"Open Reports",data:{href:"/reports/"}}],
+    mode:"guided_fallback",
+  };
+}
+
 function dailyFallback(tools: Json) {
   const daily = tools?.daily_intelligence;
   if (!daily) return null;
@@ -318,11 +474,13 @@ function dailyFallback(tools: Json) {
   const attention = datasets.reduce((n: number, d: Json) => n + Number(d?.attention?.incidents_total || 0), 0);
   const caveats = [...new Set(datasets.flatMap((d: Json) => Array.isArray(d?.honesty) ? d.honesty : []))];
   const overnight = daily?.interpretation === "overnight_window";
+  const lastCompleted = tools?.requested_window === "last_completed_business_day";
+  const label = overnight ? "For the overnight period" : lastCompleted ? "For the last completed business day" : "For today";
   return {
-    answer: `${overnight ? "For the overnight period" : "For today"}, there ${attention === 1 ? "is" : "are"} ${attention} item${attention === 1 ? "" : "s"} that may need attention.${caveats.length ? ` ${String(caveats[0])}` : ""}`,
-    cards: [{ type: "incident", title: overnight ? "Overnight intelligence" : "Today's intelligence", data: { incidents: incidents.slice(0, 8), attention } }, ...(datasets[0]?.coverage ? [{ type: "coverage", title: "Monitoring coverage", data: datasets[0].coverage }] : [])],
-    suggestions: ["Show the incidents", "Explain monitoring coverage", "Check site health"],
-    proposed_actions: [{ kind: "navigate", label: "Open incidents", data: { href: "/incidents/" } }], mode: "guided_fallback",
+    answer: `${label}, there ${attention === 1 ? "is" : "are"} ${attention} item${attention === 1 ? "" : "s"} that may need attention.${caveats.length ? ` ${String(caveats[0])}` : ""}`,
+    cards: [{ type: "incident", title: overnight ? "Overnight intelligence" : lastCompleted ? "Last completed business day" : "Today's intelligence", data: { incidents: incidents.slice(0, 8), attention } }, ...(datasets[0]?.coverage ? [{ type: "coverage", title: "Monitoring coverage", data: datasets[0].coverage }] : [])],
+    suggestions: ["Show the attention items", "Explain monitoring coverage", "What should management improve?"],
+    proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }], mode: "guided_fallback",
   };
 }
 function fallback(prompt: string, ctx: Json, tools: Json) {
@@ -341,6 +499,12 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
     return { answer: next ? `The next setup step is ${String(next.label || next.key).toLowerCase()}.` : "The main setup is complete. I can help you fine-tune the cameras, monitoring and reports for this site.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
   }
+  const restaurantPeriod = restaurantPeriodFallback(prompt, ctx, tools);
+  if (restaurantPeriod) return restaurantPeriod;
+  const officePeriod = officePeriodFallback(prompt, ctx, tools);
+  if (officePeriod) return officePeriod;
+  const restaurant = restaurantFallback(prompt, ctx, tools);
+  if (restaurant) return restaurant;
   const visual = visualDayFallback(tools);
   if (visual && /overnight|last night|yesterday|what happened|today|incident|activity|people|visitor|staff|opening|closing|restricted|armory|dwell/.test(p)) return visual;
   const daily = dailyFallback(tools);
@@ -377,7 +541,42 @@ function sanitizeResult(value: any) {
 // inside the RPCs). Stage 1 = compact index (no bytes); stage 2 = full bundles for the few relevant
 // events. Only called on a MODEL route for an evidence-intent prompt — a NO_MODEL question never
 // touches the evidence workspace.
-async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json): Promise<Json | null> {
+async function loadEvidence(sb: any, prompt: string, siteId: string, ctx: Json, tools: Json): Promise<Json | null> {
+  const businessDayIntent = /\byesterday\b|last completed|last working day|previous working day|last service day/i.test(prompt);
+  if (businessDayIntent) {
+    const businessDate = String(tools?.last_completed_business_date || "").trim();
+    const win = await rpcOptional(sb, "wl_my_business_day_window", {
+      p_site_id: siteId,
+      p_date: businessDate || null,
+    });
+    if (win?.ok && win.data?.from && win.data?.to) {
+      const cameraId = resolveCameraId(prompt, ctx?.cameras || []);
+      const idx = await rpcOptional(sb, "wl_ai_evidence_index", {
+        p_site_id: siteId,
+        p_from: win.data.from,
+        p_to: win.data.to,
+        p_camera_id: cameraId,
+      });
+      const index = idx.ok && Array.isArray(idx.data) ? idx.data : [];
+      const eventRefs = [...new Set(index.map((e: any) => e.event_ref).filter(Boolean))].slice(0, 4);
+      const bundles: any[] = [];
+      for (const ref of eventRefs) {
+        const b = await rpcOptional(sb, "wl_ai_evidence_bundle", { p_site_id: siteId, p_event_ref: ref });
+        if (b.ok && b.data?.found) bundles.push(b.data);
+      }
+      return {
+        window: {
+          from: String(win.data.from),
+          to: String(win.data.to),
+          label: "last completed business day",
+          business_date: win.data.business_date || businessDate || null,
+        },
+        camera_id: cameraId,
+        index: index.slice(0, 20),
+        bundles,
+      };
+    }
+  }
   return retrieveEvidence((name, args) => rpcOptional(sb, name, args), prompt, siteId, ctx, new Date());
 }
 function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[] {
@@ -387,9 +586,11 @@ function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[
   const siteNote = String(reporting?.ai_context_note || "");
   const priorities = Array.isArray(reporting?.owner_insight_priorities)
     ? reporting.owner_insight_priorities.slice(0, 12) : [];
+  const restaurantContract = reporting?.restaurant_intelligence_context || {};
+  const officeContract = reporting?.office_intelligence_context || {};
   return [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}` },
+    { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}\nRestaurant intelligence contract: ${JSON.stringify(restaurantContract)}\nOffice intelligence contract: ${JSON.stringify(officeContract)}` },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
     ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
@@ -426,7 +627,7 @@ async function routeChat(opts: {
   }
 
   // Scoped, two-stage evidence retrieval — only for an evidence-intent MODEL route.
-  const evidence = await loadEvidence(sb, prompt, siteId, context);
+  const evidence = await loadEvidence(sb, prompt, siteId, context, tools);
   const toolsEv = evidence ? { ...tools, evidence } : tools;
   const evToolCalls = evidence
     ? [...toolCalls, "evidence_index", ...(Array.isArray(evidence.bundles) && evidence.bundles.length ? ["evidence_bundle"] : [])]

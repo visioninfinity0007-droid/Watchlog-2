@@ -358,7 +358,7 @@ Current recorder/Agent evidence at last check:
 - Recorder model: `DS-7608NI-Q1`
 - Driver: `hikvision-isapi`
 - Last recorded Agent heartbeat in the verification query:
-  `2026-09-26 13:38:57.716037+00`
+  `2026-09-28 07:40:12.758442+00`
 
 Physical cameras: **8**
 
@@ -441,7 +441,7 @@ Current recorder/Agent evidence at last check:
 - Recorder: Hikvision `DS-7608NI-Q1`
 - Driver: `hikvision-isapi`
 - Last recorded Agent heartbeat in the verification query:
-  `2026-09-27 20:16:47.448647+00`
+  `2026-09-27 22:22:46.118327+00`
 
 Physical cameras: **8**
 
@@ -683,8 +683,7 @@ Build 76 includes the next Hikvision compatibility implementation:
 
 This still requires field acceptance on the actual recorder.
 
-Do not claim Chai Wala video extraction is field-proven until Build 76 (or a later
-authoritative build) returns a real bounded clip from that physical NVR.
+Do not claim Chai Wala video extraction is field-proven until an accepted authoritative 5.0.23 (or later) artifact returns real bounded footage from that physical NVR.
 
 ### Multi-camera incident design
 
@@ -800,6 +799,49 @@ Do not integrate these wholesale without license/performance/field evaluation.
 
 ---
 
+## 10A. Governed tenant intelligence + reporting state
+
+Canonical PR #71 established the reusable tenant-intelligence/reporting model.
+
+Implemented harness layers:
+
+- `ai-harness/site-types/restaurant.yaml`
+- `ai-harness/site-types/office.yaml`
+- `ai-harness/skills/tenant-intelligence-setup.md`
+- stable tenant overlays for Chai Wala, Al-Khalid Main site and HASCO Steel Head Office
+- per-tenant `reporting/methods/visual-snapshot-analysis.md`
+- per-tenant `reporting/daily-reports/` archive contract
+- per-tenant summary + detailed-report templates
+
+Daily archive rule:
+
+`ai-harness/tenants/<tenant-site>/reporting/daily-reports/YYYY-MM-DD/summary.md`
+
+and
+
+`ai-harness/tenants/<tenant-site>/reporting/daily-reports/YYYY-MM-DD/detailed-report.md`
+
+The folder date is the tenant's configured business/service date, not automatically midnight-to-midnight.
+
+Current date semantics:
+
+- Chai Wala: 16:00–04:00, seven days; the service day is keyed by the date on which the 16:00 opening occurs.
+- Al-Khalid Main site: 08:00–19:00 Monday–Friday; Yesterday = latest completed configured working day.
+- HASCO Steel Head Office: 08:00–19:00 Monday–Friday; Yesterday = latest completed configured working day.
+
+Production migrations now include:
+
+- `office_reporting_context`
+- `business_day_evidence_window`
+
+Live `watchlog-ai` is version **21**. Structured reporting, visual-day lookup and model-side evidence retrieval now resolve “yesterday” through the same business/service-day boundary. Do not mix calendar-yesterday evidence into a last-working-day or overnight-service-day report.
+
+Customer language is governed by `ai-harness/core/customer-language.md`: natural Pakistan English, management-first wording, no internal implementation jargon, explicit uncertainty where coverage is missing, and evidence-backed recommendations in both the daily summary and detailed report.
+
+Post-PR #71 Watchlog-2 commit `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b` was also reconciled. Its Build-76 field handoff is preserved only as superseded mirror context; canonical 5.0.23 release/source documents remain authoritative.
+
+---
+
 ## 11. Current high-priority gates
 
 1. **Visual Worker deployment**
@@ -807,7 +849,7 @@ Do not integrate these wholesale without license/performance/field evaluation.
    - process a controlled current-site batch;
    - verify context-aware outputs before draining the backlog.
 
-2. **Authoritative 5.0.22 Windows artifact + field acceptance**
+2. **Authoritative 5.0.23 Windows artifact + field acceptance**
    - produce the Windows installer from `Alkalid-security/Watchlog` main;
    - verify its SHA-256/artifact identity in Git;
    - upgrade one Build-69 Hikvision pilot in-place without forced rediscovery;

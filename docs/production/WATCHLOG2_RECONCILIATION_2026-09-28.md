@@ -69,14 +69,14 @@ Canonical now has:
 
 ## AI/runtime source status
 
-Live Supabase `watchlog-ai` is ahead of the canonical checked-in source and currently includes:
+Live Supabase `watchlog-ai` version 21 and canonical checked-in `watchlog-ai` source are now synchronized for:
 - last completed business-day resolution;
+- business/service-day evidence windows;
 - restaurant day/period tools;
 - office period tools;
 - office + restaurant intelligence contracts;
-- natural customer-facing fallbacks.
-
-The GitHub connector has repeatedly refused writes to provider/secret-sensitive Edge Function source.
+- natural customer-facing fallbacks;
+- customer-boundary route auditing.
 
 ### Outstanding source exception
 
@@ -111,9 +111,40 @@ The byte-different set was reviewed by category:
 - portal report files are semantic merges that preserve canonical office/security behavior while adding restaurant + office reporting;
 - `analytics_agent.py` retains newer canonical behavior plus the required `config_snapshot_requests` capability;
 - test/CI files reflect newer canonical contracts or merged restaurant/reporting coverage;
-- live `watchlog-ai` is ahead of checked-in provider-sensitive source and is documented as a source reconciliation exception alongside the vision worker.
+- live `watchlog-ai` was previously ahead of checked-in source. It has now been synchronized back into canonical source as part of the final reconciliation pass; the vision-worker file remains the only provider/credential-sensitive source exception.
 
 ## Rule going forward
 
 Canonical `Alkalid-security/Watchlog/main` is the product source of truth.
 Watchlog-2 is a handoff/mirror only and must not receive product work that is not reconciled back to canonical.
+
+
+## Final continuation audit — post PR #71
+
+A later Watchlog-2 main commit was created after the original 48-hour branch audit:
+
+- mirror commit: `d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b`
+- file: `docs/release/CURRENT_WINDOWS_FIELD_CONTEXT_2026-09-28.md`
+
+That mirror file described Build 76 / 5.0.21 as current field release authority. Canonical has newer 5.0.23 source/release context, so the file was **not copied as live authority**. Its field facts were reconciled into a canonical superseded-handoff document at the same path, with explicit links to the authoritative release ledger and current live context.
+
+Additional final reconciliation completed:
+
+- repaired `0129_office_reporting_context.sql` so the checked-in migration is actually executable;
+- applied/recorded the repaired office reporting migration in production;
+- added/applied `0130_business_day_evidence_window.sql`;
+- synchronized live `watchlog-ai` back into canonical source;
+- fixed the AI route-audit type for the customer-boundary route;
+- upgraded live `watchlog-ai` to version 21;
+- model-side evidence for “yesterday”/last-working-day/last-service-day now uses the same database-resolved business/service-day window as reports and visual summaries;
+- added explicit summary + detailed-report templates inside every currently active tenant reporting tree.
+
+Production migration history now includes:
+- `office_reporting_context`
+- `business_day_evidence_window`
+
+The remaining genuine source reconciliation exception is still:
+
+`prototype/supabase/functions/watchlog-vision-worker/index.ts`
+
+Do not bypass connector/provider safety controls by copying literal credentials or secret-bearing source manually.
