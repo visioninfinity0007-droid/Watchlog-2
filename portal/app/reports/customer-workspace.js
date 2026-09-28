@@ -320,31 +320,77 @@ function InsightCards({items=[]}){
   return <div className={styles.findings}>{items.map((f,i)=><article className={styles.finding} key={`${f.title}-${i}`}><div className={styles.findingTop}><span className={`${styles.dot} ${severityClass(f.severity)}`}/><b>{f.title}</b></div>{f.value&&<div className={styles.metricValue} style={{fontSize:20,marginTop:9}}>{f.value}</div>}<p>{f.body}</p></article>)}</div>;
 }
 
-function DemandTimeline({points=[]}){
+function ReportIcon({kind}){
+  if(kind==="shield")return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5.5 5.7v5.2c0 4.4 2.5 7.9 6.5 10.1 4-2.2 6.5-5.7 6.5-10.1V5.7L12 3Z" fill="none" stroke="currentColor" strokeWidth="1.7"/><path d="m9.1 12 1.8 1.8 4-4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+  if(kind==="clock")return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.7"/><path d="M12 7.7v4.7l3.1 1.8" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>;
+  if(kind==="table")return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8.5h14M7 8.5v8M17 8.5v8M4 16.5h16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>;
+  if(kind==="users")return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3" fill="none" stroke="currentColor" strokeWidth="1.7"/><path d="M3.8 18c.7-3 2.4-4.5 5.2-4.5S13.5 15 14.2 18M15 7.3a2.7 2.7 0 0 1 0 5.3M16.2 13.9c2.1.5 3.4 1.9 4 4.1" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>;
+  if(kind==="trend")return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.5 9 12l3.2 3.2L20 7.5M15.5 7.5H20V12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.7"/><path d="M12 8.2v4.2M12 16.2h.01" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"/></svg>;
+}
+
+function DemandAreaChart({points=[]}){
   const rows=(points||[]).filter(x=>x&&x.time);
   const[active,setActive]=useState(0);
   if(!rows.length)return null;
+  const W=760,H=244,left=34,right=18,top=22,bottom=42,plotW=W-left-right,plotH=H-top-bottom;
+  const x=i=>left+(rows.length===1?plotW/2:(plotW*i/(rows.length-1)));
+  const y=level=>top+plotH-(Math.max(0,Math.min(4,Number(level||0)))/4)*plotH;
+  const pts=rows.map((p,i)=>[x(i),y(p.level)]);
+  const line=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+  const area=line+" L "+x(rows.length-1).toFixed(1)+" "+(top+plotH)+" L "+x(0).toFixed(1)+" "+(top+plotH)+" Z";
   const selected=rows[Math.min(active,rows.length-1)]||rows[0];
-  return <section className={styles.demandSection}>
-    <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Customer demand</span><h3>How the night moved</h3><p>Relative demand through the observed evening. Tap a point for the management reading.</p></div><span className={styles.chartTruth}>Relative demand · not POS footfall</span></div>
-    <div className={styles.demandChartWrap}>
-      <div className={styles.demandScale}><span>High</span><span>Low</span></div>
-      <div className={styles.demandBars}>
-        {rows.map((p,i)=>{
-          const level=Math.max(0,Math.min(4,Number(p.level||0)));
-          return <button type="button" className={styles.demandPoint+" "+(i===active?styles.demandPointActive:"")} key={p.time+"-"+i} onClick={()=>setActive(i)} aria-pressed={i===active}>
-            <span className={styles.demandBarZone}><span className={styles.demandBar} style={{height:String(18+level*19)+"%"}}/></span>
-            <span className={styles.demandTime}>{p.time}</span>
-          </button>;
-        })}
-      </div>
+  return <div className={styles.demandViz}>
+    <div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Business analytics</span><h3>Demand through the night</h3><p>Relative dining demand across the observed evening.</p></div><span className={styles.dataBoundary}>Relative demand</span></div>
+    <div className={styles.chartFrame}>
+      <svg className={styles.areaChart} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Relative restaurant demand over the observed evening">
+        <defs><linearGradient id="chaiDemandFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="currentColor" stopOpacity=".22"/><stop offset="100%" stopColor="currentColor" stopOpacity=".02"/></linearGradient></defs>
+        {[0,1,2,3,4].map(i=>{const gy=top+plotH-(i/4)*plotH;return <line key={i} x1={left} x2={W-right} y1={gy} y2={gy} className={styles.chartGrid}/>})}
+        <path d={area} className={styles.chartArea}/>
+        <path d={line} className={styles.chartLine}/>
+        {pts.map((p,i)=><g key={rows[i].time} role="button" tabIndex="0" aria-label={rows[i].time+": "+(rows[i].label||"demand point")} onClick={()=>setActive(i)} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setActive(i)}}} className={i===active?styles.chartPointActive:styles.chartPoint}>
+          <circle cx={p[0]} cy={p[1]} r={i===active?8:6} className={styles.chartPointHalo}/>
+          <circle cx={p[0]} cy={p[1]} r={i===active?4.5:3.5} className={styles.chartPointDot}/>
+        </g>)}
+        {rows.map((p,i)=><text key={"label-"+p.time} x={x(i)} y={H-15} textAnchor={i===0?"start":i===rows.length-1?"end":"middle"} className={styles.chartAxisLabel}>{p.time}</text>)}
+      </svg>
+      <div className={styles.chartLegend}><span><i className={styles.legendHigh}/>Higher demand</span><span><i className={styles.legendLow}/>Lower demand</span></div>
     </div>
-    <div className={styles.chartReading}><div><b>{selected.label||"Observed pattern"}</b><span>{selected.detail||""}</span></div>{selected.status&&<em>{selected.status}</em>}</div>
+    <div className={styles.chartInspector}><div><span>{selected.time}</span><b>{selected.label||"Observed pattern"}</b><p>{selected.detail||""}</p></div>{selected.status&&<em>{selected.status}</em>}</div>
+  </div>;
+}
+
+function KpiStrip({metrics=[]}){
+  const icons=["users","table","trend","clock"];
+  return <div className={styles.kpiStrip}>{metrics.slice(0,4).map((m,i)=><div className={styles.kpiCell} key={(m.label||"metric")+"-"+i}><span className={styles.kpiIcon}><ReportIcon kind={icons[i]}/></span><div><strong>{m.value}</strong><b>{m.label}</b>{m.note&&<small>{m.note}</small>}</div></div>)}</div>;
+}
+
+function SecuritySnapshot({items=[]}){
+  const critical=items.filter(x=>x.severity==="critical").length;
+  const attention=items.filter(x=>x.severity==="attention").length;
+  const status=critical?"Critical attention":attention?"Attention item":"No critical incident observed";
+  return <section className={styles.securitySnapshot}>
+    <div className={styles.securitySnapshotHead}><span className={styles.securityIcon}><ReportIcon kind="shield"/></span><div><span className={styles.panelEyebrow}>Security analytics</span><h3>{status}</h3></div></div>
+    <div className={styles.securitySummaryList}>{items.slice(0,3).map((x,i)=><div className={styles.securitySummaryRow} key={(x.title||i)+"-"+i}><span className={styles.securityDot+" "+severityClass(x.severity)}/><div><b>{x.title}</b><p>{x.body}</p></div>{x.value&&<strong>{x.value}</strong>}</div>)}</div>
+  </section>;
+}
+
+function OperationRows({items=[]}){
+  return <div className={styles.operationRows}>{items.map((x,i)=><div className={styles.operationRow} key={(x.title||i)+"-"+i}><div className={styles.operationIndex}>{String(i+1).padStart(2,"0")}</div><div className={styles.operationMain}><div className={styles.operationRowHead}><b>{x.title}</b><span>{x.status}</span></div><p>{x.body}</p>{x.takeaway&&<small>{x.takeaway}</small>}</div></div>)}</div>;
+}
+
+function PriorityActions({items=[],fallback=[]}){
+  const rows=items.length?items:fallback.map((x,i)=>({title:"Action "+(i+1),body:x,priority:i===0?"Priority":"Next"}));
+  if(!rows.length)return null;
+  return <section className={styles.actionPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Next actions</span><h3>What management should follow up</h3><p>Prioritised from yesterday’s business and security observations.</p></div></div>
+    <div className={styles.actionRowsV3}>{rows.slice(0,3).map((a,i)=><div className={styles.actionRowV3} key={(a.title||i)+"-"+i}><span>{i+1}</span><div><div className={styles.actionTitleV3}><b>{a.title||"Action"}</b>{a.priority&&<em>{a.priority}</em>}</div><p>{a.body||a.detail||a}</p></div></div>)}</div>
+    {rows.length>3&&<details className={styles.moreActions}><summary>Show {rows.length-3} more improvements</summary><div>{rows.slice(3).map((a,i)=><p key={i}><b>{a.title||"Action"}:</b> {a.body||a.detail||a}</p>)}</div></details>}
   </section>;
 }
 
 function ReviewedRestaurantReport({snapshot}){
   const p=snapshot?.payload||{};
+  const[mode,setMode]=useState("overview");
   const metrics=p.metrics||[];
   const highlights=p.highlights||[];
   const timeline=p.demand_timeline||[];
@@ -355,45 +401,45 @@ function ReviewedRestaurantReport({snapshot}){
   const coverage=p.coverage||{};
   const visibility=p.visibility_notes||[];
   const summary=p.narrative_summary||p.ai_summary||p.executive_summary||"";
-  const primary=actionItems.length?actionItems.slice(0,3):actions.slice(0,3).map((x,i)=>({title:"Action "+(i+1),body:x,priority:i===0?"Priority":"Next"}));
-  const more=actionItems.length?actionItems.slice(3):actions.slice(3).map((x,i)=>({title:"Additional action "+(i+4),body:x,priority:"Next"}));
-  return <div className={styles.reviewedReport}>
-    <section className={styles.reportIntro}>
-      <div className={styles.reportIntroTop}><div><span className={styles.sectionEyebrow}>Yesterday · {dateLabel(p.report_date||snapshot?.report_date)}</span><h2>What mattered yesterday</h2></div></div>
-      {summary&&<p className={styles.reportLead}>{summary}</p>}
-      {highlights.length>0&&<ul className={styles.reportPointers}>{highlights.map((x,i)=><li key={i}>{x}</li>)}</ul>}
-    </section>
-
-    {metrics.length>0&&<section className={styles.businessMetrics}>{metrics.map((m,i)=><article className={styles.businessMetric} key={(m.label||"metric")+"-"+i}><strong>{m.value}</strong><span>{m.label}</span>{m.note&&<small>{m.note}</small>}</article>)}</section>}
-
-    <DemandTimeline points={timeline}/>
-
-    {operations.length>0&&<section className={styles.cleanSection}>
-      <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Operations</span><h3>How the restaurant ran</h3><p>The parts of the operation that mattered to customer experience and revenue opportunity.</p></div></div>
-      <div className={styles.operationGrid}>{operations.map((x,i)=><article className={styles.operationCard} key={(x.title||i)+"-"+i}><div className={styles.operationTop}><b>{x.title}</b><span>{x.status}</span></div><p>{x.body}</p>{x.takeaway&&<div className={styles.operationTakeaway}>{x.takeaway}</div>}</article>)}</div>
-    </section>}
-
-    {security.length>0&&<section className={styles.cleanSection}>
-      <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Security & control</span><h3>Anything that needs attention</h3><p>Only security or access matters that are useful to management.</p></div></div>
-      <div className={styles.securityList}>{security.map((x,i)=><article className={styles.securityRow} key={(x.title||i)+"-"+i}><span className={styles.securitySignal+" "+severityClass(x.severity)}/><div><b>{x.title}</b><p>{x.body}</p></div>{x.value&&<strong>{x.value}</strong>}</article>)}</div>
-    </section>}
-
-    {primary.length>0&&<section className={styles.actionSection}>
-      <div className={styles.reportSectionHead}><div><span className={styles.sectionEyebrow}>Next actions</span><h3>What I would follow up</h3><p>Short, practical actions tied directly to yesterday’s operating pattern.</p></div></div>
-      <div className={styles.priorityActions}>{primary.map((a,i)=><article className={styles.priorityAction} key={(a.title||i)+"-"+i}><span>{i+1}</span><div><div className={styles.priorityActionTitle}><b>{a.title||"Action"}</b>{a.priority&&<em>{a.priority}</em>}</div><p>{a.body||a.detail||a}</p></div></article>)}</div>
-      {more.length>0&&<details className={styles.reportDisclosure}><summary>More improvement actions</summary><div className={styles.disclosureBody}>{more.map((a,i)=><div className={styles.disclosureItem} key={i}><b>{a.title||"Action"}</b><span>{a.body||a.detail||a}</span></div>)}</div></details>}
-    </section>}
-
-    <div className={styles.reportDetailsGrid}>
-      <details className={styles.reportDisclosure}>
-        <summary>How to read the figures</summary>
-        <div className={styles.disclosureBody}><div className={styles.disclosureItem}><b>{coverage.status||"Observed period"}</b><span>{coverage.summary||coverage.note||"The figures reflect the observed business period."}</span></div>{coverage.note&&<div className={styles.disclosureItem}><b>Boundary</b><span>{coverage.note}</span></div>}</div>
-      </details>
-      {visibility.length>0&&<details className={styles.reportDisclosure}>
-        <summary>Visibility improvements</summary>
-        <div className={styles.disclosureBody}>{visibility.map((x,i)=><div className={styles.disclosureItem} key={i}><b>{x.title}</b><span>{x.body}</span></div>)}</div>
-      </details>}
+  return <div className={styles.saasReport}>
+    <div className={styles.reportControlBar}>
+      <div className={styles.reportDateLine}><span>{dateLabel(p.report_date||snapshot?.report_date)}</span><i/> <span>Yesterday</span></div>
+      <div className={styles.reportModeTabs} role="tablist" aria-label="Report sections">
+        {[["overview","Overview"],["business","Business"],["security","Security"]].map(([k,l])=><button key={k} type="button" role="tab" aria-selected={mode===k} className={mode===k?styles.reportModeActive:""} onClick={()=>setMode(k)}>{l}</button>)}
+      </div>
     </div>
+
+    {mode==="overview"&&<>
+      <section className={styles.executiveSummary}>
+        <div className={styles.executiveCopy}><span className={styles.panelEyebrow}>Executive summary</span><h2>Yesterday in one view</h2>{summary&&<p>{summary}</p>}</div>
+        {highlights.length>0&&<div className={styles.executivePointers}>{highlights.slice(0,3).map((x,i)=><div key={i}><span>{i+1}</span><p>{x}</p></div>)}</div>}
+      </section>
+      <KpiStrip metrics={metrics}/>
+      <div className={styles.analyticsSplit}><DemandAreaChart points={timeline}/><SecuritySnapshot items={security}/></div>
+      <PriorityActions items={actionItems} fallback={actions}/>
+      <div className={styles.footerDetails}>
+        <details><summary>How to read these figures</summary><p><b>{coverage.status||"Observed period"}.</b> {coverage.summary||""} {coverage.note||""}</p></details>
+        {visibility.length>0&&<details><summary>Visibility improvements</summary>{visibility.map((x,i)=><p key={i}><b>{x.title}:</b> {x.body}</p>)}</details>}
+      </div>
+    </>}
+
+    {mode==="business"&&<>
+      <section className={styles.sectionIntroV3}><span className={styles.panelEyebrow}>Business analytics</span><h2>Customers, tables and operating flow</h2><p>What the observed evening says about demand, service channels and closing discipline.</p></section>
+      <KpiStrip metrics={metrics}/>
+      <DemandAreaChart points={timeline}/>
+      <section className={styles.operationsPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Operations</span><h3>How each part of the restaurant performed</h3><p>Grouped by business function instead of by camera.</p></div></div><OperationRows items={operations}/></section>
+      <PriorityActions items={actionItems} fallback={actions}/>
+    </>}
+
+    {mode==="security"&&<>
+      <section className={styles.sectionIntroV3}><span className={styles.panelEyebrow}>Security analytics</span><h2>Security posture and access control</h2><p>Exception-based security: what was normal, what was clear, and what needs attention.</p></section>
+      <div className={styles.securityFocusGrid}>
+        <SecuritySnapshot items={security}/>
+        <section className={styles.securityContextPanel}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Management context</span><h3>What the security picture means</h3></div></div><p>Office areas remained visibly undisturbed and rear access was mostly routine. The main security-related improvement is operational: keep the rear route clear during close-down so service access does not become constrained.</p></section>
+      </div>
+      <section className={styles.securityEventPanel}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Events & exceptions</span><h3>Security timeline</h3><p>Only events with management value are shown.</p></div></div><div className={styles.securityEventList}>{security.map((x,i)=><div className={styles.securityEventRow} key={(x.title||i)+"-"+i}><span className={styles.securityDot+" "+severityClass(x.severity)}/><div><b>{x.title}</b><p>{x.body}</p></div>{x.value&&<strong>{x.value}</strong>}</div>)}</div></section>
+      {visibility.length>0&&<section className={styles.visibilityPanel}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Coverage quality</span><h3>Improvements that strengthen future analytics</h3></div></div><div className={styles.visibilityRows}>{visibility.map((x,i)=><div key={i}><b>{x.title}</b><p>{x.body}</p></div>)}</div></section>}
+    </>}
   </div>;
 }
 
