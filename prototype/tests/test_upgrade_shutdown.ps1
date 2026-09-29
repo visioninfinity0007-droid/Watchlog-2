@@ -140,9 +140,13 @@ finally {
   Remove-Item (Join-Path $Install "setup.ico") -Force
 
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper -Stage rollback -InstallDir $Install -TaskName $TaskName -StopTimeoutSec 6 -DataRootOverride $Data
-  # This isolated test deliberately has no Scheduled Task. Rollback must restore
-  # every file but return 14 rather than falsely claiming the old service is running.
-  Assert ($LASTEXITCODE -eq 14) "rollback without task should fail closed with 14, got $LASTEXITCODE"
+  # This isolated test deliberately starts with no Scheduled Task. Field recovery
+  # must restore the payload AND reconstruct/start the WatchLog supervision task
+  # instead of leaving the site dark because a prior task was missing/disabled.
+  Assert ($LASTEXITCODE -eq 0) "rollback should repair/restart the missing task, got $LASTEXITCODE"
+  $repairedTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  Assert ($null -ne $repairedTask) "rollback did not recreate the missing WatchLog task"
+  Assert ([string]$repairedTask.State -eq "Running") "recreated WatchLog task is not Running"
 
   Assert ((Get-Content (Join-Path $Install "READ ME FIRST.txt") -Raw).Trim() -eq "OLD README") "README was not restored"
   $restoredRunner = Get-Content (Join-Path $Install "run-agent.ps1") -Raw
@@ -155,6 +159,8 @@ finally {
   exit 0
 }
 finally {
+  try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
+  try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
   foreach ($p in $procs) {
     if ($p) {
       try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
