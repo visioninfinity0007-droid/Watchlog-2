@@ -249,6 +249,13 @@ class InstallerContract(unittest.TestCase):
         self.assertIn("recorder preflight exit=", ps)
         self.assertIn("Read that result even on non-zero exit", ps)
 
+    def test_recorder_preflight_retries_transient_session_handoff(self):
+        ps = (ROOT / "prototype/installer/wl-repair-upgrade.ps1").read_text(encoding="utf-8")
+        self.assertIn("RecorderPreflightAttempts = 3", ps)
+        self.assertIn("recorder preflight attempt $attempt/$attempts", ps)
+        self.assertIn("recorder preflight not ready; retrying", ps)
+        self.assertIn("if ([bool]$obj.ok) { return $obj }", ps)
+
     def test_build_outputs_and_hashes_both_installers(self):
         build = (ROOT / "tools/build_windows_release.ps1").read_text(encoding="utf-8")
         workflow = (ROOT / ".github/workflows/windows-release.yml").read_text(encoding="utf-8")
