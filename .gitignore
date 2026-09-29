@@ -8,8 +8,10 @@
 # --- internal working notes, not client deliverables --------------------
 # Commercial context, security incident detail and open questions live
 # here. This repo is in the client's GitHub org; these do not belong in it.
+# The tracked AGENTS.md (repo root) is product-level AI routing; an operator's
+# private workspace law lives in AGENTS.local.md, which stays untracked.
 _memory/
-AGENTS.md
+AGENTS.local.md
 router.md
 
 # --- dependencies and build output --------------------------------------

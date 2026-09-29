@@ -26,6 +26,52 @@ camera_identity:
     Do not bind Reception, Directors Office, Armory Gate or Admin Entrance to a specific camera
     until the current physical view is visually re-confirmed. Legacy ONVIF profile labels conflicted.
 
+# Evidence recorded 2026-09-28 from recorder on-screen titles (OSD) read on stored alert snapshots
+# (7-26 Sep). Each DB camera row showed ONE consistent view across dates. On 7-8 Sep the recorder still
+# showed its default channel titles, which reveal the real recorder channel behind each DB row.
+camera_attribution_evidence:
+  status: suspected_event_to_camera_attribution_defect
+  confidence: strong_osd_evidence_physical_view_unconfirmed
+  observations:
+    - db_row: "Camera 1 (canonical)"
+      osd_title: Directors Office
+      default_osd_title_seen: Channel2
+    - db_row: "Camera 2 (canonical)"
+      osd_title: Admin Manager Dir Entrance
+      default_osd_title_seen: Channel4
+    - db_row: "Camera 3 (canonical)"
+      osd_title: Channel6
+      default_osd_title_seen: Channel6
+    - db_row: "MediaProfile_Channel1_MainStream (hidden legacy profile)"
+      osd_title: Reception Main Entrance
+      default_osd_title_seen: Channel1
+    - db_row: "MediaProfile_Channel2_MainStream (hidden legacy profile)"
+      osd_title: Armory Gate
+      default_osd_title_seen: Channel3
+  pattern: >
+    Events from recorder channel 2k-1 are stored on hidden legacy row k and events from recorder channel
+    2k on canonical "Camera k". This is consistent with a main/sub-stream profile index being used as the
+    channel number. Recorder channels 5, 7 and 8 have never produced an event; channel 5 was previously
+    reported black and undetected.
+  consequences:
+    - canonical Camera 1-3 are NOT recorder channels 1-3 and their stored physical_channel values are unreliable
+    - Reception and Armory Gate evidence, including every restricted-area incident raised 12-25 Sep, sits on hidden legacy rows
+    - a literal canonical-only analysis silently drops 2 of the 5 views that actually produce evidence
+  analysis_rule_until_fixed: >
+    Treat hidden legacy rows that carry events as evidence sources for their physical view, never as extra
+    cameras. Refer to views by the recorder's on-screen title plus "(recorder label, not physically
+    confirmed)". Never assume Camera N is recorder channel N. Role-specific conclusions stay provisional.
+  required_fix: >
+    Fix event-to-camera attribution in the agent, re-attribute historical events/snapshots/incidents to the
+    correct canonical camera, confirm each view on site, then set roles in site_business_context and
+    re-enable role policies.
+  customer_safe_rule: >
+    Activity from the areas the recorder labels Reception Main Entrance and Armory Gate is recorded, but
+    those views are not yet shown as separate cameras, and camera numbers 1-3 do not match the recorder's
+    channels. Refer to an area only by its recorder label, adding that it is not yet confirmed on site.
+    Never map an area to a camera number. Say the camera setup is being corrected. Never mention internal
+    profile or row names.
+
 known_operational_areas:
   - Reception
   - Directors Office
@@ -51,6 +97,58 @@ truth_boundaries:
   - activity detections are not unique people
   - hidden historical ONVIF transport profiles are not extra physical cameras
   - missing monitoring is missing evidence, not no activity
+  - the first alert of a day is when monitoring started, not when staff arrived, unless coverage proves the agent was already online
+
+recorder_capability_ref:
+  knowledge: ../../device-knowledge/dahua/models/dh-xvr1b08-i.yaml
+  note: >
+    The field-verified capability is SMD human/vehicle classification only. Line crossing, intrusion, face
+    and counting are not recorder capabilities here. The recorder model itself is a runtime fact
+    (agents.device_model).
+
+# Dated, evidence-backed review items. These are not live facts: re-check against runtime data before
+# repeating them, and close an item when the evidence changes.
+known_review_focus:
+  - id: monitoring_coverage_gaps
+    status: observed_repeated
+    evidence_window: "2026-09-11..2026-09-25"
+    finding: >
+      The agent went offline every evening (~17:00-19:30) and returned around 12:00. About 39% of
+      configured business hours were monitored, ~1% of 08:00-12:00, ~3% of nights and 0% of Sundays.
+      There were 16 agent registrations between 10 and 26 Sep.
+    action: Keep the site PC and agent running 24/7. Until then, report opening and after-hours activity as unknown.
+  - id: saturday_activity_vs_configured_week
+    status: owner_confirmation_required
+    evidence_window: "2026-09-12, 2026-09-19"
+    finding: >
+      Heavy activity on two Saturdays. Sat 19 Sep was the busiest day of the window, including the views
+      labelled Directors Office and Armory Gate. Configured working days are Mon-Fri.
+    action: Owner confirms whether Saturday is a working day, then the configured working days are updated to match.
+  - id: friday_early_finish
+    status: observed_repeated
+    evidence_window: "2026-09-11, 2026-09-18, 2026-09-25"
+    finding: Last visible activity was 14:09, 14:47 and 16:21 while monitoring continued. The configured close is 19:00.
+    action: Confirm Friday hours and configure them if different.
+  - id: armory_gate_glare
+    status: observed_repeated
+    applies_to: "recorder label Armory Gate (not physically confirmed)"
+    finding: >
+      Strong pink light/glare from the doorway on most images. The detector found a person in 78% of
+      sampled alert images here vs 85-99% on other views. This is not a measured accuracy.
+    action: Re-angle the camera or shield the light source, then revalidate.
+  - id: alert_volume_unacknowledged
+    status: observed
+    evidence_window: "2026-09-07..2026-09-26"
+    finding: >
+      About 500 recorder person alerts per monitored day. 53 critical restricted-area incidents were
+      raised and none were acknowledged.
+    action: Once mapping is confirmed, gate the restricted-area policy by after-hours and/or dwell so owners are not trained to ignore it.
+  - id: restricted_area_policy_orphaned
+    status: observed
+    finding: >
+      The site's only incident policy matches a camera purpose containing "armory". No camera currently
+      carries that purpose, so the policy cannot fire.
+    action: Re-assign the purpose only after the attribution fix and physical confirmation.
 
 
 reporting_contract:

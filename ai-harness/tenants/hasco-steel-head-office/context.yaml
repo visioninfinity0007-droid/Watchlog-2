@@ -43,6 +43,39 @@ camera_role_map:
     role: perimeter
     watch_for: [arrival/departure flow, after-hours access, entrance dwell, external access]
 
+camera_identity:
+  physical_camera_count: 8
+  canonical_only: true
+  mapping_status: configured_names_not_yet_visually_verified
+  rule: >
+    The role names above come from configuration. Confirm them with a visual setup pass on representative
+    working-day images before role-specific conclusions. Run the pass under the site's egress policy:
+    locally or on WatchLog-controlled compute unless the site has opted in to external processing.
+
+# Dated, evidence-backed review items (added 2026-09-28). Re-check against runtime data before repeating.
+known_review_focus:
+  - id: working_day_evidence_absent
+    status: observed
+    evidence_window: "2026-09-23..2026-09-28"
+    finding: >
+      Only 132 timed snapshots exist, all on Saturday 26 Sep (a configured non-working day), 15:16-18:38.
+      Since 18:38 that day the agent has reported the recorder unreachable. No recorder person/motion
+      alerts have been received.
+    action: >
+      Restore recorder connectivity (power, IP, network path from the site PC). No working-day report or
+      baseline is possible until then.
+  - id: recorder_person_events_absent
+    status: observed
+    finding: >
+      The DS-7608NI-Q1 datasheet (V4.71.200, 2022-10-31) lists Motion Detection 2.0 human/vehicle
+      analysis on 4 channels only. Line crossing/intrusion are camera-side VCA functions. WatchLog has no verified
+      capability record for this model yet.
+    source: https://assets.hikvision.com/prd/public/all/doc/m000000569/Datasheet-of-DS-7608NI-Q1-NVRD_V4.71.200_20221031.pdf
+    action: >
+      Choose which 4 cameras get the recorder's human/vehicle detection, for example External Entrance,
+      Entrance Corridor, Reception and Parking.
+    internal_note: Add the model to the capability KB via migration.
+
 owner_priorities:
   - office opening and closing activity
   - visitor arrival and reception waiting

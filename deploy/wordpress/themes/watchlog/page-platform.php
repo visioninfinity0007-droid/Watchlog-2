@@ -51,7 +51,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="f-copy">
         <span class="f-kicker"><?php echo watchlog_icon('camera',20); ?> Incident review</span>
         <h3>From motion to something worth reviewing.</h3>
-        <p>Every kept event carries a still, filtered on site so common false alarms do not flood the portal.
+        <p>Every incident carries a picture from the moment it happened, and routine noise is kept out of the way so it does not flood the portal.
           Filter history by site, camera and type, then open an incident to see the captured moment.</p>
         <a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">Explore incidents <?php echo watchlog_icon('arrow-right',18); ?></a>
       </div>

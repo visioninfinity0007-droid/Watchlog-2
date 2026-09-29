@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+// Harness rules for any text an owner may see (compiled from ai-harness/; never hand-edit).
+import { OWNER_TEXT_RULES } from "./harness_rules.generated.ts";
 
 type Json = Record<string, any>;
 
@@ -43,7 +45,10 @@ For every restaurant frame, ALSO return restaurant.analytics_quality:
   "blocked_regions": ["short visible region/object description"],
   "recommended_actions": ["short physical camera/lighting/calibration improvement"]
 }
-All scores are 0..1. For adequacy/confidence/visibility/lighting, 1 is best. For glare/overexposure/occlusion/obstruction, 1 is worst. Only describe visible image-quality or geometry problems. Do not invent equipment faults. Bright bulbs, direct lamps or blown highlights in the camera view should increase glare/overexposure and may lower people-count/table-tracking confidence. Furniture, poles, fixtures, umbrellas, people or other objects blocking table/customer visibility should increase occlusion/obstruction. A recommendation is not evidence that the fix has been performed.`;
+All scores are 0..1. For adequacy/confidence/visibility/lighting, 1 is best. For glare/overexposure/occlusion/obstruction, 1 is worst. Only describe visible image-quality or geometry problems. Do not invent equipment faults. Bright bulbs, direct lamps or blown highlights in the camera view should increase glare/overexposure and may lower people-count/table-tracking confidence. Furniture, poles, fixtures, umbrellas, people or other objects blocking table/customer visibility should increase occlusion/obstruction. A recommendation is not evidence that the fix has been performed.
+
+"summary", "unusual_reason" and every other sentence you write may be shown to the site owner. Describe the scene itself ("two staff at the counter"), never the image or how it was captured or reviewed. Follow the WatchLog harness rules below.
+${OWNER_TEXT_RULES}`;
 
 if (!URL || !SERVICE_KEY) throw new Error("missing Supabase runtime configuration");
 const sb = createClient(URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -278,10 +283,11 @@ async function maybeFinalizeDay(siteId: string, date: string, model: string) {
   }));
   const restricted = frames.filter((f: any) => Array.isArray(f?.restricted_area) && f.restricted_area.length > 0)
     .slice(0, 30).map((f: any) => ({ captured_at: f.captured_at, camera: f.camera, observations: f.restricted_area }));
-  const done = Number(d.snapshots_analyzed || 0);
+  // Owner-facing text: customer vocabulary only (ai-harness/core/customer-vocabulary.yaml). Never state
+  // how many images were reviewed or how WatchLog reviews them.
   const owner_summary = notable.length
-    ? `Visual review completed for ${done} snapshots. ${notable.length} analyzed frame${notable.length === 1 ? "" : "s"} were flagged for attention; see the notable observations for camera and time.`
-    : `Visual review completed for ${done} snapshots. No analyzed frames were flagged as unusual; this does not make any claim about unverified time between snapshots.`;
+    ? `WatchLog reviewed the available camera coverage for this day. ${notable.length} moment${notable.length === 1 ? " was" : "s were"} flagged for attention; see the notable observations for camera and time.`
+    : "WatchLog reviewed the available camera coverage for this day and nothing unusual was flagged. Periods without camera coverage are not treated as quiet.";
   await rpc("wl_vision_save_day_summary", {
     p_site_id: siteId,
     p_date: date,

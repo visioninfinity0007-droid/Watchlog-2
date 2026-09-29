@@ -26,7 +26,7 @@ $signup = esc_url(watchlog_signup_url());
       <div class="card"><h3>Zones and dwell</h3><p>Measure activity and time in configured operational areas without implying worker identity.</p></div>
       <div class="card"><h3>Shift schedules</h3><p>Use configured schedules to compare expected operating periods with activity outside those hours.</p></div>
       <div class="card"><h3>Vehicle movement</h3><p>Measure anonymous vehicle flow around selected gates and operational areas, not ANPR or fleet identity.</p></div>
-      <div class="card"><h3>Incident intelligence</h3><p>Use current detector classes and on-site filtering to surface selected incident events for review.</p></div>
+      <div class="card"><h3>Incident intelligence</h3><p>Surface person and vehicle incidents from your recorder for review.</p></div>
       <div class="card"><h3>Site Health</h3><p>Keep visibility into whether the recorder, site connection and cameras are still reporting.</p></div>
     </div>
   </div>

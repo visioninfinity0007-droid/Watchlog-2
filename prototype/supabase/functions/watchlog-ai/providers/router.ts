@@ -27,7 +27,7 @@ export function isLocalEndpoint(endpoint: string): boolean {
 
 export type AiMode = "instant" | "thinking" | "hive";
 export type RouteKind = "no_model" | "ai_primary" | "ai_fallback" | "guided_fallback";
-export type EgressDecision = "local" | "external" | "blocked_local_only" | "n/a";
+export type EgressDecision = "local" | "external" | "external_text_only" | "blocked_local_only" | "n/a";
 export type RouteOutcome =
   | "ok" | "deterministic" | "customer_boundary" | "no_provider_configured" | "config_invalid"
   | "egress_blocked" | "all_providers_failed" | "router_error";
@@ -105,6 +105,17 @@ export function egressAllowed(cfg: ProviderConfig, siteAllowsExternal: boolean, 
   return siteAllowsExternal === true && modeExternalAllowed === true;
 }
 
+// Two tenant-owned consent levels (0106 + 0140): FULL external egress (text + images) or TEXT-ONLY
+// external egress. Text-only lets an external chat model read the site's text context; image bytes
+// are always withheld. The mode must still permit external egress in both cases.
+export function providerEgress(cfg: ProviderConfig, siteAllowsExternal: boolean, siteAllowsText: boolean,
+  modeExternalAllowed: boolean): { allowed: boolean; stripImages: boolean; decision: EgressDecision } {
+  if (!isExternal(cfg)) return { allowed: true, stripImages: false, decision: "local" };
+  const full = siteAllowsExternal === true && modeExternalAllowed === true;
+  const allowed = egressAllowed(cfg, siteAllowsExternal === true || siteAllowsText === true, modeExternalAllowed);
+  return { allowed, stripImages: !full, decision: !allowed ? "blocked_local_only" : full ? "external" : "external_text_only" };
+}
+
 // NO_MODEL routing: WatchLog answers canonical health/status/coverage/count questions from verified
 // data without spending an LLM call (faster, cheaper, and no prompt egress). Deliberately
 // conservative — anything that asks to explain/recommend/configure keeps the model in the loop.
@@ -140,6 +151,31 @@ export function stripEvidenceImages(evidence: any): any {
       : b.snapshots,
   })) : evidence.bundles;
   return { ...evidence, images_withheld: true, bundles };
+}
+
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+// "last Saturday" / "on Friday" / "this past monday" -> the most recent such site-local date
+// (YYYY-MM-DD), given the site-local date today. "last <today's weekday>" means a week ago; a bare
+// weekday that is today means today. Returns null when no weekday is named.
+export function resolveNamedDay(prompt: string, localDate: string): string | null {
+  const m = String(prompt || "").toLowerCase().match(/\b(last|previous|this past|past)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (!m || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
+  const today = new Date(`${localDate}T12:00:00Z`);
+  let diff = (today.getUTCDay() - WEEKDAYS.indexOf(m[2]) + 7) % 7;
+  if (diff === 0 && m[1]) diff = 7;
+  return new Date(today.getTime() - diff * 86400000).toISOString().slice(0, 10);
+}
+
+// A small calendar so the model never has to compute weekdays/dates itself.
+export function recentCalendar(localDate: string, days = 8): string[] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return [];
+  const t = new Date(`${localDate}T12:00:00Z`).getTime();
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date(t - i * 86400000);
+    const w = WEEKDAYS[d.getUTCDay()];
+    return `${d.toISOString().slice(0, 10)} ${w[0].toUpperCase()}${w.slice(1)}${i === 0 ? " (today)" : i === 1 ? " (calendar yesterday)" : ""}`;
+  });
 }
 
 // Resolve the time window from the prompt, in the site's timezone. Boundaries are the site-local day;

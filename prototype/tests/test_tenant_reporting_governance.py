@@ -17,6 +17,44 @@ HOOK=(ROOT/"portal/app/reports/use-report.js").read_text(encoding="utf-8")
 REPORT=(ROOT/"portal/app/reports/customer-workspace.js").read_text(encoding="utf-8")
 MIG=(ROOT/"prototype/supabase/migrations/0129_office_reporting_context.sql").read_text(encoding="utf-8")
 
+def test_every_ai_is_routed_through_the_harness():
+    agents=(ROOT/"AGENTS.md").read_text(encoding="utf-8")
+    assert "ai-harness/WATCHLOG.md" in agents and "Never disclose WatchLog's internal workings" in agents
+    for pointer in ("CLAUDE.md","GEMINI.md",".github/copilot-instructions.md",".cursorrules"):
+        assert "AGENTS.md" in (ROOT/pointer).read_text(encoding="utf-8"), pointer
+    assert "Start here: route yourself" in WATCHLOG and "Every runtime AI and how it receives the harness" in WATCHLOG
+    for method in ("people-counting.md","person-recognition.md","incident-video-analysis.md"):
+        text=(ROOT/"ai-harness/methods"/method).read_text(encoding="utf-8")
+        assert f"methods/{method}" in WATCHLOG and "**Customer status:**" in text and "## Customer-facing claims" in text
+
+def test_customer_vocabulary_is_enforced_in_every_runtime():
+    import yaml
+    vocab=yaml.safe_load((ROOT/"ai-harness/core/customer-vocabulary.yaml").read_text(encoding="utf-8"))
+    mig=(ROOT/"prototype/supabase/migrations/0141_customer_language_guard.sql").read_text(encoding="utf-8")
+    for i,rule in enumerate(vocab["forbidden"], start=1):   # DB safety net seeded from the harness, same order
+        assert f"('{rule['id']}', {i}, '{rule['pattern'].replace(chr(92)+'b', chr(92)+'y')}'" in mig, rule["id"]
+    assert "before insert or update of payload on public.report_snapshots" in mig
+    assert "before insert or update of summary on public.visual_day_summaries" in mig
+    vision=(ROOT/"prototype/supabase/functions/watchlog-vision-worker/index.ts").read_text(encoding="utf-8")
+    assert "OWNER_TEXT_RULES" in vision and "Visual review completed for" not in vision
+    worker=(ROOT/"prototype/vision_worker/worker.py").read_text(encoding="utf-8")
+    assert "harness_rules.generated.json" in worker and "Be explicit that periodic snapshots" not in worker
+    assert "harness_rules.generated.json" in (ROOT/"prototype/vision_worker/Dockerfile").read_text(encoding="utf-8")
+    chat=(ROOT/"prototype/supabase/functions/watchlog-ai/index.ts").read_text(encoding="utf-8")
+    assert "applyCustomerVocabulary(" in chat and "customerCardData(" in chat
+    assert "available snapshots were reviewed" not in chat
+
+def test_customer_facing_copy_and_templates_carry_no_internal_wording():
+    import re, yaml, glob
+    vocab=yaml.safe_load((ROOT/"ai-harness/core/customer-vocabulary.yaml").read_text(encoding="utf-8"))
+    rx=re.compile("|".join(f"(?:{r['pattern']})" for r in vocab["forbidden"]), re.I)
+    for f in glob.glob(str(ROOT/"ai-harness/tenants/*/reporting/daily-reports/*/*.md")):
+        text=re.sub(r"visual-snapshot-analysis\.md","",open(f,encoding="utf-8").read())
+        assert not rx.search(text), f"{f}: {rx.search(text).group(0)}"
+    site=" ".join(open(f,encoding="utf-8").read() for f in glob.glob(str(ROOT/"deploy/wordpress/themes/watchlog/*.php")))
+    for stale in ("On-site AI","on-site filtering","detector classes","production detector","one still per incident","Filtered on site"):
+        assert stale.lower() not in site.lower(), stale
+
 def test_site_types_and_tenant_folders_are_governed():
     assert "id: office" in OFFICE and "status: IMPLEMENTED" in OFFICE
     assert "id: restaurant" in RESTAURANT and "status: IMPLEMENTED" in RESTAURANT
@@ -33,6 +71,47 @@ def test_all_active_tenants_have_reporting_tree():
         assert (base/"README.md").exists()
         assert (base/"daily-reports/README.md").exists()
         assert (base/"methods/visual-snapshot-analysis.md").exists()
+
+def test_tenant_inherits_paths_resolve():
+    for tenant in ("chaiwala-chota-bukhari","al-khalid-main-site","hasco-steel-head-office"):
+        folder=ROOT/"ai-harness/tenants"/tenant
+        text=(folder/"context.yaml").read_text(encoding="utf-8")
+        parents=[]
+        for l in text.split("inherits:",1)[1].splitlines()[1:]:
+            if not l.strip().startswith("- "): break
+            parents.append(l.strip()[2:].strip())
+        assert parents, tenant
+        for rel in parents:
+            assert (folder/rel).resolve().exists(), f"{tenant}: inherits {rel} does not resolve"
+
+def test_tenant_registry_and_compliance_records():
+    registry=(ROOT/"ai-harness/tenants/README.md").read_text(encoding="utf-8")
+    for tenant in ("chaiwala-chota-bukhari","al-khalid-main-site","hasco-steel-head-office"):
+        assert f"`{tenant}/`" in registry
+        audits=list((ROOT/"ai-harness/tenants"/tenant/"reporting/internal-audits").glob("*-harness-compliance.md"))
+        assert audits, f"{tenant} has no harness compliance record"
+    assert "never analyse or report as active tenants" in registry
+    assert "tenants/README.md" in CONTEXT
+
+def test_ai_function_brief_is_compiled_from_current_harness():
+    import subprocess, sys
+    check=subprocess.run([sys.executable, str(ROOT/"prototype/scripts/compile_harness_brief.py"), "--check"],
+                         capture_output=True, text=True)
+    assert check.returncode==0, check.stdout+check.stderr
+    fn=(ROOT/"prototype/supabase/functions/watchlog-ai/index.ts").read_text(encoding="utf-8")
+    assert "harnessMessage(context)" in fn, "model messages must carry the harness + tenant brief"
+    assert "external_text_egress_allowed" in fn, "text-only tenant consent must be honoured"
+
+def test_known_evidence_gaps_are_governed_not_hidden():
+    alk_method=(ROOT/"ai-harness/tenants/al-khalid-main-site/reporting/methods/visual-snapshot-analysis.md").read_text(encoding="utf-8")
+    assert "camera_attribution_evidence" in ALK
+    assert "Enumerate by evidence, not only by `is_canonical`" in alk_method
+    assert "Never assume \"Camera N\" is recorder channel N" in alk_method
+    assert "monitoring start, not staff arrival" in alk_method
+    assert "timing_resolution_rule" in RESTAURANT
+    assert "sampling_interval_below_target" in CHAI
+    assert "db_camera_purpose_conflicts" in CHAI
+    assert "mapping_status: configured_names_not_yet_visually_verified" in HASCO
 
 def test_visual_method_requires_full_visual_pass_before_report():
     assert "List every snapshot in the window" in METHOD

@@ -140,6 +140,13 @@ metrics:
     evidence_class: observed_derived
     definition: first occupied observation to last observed occupied frame
     caveat: lower bound only
+  timing_resolution_rule:
+    applies_to: [estimated_table_sessions, observed_time_to_food_minutes, minimum_observed_dwell_minutes]
+    rule: >
+      Timing metrics can be no more precise than the ACTUAL capture interval of the camera, which is a
+      runtime fact and may differ from the configured target. State the interval. Above 120 s, present
+      time-to-food and dwell as coarse ranges, never as precise minutes, and do not derive a session
+      from one frame.
   kitchen_load:
     evidence_class: estimated
     range: 0_to_1

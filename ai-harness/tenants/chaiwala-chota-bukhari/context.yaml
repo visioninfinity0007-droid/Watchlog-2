@@ -4,9 +4,10 @@ status: IMPLEMENTED
 kind: tenant_site_overlay
 site_type: restaurant
 inherits:
-  - ../site-types/restaurant.yaml
+  - ../../site-types/restaurant.yaml
 
 identity:
+  tenant: chaiwala
   display_name: Chai Wala - Chota Bukhari
   branch: Chota Bukhari, DHA Phase 6, Karachi
   business_type: late-night chai cafe and casual restaurant
@@ -77,6 +78,64 @@ known_review_focus:
     required_evidence: repeated analytics_quality scores from processed frames
     action_if_confirmed: >
       Re-angle the camera or redirect/shield the light source, then revalidate after dark.
+  # Items below were added 2026-09-28 from a server-side pass over all 990 snapshots of the 27 and 28 Sep
+  # service days. Images were not sent to any external model.
+  - id: sampling_interval_below_target
+    status: observed
+    evidence_window: "2026-09-27..2026-09-28 service days"
+    applies_to: all cameras
+    finding: >
+      The actual capture interval is ~300 s on all 8 cameras, vs targets of 60 s (floors), 90 s (Shop
+      Front), 120 s (Kitchen) and 180 s (Cash Counter). Back Entrance, Office View and Office Camera
+      ("sampling: event") receive the same timed captures, because the recorder produced no person/motion
+      alerts in 7 days.
+    consequence: >
+      Session, dwell and time-to-food metrics have ~5-minute resolution. Report them as coarse ranges,
+      not precise minutes.
+    action: Raise floor-camera capture cadence to the target, or keep labelling timing metrics as coarse.
+  - id: closed_period_unmonitored
+    status: observed_repeated
+    evidence_window: "2026-09-27..2026-09-28"
+    finding: >
+      Monitoring stopped at 03:22 and resumed at 16:38 (site PC powered off after closing). The whole
+      closed period was unmonitored, and the 16:00 opening and 04:00 closing edges fell outside coverage.
+    action: Keep the site PC and agent on 24/7. Until then, closed-period security and opening/closing discipline are unknown.
+  - id: recorder_person_events_absent
+    status: observed
+    finding: >
+      The DS-7608NI-Q1 datasheet (V4.71.200, 2022-10-31) lists Motion Detection 2.0 human/vehicle
+      analysis on 4 channels only. Line crossing/intrusion are camera-side VCA functions. No person or
+      motion alert has been received from this recorder. WatchLog has no verified capability record for this model yet.
+    source: https://assets.hikvision.com/prd/public/all/doc/m000000569/Datasheet-of-DS-7608NI-Q1-NVRD_V4.71.200_20221031.pdf
+    action: >
+      Choose which 4 cameras get the recorder's human/vehicle detection, for example Back Entrance,
+      Cash Counter and the two office views.
+    internal_note: >
+      Add the model to the capability KB via migration, not by hand-editing device-knowledge files.
+  - id: db_camera_purpose_conflicts
+    status: config_alignment_required
+    finding: >
+      site_business_context lists Shop Front as a reception camera and Back Entrance as an entrance camera.
+      Kitchen carries purpose 'restricted', which is also a restricted purpose and a critical camera. This
+      conflicts with the roles above: Shop Front is service_handoff and not the customer entrance, Back
+      Entrance is service access and not customer footfall, and Kitchen is kitchen and not a restricted-area
+      alarm source.
+    action: Align site_business_context purposes/role lists with camera_role_map after owner approval.
+  - id: cash_counter_zone_uncalibrated
+    status: observed
+    finding: >
+      A till zone copied from an old frame placed the staff seat just outside the zone, which produced a
+      false "unattended" reading. Whole-view presence was 90-97% of checks.
+    action: >
+      Have the owner/installer draw and confirm staff-side zones. Until then report "someone visible at
+      the counter", not staff attendance.
+  - id: low_light_and_soft_focus
+    status: observed_repeated
+    applies_to: [Office View, Back Entrance]
+    finding: >
+      Office View is the darkest view (median brightness 59 vs ~120 elsewhere, ~125 frames). Back Entrance
+      has the lowest sharpness of all views.
+    action: Check lighting in the office and the Back Entrance lens/focus, then revalidate.
 
 owner_priorities:
   - visible diner activity and peak periods

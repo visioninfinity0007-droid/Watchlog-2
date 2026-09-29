@@ -20,6 +20,15 @@ import time
 import boto3
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# WatchLog AI harness rules for owner-visible text, compiled from ai-harness/core/customer-vocabulary.yaml
+# by prototype/scripts/compile_harness_brief.py. The worker refuses to run without them, so an image
+# worker can never be deployed outside the harness.
+_HARNESS_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness_rules.generated.json")
+with open(_HARNESS_RULES_PATH, encoding="utf-8") as _fh:
+    _HARNESS = json.load(_fh)
+HARNESS_OWNER_TEXT_RULES = _HARNESS["owner_text_rules"]
+HARNESS_VOCABULARY_LINE = "Never write: " + ", ".join(r["id"].replace("_", " ") for r in _HARNESS["customer_vocabulary"]) + "."
 from zoneinfo import ZoneInfo
 
 import requests
@@ -353,6 +362,8 @@ BUSINESS CONTEXT
 
 GENERAL RULES
 - Describe only what is visibly supported by this single image.
+- "summary" and "unusual_reason" may be shown to the owner: describe the scene itself, never the
+  image, snapshot or how it was captured. {HARNESS_VOCABULARY_LINE}
 - Do NOT identify any person or guess a name. Do not infer ethnicity, religion, health,
   criminality, employment status, or other sensitive traits from appearance.
 - Use neutral phrases such as "one person" or "two people"; do not call someone staff,
@@ -382,7 +393,7 @@ GENERAL RULES
     except Exception:
         result["people_count"] = 0
     result["people"] = (result.get("people") or [])[:result["people_count"] or 0]
-    result["summary"] = str(result.get("summary") or "Visual review completed.")[:500]
+    result["summary"] = str(result.get("summary") or "Nothing notable was visible.")[:500]
     result["activity"] = str(result.get("activity") or "")[:300]
     result["unusual_reason"] = str(result.get("unusual_reason") or "")[:300]
 
@@ -435,8 +446,9 @@ BUSINESS GUIDANCE
 - Site guidance: {ai_note or "Focus on operationally useful, visibly supported observations."}
 
 RULES
-- Consolidate repeated adjacent frames into continuous-looking periods only when timing and
-  evidence support it. Be explicit that periodic snapshots cannot prove what happened between frames.
+- Consolidate repeated adjacent observations into continuous-looking periods only when timing and
+  evidence support it. Say plainly when WatchLog cannot confirm what happened between observations,
+  without mentioning snapshots, frames, images or how WatchLog captures or reviews them.
 - Never count frames as people, customers, visits, transactions or orders.
 - Do not invent identities or roles. "Appears to be the same person" is allowed only when
   clothing/location/timing make that visually plausible.
@@ -449,6 +461,9 @@ RULES
 - Never infer sales, revenue, order accuracy, food quality, staff performance, unique customer
   counts, confirmed fire, confirmed injury, or medical conditions from CCTV alone.
 - Use Pakistan-friendly 12-hour times such as 2:15 PM.
+
+OWNER TEXT RULES (WatchLog AI harness; every sentence above is shown to the owner)
+{HARNESS_OWNER_TEXT_RULES}
 - No technical terms about models, detections, confidence, databases, queues, pipelines, or AI internals.
 
 OBSERVATIONS:

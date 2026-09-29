@@ -1,21 +1,26 @@
 # Detailed Daily Report — YYYY-MM-DD
 
+<!-- Customer-visible text follows ai-harness/core/customer-language.md and customer-vocabulary.yaml:
+     describe what the cameras showed and when; never image counts or how coverage was captured or reviewed.
+     Sections marked (WatchLog internal) stay out of anything shown to the client. -->
+
 ## 1. Report window
 - Tenant/site:
 - Business/service date:
 - Local start:
 - Local end:
 - Working/service-day rule:
-- Snapshot/event coverage:
+- Camera coverage window:
 - Missing periods:
 
-## 2. Evidence inventory
-Summarize canonical physical cameras, snapshot/event counts, first/last evidence times and any coverage gaps.
+## 2. Evidence inventory (WatchLog internal)
+Summarize the physical cameras, observation/event counts, first/last evidence times and any coverage gaps.
+The client-visible version is only the coverage window and the gaps, in plain time ranges.
 Do not list hidden transport/profile duplicates as cameras.
 
 ## 3. Visual extraction
 Camera-by-camera, chronological, using the tenant's reporting/methods/visual-snapshot-analysis.md.
-Preserve source snapshot/event IDs and local timestamps for material observations.
+Preserve source observation/event IDs and local timestamps for material observations (IDs are WatchLog internal).
 
 ## 4. Business/security findings
 Separate:
@@ -45,5 +50,5 @@ Keep routine activity separate from incidents. Do not infer identity, intent, de
 ## 9. Coverage & truth statement
 State whether evidence is sufficient for a complete-day conclusion. Missing evidence is not zero activity.
 
-## 10. Traceability
-Reference source snapshot/event/report IDs for material claims.
+## 10. Traceability (WatchLog internal)
+Reference source observation/event/report IDs for material claims. Never shown to the client.

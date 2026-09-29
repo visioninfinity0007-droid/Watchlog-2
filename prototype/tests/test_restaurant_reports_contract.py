@@ -13,7 +13,7 @@ ALIGN=(ROOT/"prototype/supabase/migrations/0126_chaiwala_ai_context_alignment.sq
 PERIOD=(ROOT/"prototype/supabase/migrations/0127_chaiwala_report_windows.sql").read_text(encoding="utf-8")
 QUALITY=(ROOT/"prototype/supabase/migrations/0128_chaiwala_analytics_quality.sql").read_text(encoding="utf-8")
 RESTAURANT_HARNESS=(ROOT/"ai-harness/site-types/restaurant.yaml").read_text(encoding="utf-8")
-CHAI_HARNESS=(ROOT/"ai-harness/tenants/chaiwala-chota-bukhari.yaml").read_text(encoding="utf-8")
+CHAI_HARNESS=(ROOT/"ai-harness/tenants/chaiwala-chota-bukhari/context.yaml").read_text(encoding="utf-8")
 AGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
 
 

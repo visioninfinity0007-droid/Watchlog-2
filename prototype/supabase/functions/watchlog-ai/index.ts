@@ -1,9 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { coerceModelResult, UNREADABLE_ANSWER } from "./model_result.ts";
+import { applyCustomerVocabulary, customerCardData, harnessMessage, harnessTenantKey } from "./harness.ts";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
-  normalizeMode, isExternal, egressAllowed, noModelIntent, buildCandidates,
+  normalizeMode, isExternal, egressAllowed, providerEgress, noModelIntent, buildCandidates, resolveNamedDay, recentCalendar,
   stripEvidenceImages, evidenceSummary, retrieveEvidence, resolveCameraId,
   type AiMode, type RouteAudit,
 } from "./providers/router.ts";
@@ -141,11 +142,27 @@ function disallowedOrigin(req: Request) {
   const allowed = configuredOrigins();
   return allowed.length > 0 && !!origin && !allowed.includes(origin);
 }
+// Reporting-prefs fields already sent verbatim in the SITE OPERATING CONTEXT message. Repeating them
+// inside WATCHLOG_CONTEXT only burned tokens (free provider tiers cap tokens per minute).
+const PREFS_SENT_SEPARATELY = ["ai_context_note", "owner_insight_priorities", "restaurant_intelligence_context", "office_intelligence_context"];
+function compactBusinessContext(bc: any) {
+  if (!bc || typeof bc !== "object" || !bc.reporting_prefs) return bc;
+  const prefs = { ...bc.reporting_prefs };
+  for (const k of PREFS_SENT_SEPARATELY) delete prefs[k];
+  return { ...bc, reporting_prefs: prefs };
+}
+// The model needs what a recorder can do and how strongly we know it, not internal read/write paths.
+function compactCapabilities(caps: any) {
+  return Array.isArray(caps)
+    ? caps.map((c: Json) => ({ capability: c?.capability, verdict: c?.verdict, evidence_class: c?.evidence_class,
+        ai_location: c?.ai_location, constraints: c?.constraints || undefined }))
+    : caps;
+}
 function compactContext(ctx: Json) {
   return {
     facts_version: ctx?.facts_version, generated_at: ctx?.generated_at, site: ctx?.site,
-    business_context: ctx?.business_context, onboarding: ctx?.onboarding, recorder: ctx?.recorder,
-    connectivity: ctx?.connectivity, capabilities: ctx?.capabilities, capability_known: ctx?.capability_known,
+    business_context: compactBusinessContext(ctx?.business_context), onboarding: ctx?.onboarding, recorder: ctx?.recorder,
+    connectivity: ctx?.connectivity, capabilities: compactCapabilities(ctx?.capabilities), capability_known: ctx?.capability_known,
     cameras: ctx?.cameras, faults: ctx?.faults, coverage: ctx?.coverage, permissions: ctx?.permissions,
     recent_events: (ctx?.recent_events || []).slice(0, 12), safety: ctx?.safety,
   };
@@ -198,8 +215,8 @@ function customerSafeInternalAnswer() {
 }
 function scrubInternalLanguage(input: string) {
   const fallback = "I can explain what WatchLog observed at your site and what it means for the business, while keeping WatchLog’s internal software and security implementation private.";
-  const blocked = /(WATCHLOG_CONTEXT|WATCHLOG_TOOL_RESULTS|system\s*prompt|developer\s*prompt|chain[ -]?of[ -]?thought|deterministic guidance|canonical dataset|frozen report|frozen snapshot|provider\b|model routing|routing logic|RPC\b|Supabase|database schema|internal tool|capability profile|evidence class|schema cache)/i;
-  const s = String(input || "").trim();
+  const blocked = /(WATCHLOG_CONTEXT|WATCHLOG_TOOL_RESULTS|WATCHLOG_HARNESS|system\s*prompt|developer\s*prompt|chain[ -]?of[ -]?thought|deterministic guidance|canonical dataset|frozen report|frozen snapshot|provider\b|model routing|routing logic|RPC\b|Supabase|database schema|internal tool|capability profile|evidence class|schema cache)/i;
+  const s = applyCustomerVocabulary(String(input || "").trim());
   if (!blocked.test(s)) return s;
   const parts = s.split(/(?<=[.!?])\s+/).filter((part) => !blocked.test(part));
   const clean = parts.join(" ").trim();
@@ -315,6 +332,16 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     const reportDate = serviceDayIntent ? lastCompletedBusinessDate : overnightIntent ? calendarYesterday : today;
     out.frozen_report = await rpcOptional(sb, "wl_my_report_snapshot", { p_site_id: siteId, p_date: reportDate });
   }
+  // A named weekday ("last Saturday") gets that site-local day's governed data, so the model never
+  // guesses a date or answers from the wrong day. Business/service-day questions keep their own window.
+  out.calendar = recentCalendar(today);
+  const namedDay = serviceDayIntent ? null : resolveNamedDay(prompt, today);
+  if (namedDay) {
+    out.requested_window = "named_day";
+    out.named_day = namedDay;
+    out.daily_intelligence = await rpcOptional(sb, "wl_my_daily_intelligence", { p_site_id: siteId, p_date: namedDay });
+    out.visual_day = await rpcOptional(sb, "wl_my_visual_day", { p_site_id: siteId, p_date: namedDay });
+  }
   if (/analytics|trend|visitor flow|vehicle flow|occupancy|busiest|dwell|traffic/.test(p)) {
     const days = /30 day|month/.test(p) ? 30 : /7 day|week/.test(p) ? 7 : 1;
     out.analytics = await rpcOptional(sb, "wl_analytics_overview", { p_days: days, p_site_id: siteId });
@@ -332,11 +359,12 @@ function visualDayFallback(tools: Json) {
     if (!total) return null;
     const complete = String(d.status || "").toLowerCase() === "complete" || s.review_complete === true || (total > 0 && done >= total);
     return {
+      // Customer vocabulary: never state image counts or how the review is done.
       answer: complete
-        ? `The visual review for that day is complete: ${done} of ${total} available snapshots were reviewed.`
+        ? "WatchLog has reviewed all the available camera coverage for that day."
         : done
-          ? `I’ve visually reviewed ${done} of ${total} available snapshots for that day. The remaining snapshots have not been reviewed yet.`
-          : "The visual review for that day has not completed yet.",
+          ? "WatchLog has reviewed part of the camera coverage for that day; the rest is not reviewed yet, so I won't draw conclusions about it."
+          : "WatchLog has not finished reviewing the camera coverage for that day yet.",
       cards: [],
       suggestions: ["Were there any serious incidents?", "Show me the Armory activity", "What time was the office active?"],
       proposed_actions: [],
@@ -569,10 +597,10 @@ function businessDayMonitoringFallback(prompt: string, ctx: Json, tools: Json) {
         fully_monitored: fully,
         coverage_ratio: ratio,
         gaps: gaps.slice(0, 6),
+        // Customer card: no image counts (customer vocabulary). The undefined reviewedCount/totalCount
+        // identifiers that used to be here threw whenever a completed review existed.
         reviewed_evidence: reviewedComplete ? {
           status: visual.status,
-          snapshots_reviewed: reviewedCount,
-          snapshots_total: totalCount,
           observed_period: observedPeriod || null,
         } : null,
       },
@@ -652,8 +680,8 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
 function sanitizeResult(value: any) {
   const src = value && typeof value === "object" ? value : {};
   const answer = scrubInternalLanguage(String(src.answer || "").slice(0, 16000)) || "I couldn’t prepare a reliable answer from the available site information.";
-  const cards = (Array.isArray(src.cards) ? src.cards : []).filter((c: Json) => CARD_TYPES.has(String(c?.type || ""))).slice(0, 6).map((c: Json) => ({ type: c.type, title: String(c.title || "WatchLog").slice(0, 120), data: c.data && typeof c.data === "object" ? c.data : {} }));
-  const suggestions = (Array.isArray(src.suggestions) ? src.suggestions : []).map(String).map((s: string) => s.slice(0, 140)).filter(Boolean).slice(0, 4);
+  const cards = (Array.isArray(src.cards) ? src.cards : []).filter((c: Json) => CARD_TYPES.has(String(c?.type || ""))).slice(0, 6).map((c: Json) => ({ type: c.type, title: applyCustomerVocabulary(String(c.title || "WatchLog").slice(0, 120)), data: c.data && typeof c.data === "object" ? customerCardData(c.data) : {} }));
+  const suggestions = (Array.isArray(src.suggestions) ? src.suggestions : []).map(String).map((s: string) => applyCustomerVocabulary(s.slice(0, 140))).filter(Boolean).slice(0, 4);
   const proposed_actions = (Array.isArray(src.proposed_actions) ? src.proposed_actions : []).filter((a: Json) => ACTION_KINDS.has(String(a?.kind || ""))).slice(0, 4).map((a: Json) => {
     const kind = String(a.kind), label = String(a.label || "Continue").slice(0, 100), data = a.data && typeof a.data === "object" ? { ...a.data } : {};
     if (kind === "navigate") data.href = SAFE_HREFS.has(String(data.href || "")) ? String(data.href) : "/ai/";
@@ -718,6 +746,8 @@ function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[
   const officeContract = reporting?.office_intelligence_context || {};
   return [
     { role: "system", content: SYSTEM_PROMPT },
+    // Governing harness rules + THIS tenant's governed context (compiled from ai-harness/).
+    { role: "system", content: harnessMessage(context) },
     { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}\nRestaurant intelligence contract: ${JSON.stringify(restaurantContract)}\nOffice intelligence contract: ${JSON.stringify(officeContract)}` },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
     { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
@@ -737,9 +767,11 @@ function baseAudit(mode: AiMode, route: RouteAudit["route"], extra: Partial<Rout
 // the floor. Provider/model identities are returned ONLY in `audit` (Admin/audit), never in `result`.
 async function routeChat(opts: {
   sb: any; service: any; prompt: string; siteId: string; history: any[]; context: Json; tools: Json;
-  mode: AiMode; siteAllowsExternal: boolean; toolCalls: string[];
+  mode: AiMode; siteAllowsExternal: boolean; siteAllowsText: boolean; toolCalls: string[];
 }): Promise<{ result: Json; audit: RouteAudit }> {
-  const { sb, service, prompt, siteId, history, context, tools, mode, siteAllowsExternal, toolCalls } = opts;
+  const { sb, service, prompt, siteId, history, context, tools, mode, siteAllowsExternal, siteAllowsText } = opts;
+  // Traceability: which governed harness tenant context answered (Admin/audit only).
+  const toolCalls = [...opts.toolCalls, `harness:${harnessTenantKey(context) ?? "none"}`];
 
   // Customer-facing boundary: implementation details are never exposed in chat.
   if (internalMechanicsIntent(prompt)) {
@@ -747,19 +779,21 @@ async function routeChat(opts: {
              audit: baseAudit(mode, "no_model", { outcome: "customer_boundary", tool_calls: toolCalls }) };
   }
 
-  // NO_MODEL: canonical health/status/coverage answered from verified data — no LLM, no egress, and
-  // (crucially) NO evidence workspace access.
-  if (noModelIntent(prompt)) {
-    return { result: sanitizeResult(fallback(prompt, context, tools)),
-             audit: baseAudit(mode, "no_model", { outcome: "deterministic", tool_calls: toolCalls }) };
-  }
+  // Status/health/coverage questions: WatchLog computes the verified answer first (no evidence
+  // workspace access). The model then answers with that verified result plus the harness and tenant
+  // context; if no model is reachable, the verified answer itself is returned.
+  const statusOnly = noModelIntent(prompt);
+  const verified = statusOnly ? sanitizeResult(fallback(prompt, context, tools)) : null;
+  const baseTools = verified ? { ...tools, verified_status_answer: { answer: verified.answer, cards: verified.cards } } : tools;
 
   // Scoped, two-stage evidence retrieval — only for an evidence-intent MODEL route.
-  const evidence = await loadEvidence(sb, prompt, siteId, context, tools);
-  const toolsEv = evidence ? { ...tools, evidence } : tools;
+  const evidence = statusOnly ? null : await loadEvidence(sb, prompt, siteId, context, tools);
+  const toolsEv = evidence ? { ...baseTools, evidence } : baseTools;
   const evToolCalls = evidence
     ? [...toolCalls, "evidence_index", ...(Array.isArray(evidence.bundles) && evidence.bundles.length ? ["evidence_bundle"] : [])]
     : toolCalls;
+  const verifiedFloor = () => ({ result: verified as Json,
+    audit: baseAudit(mode, "no_model", { outcome: "deterministic", tool_calls: evToolCalls }) });
 
   // Resolve the mode -> providers from DB (service-role only). A resolver error flows to the floor.
   let resolved: any = null;
@@ -771,6 +805,7 @@ async function routeChat(opts: {
   const { candidates, modeExternalAllowed, primaryInvalid } = buildCandidates(resolved, legacyEnvProvider());
 
   if (candidates.length === 0) {
+    if (verified) return verifiedFloor();
     // Nothing configured, or the configured primary is structurally invalid (fail closed).
     const outcome = primaryInvalid ? "config_invalid" : "no_provider_configured";
     return { result: sanitizeResult(fallback(prompt, context, toolsEv)),
@@ -781,15 +816,14 @@ async function routeChat(opts: {
   for (const cand of candidates) {
     last = cand.cfg;
     // Egress gate AFTER resolution: a local-only site can never be sent to an external model, no
-    // matter what an admin configured for the mode/provider.
-    if (!egressAllowed(cand.cfg, siteAllowsExternal, modeExternalAllowed)) { anyBlocked = true; continue; }
+    // matter what an admin configured for the mode/provider. Two tenant-owned consent levels: full
+    // (text + images) or text-only (image bytes never leave WatchLog).
+    const gate = providerEgress(cand.cfg, siteAllowsExternal, siteAllowsText, modeExternalAllowed);
+    if (!gate.allowed) { anyBlocked = true; continue; }
     tried++;
-    // Evidence images accompany the prompt ONLY to an egress-permitted provider; the explicit strip
-    // keeps a LOCAL-ONLY site's images away from any external model (defense in depth).
-    const evForProvider = evidence
-      ? (isExternal(cand.cfg) && !(siteAllowsExternal && modeExternalAllowed) ? stripEvidenceImages(evidence) : evidence)
-      : null;
-    const messages = buildMessages(context, evidence ? { ...tools, evidence: evForProvider } : tools, history);
+    // Evidence images accompany the prompt ONLY to a provider allowed FULL egress (defense in depth).
+    const evForProvider = evidence ? (gate.stripImages ? stripEvidenceImages(evidence) : evidence) : null;
+    const messages = buildMessages(context, evidence ? { ...baseTools, evidence: evForProvider } : baseTools, history);
     try {
       const out = await buildProvider(cand.cfg).chat(messages, { jsonMode: true, temperature: 0.2, maxOutput: cand.cfg.maxOutput });
       if (!out.text) throw new Error("provider_empty_response");
@@ -803,10 +837,11 @@ async function routeChat(opts: {
       // instead of an apology.
       if (coerced.answer === UNREADABLE_ANSWER) throw new Error("model_result_unreadable");
       const parsed: Json = sanitizeResult({ ...coerced, mode: "ai" });
+      if (verified && (!Array.isArray(parsed.cards) || parsed.cards.length === 0)) parsed.cards = verified.cards;
       return { result: parsed, audit: {
         mode, route: cand.isFallback ? "ai_fallback" : "ai_primary",
         provider_id: cand.cfg.id, provider_name: cand.cfg.name, model: cand.cfg.model,
-        used_fallback: cand.isFallback, egress: isExternal(cand.cfg) ? "external" : "local",
+        used_fallback: cand.isFallback, egress: gate.decision,
         latency_ms: out.latencyMs || 0, candidates_tried: tried, tool_calls: evToolCalls, outcome: "ok",
       } };
     } catch { /* try the next configured candidate */ }
@@ -814,6 +849,7 @@ async function routeChat(opts: {
 
   // All candidates were blocked or failed -> verified-data guided fallback (the floor), grounded on
   // the loaded evidence when the question was an evidence query.
+  if (verified) return verifiedFloor();
   return { result: sanitizeResult(fallback(prompt, context, toolsEv)), audit: {
     mode, route: "guided_fallback",
     provider_id: last?.id ?? null, provider_name: last?.name ?? null, model: last?.model ?? null,
@@ -875,10 +911,13 @@ Deno.serve(async (req) => {
     const toolCalls = Object.keys(tools).filter((k) => k !== "site_local_date" && (tools as Json)[k] != null);
 
     // Site data-egress policy (tenant-owned). Unreadable => local-only; never fail open.
-    let siteAllowsExternal = false;
+    let siteAllowsExternal = false, siteAllowsText = false;
     try {
       const eg = await sb.rpc("wl_ai_site_egress", { p_site_id: siteId });
-      if (!eg.error) siteAllowsExternal = !!eg.data?.external_egress_allowed;
+      if (!eg.error) {
+        siteAllowsExternal = !!eg.data?.external_egress_allowed;
+        siteAllowsText = !!eg.data?.external_text_egress_allowed;
+      }
     } catch { /* default local-only */ }
 
     const mode = normalizeMode(body?.mode);
@@ -886,7 +925,7 @@ Deno.serve(async (req) => {
     try {
       ({ result, audit } = await routeChat({
         sb, service, prompt, siteId, history: historyResult.data || [], context: ctxResult.data || {},
-        tools, mode, siteAllowsExternal, toolCalls,
+        tools, mode, siteAllowsExternal, siteAllowsText, toolCalls,
       }));
     } catch (routerError) {
       console.error("watchlog-ai router error", routerError instanceof Error ? routerError.message : "unknown");

@@ -68,7 +68,7 @@ $signup = esc_url(watchlog_signup_url());
       <p class="lead measure">The current product combines incident review, Analytics Studio, Site Health, reporting, team access and multi-site visibility.</p>
     </div>
     <div class="grid g3 reveal">
-      <div class="card"><span class="eyebrow">Available</span><h3>Incident intelligence</h3><p>Use current detector classes and on-site filtering to keep selected events for review with site and camera context.</p><a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">See incidents <?php echo watchlog_icon('arrow-right',16); ?></a></div>
+      <div class="card"><span class="eyebrow">Available</span><h3>Incident intelligence</h3><p>Your recorder's person and vehicle alerts, organised into incidents with site and camera context for review.</p><a class="arrow-link" href="<?php echo watchlog_url('incidents'); ?>">See incidents <?php echo watchlog_icon('arrow-right',16); ?></a></div>
       <div class="card"><span class="eyebrow">Available</span><h3>Analytics Studio</h3><p>Configure lines, zones, schedules and thresholds around the operational question each camera view needs to answer.</p><a class="arrow-link" href="<?php echo watchlog_url('platform'); ?>">See analytics <?php echo watchlog_icon('arrow-right',16); ?></a></div>
       <div class="card"><span class="eyebrow">Available</span><h3>Site Health</h3><p>See whether the site, recorder and cameras are still reporting so blind spots are visible operationally.</p><a class="arrow-link" href="<?php echo watchlog_url('site-health'); ?>">See Site Health <?php echo watchlog_icon('arrow-right',16); ?></a></div>
       <div class="card"><span class="eyebrow">Available</span><h3>Scheduled reporting</h3><p>Send configured summaries by WhatsApp, email or both, with delivery history available in the portal.</p><a class="arrow-link" href="<?php echo watchlog_url('reporting'); ?>">See reporting <?php echo watchlog_icon('arrow-right',16); ?></a></div>
@@ -136,8 +136,8 @@ $signup = esc_url(watchlog_signup_url());
     <div class="sec-head center reveal"><span class="eyebrow">Pilot / Coming Soon</span><h2>Roadmap is labelled as roadmap.</h2><p class="lead measure">These directions come from the broader product plan. They are not silently presented as finished standard-product capability.</p></div>
     <div class="grid g3 reveal">
       <div class="card"><span class="eyebrow">Coming Soon</span><h3>Control Room</h3><p>A central operational workspace for multi-site oversight, camera and site status, event review and collective reporting is planned for pilot work. The current product does not provide a live video wall.</p></div>
-      <div class="card"><span class="eyebrow">Coming Soon</span><h3>Fire &amp; smoke research</h3><p>Fire and smoke detection remain roadmap research and pilot areas until they are validated as production detectors.</p></div>
-      <div class="card"><span class="eyebrow">Pilot / Coming Soon</span><h3>Extended object analytics</h3><p>Broader object detection, classification and tracking can be explored beyond the current production detector classes through controlled pilots.</p></div>
+      <div class="card"><span class="eyebrow">Coming Soon</span><h3>Fire &amp; smoke research</h3><p>Fire and smoke detection remain roadmap research and pilot areas until they are validated as standard features.</p></div>
+      <div class="card"><span class="eyebrow">Pilot / Coming Soon</span><h3>Extended object analytics</h3><p>Broader object detection, classification and tracking can be explored beyond today's person and vehicle detection through controlled pilots.</p></div>
     </div>
   </div>
 </section>

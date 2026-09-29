@@ -48,3 +48,24 @@ Recommendations require repeated evidence or a confirmed configuration/health pr
 The recorder exposes 8 canonical physical cameras, but legacy ONVIF profile labels conflicted.
 Do not assign Reception, Directors Office, Armory Gate or Admin Entrance to a numbered camera until the current physical view is visually re-confirmed.
 Until then, report general visible activity by camera number and mapping confidence; do not manufacture role-specific conclusions.
+
+### Attribution defect (evidence 2026-09-28): do not lose real views
+See `context.yaml` → `camera_attribution_evidence`. Recorder on-screen titles show that stored events are
+attributed with an interleave:
+- recorder channel 2k-1 lands on hidden legacy row k;
+- recorder channel 2k lands on canonical "Camera k".
+
+Two hidden legacy rows carry the only evidence for two real views:
+- recorder label **Reception Main Entrance**;
+- recorder label **Armory Gate**, which also holds every restricted-area incident.
+
+Until the agent attribution is fixed and the history re-attributed:
+1. **Enumerate by evidence, not only by `is_canonical`.** Include every camera row that holds events or
+   snapshots in the window, then group rows by the physical view they show.
+2. **Never present a legacy row as an extra camera.** Present each view once.
+3. **Never assume "Camera N" is recorder channel N.**
+4. **Name a view only by its recorder label**, with "(recorder label, not physically confirmed)".
+   Role-specific conclusions (management office, restricted area, reception) stay provisional.
+5. **Coverage first.** The first alert of a day marks monitoring start, not staff arrival, unless coverage
+   proves the agent was already online.
+6. **Keep coverage-first ordering** in any report while the agent keeps dropping offline.

@@ -53,6 +53,7 @@ The cloud `watchlog-vision-worker` is only eligible to process a site when that 
 - `device-knowledge/` — 47-model recorder capability registry (see `DEVICE_KNOWLEDGE` doc).
 - `site-types/restaurant.yaml` — reusable restaurant metric, camera-role, movable-table, reporting and analytics-quality policy.
 - `site-types/office.yaml` — reusable office working-day, camera-role, reporting and coverage policy.
+- `tenants/README.md` — registry of active tenant folders vs production sites, plus the test/empty/demo sites that must never be analysed as tenants.
 - `tenants/*/context.yaml` — stable tenant/site overlays; live IDs/evidence remain database-owned.
 - `tenants/*/reporting/` — governed daily report archive + reproducible analysis methods.
 - `skills/tenant-intelligence-setup.md` — repeatable tenant setup/customization procedure.
