@@ -38,6 +38,7 @@ $AgentExe   = Join-Path $InstallDir "watchlog-agent.exe"
 $SetupExe   = Join-Path $InstallDir "watchlog-setup-ui.exe"
 $RunnerPs1  = Join-Path $InstallDir "run-agent.ps1"
 $RunnerCmd  = Join-Path $InstallDir "run-agent.cmd"
+$RegisterService = Join-Path $InstallDir "register-service.ps1"
 $BackupExe  = Join-Path $InstallDir "watchlog-agent.exe.wlbak"   # compatibility / support breadcrumb
 $DataRoot   = if ([string]::IsNullOrWhiteSpace($DataRootOverride)) {
   Join-Path $env:ProgramData "WatchLog"
@@ -402,6 +403,73 @@ function Clear-Backup {
   Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+
+function Ensure-WatchLogBackgroundTask([string]$Reason) {
+  Write-Stage "ensuring WatchLog background task: $Reason"
+
+  # Preferred path: use the payload's own task-registration script. This is
+  # deliberately idempotent and recreates a damaged/disabled task definition.
+  if (Test-Path -LiteralPath $RegisterService) {
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $RegisterService -InstallDir $InstallDir 2>&1
+    $rc = $LASTEXITCODE
+    foreach ($line in @($out)) {
+      if ($null -ne $line -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
+        Write-Stage ("register-service: " + [string]$line)
+      }
+    }
+    if ($rc -ne 0) {
+      Write-Stage "register-service failed with exit=$rc"
+    }
+  }
+
+  # Fallback for very old field builds whose rollback payload did not contain
+  # register-service.ps1. Recreate the known WatchLog task directly from the
+  # restored run-agent.ps1 rather than leaving the site dark.
+  $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  if (-not $task -and (Test-Path -LiteralPath $RunnerPs1)) {
+    try {
+      $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+      $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPs1`" -InstallDir `"$InstallDir`""
+      $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments
+      $boot = New-ScheduledTaskTrigger -AtStartup
+      $boot.Delay = "PT30S"
+      $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
+      $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
+      Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($boot,$watchdog) -Principal $principal -Settings $settings -Force | Out-Null
+      Write-Stage "recreated fallback WatchLog scheduled task"
+    } catch {
+      Write-Stage "fallback task registration failed: $($_.Exception.Message)"
+    }
+  }
+
+  try {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return $false }
+    if ([string]$task.State -eq "Disabled") {
+      Enable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
+    }
+    Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
+  } catch {
+    Write-Stage "task enable/start failed: $($_.Exception.Message)"
+    return $false
+  }
+
+  # The scheduled task owns the persistent run-agent.ps1 supervision loop.
+  # Proving the task is Running is more reliable on field Windows builds than
+  # WMI/CIM process-path enumeration, which can hide SYSTEM-owned process data.
+  $deadline = (Get-Date).AddSeconds([Math]::Max(15, $StartTimeoutSec))
+  while ((Get-Date) -lt $deadline) {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($task -and [string]$task.State -eq "Running") {
+      Write-Stage "WatchLog background task proven Running"
+      return $true
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
 function Get-FileProductVersion([string]$path) {
   try { return ([string](Get-Item -LiteralPath $path).VersionInfo.ProductVersion).Trim() } catch { return "" }
 }
@@ -484,30 +552,30 @@ switch ($Stage) {
       Fail 11 "on-disk version changed unexpectedly before commit"
     }
 
-    # register-service.ps1 should already have recreated/enabled/started the task.
+    # The orchestrator has already required fresh heartbeat + recorder +
+    # remote-update-poll health from this exact version. Do not invalidate that
+    # stronger proof with a later CIM/WMI process-path lookup: real field PCs can
+    # hide SYSTEM-owned ExecutablePath/CommandLine and falsely report no Agent.
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($task -and [string]$task.State -eq "Disabled") {
-      try { Enable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
+    if (-not $task) { Fail 12 "WatchLog background task is missing at final commit" }
+    if ([string]$task.State -eq "Disabled") {
+      try { Enable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null } catch {
+        Fail 12 "WatchLog background task could not be enabled at final commit"
+      }
     }
-    if ($task) {
-      try { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
-    }
+    try { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null } catch {}
 
-    $deadline = (Get-Date).AddSeconds($StartTimeoutSec)
-    $alive = $false
+    $deadline = (Get-Date).AddSeconds([Math]::Max(10, $StartTimeoutSec))
+    $running = $false
     while ((Get-Date) -lt $deadline) {
-      if ((Get-AgentRuntimeLeaves).Count -ge 1) { $alive = $true; break }
+      $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+      if ($task -and [string]$task.State -eq "Running") { $running = $true; break }
       Start-Sleep -Milliseconds 500
     }
-    if (-not $alive) { Fail 12 "the new agent did not start within $StartTimeoutSec s" }
-
-    Start-Sleep -Seconds 3
-    $count = (Get-AgentRuntimeLeaves).Count
-    if ($count -eq 0) { Fail 12 "the new agent started but did not stay alive (crash loop)" }
-    if ($count -gt 1) { Fail 13 "more than one watchlog-agent.exe logical runtime is running ($count) - duplicate runtime" }
+    if (-not $running) { Fail 12 "WatchLog background task did not remain Running at final commit" }
 
     Clear-Backup
-    Write-Stage "commit OK: version verified ($ExpectedVersion), single logical instance alive"
+    Write-Stage "commit OK: version verified ($ExpectedVersion), fresh runtime health already proven, background task Running"
     exit 0
   }
 
@@ -520,45 +588,20 @@ switch ($Stage) {
     $meta = Restore-Payload
     if ($meta) {
       Write-Stage "restored previous WatchLog payload"
-      Resume-Task ([bool]$meta.task_present) ([bool]$meta.task_enabled)
     } else {
-      Write-Stage "no rollback payload found; leaving current task state unchanged"
-      Resume-Task ([bool]$current.present) ([bool]$current.enabled)
+      Write-Stage "no rollback manifest found; attempting to recover the current on-disk payload"
     }
 
-    # Restoring files is not enough. If the prior installation did not have an
-    # enabled WatchLog task, or if that task cannot bring the previous agent back,
-    # rollback must fail closed instead of claiming the site is healthy.
-    $expectedTaskPresent = if ($meta) { [bool]$meta.task_present } else { [bool]$current.present }
-    $expectedTaskEnabled = if ($meta) { [bool]$meta.task_enabled } else { [bool]$current.enabled }
-    if (-not $expectedTaskPresent -or -not $expectedTaskEnabled) {
+    # A field site must never be left dark just because the task happened to be
+    # Disabled before the upgrade or because a prior failed upgrade rewrote its
+    # definition. Re-register/start the restored payload unconditionally.
+    if (-not (Ensure-WatchLogBackgroundTask "rollback recovery")) {
       Clear-Backup
-      Fail 14 "previous WatchLog payload was restored but there is no enabled background task to restart it"
-    }
-
-    $rollbackDeadline = (Get-Date).AddSeconds([Math]::Max(10, $StartTimeoutSec))
-    while ((Get-Date) -lt $rollbackDeadline) {
-      if ((Get-AgentRuntimeLeaves).Count -ge 1) {
-        Start-Sleep -Seconds 2
-        if ((Get-AgentRuntimeLeaves).Count -ge 1) {
-          Clear-Backup
-          Write-Stage "rollback complete: previous WatchLog payload restored AND agent running"
-          exit 0
-        }
-      }
-      Start-Sleep -Milliseconds 500
-    }
-
-    # One final exact task nudge. The task name is fixed/known; no process-wide kill.
-    try { & "$env:SystemRoot\System32\schtasks.exe" /Run /TN "$TaskName" | Out-Null } catch {}
-    Start-Sleep -Seconds 3
-    if ((Get-AgentRuntimeLeaves).Count -ge 1) {
-      Clear-Backup
-      Write-Stage "rollback complete after task nudge: previous agent running"
-      exit 0
+      Fail 14 "previous WatchLog payload was restored but its background task could not be repaired/restarted"
     }
 
     Clear-Backup
-    Fail 14 "previous WatchLog payload was restored but the previous agent could not be restarted"
+    Write-Stage "rollback complete: previous WatchLog payload restored AND background task Running"
+    exit 0
   }
 }
