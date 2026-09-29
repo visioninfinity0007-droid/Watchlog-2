@@ -18,7 +18,7 @@ import threading
 import time
 
 import boto3
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 
@@ -457,10 +457,34 @@ OBSERVATIONS:
     return ollama_chat([{"role": "user", "content": prompt}], DAY_SCHEMA, timeout=240)
 
 
-def local_day(job: dict) -> str:
+def service_day(job: dict) -> str:
+    """Return the configured business/service date for a snapshot.
+
+    Overnight sites such as Chai Wala (16:00 -> 04:00) keep after-midnight
+    evidence on the service date on which the shift opened.
+    """
     tz = job.get("timezone") or "Asia/Karachi"
-    dt = datetime.fromisoformat(str(job["captured_at"]).replace("Z", "+00:00"))
-    return dt.astimezone(ZoneInfo(tz)).date().isoformat()
+    local_dt = datetime.fromisoformat(str(job["captured_at"]).replace("Z", "+00:00")).astimezone(ZoneInfo(tz))
+    ctx = job.get("business_context") or {}
+    open_raw = str(ctx.get("open_time") or "00:00:00")
+    close_raw = str(ctx.get("close_time") or "23:59:59")
+    overnight = bool(ctx.get("overnight"))
+
+    def _seconds(value: str) -> int:
+        parts = value.split(":")
+        h = int(parts[0] or 0)
+        m = int(parts[1] or 0) if len(parts) > 1 else 0
+        s = int(float(parts[2])) if len(parts) > 2 else 0
+        return h * 3600 + m * 60 + s
+
+    open_s = _seconds(open_raw)
+    close_s = _seconds(close_raw)
+    now_s = local_dt.hour * 3600 + local_dt.minute * 60 + local_dt.second
+    overnight = overnight or close_s <= open_s
+
+    if overnight and now_s < close_s:
+        return (local_dt.date() - timedelta(days=1)).isoformat()
+    return local_dt.date().isoformat()
 
 
 def process_batch() -> int:
@@ -482,7 +506,7 @@ def process_batch() -> int:
                 "p_analysis_version": ANALYSIS_VERSION,
                 "p_analysis": analysis,
             }, timeout=60)
-            touched.add((job["site_id"], local_day(job)))
+            touched.add((job["site_id"], service_day(job)))
             state["processed"] += 1
             state["last_success_at"] = datetime.utcnow().isoformat() + "Z"
             state["last_error"] = None
