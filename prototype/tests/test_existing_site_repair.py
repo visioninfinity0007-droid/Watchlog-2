@@ -229,6 +229,26 @@ class InstallerContract(unittest.TestCase):
         self.assertIn('catch {', ps)
         self.assertIn('Fail 49 $msg', ps)
 
+    def test_final_commit_uses_health_plus_task_not_cim_agent_visibility(self):
+        helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
+        commit = helper.split("'commit' {", 1)[1].split("'rollback' {", 1)[0]
+        self.assertIn("fresh runtime health already proven", commit)
+        self.assertIn("background task Running", commit)
+        self.assertNotIn("Get-AgentRuntimeLeaves", commit)
+
+    def test_rollback_repairs_task_even_if_previous_task_was_disabled(self):
+        helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
+        rollback = helper.split("'rollback' {", 1)[1]
+        self.assertIn('Ensure-WatchLogBackgroundTask "rollback recovery"', rollback)
+        self.assertIn("register-service.ps1", helper)
+        self.assertNotIn("there is no enabled background task to restart it", rollback)
+
+    def test_recorder_failure_keeps_structured_preflight_detail(self):
+        ps = (ROOT / "prototype/installer/wl-repair-upgrade.ps1").read_text(encoding="utf-8")
+        self.assertIn("recorder-preflight:", ps)
+        self.assertIn("recorder preflight exit=", ps)
+        self.assertIn("Read that result even on non-zero exit", ps)
+
     def test_build_outputs_and_hashes_both_installers(self):
         build = (ROOT / "tools/build_windows_release.ps1").read_text(encoding="utf-8")
         workflow = (ROOT / ".github/workflows/windows-release.yml").read_text(encoding="utf-8")

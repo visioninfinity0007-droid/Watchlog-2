@@ -199,11 +199,28 @@ function Run-Candidate-AsSystem {
 
 function Run-RecorderCandidate {
   Remove-Item -LiteralPath $PreflightResult -Force -ErrorAction SilentlyContinue
-  & $CandidateAgent --preflight-existing-site --preflight-mode recorder --config $ConfigPath --preflight-json $PreflightResult | Out-Host
+  $output = & $CandidateAgent --preflight-existing-site --preflight-mode recorder --config $ConfigPath --preflight-json $PreflightResult 2>&1
   $rc = $LASTEXITCODE
-  if ($rc -ne 0 -or -not (Test-Path -LiteralPath $PreflightResult)) { return $null }
-  try { return Get-Content -LiteralPath $PreflightResult -Raw | ConvertFrom-Json }
-  catch { return $null }
+  foreach ($line in @($output)) {
+    if ($null -ne $line -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
+      Write-Repair ("recorder-preflight: " + [string]$line)
+    }
+  }
+
+  # The Agent deliberately exits 2 when a preflight check fails but still writes
+  # a structured JSON result. Read that result even on non-zero exit so the field
+  # log/UI preserves the real recorder/auth/channel failure instead of "no result".
+  if (Test-Path -LiteralPath $PreflightResult) {
+    try {
+      $obj = Get-Content -LiteralPath $PreflightResult -Raw | ConvertFrom-Json
+      Write-Repair "recorder preflight exit=$rc ok=$([bool]$obj.ok) error=$([string]$obj.error)"
+      return $obj
+    } catch {
+      Write-Repair "recorder preflight result parse failed: $($_.Exception.Message)"
+    }
+  }
+  Write-Repair "recorder preflight returned no structured result (exit=$rc)"
+  return $null
 }
 
 function Install-CandidatePayload {
