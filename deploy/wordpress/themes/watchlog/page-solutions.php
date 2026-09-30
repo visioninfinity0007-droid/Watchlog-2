@@ -65,9 +65,9 @@ $sols = [
       <div class="card"><span class="eyebrow">Coming Soon</span><h3>Control Room</h3>
         <p>A dedicated operational workspace for multi-site oversight, camera and site status, event review and reporting. WatchLog does not provide a live video wall today.</p></div>
       <div class="card"><span class="eyebrow">Coming Soon</span><h3>Fire &amp; smoke research</h3>
-        <p>Fire and smoke detection are being treated as pilot research areas, not available standard-product detectors.</p></div>
+        <p>Fire and smoke detection are being treated as pilot research areas, not standard features yet.</p></div>
       <div class="card"><span class="eyebrow">Pilot / Coming Soon</span><h3>Extended object analytics</h3>
-        <p>Broader object detection, classification and tracking can be explored in controlled pilots beyond the current production detector classes.</p></div>
+        <p>Broader object detection, classification and tracking can be explored in controlled pilots beyond today's person and vehicle detection.</p></div>
     </div>
   </div>
 </section>
