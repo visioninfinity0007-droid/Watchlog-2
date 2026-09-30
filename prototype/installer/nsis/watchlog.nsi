@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "0.4.4"
+  !define APPVERSION "5.0.25"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -63,48 +63,85 @@ Section "Install"
   InitPluginsDir
   File "/oname=$PLUGINSDIR\wl-upgrade.ps1" "wl-upgrade.ps1"
 
-  ; Detect an already-enrolled installation before replacing any binaries.
+  ; Two separate truths:
+  ;   $5 = ANY previous WatchLog payload/site state exists and must be stopped/unlocked first.
+  ;   $6 = previous site is fully enrolled, so setup/enrollment can be preserved.
+  ; A stale/partial install can still have a live launcher/UI/agent and locked files, so
+  ; preflight is intentionally NOT limited to fully enrolled sites.
+  StrCpy $5 "0"
   StrCpy $6 "0"
-  IfFileExists "$INSTDIR\watchlog.ini" 0 +3
-  IfFileExists "${DATAROOT}\agent_state.json" 0 +2
-    StrCpy $6 "1"
 
-  ; UPGRADE PREFLIGHT: stop the task, stop ONLY the exact watchlog-agent.exe, wait for it to exit,
-  ; verify the binary is UNLOCKED, and back it up. $8 records that an upgrade is in progress so a
-  ; later failure can roll back. If we cannot free the binary we do NOT overwrite anything - the
-  ; existing agent is left installed and running (no half-upgrade, no false success).
-  StrCpy $8 "0"
-  ${If} $6 == "1"
-    StrCpy $8 "1"
-    DetailPrint "Preparing the existing WatchLog agent for a safe upgrade..."
-    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
-    ${If} $9 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely stop the running agent to upgrade it, so nothing was changed. Your existing WatchLog is still installed and will keep running. Close anything that may be using WatchLog and run the installer again."
-      Abort "Upgrade preflight failed; existing runtime preserved"
+  ${If} ${FileExists} "$INSTDIR\watchlog-agent.exe"
+    StrCpy $5 "1"
+  ${ElseIf} ${FileExists} "$INSTDIR\watchlog-setup-ui.exe"
+    StrCpy $5 "1"
+  ${ElseIf} ${FileExists} "$INSTDIR\run-agent.ps1"
+    StrCpy $5 "1"
+  ${ElseIf} ${FileExists} "$INSTDIR\watchlog.ini"
+    StrCpy $5 "1"
+  ${EndIf}
+
+  ${If} ${FileExists} "$INSTDIR\watchlog.ini"
+    ${If} ${FileExists} "${DATAROOT}\agent_state.json"
+      StrCpy $6 "1"
+      StrCpy $5 "1"
     ${EndIf}
   ${EndIf}
 
-  ; Replace binaries. SetOverwrite try makes a locked file set the error flag (no silent Ignore),
-  ; so a failed replacement can NEVER pass unnoticed. Preflight already unlocked the agent; this is
-  ; the safety net.
+  ; Complete modern existing sites use the staged Repair/Upgrade path.
+  ; This check happens BEFORE any process is stopped or installed file is touched.
+  ${If} $6 == "1"
+    ${If} ${FileExists} "${DATAROOT}\Secrets\agent_key.dpapi"
+      ${If} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
+        MessageBox MB_ICONINFORMATION|MB_OK "WatchLog is already connected on this PC. For an existing site, use WatchLog-Repair-Upgrade.exe instead of the full installer. Repair/Upgrade validates the new Agent before replacing anything and does not run recorder discovery again."
+        Abort "Existing connected site: use WatchLog-Repair-Upgrade.exe"
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  ; UPGRADE PREFLIGHT: suspend the WatchLog watchdog/task, stop the exact launcher,
+  ; Setup UI and agent for THIS install, prove every replace-target file is unlocked,
+  ; and back up the previous payload. $8 records a rollback-capable existing install.
+  StrCpy $8 "0"
+  ${If} $5 == "1"
+    StrCpy $8 "1"
+    DetailPrint "Closing the existing WatchLog processes before updating files..."
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
+    ${If} $9 != 0
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not safely close the existing installation, so no update files were replaced. Close any open WatchLog window and run the installer again."
+      Abort "Upgrade preflight failed; previous installation preserved"
+    ${EndIf}
+  ${EndIf}
+
+  ; Replace the WHOLE core payload only after preflight has stopped the scheduled
+  ; launcher, open Setup UI and agent and proved every replace-target file is unlocked.
+  ; One extraction error anywhere is a failed upgrade: roll the complete previous
+  ; payload back instead of leaving a mixed-version installation.
   SetOutPath "$INSTDIR"
   SetOverwrite try
   ClearErrors
   File "watchlog-agent.exe"
-  ${If} ${Errors}
-    ${If} $8 == "1"
-      DetailPrint "Could not replace watchlog-agent.exe; rolling back to the previous version..."
-      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
-    ${EndIf}
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog could not replace the agent program (it was still in use). The previous working WatchLog has been kept. Restart Windows and run the installer again."
-    Abort "watchlog-agent.exe replacement failed"
-  ${EndIf}
   File "watchlog-setup-ui.exe"
   File "run-agent.ps1"
   File "register-service.ps1"
+  File "apply-remote-update.ps1"
   File "wl-upgrade.ps1"
   File "READ ME FIRST.txt"
   File "setup.ico"
+  ${If} ${Errors}
+    ${If} $8 == "1"
+      DetailPrint "A WatchLog update file could not be replaced; restoring the previous installation..."
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not replace all update files safely. The previous working version was restored and its Agent restart was verified. No new version was kept."
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not replace all update files safely. The previous files were restored, but the old Agent restart could not be proven. Do not uninstall anything. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+      ${EndIf}
+    ${Else}
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not write the installation files safely. No working prior WatchLog installation was available to roll back."
+    ${EndIf}
+    Abort "WatchLog payload replacement failed"
+  ${EndIf}
   SetOverwrite on
 
   ; UPGRADE VERSION TRUTH: before starting anything, verify the on-disk binary's file ProductVersion
@@ -114,8 +151,13 @@ Section "Install"
     ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog was not able to install the new version correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
-      Abort "Installed version did not match; rolled back"
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog was not able to install the new version correctly. The previous working version was restored and its Agent restart was verified. No new version was kept."
+        Abort "Installed version did not match; rollback proven"
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog was not able to install the new version correctly. The previous files were restored, but WatchLog could not prove the old Agent restarted. Do not uninstall anything. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+        Abort "Installed version did not match; rollback restart not proven"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 
@@ -123,6 +165,26 @@ Section "Install"
   ; receives public defaults only; the graphical setup writes recorder values.
   IfFileExists "$INSTDIR\watchlog.ini" +2 0
     File "/oname=watchlog.ini" "watchlog.defaults.ini"
+  ; Always stage the defaults alongside, so --migrate-only can merge public keys that an
+  ; EXISTING ini predates (push_bridge_url today). Without this an upgraded site can never
+  ; receive a new public setting -- and the upgraded fleet is the fleet that matters.
+  SetOverwrite try
+  ClearErrors
+  File "watchlog.defaults.ini"
+  ${If} ${Errors}
+    ${If} $8 == "1"
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not update its public defaults safely. The previous working version was restored and its Agent restart was verified."
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not update its public defaults safely. The previous files were restored, but the old Agent restart could not be proven. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+      ${EndIf}
+    ${Else}
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not write its public defaults safely. Setup stopped without claiming success."
+    ${EndIf}
+    Abort "WatchLog defaults replacement failed"
+  ${EndIf}
+  SetOverwrite on
 
   ; The AI model (yolov8n.onnx) is bundled inside watchlog-agent.exe (PyInstaller
   ; --add-data), so no separate model file is shipped. (Removed the vestigial
@@ -136,9 +198,16 @@ Section "Install"
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --migrate-only --config "$INSTDIR\watchlog.ini"' $0
     ${If} $0 != 0
       ${If} $8 == "1"
-        ExecWait '"$SYSDIR\schtasks.exe" /Run /TN "${TASKNAME}"' $9
+        DetailPrint "Credential migration failed; restoring the complete previous WatchLog installation..."
+        ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+        ${If} $9 == 0
+          MessageBox MB_ICONSTOP|MB_OK "WatchLog could not migrate the recorder credential. The previous working version was restored and its Agent restart was verified."
+        ${Else}
+          MessageBox MB_ICONSTOP|MB_OK "WatchLog could not migrate the recorder credential. The previous files were restored, but the old Agent restart could not be proven. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+        ${EndIf}
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not migrate the recorder credential. Setup stopped without claiming a completed installation."
       ${EndIf}
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not migrate the existing recorder credential. The upgrade was stopped so the site is not left in a misleading state."
       Abort "WatchLog credential migration failed"
     ${EndIf}
     ; A reinstall can keep enrollment state while the credential file was
@@ -150,7 +219,17 @@ Section "Install"
       ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
-        MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+        ${If} $8 == "1"
+          DetailPrint "Recorder credential repair did not finish; restoring the previous WatchLog installation..."
+          ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+          ${If} $9 == 0
+            MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. The previous working version was restored and its Agent restart was verified."
+          ${Else}
+            MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. The previous files were restored, but the old Agent restart could not be proven. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+          ${EndIf}
+        ${Else}
+          MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. Setup stopped without claiming a completed installation."
+        ${EndIf}
         Abort "WatchLog setup did not complete"
       ${EndIf}
     ${EndIf}
@@ -159,14 +238,24 @@ Section "Install"
     ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not complete. The background connection was not started. Run the installer again when the recorder, site code and network are ready."
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
       Abort "WatchLog setup did not complete"
     ${EndIf}
   ${EndIf}
 
   ; The recorder credential must exist before a background task can start.
   ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after setup. Run WatchLog Setup again."
+    ${If} $8 == "1"
+      DetailPrint "Recorder credential is missing after upgrade; restoring the previous WatchLog installation..."
+      ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after the attempted upgrade. The previous working version was restored and its Agent restart was verified."
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential after the attempted upgrade. Previous files were restored, but the old Agent restart could not be proven. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+      ${EndIf}
+    ${Else}
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog could not find the recorder credential. Setup stopped without registering background monitoring."
+    ${EndIf}
     Abort "Recorder credential missing"
   ${EndIf}
 
@@ -179,10 +268,15 @@ Section "Install"
     ${If} $8 == "1"
       DetailPrint "Registration failed; rolling back to the previous working WatchLog..."
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "The new WatchLog background startup could not be proven. The previous working version was restored and its Agent restart was verified."
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "The new WatchLog background startup could not be proven. Previous files were restored, but the old Agent restart could not be proven. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+      ${EndIf}
     ${Else}
       ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F' $9
+      MessageBox MB_ICONSTOP|MB_OK "WatchLog connected the site, but automatic background startup could not be proven. Setup stopped so this is not mistaken for a complete installation."
     ${EndIf}
-    MessageBox MB_ICONSTOP|MB_OK "WatchLog connected the site, but automatic background startup could not be proven. Setup stopped so this is not mistaken for a complete installation."
     Abort "WatchLog background startup registration failed"
   ${EndIf}
 
@@ -194,8 +288,13 @@ Section "Install"
     ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage commit -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
-      MessageBox MB_ICONSTOP|MB_OK "WatchLog installed the update but the new agent did not start correctly, so the previous working version has been restored. No changes were kept. Please contact WatchLog support."
-      Abort "Upgrade commit (start/alive) failed; rolled back"
+      ${If} $9 == 0
+        MessageBox MB_ICONSTOP|MB_OK "WatchLog installed the update but the new Agent did not stay healthy. The previous working version was restored and its Agent restart was verified. No new version was kept."
+        Abort "Upgrade commit failed; rollback proven"
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "The new WatchLog Agent did not stay healthy. The previous files were restored, but WatchLog could not prove the old Agent restarted. Do not uninstall anything. Restart Windows once and contact WatchLog support with C:\ProgramData\WatchLog\upgrade.log."
+        Abort "Upgrade commit failed; rollback restart not proven"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 
@@ -218,6 +317,13 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  ; schtasks /End kills the run-agent.ps1 LAUNCHER; the watchlog-agent.exe grandchild
+  ; survives it. Deleting a locked exe then silently fails and leaves a ghost agent
+  ; running against a site that has been uninstalled. wl-upgrade.ps1 -Stage preflight is
+  ; the already-proven primitive that stops the task AND the process and verifies the
+  ; binary is unlocked, so use it before touching any file.
+  IfFileExists "$INSTDIR\wl-upgrade.ps1" 0 +2
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
   ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
   ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
   Delete "${STARTMENU}\WatchLog Setup.lnk"
@@ -226,12 +332,17 @@ Section "Uninstall"
   Delete "$INSTDIR\watchlog-agent.exe"
   Delete "$INSTDIR\watchlog-setup-ui.exe"
   Delete "$INSTDIR\run-agent.ps1"
+  Delete "$INSTDIR\apply-remote-update.ps1"
   Delete "$INSTDIR\run-agent.cmd"
   Delete "$INSTDIR\register-service.ps1"
   Delete "$INSTDIR\READ ME FIRST.txt"
   Delete "$INSTDIR\watchlog.ini"
   Delete "$INSTDIR\setup.ico"
   Delete "$INSTDIR\yolov8n.onnx"  ; legacy: remove any externally-shipped model from older installs
+  ; Leftovers that kept $INSTDIR alive after every uninstall, so RMDir below always
+  ; failed and the folder (plus a stale rollback backup) survived forever.
+  Delete "$INSTDIR\wl-upgrade.ps1"
+  Delete "$INSTDIR\watchlog-agent.exe.wlbak"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
@@ -241,6 +352,18 @@ Section "Uninstall"
   ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
   ; because is_enrolled requires a decryptable key, which is now gone.
   RMDir /r "${DATAROOT}\Secrets"
+
+  ; IDENTITY-BOUND local state must go too. Keeping agent_state.json and the spool meant
+  ; a PC uninstalled at customer A and reinstalled at customer B DRAINED A's queued events
+  ; into B's site on first connect. Logs stay for support; identity and queued data do not.
+  Delete "${DATAROOT}\agent_state.json"
+  Delete "${DATAROOT}\spool.sqlite"
+  Delete "${DATAROOT}\spool.sqlite-wal"
+  Delete "${DATAROOT}\spool.sqlite-shm"
+  Delete "${DATAROOT}\health.sqlite"
+  Delete "${DATAROOT}\health.sqlite-wal"
+  Delete "${DATAROOT}\health.sqlite-shm"
+  Delete "${DATAROOT}\last_live.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
 SectionEnd
