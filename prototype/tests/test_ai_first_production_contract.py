@@ -7,12 +7,19 @@ def read(rel):
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
+def surface(rel_dir):
+    return "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / rel_dir).rglob("*.js"))
+    )
+
+
 def main():
     problems = []
     gateway = read("prototype/supabase/functions/watchlog-ai/index.ts")
     guardrails = read("prototype/supabase/migrations/0104_ai_runtime_guardrails.sql")
     hardening = read("prototype/supabase/migrations/0103_production_security_hardening.sql")
-    portal = read("portal/app/ai/page.js")
+    portal = surface("portal/app/ai")
 
     required_gateway = [
         'wl_ai_record_usage',
@@ -53,9 +60,17 @@ def main():
 
     if 'JSON.stringify(data,null,2)' in portal or 'JSON.stringify(data, null, 2)' in portal:
         problems.append("AI customer cards must not fall back to raw JSON dumps")
-    for token in ['ActionButtons', 'IncidentCard', 'ReportCard', 'Verified-data mode', 'cov?.classes']:
+    for token in [
+        'functions.invoke("watchlog-ai"',
+        'rpc("wl_ai_context"',
+        'CustomerCard',
+        'CustomerActions',
+        'Open Incident Review',
+        'Open System Health',
+        'Monitoring coverage',
+    ]:
         if token not in portal:
-            problems.append(f"AI portal missing customer-ready behavior: {token}")
+            problems.append(f"Ask WatchLog workspace missing customer-ready behavior: {token}")
 
     # Provider credentials must remain server-only.
     for rel in ["portal/app/ai/page.js", "portal/app/setup/page.js", "portal/app/shell.js"]:

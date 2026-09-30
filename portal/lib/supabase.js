@@ -26,10 +26,10 @@ export function supabase() {
   return client;
 }
 
-/** Readable message from a Supabase/Postgres error. */
+/** Customer-safe error message. Internal database/infrastructure detail never reaches the portal. */
 export function say(error) {
   if (!error) return "";
-  const m = error.message || String(error);
+  const m = String(error.message || error || "").trim();
   if (/invalid login credentials/i.test(m)) return "Wrong email or password.";
   if (/email not confirmed/i.test(m))
     return "Check your email and confirm the address, then sign in.";
@@ -37,5 +37,17 @@ export function say(error) {
     return "That email already has an account. Sign in instead.";
   if (/password should be at least/i.test(m))
     return "Password must be at least 6 characters.";
-  return m;
+  if (/canceling statement|statement timeout|timeout.*statement/i.test(m))
+    return "WatchLog took too long to load this information. Try again.";
+  if (/failed to fetch|network.*error|network request failed|load failed/i.test(m))
+    return "WatchLog could not reach the service. Check your connection and try again.";
+  if (/not authorized|permission denied|insufficient privilege|42501/i.test(m))
+    return "You do not have access to this action.";
+  if (/duplicate key|unique constraint/i.test(m))
+    return "That item already exists.";
+  if (
+    /schema cache|function .* does not exist|relation .* does not exist|column .* does not exist|syntax error|sqlstate|pgrst\d+|postgres|supabase|violates .* constraint|internal server error/i.test(m)
+  )
+    return "WatchLog could not complete that request. Try again.";
+  return "WatchLog could not complete that request. Try again.";
 }

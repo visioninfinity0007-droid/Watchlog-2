@@ -3,7 +3,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# AI-first refactor: each customer route's page.js is a thin re-export of its *-workspace.js (and, for
+# Owner-first portal: customer routes may use thin page.js wrappers around workspace components (and, for
 # the split surfaces, a legacy.js served at a subroute such as /settings/account/,
 # /control-room/advanced/ and /incidents/evidence/). The finished-product language contract therefore
 # scans the REAL customer copy across every customer route — not the thin stubs — so the forbidden
@@ -116,7 +116,7 @@ def main():
         # Account/billing/plan/role surface served at /settings/account/ (settings/legacy.js).
         "portal/app/settings/legacy.js": ["WatchLog Support", "setup code", "Download WatchLog for Windows"],
         # AI-first Site Health (health-workspace.js): connection + camera-system + verifiability signals.
-        "portal/app/site-health/health-workspace.js": ["Connection", "WatchLog", "Camera system", "Not verified"],
+        "portal/app/site-health/health-workspace.js": ["Connection", "WatchLog", "Camera system", "Not verified", "Monitoring is not fully verified"],
         # Activity Rules studio (renamed from "analytics setup").
         "portal/app/analytics/studio/page.js": ["Activity Rules", "Save activity rule", "WatchLog update required", "Review and evidence"],
         "portal/app/account-suspended/page.js": ["temporarily paused", "have not been deleted", "WatchLog support channel"],
@@ -128,15 +128,6 @@ def main():
             "Area occupancy peak",
             "requested camera views",
         ],
-        "portal/app/operations/page.js": [
-            "Review operational exceptions that need attention.",
-            "require a person to review them",
-        ],
-        "portal/app/executive/page.js": [
-            "Site connection unavailable",
-            "Recorder events",
-            "SOP exceptions",
-        ],
     }
     for rel, phrases in required.items():
         text = (ROOT / rel).read_text(encoding="utf-8")
@@ -144,9 +135,9 @@ def main():
             if phrase not in text:
                 problems.append(f"{rel}: expected customer product phrase missing: {phrase!r}")
 
-    # AI home (/ai/) copy lives across the ai workspace surface (customer-welcome/prompts/header/workspace).
+    # Ask WatchLog remains the governed question workspace, but it is no longer the signed-in homepage.
     ai_home = _surface("ai")
-    for phrase in ("WatchLog AI", "How can I help with", "Ask WatchLog about ", "Device changes require approval."):
+    for phrase in ("WatchLog AI", "Ask WatchLog about ", "Device changes require approval."):
         if phrase not in ai_home:
             problems.append(f"ai workspace: expected customer product phrase missing: {phrase!r}")
 
@@ -175,6 +166,25 @@ def main():
     ):
         if phrase.lower() in reports_rendered.lower():
             problems.append(f"reports surface: customer-facing process language found: {phrase!r}")
+    incident_surface = (ROOT / "portal/app/incidents/customer-workspace.js").read_text(encoding="utf-8")
+    for phrase in ("Incident review", "Management action", "Acknowledge", "Resolve", "Supporting evidence"):
+        if phrase not in incident_surface:
+            problems.append(f"incident review missing consolidated customer workflow: {phrase!r}")
+    operations_route = (ROOT / "portal/app/operations/page.js").read_text(encoding="utf-8")
+    if 'location.replace("/incidents/"' not in operations_route:
+        problems.append("legacy /operations/ route must resolve to the consolidated Incident Review")
+    executive_route = (ROOT / "portal/app/executive/page.js").read_text(encoding="utf-8")
+    if 'location.replace("/reports/?"' not in executive_route:
+        problems.append("legacy /executive/ route must resolve to canonical Reports")
+
+    evidence_surface = (ROOT / "portal/app/incidents/legacy.js").read_text(encoding="utf-8")
+    for phrase in ("Camera evidence", "Camera event history", "Available for review"):
+        if phrase not in evidence_surface:
+            problems.append(f"camera-evidence surface missing semantic-layer copy: {phrase!r}")
+    for phrase in ("<strong>{rows.length}</strong>incident", "<small>Detection source</small>", "<small>Review state</small>"):
+        if phrase in evidence_surface:
+            problems.append(f"camera-evidence surface collapses events into incidents: {phrase!r}")
+
     # Saved Video (was "recorder archive"), across the archive surface (workspace + saved-video-*).
     archive_surface = _surface("archive")
     for phrase in ("Search saved video", "Recovered from saved video", "Not available at this site"):
@@ -206,22 +216,51 @@ def main():
     if "requireTenant" not in camera_view:
         problems.append("Camera View must use the shared tenant/account guard")
 
-    # AI-first shell: WatchLog AI is the home (brand, new chat, Ask WatchLog); Reports and Setup are the
-    # primary jobs; Settings and the Camera View (Control Room) stay reachable under More. The nav is
-    # data-driven from nav-config.js and rendered by shell.js.
-    if '"WatchLog AI":"/ai/"' not in nav_config:
-        problems.append("AI-first nav: WatchLog AI must be the home route")
-    for token in ('["Reports","/reports/?view=yesterday","Reports"]', '["Setup","/setup/","Setup"]', '["Settings","/settings/","Settings"]'):
-        if token not in nav_config:
-            problems.append(f"AI-first nav missing primary job: {token}")
-    if '["Cameras","/control-room/","Control Room"]' not in nav_config:
-        problems.append("Control Room must remain reachable as the Camera View tool")
+    # Owner-first shell: signed-in customers land on Home, where WatchLog proactively shows
+    # attention, monitoring confidence and available business activity before asking the customer
+    # to start a chat. Ask WatchLog remains a primary job, while advanced tools stay under More.
+    owner_home = (ROOT / "portal/app/home/customer-workspace.js").read_text(encoding="utf-8")
+    if '"Home":"/home/"' not in nav_config:
+        problems.append("owner-first nav: Home must be the customer home route")
+    for token in (
+        '["Home","/home/","Home"]',
+        '["Attention","/notifications/","Notifications"]',
+        '["Insights","/analytics/","Analytics"]',
+        '["Reports","/reports/?view=yesterday","Reports"]',
+        '["Ask WatchLog","/ai/","WatchLog AI"]',
+    ):
+        if token not in nav_config.replace("\\n", "").replace(" ", ""):
+            # The config is intentionally formatted for readability; compare without layout whitespace below.
+            compact = re.sub(r"\\s+", "", nav_config)
+            if re.sub(r"\\s+", "", token) not in compact:
+                problems.append(f"owner-first nav missing primary job: {token}")
+    for token in (
+        '["Cameras & Evidence","/control-room/","Control Room"]',
+        '["System Health","/site-health/","Site Health"]',
+        '["Setup & Support","/setup/","Setup"]',
+        '["Account","/settings/","Settings"]',
+    ):
+        compact = re.sub(r"\\s+", "", nav_config)
+        if re.sub(r"\\s+", "", token) not in compact:
+            problems.append(f"owner-first More menu missing tool: {token}")
     if "MAIN_TABS" not in shell or "MORE_TABS" not in shell:
-        problems.append("AI-first shell must render the data-driven nav from nav-config")
-    if 'withSite("/ai/",siteId)' not in shell:
-        problems.append("AI-first shell must route the home/brand to WatchLog AI")
-    if 'location.replace(tenant ? "/ai/" : "/onboarding/")' not in home:
-        problems.append("signed-in tenants must land in WatchLog AI")
+        problems.append("owner-first shell must render the data-driven nav from nav-config")
+    if 'withSite("/home/",siteId)' not in shell:
+        problems.append("owner-first shell must route the brand and Home navigation to /home/")
+    if 'location.replace(tenant ? "/home/" : "/onboarding/")' not in home:
+        problems.append("signed-in tenants must land on owner Home")
+    for phrase in (
+        "What matters now, what needs attention, and what WatchLog can verify.",
+        "Monitoring coverage",
+        "Nothing needs your attention right now.",
+        "Business activity insights are not ready yet.",
+        "Ask WatchLog",
+    ):
+        if phrase not in owner_home:
+            problems.append(f"owner Home missing customer-facing foundation copy: {phrase!r}")
+    for rpc in ("wl_ai_context", "wl_notifications", "wl_my_daily_intelligence", "wl_analytics_overview"):
+        if f'rpc("{rpc}"' not in owner_home:
+            problems.append(f"owner Home must reuse governed customer data: {rpc}")
 
     # The browser invokes the authenticated Edge Function and never contains an AI secret.
     if 'functions.invoke("watchlog-ai"' not in ai_home:
@@ -273,6 +312,12 @@ def main():
         problems.append("guided setup must request capability-aware AI recommendations")
     if "NEXT_PUBLIC_INSTALLER_URL" not in setup_surface:
         problems.append("guided setup must use the configured canonical WatchLog installer URL")
+    for phrase in ("WatchLog is connected", "Monitoring is active", "Approve current setup"):
+        if phrase not in setup_surface:
+            problems.append(f"connected-site setup experience missing: {phrase!r}")
+    setup_base = (ROOT / "portal/app/setup/use-setup-base.js").read_text(encoding="utf-8")
+    if 's.key==="monitoring"' not in setup_base:
+        problems.append("setup must distinguish a live monitoring site from pre-start onboarding")
 
     if problems:
         raise SystemExit("Customer portal language contract failed:\n- " + "\n- ".join(problems))
