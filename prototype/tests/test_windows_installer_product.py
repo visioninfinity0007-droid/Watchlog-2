@@ -18,6 +18,7 @@ def text(path):
 def main():
     gui = text("prototype/agent/setup_gui.py")
     backend = text("prototype/agent/setup_backend.py")
+    discover = text("prototype/agent/discover.py")
     secret = text("prototype/agent/windows_secret.py")
     store = text("prototype/agent/credential_store.py")
     agent = text("prototype/agent/watchlog_agent.py")
@@ -34,6 +35,24 @@ def main():
         "GUI is real PySide6": "from PySide6" in gui,
         "GUI build is windowed": '"--windowed"' in build_ui,
         "GUI covers recorder discovery": "discover_recorders" in gui and "test_recorder" in gui,
+        "recorder discovery shows animated progress": "self.discovery_progress = QProgressBar()" in gui
+            and "self.discovery_progress.setRange(0, 0)" in gui
+            and "self.discovery_status.setText(message)" in gui,
+        "recorder discovery blocks duplicate navigation while scanning":
+            "self.recorder_back.setEnabled(not active)" in gui
+            and "self.recorder_next.setEnabled(not active)" in gui,
+        "recorder discovery preserves Build 69 reach and cannot spinner-forever":
+            "DISCOVERY_DEADLINE_SECONDS = 32.0" in discover
+            and "MAX_AUTO_SUBNETS = 8" in discover
+            and "SWEEP_WORKERS = 256" in discover
+            and "_VIRTUAL_ADAPTER_TOKENS" in discover
+            and "return primary + secondary" in discover
+            and "SWEEP_FAST_PORTS = [37777, 8000, 80, 443]" in discover
+            and "timeout_ms=40000" in gui
+            and "Use this IP" in gui
+            and "self.manual_ip.setEnabled(True)" in gui
+            and "_discover.sweep(" in gui
+            and '["192.168.10", "10.44.7"]' in gui,
         "GUI performs real finalization": "finalize_install" in gui,
         "recorder credential is DPAPI-encrypted (not plaintext)": "CryptProtectData" in secret and "write_json_secret" in store and "nvr_credential.dpapi" in store,
         "DACL hardened+verified to SYSTEM+Admins only": "SYSTEM_SID" in secret and "ADMINISTRATORS_SID" in secret and "_ALLOWED_SIDS" in secret,
@@ -72,6 +91,38 @@ def main():
             "InitPluginsDir" in nsis and 'File "/oname=$PLUGINSDIR\\wl-upgrade.ps1"' in nsis and 'File "wl-upgrade.ps1"' in nsis,
         "upgrade STOPS+verifies the agent BEFORE replacing the binary":
             "-Stage preflight" in nsis and nsis.index("-Stage preflight") < nsis.index('File "watchlog-agent.exe"'),
+        "preflight runs for any existing WatchLog payload, not only an enrolled site":
+            'StrCpy $5 "0"' in nsis
+            and '${If} ${FileExists} "$INSTDIR\\watchlog-agent.exe"' in nsis
+            and '${ElseIf} ${FileExists} "$INSTDIR\\watchlog-setup-ui.exe"' in nsis
+            and '${ElseIf} ${FileExists} "$INSTDIR\\run-agent.ps1"' in nsis
+            and '${If} $5 == "1"' in nsis
+            and '${If} $6 == "1"' in nsis,
+        "upgrade preflight stops launcher + setup UI + agent from this install":
+            "Get-LauncherProcesses" in upgrade
+            and "Get-SetupProcesses" in upgrade
+            and "Stop-WatchLogRuntime" in upgrade
+            and "watchlog-setup-ui.exe" in upgrade,
+        "upgrade suspends task watchdog while replacing files":
+            "Disable-ScheduledTask" in upgrade
+            and "Resume-Task" in upgrade
+            and "task_enabled" in upgrade,
+        "upgrade proves every core payload file is unlocked before replacement":
+            "$PayloadFiles = @(" in upgrade
+            and "Get-LockedPayloadFiles" in upgrade
+            and "all payload files unlocked and backed up" in upgrade,
+        "upgrade backs up and restores the complete payload, not just the agent exe":
+            "upgrade-backup" in upgrade
+            and "Backup-Payload" in upgrade
+            and "Restore-Payload" in upgrade
+            and "existing_files" in upgrade,
+        "NSIS checks extraction failure after the entire core payload":
+            nsis.index('File "watchlog-agent.exe"') < nsis.index('File "setup.ico"')
+            < nsis.index("${If} ${Errors}", nsis.index('File "setup.ico"')),
+        "upgrade migration/setup failures restore the previous payload":
+            "Credential migration failed; restoring the complete previous WatchLog installation" in nsis
+            and "Recorder credential repair did not finish; restoring the previous WatchLog installation" in nsis
+            and "Recorder credential is missing after upgrade; restoring the previous WatchLog installation" in nsis,
         "a locked agent binary cannot silently continue (SetOverwrite try + error check + rollback)":
             "SetOverwrite try" in nsis and "${Errors}" in nsis and "-Stage rollback" in nsis,
         "upgrade verifies the INSTALLED version before starting":
@@ -82,8 +133,16 @@ def main():
             nsis.index("-Stage commit") < nsis.index('"DisplayVersion" "${APPVERSION}"'),
         "failed upgrade rolls back to the previous working agent":
             "-Stage rollback" in nsis and "rollback" in upgrade and "wlbak" in upgrade,
-        "helper stops ONLY the exact watchlog-agent.exe (no broad kill)":
-            "Name='watchlog-agent.exe'" in upgrade and "ExecutablePath" in upgrade and "-Force -ErrorAction SilentlyContinue" in upgrade,
+        "helper stops ONLY WatchLog processes from the exact install path (no broad kill)":
+            "Get-ExactExecutableProcesses" in upgrade
+            and 'Get-ExactExecutableProcesses "watchlog-agent.exe" $AgentExe' in upgrade
+            and "ExecutablePath" in upgrade
+            and "Get-LauncherProcesses" in upgrade
+            and "-Force -ErrorAction SilentlyContinue" in upgrade,
+        "service registration does not broad-kill same-named agents":
+            "Get-CimInstance Win32_Process" in register
+            and "ExecutablePath" in register
+            and 'Get-Process -Name "watchlog-agent"' not in register,
         "helper verifies BOTH file ProductVersion and runtime --version":
             "VersionInfo.ProductVersion" in upgrade and "--version" in upgrade,
         "helper verifies a single instance (no duplicate runtime)":
