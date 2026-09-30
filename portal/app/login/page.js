@@ -62,7 +62,7 @@ export default function Login() {
         </div>
 
         <h1>Sign in</h1>
-        <p className="sub">See what your cameras saw.</p>
+        <p className="sub">See what happened, what needs attention, and what WatchLog can verify.</p>
 
         {error && <div className="err">{error}</div>}
         {notice && <div className="ok-note">{notice}</div>}
