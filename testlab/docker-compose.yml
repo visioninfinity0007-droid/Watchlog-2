@@ -1,0 +1,101 @@
+name: watchlog-testlab
+
+x-device: &device
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  networks:
+    lab_lan: {}
+
+services:
+  lab-router:
+    <<: *device
+    container_name: watchlog-lab-router
+    environment:
+      DEVICE_KIND: router
+      DEVICE_NAME: Lab Router
+      SDK_PORT: "0"
+      RTSP_PORT: "0"
+    networks:
+      lab_lan:
+        ipv4_address: ${LAB_ROUTER_IP:-10.77.0.50}
+
+  dahua-nvr:
+    <<: *device
+    container_name: watchlog-lab-dahua
+    environment:
+      DEVICE_KIND: dahua
+      DEVICE_NAME: WatchLog Lab Dahua
+      DEVICE_MODEL: DH-XVR1B08-I
+      DEVICE_SERIAL: LAB-DAHUA-XVR-001
+      DEVICE_CHANNELS: "4"
+      DEVICE_USERNAME: ${LAB_NVR_USER:-admin}
+      DEVICE_PASSWORD: ${LAB_NVR_PASSWORD:-WatchLog123!}
+      SDK_PORT: "37777"
+      # Deliberately delayed. The router answers immediately, while the NVR's
+      # native signature appears later. This reproduces the field discovery race.
+      SDK_START_DELAY: ${DAHUA_SDK_DELAY:-4}
+    networks:
+      lab_lan:
+        ipv4_address: ${LAB_DAHUA_IP:-10.77.0.20}
+
+  hikvision-nvr:
+    <<: *device
+    container_name: watchlog-lab-hikvision
+    environment:
+      DEVICE_KIND: hikvision
+      DEVICE_NAME: WatchLog Lab Hikvision
+      DEVICE_MODEL: DS-7608NI-Q1
+      DEVICE_SERIAL: LAB-HIK-7608-001
+      DEVICE_CHANNELS: "4"
+      DEVICE_USERNAME: ${LAB_NVR_USER:-admin}
+      DEVICE_PASSWORD: ${LAB_NVR_PASSWORD:-WatchLog123!}
+      SDK_PORT: "8000"
+      SDK_START_DELAY: "0"
+    networks:
+      lab_lan:
+        ipv4_address: ${LAB_HIKVISION_IP:-10.77.0.21}
+
+  onvif-camera-1:
+    <<: *device
+    container_name: watchlog-lab-onvif-1
+    environment:
+      DEVICE_KIND: onvif
+      DEVICE_NAME: Lab ONVIF Camera 1
+      DEVICE_MODEL: WL-ONVIF-CAM-S
+      DEVICE_SERIAL: LAB-ONVIF-001
+      DEVICE_CHANNELS: "1"
+      DEVICE_USERNAME: ${LAB_NVR_USER:-admin}
+      DEVICE_PASSWORD: ${LAB_NVR_PASSWORD:-WatchLog123!}
+      SDK_PORT: "0"
+    networks:
+      lab_lan:
+        ipv4_address: ${LAB_ONVIF1_IP:-10.77.0.31}
+
+  onvif-camera-2:
+    <<: *device
+    container_name: watchlog-lab-onvif-2
+    environment:
+      DEVICE_KIND: onvif
+      DEVICE_NAME: Lab ONVIF Camera 2
+      DEVICE_MODEL: WL-ONVIF-CAM-T
+      DEVICE_SERIAL: LAB-ONVIF-002
+      DEVICE_CHANNELS: "1"
+      DEVICE_USERNAME: ${LAB_NVR_USER:-admin}
+      DEVICE_PASSWORD: ${LAB_NVR_PASSWORD:-WatchLog123!}
+      SDK_PORT: "0"
+    networks:
+      lab_lan:
+        ipv4_address: ${LAB_ONVIF2_IP:-10.77.0.32}
+
+networks:
+  lab_lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${LAB_PARENT_IFACE:-eth1}
+    ipam:
+      config:
+        - subnet: ${LAB_SUBNET:-10.77.0.0/24}
+          ip_range: ${LAB_CONTAINER_RANGE:-10.77.0.0/24}
+          gateway: ${LAB_GATEWAY:-10.77.0.1}
