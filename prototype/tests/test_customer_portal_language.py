@@ -220,7 +220,7 @@ def main():
     # attention, monitoring confidence and available business activity before asking the customer
     # to start a chat. Ask WatchLog remains a primary job, while advanced tools stay under More.
     owner_home = (ROOT / "portal/app/home/customer-workspace.js").read_text(encoding="utf-8")
-    if '"Home":"/home/"' not in nav_config:
+    if 'Home:"/home/"' not in nav_config and '["Home","/home/","Home"]' not in nav_config.replace(" ", ""):
         problems.append("owner-first nav: Home must be the customer home route")
     for token in (
         '["Home","/home/","Home"]',
