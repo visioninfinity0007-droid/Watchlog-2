@@ -175,11 +175,11 @@ export default function CustomerHome(){
         </div>
       </header>
 
-      {error&&<div className={styles.error}>{error}</div>}
-      {partial&&<div className={styles.partial}>Some parts of this overview could not be refreshed. Available information is shown below.</div>}
+      {error&&<div className={styles.error} role="alert">{error}</div>}
+      {partial&&<div className={styles.partial} role="status">Some parts of this overview could not be refreshed. Available information is shown below.</div>}
 
-      {busy?<div className={styles.loading}><span/><span/><span/></div>:<>
-        <section className={styles.hero+" "+(styles[tone]||"")}>
+      {busy?<div className={styles.loading} role="status" aria-label="Loading WatchLog overview"><span/><span/><span/></div>:<>
+        <section className={styles.hero+" "+(styles[tone]||"")} aria-live="polite">
           <i/>
           <div><span>Right now</span><h2>{title}</h2><p>{copy}</p></div>
           <a href={withSite(attention.length?"/notifications/":"/site-health/",siteId)}>{attention.length?"Review attention":"Check monitoring"}</a>
