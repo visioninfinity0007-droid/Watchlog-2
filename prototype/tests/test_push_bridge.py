@@ -41,6 +41,16 @@ KEEPALIVE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   <eventState>inactive</eventState>
 </EventNotificationAlert>"""
 
+HEARTBEAT_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<EventNotificationAlert xmlns="http://www.isapi.org/ver20/XMLSchema" version="2.0">
+  <channelID>1</channelID>
+  <dateTime>2026-09-25T12:00:00Z</dateTime>
+  <activePostCount>0</activePostCount>
+  <eventType>heartBeat</eventType>
+  <eventState>active</eventState>
+  <eventDescription>heartBeat</eventDescription>
+</EventNotificationAlert>"""
+
 NOT_AN_ALERT = b"<?xml version='1.0'?><Something><x>1</x></Something>"
 
 CASES = []
@@ -89,6 +99,20 @@ def t_keepalive():
     ev = pb.parse_hikvision(KEEPALIVE_XML, "application/xml")
     assert ev is None, "a keep-alive was turned into an event"
     return "dropped"
+
+
+@case("an active Hikvision heartBeat is liveness only, not an incident")
+def t_hik_heartbeat():
+    assert pb.parse_hikvision(HEARTBEAT_XML, "application/xml") is None
+    return "heartBeat reserved for recorder liveness"
+
+
+@case("handler authenticates liveness before vendor parsing")
+def t_handler_liveness_first():
+    src = Path(pb.__file__).read_text(encoding="utf-8")
+    block = src.split("def do_POST(self):", 1)[1]
+    assert block.index("liveness(token)") < block.index("parse_any(body, ctype)")
+    return "liveness precedes parser"
 
 
 @case("a non-alert POST is refused")
