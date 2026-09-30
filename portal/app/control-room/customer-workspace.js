@@ -418,7 +418,7 @@ export default function CustomerCameraView() {
                               {shot?.image ? (
                                 <img
                                   src={shot.image}
-                                  alt={`Recent view from \${c.name || `camera \${c.channel}`}`}
+                                  alt={`Recent view from ${c.name || `camera ${c.channel}`}`}
                                 />
                               ) : (
                                 <span>
@@ -431,20 +431,20 @@ export default function CustomerCameraView() {
                             <div className="camera-view-body">
                               <div className="camera-view-title">
                                 <div>
-                                  <b>{c.name || `Camera \${c.channel}`}</b>
+                                  <b>{c.name || `Camera ${c.channel}`}</b>
                                   <small>{role ? human(role) : human(c.purpose || "general")}</small>
                                 </div>
-                                <span className={`pill \${health.cls}`}>
+                                <span className={`pill ${health.cls}`}>
                                   {health.label}
                                 </span>
                               </div>
                               <div className="camera-view-meta">
                                 <span>
                                   {shot?.captured
-                                    ? `Recent view \${ago(shot.captured)}`
+                                    ? `Recent view ${ago(shot.captured)}`
                                     : "No recent view"}
                                 </span>
-                                <span className={`pill \${recordingState.cls}`}>
+                                <span className={`pill ${recordingState.cls}`}>
                                   {recordingState.label}
                                 </span>
                               </div>
