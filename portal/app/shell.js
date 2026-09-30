@@ -79,9 +79,9 @@ export function Nav({active,email,right,currentSiteId=""}){
       </div>
 
       <nav className="productRailNav" aria-label="WatchLog navigation">
-        {MAIN_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailLink"+(active===match?" active":"")}><PortalIcon name={label}/><span>{label}</span></a>)}
+        {MAIN_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} aria-current={active===match?"page":undefined} className={"productRailLink"+(active===match?" active":"")}><PortalIcon name={label}/><span>{label}</span></a>)}
         <button type="button" className={"productRailLink productRailTools"+(MORE_ACTIVE.has(active)?" active":"")} onClick={()=>setMoreOpen(v=>!v)} aria-expanded={moreOpen}><PortalIcon name="More"/><span>More</span><b>{moreOpen?"−":"+"}</b></button>
-        {moreOpen&&<div className="productRailSubnav">{MORE_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailSubLink"+(active===match?" active":"")}><PortalIcon name={label}/><span>{label}</span></a>)}</div>}
+        {moreOpen&&<div className="productRailSubnav">{MORE_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} aria-current={active===match?"page":undefined} className={"productRailSubLink"+(active===match?" active":"")}><PortalIcon name={label}/><span>{label}</span></a>)}</div>}
       </nav>
 
       {active==="WatchLog AI"&&<>
@@ -105,11 +105,11 @@ export function Nav({active,email,right,currentSiteId=""}){
       </div>
     </aside>
     <nav className="productMobileBottom" aria-label="WatchLog mobile navigation">
-      <a href={withSite("/home/",siteId)} className={active==="Home"?"active":""}><PortalIcon name="Home"/><span>Home</span></a>
-      <a href={withSite("/notifications/",siteId)} className={active==="Notifications"?"active":""}><PortalIcon name="Attention"/><span>Attention</span></a>
-      <a href={withSite("/ai/",siteId)} className={"ask"+(active==="WatchLog AI"?" active":"")}><PortalIcon name="Ask"/><span>Ask</span></a>
-      <a href={withSite("/reports/?view=yesterday",siteId)} className={active==="Reports"?"active":""}><PortalIcon name="Reports"/><span>Reports</span></a>
-      <button type="button" className={MORE_ACTIVE.has(active)?"active":""} onClick={()=>setMobileOpen(true)}><PortalIcon name="More"/><span>More</span></button>
+      <a href={withSite("/home/",siteId)} aria-current={active==="Home"?"page":undefined} className={active==="Home"?"active":""}><PortalIcon name="Home"/><span>Home</span></a>
+      <a href={withSite("/notifications/",siteId)} aria-current={active==="Notifications"?"page":undefined} className={active==="Notifications"?"active":""}><PortalIcon name="Attention"/><span>Attention</span></a>
+      <a href={withSite("/ai/",siteId)} aria-current={active==="WatchLog AI"?"page":undefined} className={"ask"+(active==="WatchLog AI"?" active":"")}><PortalIcon name="Ask"/><span>Ask</span></a>
+      <a href={withSite("/reports/?view=yesterday",siteId)} aria-current={active==="Reports"?"page":undefined} className={active==="Reports"?"active":""}><PortalIcon name="Reports"/><span>Reports</span></a>
+      <button type="button" aria-haspopup="true" aria-expanded={mobileOpen} className={MORE_ACTIVE.has(active)?"active":""} onClick={()=>setMobileOpen(true)}><PortalIcon name="More"/><span>More</span></button>
     </nav>
   </>;
 }
