@@ -128,9 +128,9 @@ export default function CustomerNotifications(){
         </div>
       </header>
 
-      {error&&<div className="err">{error}</div>}
+      {error&&<div className="err" role="alert">{error}</div>}
 
-      <section className={s.priority+" "+s[heroTone]}>
+      <section className={s.priority+" "+s[heroTone]} aria-live="polite">
         <i/>
         <div><span>Current priority</span><h2>{heroTitle}</h2><p>{heroCopy}</p></div>
         <div className={s.priorityCounts}><div><strong>{urgent.length}</strong><small>urgent</small></div><div><strong>{attention.length}</strong><small>attention</small></div><div><strong>{unread.length}</strong><small>unread</small></div></div>
@@ -145,7 +145,7 @@ export default function CustomerNotifications(){
         ].map(([key,name])=><button key={key} type="button" role="tab" aria-selected={filter===key} className={filter===key?s.activeFilter:""} onClick={()=>{setFilter(key);const q=new URLSearchParams(location.search);if(key==="all")q.delete("filter");else q.set("filter",key);history.replaceState(null,"","/notifications/?"+q.toString())}}><span>{name}</span><b>{counts[key]||0}</b></button>)}
       </div>
 
-      {busy?<div className={s.empty}>Checking for updates…</div>:visible.length?<div className={s.list}>
+      {busy?<div className={s.empty} role="status">Checking for updates…</div>:visible.length?<div className={s.list}>
         {visible.map(item=>{
           const level=String(item.severity||"info").toLowerCase();
           return <article className={s.item+" "+(item.read?s.read:s.unread)} key={String(item.kind)+":"+String(item.id)}>
