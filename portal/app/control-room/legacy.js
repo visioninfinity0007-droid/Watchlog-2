@@ -466,7 +466,7 @@ export default function ControlRoom() {
       {error && <div className="err">{error}</div>}
       {analyticsError && <div className="banner"><b>Analytics could not refresh.</b><div className="muted" style={{ fontSize: "var(--font-size-sm)", marginTop: 4 }}>{analyticsError}</div></div>}
 
-      <div className={ui.callout}><span className={ui.statusDot} /><div><div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 4 }}>One operational view</div><strong>Health, activity and follow-up in one place.</strong><p>Control Room brings together site health, camera events and analytics. Recorded video stays on your recorder. Requested still images and available incident evidence appear alongside the operational status of each site.</p></div></div>
+      <div className={ui.callout}><span className={ui.statusDot} /><div><div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 4 }}>One operational view</div><strong>Health, activity and follow-up in one place.</strong><p>Control Room brings together site health, camera events and analytics. Recorded video stays on your recorder. Requested camera views and available incident evidence appear alongside the operational status of each site.</p></div></div>
 
       <section className={ui.metricGrid} aria-label="Control Room summary">
         <div className={ui.metric}><div className={ui.metricValue}>{currentSites}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Sites in view" : "Selected site"}</div></div>
@@ -511,7 +511,7 @@ export default function ControlRoom() {
             })}
           </div>
         </section>
-        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Camera tiles show requested still images, not live video. The capture time on each tile shows how recent the image is.</div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Camera tiles show requested camera views, not live video. The time on each tile shows how recent the view is.</div>
       </>}
 
       <div className={ui.sectionHead}><div><h2>Common camera purposes</h2><p>Use these as a guide when planning a site layout, then set each camera&apos;s purpose in Analytics Setup.</p></div><a className={ui.secondaryLink} href="/analytics/studio/">Open Analytics Setup</a></div>
@@ -532,7 +532,7 @@ export default function ControlRoom() {
       <div className={ui.sectionHead}><div><h2>Operational queue</h2><p>Connection and camera-system issues that should be checked first.</p></div><a className={ui.secondaryLink} href="/site-health/">Open Site Health</a></div>
       <section className={ui.twoCol}>
         <div className={ui.card}>{model.queue.length === 0 ? <div className={ui.emptyCard}>No current connection, quiet-camera or camera-system items need attention in this view.</div> : <div className={ui.splitList}>{model.queue.map((item) => <a key={item.key} className={ui.listRow} href={item.href} style={{ color: "inherit", textDecoration: "none" }}><span className={`pill ${item.severity === "critical" ? "s-bad" : "s-warn"}`}>{item.severity === "critical" ? "Act now" : "Check"}</span><div><strong>{item.title}</strong><small>{item.detail}{item.when ? ` · ${ago(item.when)}` : ""}</small></div></a>)}</div>}</div>
-        <div className={ui.featureCard}><div className={ui.eyebrow}>What Control Room shows</div><h3>Operational awareness across every site.</h3><p>Control Room brings together the site health, event and analytics information WatchLog already tracks. Recorded video stays on your recorder — Control Room shows requested still images and available incident evidence, not a live video wall or continuous cloud video.</p><div className={ui.inlineActions}><a className={ui.secondaryLink} href="/analytics/">Analytics</a><a className={ui.primaryLink} href="/incidents/">Review incidents</a></div></div>
+        <div className={ui.featureCard}><div className={ui.eyebrow}>What Control Room shows</div><h3>Operational awareness across every site.</h3><p>Control Room brings together the site health, event and analytics information WatchLog already tracks. Recorded video stays on your recorder — Control Room shows requested camera views and available incident evidence, not a live video wall or continuous cloud video.</p><div className={ui.inlineActions}><a className={ui.secondaryLink} href="/analytics/">Analytics</a><a className={ui.primaryLink} href="/incidents/">Review incidents</a></div></div>
       </section>
 
       <div className={ui.sectionHead}><div><h2>Site status</h2><p>Compare site connectivity and recent attention signals without leaving the Control Room.</p></div></div>
