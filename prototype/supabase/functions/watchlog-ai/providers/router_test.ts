@@ -84,6 +84,9 @@ Deno.test("noModelIntent: canonical status = true; reasoning/setup = false", () 
   eq(noModelIntent("Are my cameras online?"), true, "camera status");
   eq(noModelIntent("how many cameras do I have"), true, "canonical count");
   eq(noModelIntent("show monitoring coverage"), true, "coverage");
+  eq(noModelIntent("Was yesterday fully monitored?"), true, "completed service-day monitoring is canonical status");
+  eq(noModelIntent("Was last night fully monitored?"), true, "overnight monitoring status is canonical");
+  eq(noModelIntent("What happened overnight?"), false, "overnight activity still needs business/evidence reasoning");
   eq(noModelIntent("Explain the monitoring coverage and why it dropped"), false, "explain -> model");
   eq(noModelIntent("help me set up line crossing"), false, "setup -> model");
   eq(noModelIntent("what should I monitor for a retail site"), false, "recommend -> model");
@@ -185,4 +188,28 @@ Deno.test("buildCandidates: primary+fallback ordered; unconfigured uses env brid
   const r3 = buildCandidates({ configured: true, primary: { ...LOCAL, endpoint: "" }, fallback: null }, env);
   eq(r3.primaryInvalid, true, "invalid primary flagged");
   eq(r3.candidates.length, 0, "no env bridge masks a broken DB config");
+});
+
+Deno.test("buildCandidates: optional tertiary layer (0109) is ordered last and fails closed", () => {
+  const THIRD = { ...EXTERNAL, id: "p3", name: "Third", endpoint: "https://third.example/v1", model: "m3" };
+  // three configured layers -> tried in order, both non-primary layers marked as fallback
+  const r1 = buildCandidates(
+    { configured: true, external_egress_allowed: true, primary: LOCAL, fallback: EXTERNAL, tertiary: THIRD }, null);
+  eq(r1.candidates.length, 3, "three candidates");
+  eq(r1.candidates[0].cfg.id, "p1", "primary first");
+  eq(r1.candidates[1].cfg.id, "p2", "fallback second");
+  eq(r1.candidates[2].cfg.id, "p3", "tertiary third");
+  eq(r1.candidates[2].isFallback, true, "tertiary counts as a fallback leg for the audit");
+  // a structurally invalid tertiary is DROPPED, never guessed, and never disturbs layers 1-2
+  const r2 = buildCandidates(
+    { configured: true, primary: LOCAL, fallback: EXTERNAL, tertiary: { ...THIRD, model: "" } }, null);
+  eq(r2.candidates.length, 2, "invalid tertiary dropped");
+  eq(r2.primaryInvalid, false, "a bad tertiary does not flag the primary");
+  // tertiary alone (no fallback configured) still resolves as the second candidate
+  const r3 = buildCandidates({ configured: true, primary: LOCAL, fallback: null, tertiary: THIRD }, null);
+  eq(r3.candidates.length, 2, "primary + tertiary");
+  eq(r3.candidates[1].cfg.id, "p3", "tertiary follows primary when no fallback is set");
+  // absent tertiary keeps the pre-0108 two-layer behaviour byte for byte
+  const r4 = buildCandidates({ configured: true, primary: LOCAL, fallback: EXTERNAL }, null);
+  eq(r4.candidates.length, 2, "no tertiary -> unchanged two-layer chain");
 });
