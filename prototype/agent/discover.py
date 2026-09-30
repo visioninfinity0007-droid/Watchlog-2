@@ -19,6 +19,9 @@ import ipaddress
 import re
 import socket
 import ssl
+import subprocess
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -35,12 +38,14 @@ READ_TIMEOUT = 3.0
 PORTS: list[tuple[int, str, str]] = [
     (80,    "http",  "standard web interface"),
     (8080,  "http",  "common alternate web port"),
-    (8000,  "http",  "Hikvision SDK / alternate web"),
+    (8000,  "tcp",   "Hikvision SDK port"),
     (81,    "http",  "alternate web"),
+    (82,    "http",  "alternate web"),
     (88,    "http",  "alternate web"),
     (8081,  "http",  "alternate web"),
     (443,   "https", "HTTPS web interface"),
     (8443,  "https", "alternate HTTPS"),
+    (8888,  "http",  "common alternate web/API port"),
     (37777, "tcp",   "Dahua SDK port"),
     (37778, "tcp",   "Dahua SDK (UDP twin)"),
     (34567, "tcp",   "Xiongmai / XMEye - NOT SUPPORTED"),
@@ -80,8 +85,8 @@ def host_of(target: str) -> str:
     return t.split("/")[0].split(":")[0]
 
 
-def _http_probe(host: str, port: int, tls: bool) -> tuple:
-    """One GET / with no auth. Returns (status, server, title, snippet)."""
+def _http_probe(host: str, port: int, tls: bool, path: str = "/") -> tuple:
+    """One unauthenticated GET. Returns (status, server, title/auth realm, snippet)."""
     raw = b""
     try:
         sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
@@ -93,7 +98,8 @@ def _http_probe(host: str, port: int, tls: bool) -> tuple:
             ctx.verify_mode = ssl.CERT_NONE
             sock = ctx.wrap_socket(sock, server_hostname=host)
         sock.settimeout(READ_TIMEOUT)
-        sock.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\n"
+        target = path if path.startswith("/") else "/" + path
+        sock.sendall(f"GET {target} HTTP/1.1\r\nHost: {host}\r\n"
                      f"User-Agent: WatchLog-Discover\r\n"
                      f"Connection: close\r\n\r\n".encode())
         while len(raw) < 8192:
@@ -142,6 +148,34 @@ def _guess(*blobs) -> str | None:
     return None
 
 
+def probe_hikvision_isapi(host: str, open_ports) -> dict:
+    """Read-only Hikvision integration probe with no credentials.
+
+    The normal web home page is often a generic JavaScript shell and may not contain
+    the word Hikvision. Querying the documented ISAPI identity path gives a much
+    stronger signal: DeviceInfo XML means active, while a Digest/Basic challenge with
+    a Hikvision-ish server/realm means active and awaiting credentials.
+    """
+    ports = [int(p) for p in (open_ports or [])]
+    for port in (80, 443, 8080, 8443, 81, 82, 88, 8081, 8888):
+        if port not in ports:
+            continue
+        tls = port in (443, 8443)
+        status, server, title, snippet = _http_probe(
+            host, port, tls, "/ISAPI/System/deviceInfo")
+        blob = " ".join(str(x or "") for x in (server, title, snippet))
+        vendor = _guess(blob)
+        device_xml = "deviceinfo" in (snippet or "").lower()
+        hik_clue = bool(vendor and "hikvision" in vendor.lower())
+        if status == 200 and device_xml:
+            return {"vendor_hint": "hikvision", "state": "active", "port": port}
+        if status in (401, 403) and hik_clue:
+            return {"vendor_hint": "hikvision", "state": "auth_required", "port": port}
+        if status in (404, 405, 501) and hik_clue:
+            return {"vendor_hint": "hikvision", "state": "unavailable", "port": port}
+    return {"vendor_hint": None, "state": "unknown", "port": None}
+
+
 def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
     res = PortResult(port=port, kind=kind, note=note, open=False)
     try:
@@ -157,12 +191,27 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
     return res
 
 
-# A short list for sweeping a whole subnet - 254 hosts x 13 ports is slow
-# and mostly pointless. These six catch every recorder we can support plus
-# the two families we cannot, so an unsupported unit still gets named.
-SWEEP_PORTS = [80, 8000, 8080, 554, 37777, 34567]
-SWEEP_TIMEOUT = 0.4
+# Every port the rest of the setup stack can actually talk to. This list must stay a
+# superset of setup_backend._WEB_PORTS / vendor-signature ports.
+SWEEP_PORTS = [80, 443, 8000, 8080, 8443, 81, 82, 88, 8081, 8888, 554, 37777, 37778, 34567]
+
+# Field Build 74 exposed a release-blocking discovery failure: a Windows PC with several
+# private/virtual adapters could queue 8 x /24 x many ports and leave the setup UI spinning
+# for minutes. Discovery is now budgeted as a product interaction, not an unbounded scan.
+#
+# Phase 1 uses the four highest-value recorder/control ports with a patient enough timeout
+# to survive cold ARP/neighbour learning. Phase 2 checks the remaining CCTV/web ports only
+# while the global deadline remains. Physical adapters are ranked ahead of virtual/VPN
+# adapters, and automatic scanning is capped at four /24s. Explicit subnet and manual-IP
+# paths remain available for unusual topologies.
+SWEEP_FAST_PORTS = [37777, 8000, 80, 443]
+SWEEP_DEEP_PORTS = [port for port in SWEEP_PORTS if port not in SWEEP_FAST_PORTS]
+RECORDER_SIGNATURE_PORTS = {37777, 37778, 8000, 34567}
+SWEEP_TIMEOUT = 0.75
+SWEEP_DEEP_TIMEOUT = 0.35
+SWEEP_WORKERS = 256
 MAX_AUTO_SUBNETS = 8
+DISCOVERY_DEADLINE_SECONDS = 32.0
 
 
 def _usable_ipv4(value: str | None) -> str | None:
@@ -177,6 +226,11 @@ def _usable_ipv4(value: str | None) -> str | None:
         return None
     if addr.is_unspecified or addr.is_loopback or addr.is_multicast:
         return None
+    # Reserved 240.0.0.0/4 is never a LAN host, and Python classifies it as "private",
+    # so is_private alone would accept a subnet mask (255.255.255.0) scraped out of an
+    # ipconfig dump and then sweep a nonsense /24.
+    if addr.is_reserved:
+        return None
     # Never auto-scan a public /24. CCTV interfaces should be RFC1918 or
     # link-local; manual IP entry remains available for unusual topologies.
     if not (addr.is_private or addr.is_link_local):
@@ -184,24 +238,67 @@ def _usable_ipv4(value: str | None) -> str | None:
     return str(addr)
 
 
+_VIRTUAL_ADAPTER_TOKENS = (
+    "virtual", "vethernet", "hyper-v", "vmware", "virtualbox", "docker",
+    "wsl", "tailscale", "wireguard", "vpn", "loopback", "bluetooth",
+)
+
+
 def _adapter_ipv4s() -> list[str]:
-    """Reliable active-interface enumeration when psutil is packaged."""
+    """Reliable active-interface enumeration, physical NICs before virtual/VPN NICs.
+
+    We do not discard virtual adapters completely because unusual CCTV deployments can
+    legitimately use one. We rank them after physical Ethernet/Wi-Fi so the bounded
+    automatic scan cannot spend its whole budget on Docker/Hyper-V/VPN /24s first.
+    """
     if psutil is None:
         return []
-    found: list[str] = []
+    primary: list[str] = []
+    secondary: list[str] = []
     try:
         stats = psutil.net_if_stats()
         for name, addresses in psutil.net_if_addrs().items():
             if name in stats and not stats[name].isup:
                 continue
+            lower_name = str(name).lower()
+            bucket = secondary if any(token in lower_name for token in _VIRTUAL_ADAPTER_TOKENS) else primary
             for address in addresses:
                 if address.family != socket.AF_INET:
                     continue
                 ip = _usable_ipv4(address.address)
-                if ip and ip not in found:
-                    found.append(ip)
+                if ip and ip not in primary and ip not in secondary:
+                    bucket.append(ip)
     except Exception:                                    # noqa: BLE001
         return []
+    return primary + secondary
+
+
+def _command_ipv4s() -> list[str]:
+    """Adapter enumeration that does not depend on psutil being packaged.
+
+    psutil is an optional import and was never added to the frozen build, so the
+    shipped installer silently lost multi-adapter discovery and swept only the
+    default-route /24 — exactly the blind spot local_ipv4s() exists to close.
+    Parse the OS's own interface dump as well. _usable_ipv4 rejects masks (255.x
+    is not private) and public addresses; a default gateway shares its host's /24
+    so an extra hit is harmless. Locale-independent: no label parsing.
+    """
+    kwargs = {"capture_output": True, "text": True, "timeout": 6}
+    if sys.platform.startswith("win"):
+        cmd = ["ipconfig"]
+        # --windowed setup UI: never flash a console window.
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        cmd = ["ip", "-4", "-o", "addr"]
+    try:
+        proc = subprocess.run(cmd, **kwargs)             # noqa: S603
+    except Exception:                                    # noqa: BLE001
+        return []
+    found: list[str] = []
+    for raw in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", proc.stdout or ""):
+        ip = _usable_ipv4(raw)
+        if ip and ip not in found:
+            found.append(ip)
     return found
 
 
@@ -231,6 +328,11 @@ def local_ipv4s() -> list[str]:
         pass
 
     for ip in _adapter_ipv4s():
+        add(ip)
+
+    # Runs even when psutil is present: a CCTV NIC that psutil misses (or a build
+    # without psutil at all) must never silently shrink the swept network set.
+    for ip in _command_ipv4s():
         add(ip)
 
     try:
@@ -268,41 +370,114 @@ def _sweep_bases(subnet: str | None = None) -> tuple[list[str], list[str]]:
     return bases, addresses
 
 
-def sweep(subnet: str | None = None, log=print) -> list[tuple[str, list[int]]]:
-    """
-    Find recorders on the relevant local /24 network(s).
+def _has_recorder_signature(found: dict[str, set[int]]) -> bool:
+    """A generic router/web response is not proof that the recorder was found."""
+    return any(bool(ports & RECORDER_SIGNATURE_PORTS) for ports in found.values())
 
-    Explicit subnet keeps the old single-/24 behavior. Automatic discovery scans
-    each distinct active local /24 so a Wi-Fi + CCTV-Ethernet PC cannot hide the
-    recorder merely because Windows routes internet traffic over Wi-Fi.
+
+def sweep(subnet: str | None = None, log=print,
+          progress=lambda _message: None, _connect=None,
+          _bases=None) -> list[tuple[str, list[int]]]:
+    """Find recorder candidates without ever leaving setup spinning indefinitely.
+
+    Automatic discovery is deliberately bounded. It scans up to the same eight local
+    /24s covered by field-proven Build 69 (physical adapters first), then returns whatever it proved before the global
+    deadline. The fast phase preserves multiple strong recorder candidates across those
+    ranked LANs; once that phase proves native recorder signatures, only those recorder
+    hosts are service-confirmed and the expensive deep broad scan is skipped. Manual IP
+    and explicit-subnet paths are never removed.
     """
-    bases, addresses = _sweep_bases(subnet)
+    bases, addresses = _bases if _bases is not None else _sweep_bases(subnet)
+    connect_fn = _connect or socket.create_connection
     if not bases:
         log("  could not work out this PC's network; enter the recorder IP manually")
         return []
 
+    started = time.monotonic()
+    deadline = started + DISCOVERY_DEADLINE_SECONDS
     if addresses:
         log(f"  this PC has local IPv4: {', '.join(addresses)}")
-    log("  sweeping " + ", ".join(f"{base}.1-254" for base in bases) + " on ports "
-        + f"{', '.join(str(p) for p in SWEEP_PORTS)} ...")
+    log("  bounded sweep: " + ", ".join(f"{base}.1-254" for base in bases))
 
     def probe(args):
-        ip, port = args
+        ip, port, budget = args
         try:
-            with socket.create_connection((ip, port), timeout=SWEEP_TIMEOUT):
+            with connect_fn((ip, port), timeout=budget):
                 return ip, port
         except Exception:                                # noqa: BLE001
             return None
 
-    targets = [(f"{base}.{h}", p)
-               for base in bases
-               for h in range(1, 255)
-               for p in SWEEP_PORTS]
     found: dict[str, set[int]] = {}
-    with ThreadPoolExecutor(max_workers=256) as pool:
-        for hit in pool.map(probe, targets):
-            if hit:
-                found.setdefault(hit[0], set()).add(hit[1])
+
+    def run_stage(targets, label: str):
+        """Run one bounded batch. Socket timeouts make each stage finite."""
+        if time.monotonic() >= deadline:
+            return
+        progress(label)
+        with ThreadPoolExecutor(max_workers=SWEEP_WORKERS) as pool:
+            for hit in pool.map(probe, targets):
+                if hit:
+                    found.setdefault(hit[0], set()).add(hit[1])
+                if time.monotonic() >= deadline:
+                    # Do not enqueue another discovery phase after this one. pool.map's
+                    # already-running connects are individually bounded by their socket
+                    # timeout, so leaving the context cannot turn into a minutes-long hang.
+                    break
+
+    # Phase 1: patient probes on the ports that prove most Hikvision/Dahua boxes.
+    for index, base in enumerate(bases, 1):
+        if time.monotonic() >= deadline:
+            break
+        progress(f"Checking local network {index}/{len(bases)} ({base}.x)…")
+        hosts = [f"{base}.{h}" for h in range(1, 255)]
+        run_stage(
+            [(ip, port, SWEEP_TIMEOUT) for ip in hosts for port in SWEEP_FAST_PORTS],
+            f"Checking local network {index}/{len(bases)} for recorder services…",
+        )
+        # Keep scanning the other ranked physical LANs in this fast phase so a PC
+        # connected to more than one recorder network can still present every strong
+        # candidate. The cap + timeout keep this finite.
+
+    # Confirm every strong candidate with the complete port set, using the same
+    # patient timeout. This recovers RTSP / alternate web ports without a broad scan.
+    recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
+    if recorder_ips and time.monotonic() < deadline:
+        progress("Recorder found. Confirming its services…")
+        remaining = [
+            (ip, port, SWEEP_TIMEOUT)
+            for ip in recorder_ips
+            for port in SWEEP_PORTS
+            if port not in found.get(ip, set())
+        ]
+        run_stage(remaining, "Recorder found. Confirming web and video services…")
+        return [(ip, sorted(ports)) for ip, ports in
+                sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
+
+    # Phase 2: no native signature yet. Check alternate web/RTSP/vendor ports only
+    # while the global UX budget remains. This keeps HTTPS/custom-port recorders
+    # discoverable without allowing a fleet of virtual adapters to hang setup.
+    for index, base in enumerate(bases, 1):
+        if time.monotonic() >= deadline:
+            break
+        hosts = [f"{base}.{h}" for h in range(1, 255)]
+        run_stage(
+            [(ip, port, SWEEP_DEEP_TIMEOUT) for ip in hosts for port in SWEEP_DEEP_PORTS],
+            f"Checking alternate CCTV ports on network {index}/{len(bases)}…",
+        )
+
+    recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
+    if recorder_ips and time.monotonic() < deadline:
+        progress("Recorder found. Confirming its services…")
+        remaining = [
+            (ip, port, SWEEP_TIMEOUT)
+            for ip in recorder_ips
+            for port in SWEEP_PORTS
+            if port not in found.get(ip, set())
+        ]
+        run_stage(remaining, "Recorder found. Confirming web and video services…")
+
+    elapsed = time.monotonic() - started
+    log(f"  discovery finished in {elapsed:.1f}s; {len(found)} host(s) answered")
     return [(ip, sorted(ports)) for ip, ports in
             sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]
 
@@ -353,6 +528,44 @@ def sweep_report(hits: list[tuple[str, list[int]]], log=print) -> None:
         log("  Nothing looks like a recorder. The devices above are probably")
         log("  the router and PCs.")
         log("")
+
+
+def fingerprint(host: str, open_ports) -> dict:
+    """Fingerprint an already-discovered host without relying on ONVIF.
+
+    Only ports already observed open are touched. HTTP/HTTPS banners, auth realms
+    and titles are inspected read-only; binary vendor/RTSP ports remain evidence
+    but are never spoken to as HTTP. This is the ONVIF-OFF discovery path.
+    """
+    ports = sorted({int(p) for p in (open_ports or [])})
+    by_port = {p: (kind, note) for p, kind, note in PORTS}
+    web = []
+    vendor_guess = None
+    for port in ports:
+        spec = by_port.get(port)
+        if not spec:
+            continue
+        kind, note = spec
+        if kind not in ("http", "https"):
+            continue
+        result = scan_port(host, port, kind, note)
+        web.append({
+            "port": port,
+            "kind": kind,
+            "status": result.status,
+            "server": result.server,
+            "title": result.title,
+            "vendor_guess": result.vendor_guess,
+        })
+        if not vendor_guess and result.vendor_guess:
+            vendor_guess = result.vendor_guess
+    return {
+        "host": host,
+        "ports": ports,
+        "vendor_guess": vendor_guess,
+        "rtsp": 554 in ports,
+        "web": web,
+    }
 
 
 def scan(target: str, log=print) -> list[PortResult]:

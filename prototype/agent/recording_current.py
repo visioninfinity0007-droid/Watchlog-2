@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 import dahua_archive
+import hikvision_archive
 import recording_health
 
 _ORIGINAL_ASSESS = recording_health.assess_recording_storage
@@ -29,11 +30,14 @@ ARCHIVE_SETTLE_MINUTES = 2
 def _is_dahua(driver) -> bool:
     return driver is not None and getattr(driver, "name", "") == "dahua-cgi"
 
+def _is_hikvision(driver) -> bool:
+    return driver is not None and getattr(driver, "name", "") == "hikvision-isapi"
+
 
 def _archive_assess(driver, channels, nvr_state: str, inventory=None) -> dict:
     """Preserve storage assessment, replace Dahua RecordMode with archive proof."""
     base = _ORIGINAL_ASSESS(driver, channels, nvr_state, inventory=inventory)
-    if not _is_dahua(driver) or nvr_state != "ok":
+    if nvr_state != "ok" or not (_is_dahua(driver) or _is_hikvision(driver)):
         base["recording_evidence"] = "vendor_status"
         return base
 
@@ -57,9 +61,20 @@ def _archive_assess(driver, channels, nvr_state: str, inventory=None) -> dict:
         if storage.get("state") == "fault":
             rows.append({"channel": channel, "state": "storage_fault", "reason": "storage_fault"})
             continue
+        found = False
         try:
-            found = dahua_archive.has_recording(driver, channel, window_start, window_end)
-            archive_api_proven = True
+            if _is_dahua(driver):
+                found = dahua_archive.has_recording(driver, channel, window_start, window_end)
+                archive_api_proven = True
+            else:
+                proof = hikvision_archive.prove_recorder_archive(
+                    driver, channel, now=window_end,
+                    window_seconds=int((window_end-window_start).total_seconds()),
+                    limit=4,
+                )
+                if proof.get("status") in ("verified", "empty"):
+                    archive_api_proven = True
+                found = proof.get("status") == "verified"
         except Exception:  # noqa: BLE001 — archive ambiguity is UNKNOWN, never a false alarm
             found = False
         rows.append({
