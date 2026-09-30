@@ -1,0 +1,130 @@
+version: 1
+id: office
+status: IMPLEMENTED
+kind: site_type
+purpose: >
+  Reusable semantic and reporting policy for offices, head offices and administrative sites
+  where WatchLog combines security evidence with management-relevant operating context.
+
+authority:
+  factual_state: watchlog_database
+  semantic_policy: ai_harness
+  rule: >
+    The harness defines meaning, allowed interpretations and report structure. Live camera
+    mappings, coverage, events, incidents and observations come only from governed runtime data.
+
+working_day:
+  default_days_iso: [1, 2, 3, 4, 5]
+  yesterday_rule: >
+    "Yesterday" means the latest completed configured working day, not the previous
+    midnight-to-midnight calendar date. Weekends/non-working days are skipped.
+  last_7_days_rule: last 7 completed configured working days
+  last_30_days_rule: >
+    last 30 completed calendar days with working-day and non-working-day activity separated
+  incomplete_day_rule: >
+    Do not present the current working day as complete before its configured closing time.
+
+camera_roles:
+  entrance:
+    purpose: arrival/departure and access activity
+    allowed_outputs: [arrival_activity, departure_activity, after_hours_access, entrance_dwell]
+  reception:
+    purpose: reception and waiting-area activity
+    allowed_outputs: [reception_activity, visible_waiting, visible_occupancy, unattended_periods]
+  management_office:
+    purpose: management/private office access
+    allowed_outputs: [visible_presence, after_hours_presence, unusual_access]
+  general_office:
+    purpose: general office activity level
+    allowed_outputs: [activity_detections, visible_presence, busy_periods, quiet_periods]
+  corridor:
+    purpose: internal movement flow
+    allowed_outputs: [activity_detections, dwell, after_hours_movement]
+  parking:
+    purpose: vehicle and parking-area activity
+    allowed_outputs: [vehicle_activity, vehicle_dwell, after_hours_parking]
+  restricted:
+    purpose: sensitive/restricted-area access
+    allowed_outputs: [visible_presence, access_activity, after_hours_activity]
+  perimeter:
+    purpose: external access/perimeter movement
+    allowed_outputs: [access_activity, visible_presence, after_hours_activity]
+
+metric_definitions:
+  activity_detections:
+    class: observed-derived
+    definition: camera detection events or episodes in the report window
+    never_call: [unique_people, employee_count, visitor_count]
+  visible_presence:
+    class: observed
+    definition: people visibly present in analyzed evidence
+    never_call: [identity, employee_status, visitor_identity]
+  visitor_flow:
+    class: observed-derived
+    rule: >
+      Only use visitor/reception language where the physical reception/entrance camera mapping
+      is confirmed. Never translate detector-event counts into unique visitors.
+  opening_activity:
+    class: observed-derived
+    caveat: confidence depends on entrance mapping and monitoring coverage
+  closing_activity:
+    class: observed-derived
+    caveat: confidence depends on entrance mapping and monitoring coverage
+  after_hours_presence:
+    class: observed
+    definition: visible presence outside configured business hours
+  restricted_area_activity:
+    class: observed
+    rule: only when the physical restricted-area camera mapping is confirmed
+  monitoring_coverage:
+    class: measured
+    definition: verified LIVE / RECOVERED / UNVERIFIED monitoring coverage for the window
+
+analytics_quality:
+  checks:
+    - physical camera mapping confidence
+    - glare or overexposure
+    - occlusion and persistent obstruction
+    - camera angle and blind spots
+    - recorder/camera health
+    - analysis and snapshot coverage
+    - timestamp continuity
+  recommendation_rule: >
+    Physical camera, lighting or mapping recommendations require repeated evidence or a confirmed
+    configuration/health gap. A single poor frame is not enough.
+
+report_windows:
+  today:
+    label: Today
+    purpose: current working-day status; mark incomplete until close
+  yesterday:
+    label: Yesterday
+    purpose: latest completed configured working-day management report
+  last_7_days:
+    label: Last 7 days
+    purpose: pattern review across the last 7 completed working days
+  last_30_days:
+    label: Last 30 days
+    purpose: management trend across 30 completed calendar days with working/non-working split
+
+report_sections:
+  - coverage and data quality
+  - security incidents and management attention
+  - opening/closing activity
+  - entrance/reception activity where mapping is confirmed
+  - general office and corridor activity
+  - management/restricted-area activity where mapping is confirmed
+  - after-hours activity
+  - parking/perimeter activity where applicable
+  - monitoring reliability
+  - evidence-based improvement recommendations
+
+response_policy:
+  tone: natural_management_brief
+  rules:
+    - lead with what management needs to know
+    - explain uncertainty in ordinary language, not pipeline terminology
+    - never call detections unique people
+    - never infer identity, demographics, intent, wrongdoing or employee productivity
+    - missing coverage is missing evidence, not zero activity
+    - state camera-mapping uncertainty before role-specific conclusions
