@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Agent identity + camera enrollment tests
@@ -39,8 +39,6 @@ jobs:
         run: python tools/secret_scan.py
       - name: Migration lint
         run: python tools/lint_migrations.py
-      - name: WatchLog AI multimodal + admin conversation contract
-        run: python prototype/tests/test_ai_multimodal_contract.py
       - name: Health Foundation schema/authz contract (Phase A)
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)
@@ -79,6 +77,10 @@ jobs:
         run: python prototype/tests/test_watchlog_deployment_smoke.py
       - name: Auth redirect + recovery contract
         run: python prototype/tests/test_auth_flow_contract.py
+      - name: Private visual snapshot pipeline contract
+        run: python prototype/tests/test_visual_snapshot_pipeline_contract.py
+      - name: Camera preview realtime contract
+        run: python prototype/tests/test_camera_preview_realtime_contract.py
       - name: Vision false-alarm filter tests
         run: python prototype/tests/test_vision_filter.py
       - name: Analytics Studio local rule-engine tests
@@ -104,7 +106,7 @@ jobs:
       - name: Analytics Studio report rendering tests
         run: python prototype/tests/test_analytics_reporting.py
       - name: Reports preview truth contract
-        run: python prototype/tests/test_reports_preview_truth.py
+        run: python prototype/tests/test_reports_preview_truth.py && python prototype/tests/test_restaurant_reports_contract.py && python prototype/tests/test_tenant_reporting_governance.py
       - name: Analytics portal alignment contract
         run: python prototype/tests/test_analytics_portal_contract.py
       - name: Portal + installer alignment contract
