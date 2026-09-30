@@ -17,10 +17,10 @@
    own stylesheet (they are not in the shared token set yet), so they live here too
    rather than drifting to a portal-only purple. */
 :root{
-  --wl-blue:#1748D3;
-  --wl-blue-bright:#3E6BE6;
-  --wl-ice:#72D4FF;
-  --wl-grad:linear-gradient(135deg,#5B21FF 0%,#1748D3 100%);
+  --wl-blue:#5B21FF;
+  --wl-blue-bright:#4413CC;
+  --wl-ice:#8B6BFF;
+  --wl-grad:linear-gradient(135deg,#5B21FF 0%,#4413CC 100%);
   --wl-elevate:0 1px 0 rgba(255,255,255,.04) inset, 0 18px 40px -30px rgba(0,0,0,.75);
   --wl-glow:0 0 0 3px rgba(114,212,255,.16);
 }
@@ -31,7 +31,7 @@ html, body {
   margin: 0;
   padding: 0;
   background:
-    radial-gradient(120% 80% at 85% -10%, rgba(23,72,211,.12), transparent 60%),
+    radial-gradient(120% 80% at 85% -10%, rgba(91,33,255,.10), transparent 60%),
     radial-gradient(90% 60% at 8% -5%, rgba(91,33,255,.09), transparent 55%),
     var(--color-canvas);
   background-attachment: fixed;
@@ -93,11 +93,11 @@ button {
   border-radius: var(--radius-control);
   background: var(--wl-blue); color: #fff;
   font: inherit; font-weight: var(--font-weight-semibold); cursor: pointer;
-  box-shadow: 0 8px 20px -10px rgba(23,72,211,.7);
+  box-shadow: 0 8px 20px -10px rgba(91,33,255,.34);
   transition: background var(--motion-duration-control) var(--motion-ease),
               box-shadow var(--motion-duration-control) var(--motion-ease);
 }
-button:hover:not(:disabled) { background: var(--wl-blue-bright); box-shadow: 0 12px 26px -10px rgba(23,72,211,.8); }
+button:hover:not(:disabled) { background: var(--wl-blue-bright); box-shadow: 0 12px 26px -10px rgba(91,33,255,.42); }
 button:disabled { opacity: .5; cursor: default; }
 button.ghost {
   background: transparent; color: var(--color-white);

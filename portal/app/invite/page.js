@@ -47,14 +47,14 @@ export default function Invite() {
           <>
             <h1>You are in</h1>
             <div className="ok-note">{msg}</div>
-            <a href="/dashboard/"><button>Go to the dashboard</button></a>
+            <a href="/home/"><button>Open WatchLog</button></a>
           </>
         )}
         {state === "error" && (
           <>
             <h1>That did not work</h1>
             <div className="err">{msg}</div>
-            <a href="/dashboard/"><button className="ghost" style={{ width: "100%" }}>Go to the dashboard</button></a>
+            <a href="/home/"><button className="ghost" style={{ width: "100%" }}>Go to the dashboard</button></a>
           </>
         )}
       </div>
