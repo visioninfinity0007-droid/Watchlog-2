@@ -126,3 +126,31 @@
   .target-actions>*{flex:1}
   .target-actions select{min-width:0!important}
 }
+
+/* Phase 6 accessibility and responsive interaction rules. */
+.shell :where(a,button,input,select,textarea,[tabindex]):focus-visible{
+  outline:3px solid rgba(91,33,255,.38)!important;
+  outline-offset:2px!important;
+}
+.shell :where(.productRailLink,.productRailSubLink,.productRailSite,.productMobileBottom a,.productMobileBottom button):focus-visible{
+  border-radius:8px;
+}
+.shell :where([class*="metric"],[class*="Metric"],td,th,.pill){
+  font-variant-numeric:tabular-nums;
+}
+.shell button:disabled,.shell a[aria-disabled="true"]{cursor:not-allowed!important}
+.productMobileBottom a,.productMobileBottom button{min-height:56px!important}
+@media(max-width:760px){
+  .shell button,.shell a[class*="Link"],.shell .ghost,.shell .productRailLink,.shell .productRailSubLink{min-height:44px}
+  .shell select,.shell input{min-height:44px!important}
+  .productRailMenu,.productRailSignout{min-height:44px!important}
+  .productRailSite{min-height:52px}
+}
+@media(prefers-reduced-motion:reduce){
+  .shell *,.shell *::before,.shell *::after,.auth-card *,.auth-card *::before,.auth-card *::after{
+    animation-duration:.01ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:.01ms!important;
+    scroll-behavior:auto!important;
+  }
+}
