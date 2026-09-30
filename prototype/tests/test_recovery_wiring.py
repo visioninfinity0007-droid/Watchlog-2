@@ -4,7 +4,7 @@
 Source contract over watchlog_agent.py: the recovery worker is started as a thread, detects the
 outage from persisted last-live on startup, opens a recovery interval, backfills with live
 priority + throttle, is gated by recovery_enabled, and is strictly READ-ONLY (never a recorder
-write). Persistence of last-live is on the heartbeat cadence.
+write). Persistence of last-live is on the heartbeat cadence only when recorder transport is fresh.
 """
 from __future__ import annotations
 
@@ -21,19 +21,50 @@ class RecoveryWiring(unittest.TestCase):
         self.assertIn("target=recovery_worker", SRC)
         self.assertIn("recov.join(", SRC)                     # joined on shutdown
 
+    def test_real_collector_publishes_recorder_transport_truth(self):
+        collector = SRC.split("def collector(", 1)[1].split("def upload_once(", 1)[0]
+        self.assertIn('holder["live_driver"] = driver', collector)
+        self.assertIn('holder["recorder_live_at"] = time.monotonic()', collector)
+        self.assertIn('holder.pop("live_driver", None)', collector)
+
+    def test_recovery_accepts_startup_channel_dictionaries(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("if isinstance(item, dict)", worker)
+        self.assertIn('item.get("channel")', worker)
+
     def test_outage_detection_and_report(self):
         self.assertIn("read_last_live", SRC)
         self.assertIn("detect_outage", SRC)
         self.assertIn("wl_open_recovery_interval", SRC)
 
-    def test_last_live_persisted_on_heartbeat(self):
+    def test_last_live_requires_fresh_recorder_transport(self):
+        self.assertIn("Persist RECORDER observation", SRC)
+        self.assertIn('holder.get("live_driver")', SRC)
+        self.assertIn("last_activity_monotonic", SRC)
         self.assertIn("persist_last_live", SRC)
+
+    def test_hikvision_and_dahua_archive_recovery_are_wired(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("dahua_archive.install()", worker)
+        self.assertIn("hikvision_archive.install()", worker)
+        self.assertNotIn("Hikvision archive recovery disabled", worker)
+
+    def test_spool_overflow_becomes_recorder_archive_recovery(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("pending_recovery_gap", worker)
+        self.assertIn("clear_recovery_gap", worker)
+        self.assertIn("spool overflow", worker)
 
     def test_gated_and_live_priority_and_throttled(self):
         worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
         self.assertIn("cfg.recovery_enabled", worker)
         self.assertIn("live_pending=lambda: spool.count()", worker)
         self.assertIn("throttle_seconds=cfg.recovery_throttle_seconds", worker)
+
+    def test_visual_gap_backfill_is_always_wired(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("snapshot_interval_seconds=cfg.recovery_snapshot_seconds", worker)
+        self.assertIn("RecoveryRunner(", worker)
 
     def test_recovery_is_read_only(self):
         worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
