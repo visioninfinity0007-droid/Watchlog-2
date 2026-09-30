@@ -2,7 +2,6 @@
 
 import {useMemo,useState} from "react";
 import {withSite} from "../site-context";
-import ui from "../portal.module.css";
 import styles from "./reports.module.css";
 
 function num(v){return v==null||Number.isNaN(Number(v))?null:Number(v)}
@@ -19,9 +18,48 @@ function ReportTabs({mode,setMode}){
   </div>;
 }
 
+function ReportStatus({view,model}){
+  const limited=model&&model.sufficiency&&model.sufficiency.level==="limited";
+  const label=view==="daily"?"In progress":limited?"Limited coverage":"Completed";
+  const cls=view==="daily"?styles.reportStatusLive:limited?styles.reportStatusBuilding:styles.reportStatusReady;
+  return <span className={styles.reportStatus+" "+cls}><i/>{label}</span>;
+}
+
+function ReportHealth({view,model}){
+  const period=model&&model.kind==="period";
+  const current=period?Number(model.observed||0):null;
+  const total=period?Number(model.days||0):null;
+  const ratio=period&&total?Math.max(0,Math.min(100,Math.round(current/total*100))):null;
+  return <section className={styles.reportHealthCard}>
+    <div className={styles.reportHealthHead}><span className={styles.panelEyebrow}>Report confidence</span><b>{period?(current+" of "+total+" days represented"):(model.coverage&&model.coverage.status||"Coverage available")}</b></div>
+    {period&&<div className={styles.reportHealthProgress}><span style={{width:String(ratio)+"%"}}/></div>}
+    <p>{model.sufficiency&&model.sufficiency.message||model.coverage&&model.coverage.summary||"Figures are limited to the periods that can be supported reliably."}</p>
+    {model.coverage&&model.coverage.note&&<small>{model.coverage.note}</small>}
+  </section>;
+}
+
+function PeriodBuildState({model,windowData,siteId}){
+  const rows=windowData&&windowData.saved_reports||[];
+  const minimum=model.days===7?4:10;
+  const pctReady=Math.max(0,Math.min(100,Math.round((Number(model.observed||0)/minimum)*100)));
+  return <section className={styles.periodBuildCard}>
+    <div className={styles.periodBuildTop}><div><span className={styles.panelEyebrow}>Period is still building</span><h3>{model.observed} represented day{Number(model.observed)===1?"":"s"} so far</h3><p>WatchLog will unlock the period trend when enough completed service days are represented. Daily reports are still available below.</p></div><strong>{pctReady}%</strong></div>
+    <div className={styles.periodBuildTrack}><span style={{width:String(pctReady)+"%"}}/></div>
+    <div className={styles.periodBuildDates}>{rows.slice(0,6).map(function(r,i){const d=String(r.service_date||"");return <a key={(r.report_id||d||i)+"-"+i} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}><b>{shortDate(d)}</b><span>Completed</span></a>})}</div>
+  </section>;
+}
+
+function ReportIcon({kind}){
+  if(kind==="users")return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3"/><path d="M3.8 18c.7-3 2.4-4.5 5.2-4.5S13.5 15 14.2 18M15 7.4a2.7 2.7 0 0 1 0 5.2M16.2 13.9c2.1.5 3.4 1.9 4 4.1"/></svg>;
+  if(kind==="table")return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8.5h14M7 8.5v8M17 8.5v8M4 16.5h16"/></svg>;
+  if(kind==="clock")return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.7v4.7l3.1 1.8"/></svg>;
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.5 9 12l3.2 3.2L20 7.5M15.5 7.5H20V12"/></svg>;
+}
+
 function KpiStrip({metrics=[]}){
+  const icons=["users","table","trend","clock"];
   if(!metrics.length)return null;
-  return <div className={styles.kpiStrip}>{metrics.slice(0,4).map(function(m,i){return <div className={styles.kpiCell} key={(m.label||"metric")+"-"+i}><span className={styles.kpiIcon}>•</span><div><strong>{m.value}</strong><b>{m.label}</b>{m.note&&<small>{m.note}</small>}</div></div>})}</div>;
+  return <div className={styles.kpiStrip}>{metrics.slice(0,4).map(function(m,i){const delta=m.delta;return <div className={styles.kpiCell} key={(m.label||"metric")+"-"+i}><span className={styles.kpiIcon}><ReportIcon kind={icons[i]}/></span><div><div className={styles.kpiValueRow}><strong>{m.value}</strong>{delta&&<em className={String(delta).startsWith("-")?styles.kpiDeltaDown:styles.kpiDeltaUp}>{delta}</em>}</div><b>{m.label}</b>{m.note&&<small>{m.note}</small>}</div></div>})}</div>;
 }
 
 function DemandChart({points=[],title="Demand pattern",subtitle="How visible demand changed during the period."}){
@@ -74,9 +112,20 @@ function DetailRows({items=[]}){
 }
 
 function SavedReports({windowData,siteId,limit=8}){
-  const rows=(windowData&&windowData.saved_reports||[]).slice(0,limit);
+  const all=windowData&&windowData.saved_reports||[];
+  const rows=all.slice(0,limit),extra=all.slice(limit);
   if(!rows.length)return null;
-  return <section className={styles.section}><div className={styles.sectionHead}><div><h3>Completed daily reports</h3><p>Open a completed day for the full daily management report.</p></div></div><div className={styles.savedReportTable}>{rows.map(function(x,i){const d=String(x.service_date||"");return <a key={(x.report_id||d||i)+"-"+i} className={styles.savedReportRow} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}><span><b>{dateLabel(d)}</b><small>{x.summary||"Completed daily report"}</small></span><em>Open report</em></a>})}</div></section>;
+  const renderRow=function(x,i,prefix){const d=String(x.service_date||"");const highlights=x.highlights||[];return <a key={(prefix||"row")+"-"+(x.report_id||d||i)+"-"+i} className={styles.savedReportRow} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}>
+    <span className={styles.savedReportDate}><b>{shortDate(d)}</b><small>{new Date(d+"T12:00:00").toLocaleDateString([], {weekday:"short"})}</small></span>
+    <span className={styles.savedReportCopy}><b>{x.title||"Daily management report"}</b><small>{x.summary||highlights[0]||"Completed daily report"}</small></span>
+    <span className={styles.savedReportState}><i/>Completed</span>
+    <em aria-hidden="true">→</em>
+  </a>};
+  return <section className={styles.savedReportsCard}>
+    <div className={styles.savedReportsHead}><div><span className={styles.panelEyebrow}>Daily reports</span><h3>Completed service days</h3><p>Open a day to see the full management story, actions and security detail.</p></div><span>{all.length} available</span></div>
+    <div className={styles.savedReportTable}>{rows.map(function(x,i){return renderRow(x,i,"primary")})}</div>
+    {extra.length>0&&<details className={styles.savedReportsMore}><summary>Show {extra.length} more completed report{extra.length===1?"":"s"}</summary><div className={styles.savedReportTable}>{extra.map(function(x,i){return renderRow(x,i,"extra")})}</div></details>}
+  </section>;
 }
 
 function ConfidenceDetails({coverage,visibility=[],sufficiency}){
@@ -163,8 +212,9 @@ function normalizePeriod({view,period,windowData}){
   const series=days===30?weeks:daily.filter(function(x){return Number(x.camera_observations||0)>0});
   const maxTrend=Math.max.apply(null,[1].concat(series.map(function(x){return Number(x.estimated_covers||0)})));
   const timeline=trendReady?series.map(function(x){const d=x.service_date||x.week_start;return {time:shortDate(d),level:clampLevel(x.estimated_covers,maxTrend),label:x.estimated_covers==null?"Demand":"Estimated covers "+x.estimated_covers,detail:days===30?(x.observed_days+" represented service day"+(Number(x.observed_days)===1?"":"s")+" in this week"):(x.peak_visible_diners==null?"":"Peak visible diners "+x.peak_visible_diners)}}):[];
+  const coverDelta=comparisonReady&&num(data.comparison&&data.comparison.estimated_covers_pct)!=null?((Number(data.comparison.estimated_covers_pct)>0?"+":"")+Number(data.comparison.estimated_covers_pct)+"%"):null;
   const metrics=trendReady?[
-    {value:val(s.avg_estimated_covers_per_observed_day),label:"Avg estimated covers",note:"Per represented service day"},
+    {value:val(s.avg_estimated_covers_per_observed_day),label:"Avg estimated covers",note:"Per represented service day",delta:coverDelta},
     {value:busiestDay&&busiestDay.service_date?shortDate(busiestDay.service_date):"—",label:"Busiest represented day",note:busiestDay&&busiestDay.estimated_covers!=null?"Estimated covers "+busiestDay.estimated_covers:""},
     {value:busiestHour&&busiestHour.local_hour||"—",label:"Busiest time",note:"Strongest recurring visible demand"},
     {value:s.median_observed_time_to_food_minutes==null?"—":s.median_observed_time_to_food_minutes+" min",label:"Observed time to food",note:"Across supported table sessions"}
@@ -192,7 +242,7 @@ function normalizePeriod({view,period,windowData}){
   ];
   const coverage={status:observed+" of "+days+" represented days",summary:trendReady?"Enough represented days exist for a period-level demand view.":"The period is still too sparse for a full trend.",note:"Missing or incomplete days remain unknown and are excluded from comparisons."};
   const sufficiency={level:trendReady?"good":"limited",message:trendReady?"This "+days+"-day view uses "+observed+" represented service days. "+(comparisonReady?"The prior period also meets the comparison threshold.":"Prior-period change is withheld where the comparison is not sufficiently represented."):"A "+days+"-day trend requires at least "+minimum+" represented service days. "+observed+" are currently available, so detailed period trends are withheld."};
-  return {kind:"period",date:null,period:data.period||windowData&&windowData.period||{},eyebrow:days===7?"Last 7 days":"Last 30 days",headline:days===7?"The week in one view":"The month in one view",summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,security:security,operations:operations,actions:actions,coverage:coverage,visibility:[],reportId:null,sufficiency:sufficiency,trendReady:trendReady,weekdayReady:weekdayReady,observed:observed,days:days};
+  return {kind:"period",date:null,period:data.period||windowData&&windowData.period||{},eyebrow:days===7?"Last 7 days":"Last 30 days",headline:days===7?"The week in one view":"The month in one view",summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,security:security,operations:operations,actions:actions,coverage:coverage,visibility:[],reportId:null,sufficiency:sufficiency,trendReady:trendReady,comparisonReady:comparisonReady,weekdayReady:weekdayReady,observed:observed,days:days,minimum:minimum};
 }
 
 export default function UnifiedRestaurantReport({view,day,securityDay,period,windowData,snapshot,siteId,requestedReportDate,renderActions}){
@@ -200,36 +250,63 @@ export default function UnifiedRestaurantReport({view,day,securityDay,period,win
   const model=useMemo(function(){return view==="week"||view==="monthly"?normalizePeriod({view:view,period:period,windowData:windowData}):normalizeDaily({view:view,day:day,securityDay:securityDay,snapshot:snapshot,requestedReportDate:requestedReportDate})},[view,day,securityDay,period,windowData,snapshot,requestedReportDate]);
   const periodText=model.date?dateLabel(model.date):model.period&&model.period.start_service_date&&model.period.end_service_date?shortDate(model.period.start_service_date)+" – "+shortDate(model.period.end_service_date):periodName(view);
   const actionBlock=model.actions&&model.actions.length?(renderActions?renderActions(model.actions,model.reportId):<ActionList items={model.actions}/>):null;
+  const chartTitle=view==="daily"?"Demand so far today":view==="yesterday"?"Demand through the service day":view==="week"?"Demand across the week":"Demand across the month";
+  const showBuild=model.kind==="period"&&!model.trendReady;
 
   return <div className={styles.saasReport}>
-    <div className={styles.reportControlBar}><div className={styles.reportDateLine}><span>{periodText}</span><i/><span>{model.eyebrow}</span></div><ReportTabs mode={mode} setMode={setMode}/></div>
+    <div className={styles.reportControlBarV4}>
+      <div className={styles.reportIdentity}>
+        <ReportStatus view={view} model={model}/>
+        <div><b>{periodText}</b><span>{view==="daily"?"Current service day":model.kind==="period"?"Management period":"Completed service day"}</span></div>
+      </div>
+      <ReportTabs mode={mode} setMode={setMode}/>
+    </div>
 
     {mode==="overview"&&<>
-      <section className={styles.executiveSummary}><div className={styles.executiveCopy}><span className={styles.panelEyebrow}>Management overview</span><h2>{model.headline}</h2><p>{model.summary}</p></div>{model.highlights&&model.highlights.length>0&&<div className={styles.executivePointers}>{model.highlights.slice(0,3).map(function(x,i){return <div key={i}><span>{i+1}</span><p>{x}</p></div>})}</div>}</section>
+      <section className={styles.reportHeroV4}>
+        <div className={styles.reportHeroCopy}><span className={styles.panelEyebrow}>Management overview</span><h2>{model.headline}</h2><p>{model.summary}</p></div>
+        {model.highlights&&model.highlights.length>0&&<div className={styles.reportHighlightsV4}>{model.highlights.slice(0,3).map(function(x,i){return <div key={i}><span>{String(i+1).padStart(2,"0")}</span><p>{x}</p></div>})}</div>}
+      </section>
+
       <KpiStrip metrics={model.metrics}/>
-      <div className={styles.analyticsSplit}><DemandChart points={model.timeline} title={view==="daily"?"Demand so far today":view==="yesterday"?"Demand through the service day":view==="week"?"Demand across the week":"Demand across the month"} subtitle={model.trendReady===false?"A trend will appear when enough service days are represented.":"The strongest and weakest represented periods at a glance."}/><SecurityPanel items={model.security||[]} coveredDays={model.kind==="period"?model.observed:null}/></div>
+
+      <div className={styles.reportMainGridV4}>
+        <div className={styles.reportPrimaryV4}>
+          {showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<DemandChart points={model.timeline} title={chartTitle} subtitle="Use the shape of the period to see where demand strengthened, softened or repeated."/>}
+        </div>
+        <aside className={styles.reportRailV4}>
+          <SecurityPanel items={model.security||[]} coveredDays={model.kind==="period"?model.observed:null}/>
+          <ReportHealth view={view} model={model}/>
+        </aside>
+      </div>
+
       {actionBlock}
       {view==="yesterday"&&!snapshot&&<SavedReports windowData={windowData} siteId={siteId} limit={1}/>}
       {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
-      <ConfidenceDetails coverage={model.coverage} visibility={model.visibility} sufficiency={model.sufficiency}/>
+      {model.visibility&&model.visibility.length>0&&<ConfidenceDetails coverage={null} visibility={model.visibility} sufficiency={null}/>}
     </>}
 
     {mode==="business"&&<>
-      <section className={styles.sectionIntroV3}><span className={styles.panelEyebrow}>Business</span><h2>{view==="daily"?"Today’s demand and service flow":view==="yesterday"?"Customers, tables and service flow":view==="week"?"What changed across the week":"What patterns are becoming meaningful"}</h2><p>{view==="daily"?"Current trading activity, table use and service pressure without turning an in-progress day into a completed report.":view==="yesterday"?"Demand, table use, service channels and closing discipline for the completed service day.":view==="week"?"Repeated demand and service patterns across represented service days.":"Longer-term demand and service patterns only where enough represented days exist."}</p></section>
+      <section className={styles.sectionIntroV4}><span className={styles.panelEyebrow}>Business</span><h2>{view==="daily"?"Today’s demand and service flow":view==="yesterday"?"Customers, tables and service flow":view==="week"?"What changed across the week":"What patterns are becoming meaningful"}</h2><p>{view==="daily"?"Current trading activity, table use and service pressure without treating an in-progress day as complete.":view==="yesterday"?"Demand, table use, service channels and closing discipline for the completed service day.":view==="week"?"Repeated demand and service patterns across represented service days.":"Longer-term demand and service patterns only where enough represented days exist."}</p></section>
       <KpiStrip metrics={model.metrics}/>
-      <DemandChart points={model.timeline} title={view==="daily"?"Demand so far today":view==="yesterday"?"Demand through the service day":view==="week"?"Service-day trend":"Period trend"} subtitle="Use the trend to understand timing and direction; detailed figures remain limited to represented periods."/>
-      <section className={styles.operationsPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Business detail</span><h3>What management should know</h3><p>Grouped by business question rather than by camera.</p></div></div><DetailRows items={model.operations||[]}/></section>
-      {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
+      <div className={styles.businessGridV4}>
+        <div>{showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<DemandChart points={model.timeline} title={view==="week"?"Service-day trend":view==="monthly"?"Weekly demand pattern":chartTitle} subtitle="The main period trend stays primary; supporting detail is grouped below."/>}</div>
+        <section className={styles.operationsPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Business signals</span><h3>What management should know</h3><p>Grouped by operating question rather than by camera.</p></div></div><DetailRows items={model.operations||[]}/></section>
+      </div>
       {actionBlock}
+      {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
       <ConfidenceDetails coverage={model.coverage} visibility={model.visibility} sufficiency={model.sufficiency}/>
     </>}
 
     {mode==="security"&&<>
-      <section className={styles.sectionIntroV3}><span className={styles.panelEyebrow}>Security</span><h2>{view==="daily"?"Current security attention":view==="yesterday"?"Security posture for the completed day":view==="week"?"Security exceptions across the week":"Recurring security exceptions"}</h2><p>Only management-relevant exceptions are shown. Routine movement stays routine, and missing coverage is never treated as proof that nothing happened.</p></section>
-      <SecurityPanel items={model.security||[]} coveredDays={model.kind==="period"?model.observed:null}/>
+      <section className={styles.sectionIntroV4}><span className={styles.panelEyebrow}>Security</span><h2>{view==="daily"?"Current security attention":view==="yesterday"?"Security posture for the completed day":view==="week"?"Security exceptions across the week":"Recurring security exceptions"}</h2><p>Only management-relevant exceptions are shown. Routine movement stays routine, and missing coverage is never treated as proof that nothing happened.</p></section>
+      <div className={styles.securityGridV4}>
+        <SecurityPanel items={model.security||[]} coveredDays={model.kind==="period"?model.observed:null}/>
+        <ReportHealth view={view} model={model}/>
+      </div>
       {model.security&&model.security.length>0&&<section className={styles.securityEventPanel}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Events & exceptions</span><h3>Security timeline</h3><p>Only items with management value are included.</p></div></div><div className={styles.securityEventList}>{model.security.map(function(x,i){return <div className={styles.securityEventRow} key={(x.title||i)+"-"+i}><span className={styles.securityDot+" "+(x.severity==="critical"?styles.dotCritical:x.severity==="attention"?styles.dotAttention:styles.dotGood)}/><div><b>{x.title||"Security note"}</b><p>{x.body||x.summary||""}</p></div>{x.service_date&&<strong>{shortDate(x.service_date)}</strong>}</div>})}</div></section>}
       {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
-      <ConfidenceDetails coverage={model.coverage} visibility={model.visibility} sufficiency={model.sufficiency}/>
+      {model.visibility&&model.visibility.length>0&&<ConfidenceDetails coverage={null} visibility={model.visibility} sufficiency={null}/>}
     </>}
   </div>;
 }

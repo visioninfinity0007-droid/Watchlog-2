@@ -405,9 +405,9 @@ function OperationRows({items=[]}){
 }
 
 const RECOMMENDATION_RESPONSES=[
-  ["accepted","We'll do this"],
+  ["accepted","Accept"],
   ["need_help","Need help"],
-  ["not_now","Not now"],
+  ["not_now","Later"],
   ["not_relevant","Not relevant"],
 ];
 const RECOMMENDATION_TEAM_STATUS={
@@ -451,7 +451,7 @@ function RecommendationFeedback({action,existing,siteId,reportId,onSaved}){
   }
 
   return <div className={styles.recommendationFeedback}>
-    <div className={styles.feedbackPrompt}>What do you think about this recommendation?</div>
+    <div className={styles.feedbackPrompt}>Your response</div>
     <div className={styles.feedbackChoices}>{RECOMMENDATION_RESPONSES.map(([code,label])=><button type="button" key={code} className={choice===code?styles.feedbackChoiceActive:""} onClick={()=>{setChoice(code);setMessage("");if(code==="need_help")setShowNote(true);}}>{label}</button>)}</div>
     <div className={styles.feedbackTools}>
       <button type="button" className={styles.feedbackTextButton} onClick={()=>setShowNote(v=>!v)}>{showNote?"Hide comment":"Add comment"}</button>
@@ -632,5 +632,6 @@ export default function CustomerReports(){
     reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
   }
 
-  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="daily"?"Live management view for the current service day.":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Completed business and security report.":"Completed business and security report."):(r.view==="week"?"Weekly business and security review.":"Monthly business and security review.")):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
+  const periodHint=r.view==="daily"?"Live service day":r.view==="yesterday"?"Completed service day":r.view==="week"?"Rolling weekly view":"Rolling monthly view";
+  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className={"main "+styles.reportPageMain}><header className={"target-page-head "+styles.reportPageHead}><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="daily"?"Live management view for the current service day.":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Completed business and security report.":"Completed business and security report."):(r.view==="week"?"Weekly business and security review.":"Monthly business and security review.")):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery & recipients</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={styles.periodToolbar}><div className={styles.periodToolbarLabel}><span>Reporting period</span><small>{periodHint}</small></div><div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div></div>{r.busy?<div className={styles.reportLoading}><span/><div><b>Preparing your report</b><p>Loading the management view for this period.</p></div></div>:reportBody}<div className={styles.askReportBar}><div><span className={styles.panelEyebrow}>Need more detail?</span><h2>Ask WatchLog about this report</h2><p>Drill into a business pattern, security exception or recommendation without leaving the report context.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
 }

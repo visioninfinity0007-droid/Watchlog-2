@@ -58,6 +58,18 @@ export default function useReport(){
   const[busy,setBusy]=useState(true);
   const[error,setError]=useState("");
 
+  function selectView(next){
+    if(!VALID_VIEWS.has(next))return;
+    setView(next);
+    setRequestedReportDate("");
+    try{
+      const params=new URLSearchParams(location.search);
+      params.set("view",next);
+      params.delete("date");
+      history.replaceState(null,"",location.pathname+"?"+params.toString()+(location.hash||""));
+    }catch{}
+  }
+
   useEffect(()=>{let live=true;(async()=>{
     const g=await requireTenant();if(!g||!live)return;
     setEmail(g.session.user.email||"");
@@ -255,5 +267,5 @@ export default function useReport(){
 
   const isChaiWalaRestaurant=restaurantConfig?.report_layout_profile==="chaiwala_restaurant_ops_v1";
   const isOffice=siteContext?.site_type==="office";
-  return{email,siteId,site,view,setView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantSecurity,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
+  return{email,siteId,site,view,setView:selectView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantSecurity,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
 }

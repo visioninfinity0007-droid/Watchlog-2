@@ -54,3 +54,20 @@ assert "report_id:r.report_id" in UNIFIED,     "rolling-period recommendations m
 
 USE_REPORT = Path("portal/app/reports/use-report.js").read_text(encoding="utf-8")
 assert "restaurantSecurity" in USE_REPORT and 'rpc("wl_my_daily_intelligence"' in USE_REPORT,     "Today/Yesterday Security must use real daily security evidence"
+
+
+# Dashboard UX contract: all restaurant periods keep the same decision-first hierarchy.
+for token in (
+    "reportControlBarV4",
+    "reportHeroV4",
+    "reportMainGridV4",
+    "ReportHealth",
+    "PeriodBuildState",
+    "SavedReports",
+):
+    assert token in UNIFIED, f"unified restaurant report missing dashboard UX primitive: {token}"
+
+assert "Completed service days" in UNIFIED and "savedReportsMore" in UNIFIED,     "daily report history must stay accessible without overwhelming the period dashboard"
+assert "ReportStatus" in UNIFIED and "In progress" in UNIFIED and "Limited coverage" in UNIFIED,     "report status must communicate live/completed/limited states"
+assert 'params.set("view",next)' in USE_REPORT and 'params.delete("date")' in USE_REPORT,     "period selection must stay reflected in the report URL"
+assert '["accepted","Accept"]' in PAGE and '["not_now","Later"]' in PAGE,     "recommendation response flow must use compact client-facing choices"
