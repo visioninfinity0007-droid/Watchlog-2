@@ -158,7 +158,10 @@ def main():
     # Rendered Reports copy must never describe how WatchLog reviews/processes camera material.
     # Keep this focused on customer-workspace.js so internal variable names and hidden AI prompts
     # do not create false positives.
-    reports_rendered = (ROOT / "portal/app/reports/customer-workspace.js").read_text(encoding="utf-8")
+    reports_rendered = "\n".join([
+        (ROOT / "portal/app/reports/customer-workspace.js").read_text(encoding="utf-8"),
+        (ROOT / "portal/app/reports/unified-restaurant-report.js").read_text(encoding="utf-8"),
+    ])
     for phrase in (
         "scored frames",
         "analyzed frames",
@@ -167,6 +170,8 @@ def main():
         "manual validation",
         "still being processed",
         "requested still images",
+        "restaurant intelligence",
+        "analytics quality",
     ):
         if phrase.lower() in reports_rendered.lower():
             problems.append(f"reports surface: customer-facing process language found: {phrase!r}")

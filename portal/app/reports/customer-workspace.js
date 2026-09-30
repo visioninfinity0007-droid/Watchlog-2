@@ -8,6 +8,7 @@ import Mark from "../mark";
 import ui from "../portal.module.css";
 import styles from "./reports.module.css";
 import useReport from "./use-report";
+import UnifiedRestaurantReport from "./unified-restaurant-report";
 
 const VIEWS=[["daily","Today"],["yesterday","Yesterday"],["monthly","30 days"],["executive","Executive"]];
 const RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]];
@@ -29,12 +30,12 @@ function AnalyticsQuality({quality}){
   const validation=q.accuracy_validation||{};
   if(!Number(q.scored_frames||0)&&!cameras.length){
     return <section className={styles.qualityShell}>
-      <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Camera geometry and image quality determine how trustworthy customer/table analytics can be.</p></div></div>
+      <div className={styles.sectionHead}><div><h3>Report reliability & improvement recommendations</h3><p>Camera geometry and image quality determine how trustworthy customer/table analytics can be.</p></div></div>
       <div className={styles.qualityWaiting}><b>Camera-quality insights are not available for this period yet.</b><span>WatchLog only shows reliability guidance when the available coverage supports it. An accuracy percentage is shown only when it can be supported reliably.</span></div>
     </section>;
   }
   return <section className={styles.qualityShell}>
-    <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Repeated camera-view problems are surfaced before WatchLog recommends operational changes.</p></div><span className={styles.qualityScored}>Quality reviewed</span></div>
+    <div className={styles.sectionHead}><div><h3>Report reliability & improvement recommendations</h3><p>Repeated camera-view problems are surfaced before WatchLog recommends operational changes.</p></div><span className={styles.qualityScored}>Quality reviewed</span></div>
     <div className={styles.qualityGrid}>{cameras.map(c=>{
       const visibility=scorePct(c.visibility_quality),count=scorePct(c.people_count_confidence),tables=scorePct(c.table_tracking_confidence),glare=scorePct(c.glare_level),occ=scorePct(c.occlusion_level),angle=scorePct(c.camera_angle_adequacy);
       return <article className={styles.qualityCard} key={c.camera_id||c.camera}>
@@ -146,7 +147,7 @@ function RestaurantPeriodReport({data,days}){
 
   return <section className={styles.periodShell}>
     <div className={styles.periodHero}>
-      <div><div className={styles.kicker}>Chai Wala · restaurant intelligence</div><h2>{title}</h2><p>{shortDate(data.period?.start_service_date)} – {shortDate(data.period?.end_service_date)} · service days run 4 PM–4 AM</p></div>
+      <div><div className={styles.kicker}>Chai Wala · restaurant performance</div><h2>{title}</h2><p>{shortDate(data.period?.start_service_date)} – {shortDate(data.period?.end_service_date)} · service days run 4 PM–4 AM</p></div>
       <div className={styles.periodHeroFacts}>
         <span><b>{observed}</b>/{days} observed days</span>
         <span><b>{coverageLabel(coverage)}</b> avg coverage</span>
@@ -497,8 +498,8 @@ function PriorityActions({items=[],fallback=[],siteId,reportId}){
   if(!rows.length)return null;
   return <section className={styles.actionPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Next actions</span><h3>What management should follow up</h3><p>Respond to any recommendation so the WatchLog team can incorporate your feedback and help with implementation.</p></div></div>
     {loadError&&<div className={styles.feedbackLoadError}>{loadError}</div>}
-    <div className={styles.actionRowsV3}>{rows.slice(0,3).map((a,i)=><RecommendationRow key={(a.id||a.title||i)+"-"+i} action={a} index={i} existing={feedback[a.id]} siteId={siteId} reportId={reportId} onSaved={saved}/>)}</div>
-    {rows.length>3&&<details className={styles.moreActions}><summary>Show {rows.length-3} more improvements</summary><div className={styles.moreActionRows}>{rows.slice(3).map((a,i)=><RecommendationRow compact key={(a.id||a.title||i)+"-"+i} action={a} index={i+3} existing={feedback[a.id]} siteId={siteId} reportId={reportId} onSaved={saved}/>)}</div></details>}
+    <div className={styles.actionRowsV3}>{rows.slice(0,3).map((a,i)=><RecommendationRow key={(a.id||a.title||i)+"-"+i} action={a} index={i} existing={feedback[a.id]} siteId={siteId} reportId={a.report_id||reportId} onSaved={saved}/>)}</div>
+    {rows.length>3&&<details className={styles.moreActions}><summary>Show {rows.length-3} more improvements</summary><div className={styles.moreActionRows}>{rows.slice(3).map((a,i)=><RecommendationRow compact key={(a.id||a.title||i)+"-"+i} action={a} index={i+3} existing={feedback[a.id]} siteId={siteId} reportId={a.report_id||reportId} onSaved={saved}/>)}</div></details>}
   </section>;
 }
 
@@ -602,26 +603,17 @@ export default function CustomerReports(){
 
   let reportBody=null;
   if(r.isChaiWalaRestaurant){
-    if(r.view==="daily"||r.view==="yesterday"){
-      const manualBusinessReport=r.view==="yesterday"&&r.snapshot?.payload?.manual_business_report===true;
-      reportBody=manualBusinessReport
-        ? <ReviewedRestaurantReport snapshot={r.snapshot} siteId={r.siteId}/>
-        : <>
-            <RestaurantOperations data={r.restaurant} periodLabel={r.view==="daily"?"Today":"Yesterday"}/>
-            <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Yesterday's management reading"}/>
-            {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<>
-              <div className={ui.emptyCard}>No saved business report is available for this service day yet.</div>
-              <SavedReportHistory windowData={r.reportWindow} siteId={r.siteId} mode="latest"/>
-            </>)}
-          </>;
-    }else if(r.view==="week"||r.view==="monthly"){
-      const days=r.view==="week"?7:30;
-      reportBody=<>
-        <RestaurantPeriodReport data={r.restaurantPeriod} days={days}/>
-        <ManagementReading answer={r.answer} label={days===7?"What the last 7 days suggest":"What the last 30 days suggest"}/>
-        <SavedReportHistory windowData={r.reportWindow} siteId={r.siteId}/>
-      </>;
-    }
+    reportBody=<UnifiedRestaurantReport
+      view={r.view}
+      day={r.restaurant}
+      securityDay={r.restaurantSecurity}
+      period={r.restaurantPeriod}
+      windowData={r.reportWindow}
+      snapshot={r.snapshot}
+      siteId={r.siteId}
+      requestedReportDate={r.requestedReportDate}
+      renderActions={(items,reportId)=><PriorityActions items={items} siteId={r.siteId} reportId={reportId}/>}
+    />;
   }else if(r.isOffice){
     if(r.view==="daily"||r.view==="yesterday"){
       reportBody=<>
@@ -640,5 +632,5 @@ export default function CustomerReports(){
     reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;
   }
 
-  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="yesterday"&&r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Demand, customers, service flow, security and next actions.":"Demand, customers, service flow, security and next actions."):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
+  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className="main"><header className="target-page-head"><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="daily"?"Live management view for the current service day.":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Completed business and security report.":"Completed business and security report."):(r.view==="week"?"Weekly business and security review.":"Monthly business and security review.")):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div>{r.busy?<div className={ui.emptyCard}>Preparing the report…</div>:reportBody}<div className={ui.sectionHead}><div><h2>Need more detail?</h2><p>Ask WatchLog about any part of this report.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
 }

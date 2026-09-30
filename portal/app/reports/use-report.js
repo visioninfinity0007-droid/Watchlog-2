@@ -11,10 +11,10 @@ const PROMPTS={
   executive:`Give me a concise executive summary for leadership. State the security position, important operational patterns, anything requiring attention and the highest-priority action. ${REPORT_STYLE}`
 };
 const RESTAURANT_PROMPTS={
-  daily:"Give me today's restaurant management report. Cover customer demand, occupied tables, estimated covers, observed time to food, service pressure, analytics quality, improvement recommendations, monitoring coverage and any security attention. Keep visible diners separate from unique footfall.",
-  yesterday:"Give me the last completed service-day restaurant management report. Cover customer demand, occupied tables, estimated covers, observed time to food, service pressure, analytics quality, improvement recommendations, monitoring coverage and any security attention. Keep visible diners separate from unique footfall.",
-  week:"Summarize the last 7 completed restaurant service days for management. Focus on demand patterns, floor and table utilization, estimated covers, observed time to food, handoff and kitchen pressure, analytics quality, coverage, repeated issues and practical improvements.",
-  monthly:"Summarize the last 30 restaurant service days for management. Focus on weekly and weekday trends, demand by hour, floor and table utilization, estimated covers, observed time to food, service pressure, analytics quality, coverage, recurring issues and practical improvements."
+  daily:"Explain today's restaurant management view in plain business language. Lead with what is happening now, any security attention and the next justified action. Keep estimates clearly labelled and do not discuss WatchLog's internal review method.",
+  yesterday:"Explain the completed restaurant service day in plain business language. Lead with what mattered, any security exception and the most important management action. Keep estimates clearly labelled.",
+  week:"Explain the weekly restaurant management view. Focus on repeated demand/service patterns, security exceptions and justified actions. Compare with the prior week only when the periods are genuinely comparable.",
+  monthly:"Explain the monthly restaurant management view. Focus on patterns that are supported by enough represented days, recurring security exceptions and justified actions. Do not present sparse data as a full-month trend."
 };
 const OFFICE_PROMPTS={
   daily:"Give me today's office management report. Lead with security attention, office activity, opening/closing status, after-hours exceptions, monitoring coverage and practical improvements. Use natural management language and do not call activity detections unique people.",
@@ -49,6 +49,7 @@ export default function useReport(){
   const[snapshot,setSnapshot]=useState(null);
   const[reportWindow,setReportWindow]=useState(null);
   const[restaurant,setRestaurant]=useState(null);
+  const[restaurantSecurity,setRestaurantSecurity]=useState(null);
   const[restaurantPeriod,setRestaurantPeriod]=useState(null);
   const[restaurantConfig,setRestaurantConfig]=useState(null);
   const[officeDay,setOfficeDay]=useState(null);
@@ -86,7 +87,7 @@ export default function useReport(){
     if(!siteId)return;
     let live=true;
     (async()=>{
-      setBusy(true);setAnswer("");setSnapshot(null);setReportWindow(null);setRestaurant(null);setRestaurantPeriod(null);setOfficeDay(null);setOfficePeriod(null);setError("");
+      setBusy(true);setAnswer("");setSnapshot(null);setReportWindow(null);setRestaurant(null);setRestaurantSecurity(null);setRestaurantPeriod(null);setOfficeDay(null);setOfficePeriod(null);setError("");
       const sb=supabase();
       const [cfg,ctx]=await Promise.all([
         sb.rpc("wl_restaurant_site_config",{p_site_id:siteId}),
@@ -128,15 +129,17 @@ export default function useReport(){
       }
 
       if(chaiLayout&&view==="week"){
+        const structured=savedWindow?.structured_restaurant_metrics||null;
+        if(structured){
+          setRestaurantPeriod(structured);
+          setBusy(false);
+          return;
+        }
         const period=await sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:7,p_end_date:null});
         if(!live)return;
         if(period.error){setBusy(false);setError(say(period.error));return}
         setRestaurantPeriod(period.data||null);
-        const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.week,site_id:siteId,conversation_id:null}});
-        if(!live)return;
         setBusy(false);
-        if(ai.error||ai.data?.error){setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
-        setAnswer(ai.data?.answer||"");
         return;
       }
 
@@ -154,15 +157,17 @@ export default function useReport(){
       }
 
       if(chaiLayout&&view==="monthly"){
+        const structured=savedWindow?.structured_restaurant_metrics||null;
+        if(structured){
+          setRestaurantPeriod(structured);
+          setBusy(false);
+          return;
+        }
         const period=await sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:30,p_end_date:null});
         if(!live)return;
         if(period.error){setBusy(false);setError(say(period.error));return}
         setRestaurantPeriod(period.data||null);
-        const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.monthly,site_id:siteId,conversation_id:null}});
-        if(!live)return;
         setBusy(false);
-        if(ai.error||ai.data?.error){setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
-        setAnswer(ai.data?.answer||"");
         return;
       }
 
@@ -174,9 +179,16 @@ export default function useReport(){
           if(!resolved.error&&resolved.data)date=String(resolved.data);
         }
         if(restaurantEnabled){
-          const rr=await sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:date});
+          const [rr,securityDay]=await Promise.all([
+            sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:date}),
+            sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:date})
+          ]);
           if(!live)return;
           if(!rr.error)rest=rr.data||null;
+          if(!securityDay.error){
+            const d=securityDay.data||{};
+            setRestaurantSecurity({incidents:d.incidents||[],attention:d.attention||{},coverage:d.coverage||{}});
+          }
         }
         if(officeEnabled){
           const od=await sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:date});
@@ -188,10 +200,12 @@ export default function useReport(){
         if(!live)return;
         if(!report.error)setSnapshot(report.data||null);
         setRestaurant(report.data?(report.data?.payload?.restaurant||rest):rest);
-        const completedReviewedRestaurant=chaiLayout&&report.data?.payload?.manual_business_report===true;
-        if(!completedReviewedRestaurant&&(chaiLayout||officeLayout)){
-          const prompt=chaiLayout?RESTAURANT_PROMPTS.yesterday:OFFICE_PROMPTS.yesterday;
-          const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt,site_id:siteId,conversation_id:null}});
+        if(chaiLayout){
+          setBusy(false);
+          return;
+        }
+        if(officeLayout){
+          const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:OFFICE_PROMPTS.yesterday,site_id:siteId,conversation_id:null}});
           if(!live)return;
           if(ai.error||ai.data?.error){setBusy(false);setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
           setAnswer(ai.data?.answer||"");
@@ -214,15 +228,18 @@ export default function useReport(){
       }
 
       if(chaiLayout&&view==="daily"){
-        const rr=await sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:null});
+        const [rr,securityDay]=await Promise.all([
+          sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:null}),
+          sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:null})
+        ]);
         if(!live)return;
         if(rr.error){setBusy(false);setError(say(rr.error));return}
         setRestaurant(rr.data||null);
-        const ai=await sb.functions.invoke("watchlog-ai",{body:{prompt:RESTAURANT_PROMPTS.daily,site_id:siteId,conversation_id:null}});
-        if(!live)return;
+        if(!securityDay.error){
+          const d=securityDay.data||{};
+          setRestaurantSecurity({incidents:d.incidents||[],attention:d.attention||{},coverage:d.coverage||{}});
+        }
         setBusy(false);
-        if(ai.error||ai.data?.error){setError(ai.data?.message||say(ai.error)||"WatchLog could not prepare the management reading.");return}
-        setAnswer(ai.data?.answer||"");
         return;
       }
 
@@ -238,5 +255,5 @@ export default function useReport(){
 
   const isChaiWalaRestaurant=restaurantConfig?.report_layout_profile==="chaiwala_restaurant_ops_v1";
   const isOffice=siteContext?.site_type==="office";
-  return{email,siteId,site,view,setView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
+  return{email,siteId,site,view,setView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantSecurity,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
 }

@@ -174,6 +174,30 @@ For an executive report:
 - compare with a previous equivalent period only when the comparison is truly like-for-like;
 - never imply numerical precision that the visual evidence cannot support.
 
+## Unified period contract
+
+Today, Yesterday, Last 7 days and Last 30 days are time-window selectors for the same reporting product. They must not switch to unrelated renderers or different information architecture.
+
+Every window uses the same local views:
+- **Overview** — management story, up to four decision KPIs, one primary period-appropriate visual, compact security posture and top actions.
+- **Business** — demand, table/service flow and operating detail.
+- **Security** — exception-based security and access-control detail.
+
+Period-specific questions:
+- **Today:** what is happening now, what needs attention now, and what should management do during the current service day?
+- **Yesterday:** what happened in the completed service day, what was abnormal, and what should change next?
+- **Last 7 days:** what repeated or changed across the week, and is any comparison with the previous week genuinely like-for-like?
+- **Last 30 days:** what patterns are becoming operationally meaningful, without presenting sparse history as a complete month?
+
+Evidence sufficiency is part of the product:
+- do not render a complete-looking 7-day or 30-day trend when only a small fraction of the period is represented;
+- withhold period comparisons unless both periods have enough represented service days;
+- keep completed daily reports accessible even when there is not enough history for a period trend;
+- missing days are unknown, not zero demand;
+- report confidence/visibility belongs in progressive disclosure unless the monitoring gap is itself the main management issue.
+
+AI explanation must not become a second report below the structured report. The deterministic report is authoritative; Ask WatchLog is the place for additional explanation.
+
 ## Navigation and interaction
 
 A completed restaurant report should expose three local views:
