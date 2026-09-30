@@ -222,7 +222,10 @@ def vocabulary_brief() -> str:
     lines = ["CUSTOMER VOCABULARY (every customer-visible word; enforced):"]
     lines += [f"- {clean(p)}" for p in v["principles"]]
     lines.append("Never write these words or phrases (say instead):")
-    lines += [f"- {pattern_words(f['pattern'])} -> {f['say_instead']}" for f in v["forbidden"]]
+    # brief_words overrides the words shown to the model; brief_words: "" keeps a rule enforced in code
+    # and the DB guard but out of the prompt (its wording is already covered by a listed rule).
+    lines += [f"- {f.get('brief_words') or pattern_words(f['pattern'])} -> {f['say_instead']}"
+              for f in v["forbidden"] if f.get("brief_words") != ""]
     return "\n".join(lines)
 
 

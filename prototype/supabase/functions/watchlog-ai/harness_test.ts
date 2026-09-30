@@ -1,6 +1,6 @@
 // deno test prototype/supabase/functions/watchlog-ai/harness_test.ts
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { applyCustomerVocabulary, customerCardData, harnessMessage, resolveTenantBrief } from "./harness.ts";
+import { applyCustomerVocabulary, customerCardData, harnessMessage, modelToolView, resolveTenantBrief } from "./harness.ts";
 
 // ---- customer vocabulary (ai-harness/core/customer-vocabulary.yaml) ----------------------------
 Deno.test("internal wording never reaches a customer answer", () => {
@@ -21,6 +21,37 @@ Deno.test("business wording and line breaks are left alone", () => {
                    "*Site*\n\n• Reviewed: afternoon\n• Note: all clear"]) {
     assertEquals(applyCustomerVocabulary(s), s);
   }
+});
+
+Deno.test("vocabulary rewrites stay grammatical (answers seen live on 2026-09-30)", () => {
+  assertEquals(applyCustomerVocabulary("so the visual review is still pending"), "so the review is still pending");
+  assertEquals(applyCustomerVocabulary("A completed image-by-image visual review."), "A completed review.");
+  assertEquals(applyCustomerVocabulary("Frames manually reviewed: 913"), "camera coverage reviewed: 913");
+  assertEquals(applyCustomerVocabulary("the coverage gaps and low cadence limit the picture"),
+               "the coverage gaps and limited coverage limit the picture");
+  assertEquals(applyCustomerVocabulary("the cameras did not capture the required samples"),
+               "the cameras did not capture the required camera coverage");
+  assertEquals(applyCustomerVocabulary("Share your reporting cadence and sample menu."), "Share your reporting cadence and sample menu.");
+});
+
+Deno.test("business figures that are not ready are never presented to the model as monitoring coverage", () => {
+  const tools = {
+    restaurant_period: { ok: true, data: { summary: { avg_coverage_ratio: 0, observed_service_days: 0 },
+      daily: [{ coverage_ratio: 0, camera_coverage: [{ coverage_ratio: 0, observed_samples: 0 }] }] } },
+    restaurant_day: { ok: true, data: { data_quality: { business_analytics_coverage_ratio: 0 } } },
+    office_period: { ok: true, data: { summary: { avg_coverage_ratio: 0.9 } } },
+    period_monitoring: { avg_monitored_pct: 87 },
+  };
+  const view = modelToolView(tools);
+  const figures = JSON.stringify([view.restaurant_period.data, view.restaurant_day.data]);
+  assert(!/coverage/i.test(figures), figures);
+  assert(/figures_prepared/.test(figures));
+  assert(/not monitoring coverage/.test(view.restaurant_period.meaning));
+  // Real monitoring coverage keeps its name; the original tool results are untouched.
+  assertEquals(view.office_period, tools.office_period);
+  assertEquals(view.period_monitoring, tools.period_monitoring);
+  assertEquals(tools.restaurant_period.data.summary.avg_coverage_ratio, 0);
+  assert(/Business figures are not coverage/.test(CORE_BRIEF));
 });
 
 Deno.test("customer cards carry no image counts and no internal wording", () => {

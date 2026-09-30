@@ -55,7 +55,32 @@ export function applyCustomerVocabulary(input: string): string {
   const original = s;
   for (const r of VOCABULARY_RULES) s = s.replace(r.rx, r.to);
   if (s === original) return s;
-  return s.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+([,.;:])/g, "$1").replace(/([;,])[ \t]*([;,.])/g, "$2").trim();
+  // Same tidy-up as the DB guard (wl_customer_text_clean), so both rewrite identically.
+  return s.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+([,.;:])/g, "$1").replace(/([;,])[ \t]*([;,.])/g, "$2")
+    .replace(/^[ ;,]+|[ ;,]+$/g, "");
+}
+// Model-facing copy of the tool results. Business figures carry their own "coverage" ratios: how much
+// of the window the figures were prepared from, NOT whether cameras were monitored. Relabelled so the
+// model cannot read a figure that is not ready yet as "not monitored" (ai-harness/core/truth.md,
+// Coverage truth). Fallbacks and cards keep reading the original tool results.
+const BUSINESS_FIGURE_TOOLS = ["restaurant_day", "restaurant_period"];
+const FIGURES_MEANING = "Business figures only. figures_prepared values show how much of the window these figures were prepared from; they are not monitoring coverage and never mean the site was unmonitored.";
+function relabelFigureCoverage(value: any): any {
+  if (Array.isArray(value)) return value.map(relabelFigureCoverage);
+  if (value && typeof value === "object") {
+    const out: Json = {};
+    for (const [k, v] of Object.entries(value)) out[k.replace(/coverage/gi, "figures_prepared")] = relabelFigureCoverage(v);
+    return out;
+  }
+  return value;
+}
+export function modelToolView(tools: Json): Json {
+  const out: Json = { ...tools };
+  for (const key of BUSINESS_FIGURE_TOOLS) {
+    if (!out[key]?.data) continue;
+    out[key] = { ...out[key], meaning: FIGURES_MEANING, data: relabelFigureCoverage(out[key].data) };
+  }
+  return out;
 }
 // Customer cards: vocabulary applied to every string, and image-count fields dropped entirely.
 export function customerCardData(value: any): any {

@@ -1,6 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { coerceModelResult, UNREADABLE_ANSWER } from "./model_result.ts";
-import { applyCustomerVocabulary, customerCardData, harnessMessage, harnessTenantKey } from "./harness.ts";
+import { applyCustomerVocabulary, customerCardData, harnessMessage, harnessTenantKey, modelToolView } from "./harness.ts";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
@@ -269,6 +269,30 @@ async function rpcOptional(sb: any, name: string, args: Json) {
   if (/schema cache|could not find the function|does not exist/i.test(msg)) return { ok: false, unavailable: true };
   return { ok: false, error: msg.slice(0, 300) };
 }
+// Monitoring coverage of each completed business/service day in a period, so a period answer says
+// what was actually monitored. Business figures that are not ready yet never stand in for coverage.
+async function periodMonitoring(sb: any, siteId: string, lastDate: string, days: number) {
+  const dates = Array.from({ length: days }, (_, i) =>
+    new Date(Date.parse(`${lastDate}T12:00:00Z`) - (days - 1 - i) * 86400000).toISOString().slice(0, 10));
+  const daily: Json[] = [];
+  for (let i = 0; i < dates.length; i += 7) {
+    const batch = await Promise.all(dates.slice(i, i + 7).map((d) =>
+      rpcOptional(sb, "wl_my_business_day_monitoring", { p_site_id: siteId, p_date: d })));
+    batch.forEach((r, j) => {
+      const c = r?.ok ? r.data?.coverage : null;
+      const ratio = c ? Number(c.classes?.total_coverage_ratio ?? c.coverage_ratio) : NaN;
+      daily.push({ business_date: dates[i + j], monitored_pct: Number.isFinite(ratio) ? Math.round(ratio * 100) : null,
+        fully_monitored: r?.ok ? r.data?.fully_monitored === true : null });
+    });
+  }
+  const known = daily.filter((d) => d.monitored_pct != null);
+  return {
+    days, daily,
+    days_with_monitoring: known.filter((d) => d.monitored_pct > 0).length,
+    avg_monitored_pct: known.length ? Math.round(known.reduce((a, d) => a + d.monitored_pct, 0) / known.length) : null,
+    meaning: "Monitoring coverage of each completed business/service day. This, not business figures, says what was monitored.",
+  };
+}
 async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   const p = prompt.toLowerCase(), tz = ctx?.site?.timezone || "UTC";
   const today = dateInZone(tz), calendarYesterday = dateInZone(tz, -1);
@@ -318,6 +342,9 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     }
     out.restaurant_config = await rpcOptional(sb, "wl_restaurant_site_config", { p_site_id: siteId });
   }
+  // Office period results already carry monitoring coverage; every other site type needs it fetched.
+  const periodWindow = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
+  if (periodWindow && siteType !== "office") out.period_monitoring = await periodMonitoring(sb, siteId, lastCompletedBusinessDate, periodWindow);
   const officeIntent = siteType === "office" && /office|security|opening|closing|visitor|reception|restricted|armory|admin|after.?hours|activity|incident|management brief|daily brief|report|today|yesterday|week|month|30 day|7 day/.test(p);
   if (officeIntent) {
     const periodDays = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
@@ -445,8 +472,13 @@ function restaurantPeriodFallback(prompt: string, ctx: Json, tools: Json) {
   const d = wrapped.data || {}, s = d.summary || {}, c = d.comparison || {}, aq = d.analytics_quality || {};
   const days = Number(d.days || 0), observed = Number(s.observed_service_days || 0);
   if (!observed) {
+    // Figures not ready is not the same as unmonitored: say what monitoring actually covered.
+    const pm = tools?.period_monitoring;
+    const monitored = pm?.avg_monitored_pct == null ? ""
+      : Number(pm.days_with_monitoring || 0) === 0 ? ` WatchLog could not verify monitoring on any of those days.`
+      : ` The cameras were monitored for about ${pm.avg_monitored_pct}% of service hours across those days.`;
     return {
-      answer: `There are no processed restaurant observations in this ${days}-day window yet, so I won’t invent demand, cover or service-time trends.`,
+      answer: `Restaurant figures for the last ${days} service days are not ready yet, so I won’t guess demand, covers or service times.${monitored}`,
       cards: [{ type: "report", title: `${days}-day restaurant review`, data: { period: d.period, summary: s, status: "waiting_for_observations" } }],
       suggestions: ["Check monitoring coverage", "What can these cameras measure?", "Open Reports"],
       proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
@@ -459,7 +491,7 @@ function restaurantPeriodFallback(prompt: string, ctx: Json, tools: Json) {
     `average ${s.avg_estimated_covers_per_observed_day ?? "—"} per observed service day`,
     `served table sessions ${s.served_sessions ?? "—"}`,
     s.median_observed_time_to_food_minutes == null ? null : `median observed time to food ${s.median_observed_time_to_food_minutes} min`,
-    coverage == null ? null : `average analytics coverage ${coverage}%`,
+    coverage == null ? null : `figures prepared for about ${coverage}% of service hours`,
   ].filter(Boolean);
   const comparison = c.estimated_covers_pct == null ? "" : ` Estimated covers changed ${Number(c.estimated_covers_pct)>0?"+":""}${c.estimated_covers_pct}% versus the previous ${days}-day period.`;
   const caution = coverage != null && coverage < 70 ? " Coverage is partial, so trend comparisons should be treated cautiously." : "";
@@ -490,7 +522,7 @@ function restaurantFallback(prompt: string, ctx: Json, tools: Json) {
   const observations = Number(q.camera_observations || 0);
   if (!observations) {
     return {
-      answer: "Restaurant analytics is configured, but there are no processed restaurant observations for this service day yet, so I won’t invent customer, table or service figures.",
+      answer: "Restaurant figures for this service day are not ready yet, so I won’t guess customer, table or service numbers.",
       cards: [{ type: "report", title: "Restaurant operations", data: { service_date: d.service_date, coverage: q, status: "waiting_for_observations" } }],
       suggestions: ["Check camera coverage", "Open Reports", "What can these cameras measure?"],
       proposed_actions: [{ kind: "navigate", label: "Open Reports", data: { href: "/reports/" } }],
@@ -750,7 +782,7 @@ function buildMessages(context: Json, tools: Json, history: any[]): ChatMessage[
     { role: "system", content: harnessMessage(context) },
     { role: "system", content: `SITE OPERATING CONTEXT\nBusiness type: ${siteType}\nOwner priorities: ${JSON.stringify(priorities)}\nSite guidance: ${siteNote || "Use the verified site context and customer-facing camera roles."}\nRestaurant intelligence contract: ${JSON.stringify(restaurantContract)}\nOffice intelligence contract: ${JSON.stringify(officeContract)}` },
     { role: "system", content: `WATCHLOG_CONTEXT\n${JSON.stringify(compactContext(context))}` },
-    { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(tools)}` },
+    { role: "system", content: `WATCHLOG_TOOL_RESULTS\n${JSON.stringify(modelToolView(tools))}` },
     ...history.slice(-18).filter((m: Json) => m?.role === "user" || m?.role === "assistant")
       .map((m: Json) => ({ role: m.role as "user" | "assistant", content: String(m.content || "").slice(0, 20000) })),
   ];

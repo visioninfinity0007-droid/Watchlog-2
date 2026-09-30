@@ -27,11 +27,26 @@ internal_keys_exempt: [review_audit, internal, internal_notes, internal_audit, a
 forbidden:
   # Order matters: the safety-net rewrite applies these top to bottom. Multi-word phrases come before
   # the single words they contain. replace_with is a safe, plain substitute for automatic rewriting;
-  # authors should write good customer language in the first place (see say_instead).
-  - id: review_process
-    pattern: '\b(manually reviewed|manual review|visual review|image[- ]by[- ]image|exported review file|review file)\b'
+  # authors should write good customer language in the first place (see say_instead). A replacement
+  # must keep the sentence grammatical: verbs are replaced by a verb, nouns by a noun. List the longest
+  # alternative first, so JavaScript (first match) and Postgres (longest match) rewrite identically.
+  # brief_words: the words the model is shown (default: read from the pattern). brief_words: "" keeps a
+  # rule enforced in code and the DB guard but out of the prompt, when a listed rule already covers it.
+  - id: review_verb
+    pattern: '\b(manually|visually) reviewed\b|\breviewed (image[- ]by[- ]image|frame[- ]by[- ]frame)\b'
     replace_with: reviewed
+    brief_words: manually/visually reviewed, reviewed image-by-image
     say_instead: "reviewed / WatchLog reviewed the camera coverage"
+  - id: review_process
+    pattern: '\b(image[- ]by[- ]image visual review|image[- ]by[- ]image review|exported review file|manual review|visual review|review file)\b'
+    replace_with: review
+    brief_words: manual/visual/image-by-image review, review file
+    say_instead: "review / WatchLog's review of the day"
+  - id: review_method
+    pattern: '\b(image[- ]by[- ]image|frame[- ]by[- ]frame)\b'
+    replace_with: ""
+    brief_words: ""
+    say_instead: "(omit)"
   - id: analysed_images
     pattern: '\banaly[sz]ed (images?|snapshots?|frames?)\b'
     replace_with: reviewed camera coverage
@@ -40,14 +55,30 @@ forbidden:
     pattern: '\bcanonical cameras?\b|\b(transport|stream|onvif) profiles?\b|\blegacy (camera )?rows?\b'
     replace_with: cameras
     say_instead: cameras
-  - id: sampling
-    pattern: '\b(no )?sampling\b|\bsampled\b|\bcapture (interval|cadence)\b'
-    replace_with: ""
+  - id: low_cadence
+    pattern: '\b(low|limited|reduced|sparse) (capture |sampling |camera )?cadence\b'
+    replace_with: limited coverage
+    brief_words: ""
+    say_instead: "limited coverage / the cameras covered only part of the window"
+  - id: capture_cadence
+    pattern: '\b(capture|sampling|camera|image|snapshot|frame) (cadence|interval)s?\b'
+    replace_with: coverage
+    brief_words: ""
     say_instead: "(omit) - describe coverage as a time window"
+  - id: sampling
+    pattern: '\b(no )?sampling\b|\bsampled\b'
+    replace_with: ""
+    brief_words: sampling, sampled, samples, cadence, capture interval
+    say_instead: "(omit) - describe coverage as a time window"
+  - id: image_samples
+    pattern: '\b(camera |image |visual )?samples\b'
+    replace_with: camera coverage
+    brief_words: ""
+    say_instead: "what the cameras showed / camera coverage"
   - id: image_units
     pattern: '\b(snapshots?|still images?|video frames?|frames?)\b'
     replace_with: camera coverage
-    say_instead: "what the cameras showed / camera coverage / a camera view (or just describe the scene)"
+    say_instead: "what the cameras showed / a camera view"
   - id: processing
     pattern: '\b(processing|job|review|task) queue\b|\bpipeline (state|failure|status|stage)\b|\bprocessing (state|status|attempts?)\b|\bbacklog\b'
     replace_with: ""

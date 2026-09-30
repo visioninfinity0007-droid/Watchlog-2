@@ -31,8 +31,12 @@ def test_customer_vocabulary_is_enforced_in_every_runtime():
     import yaml
     vocab=yaml.safe_load((ROOT/"ai-harness/core/customer-vocabulary.yaml").read_text(encoding="utf-8"))
     mig=(ROOT/"prototype/supabase/migrations/0141_customer_language_guard.sql").read_text(encoding="utf-8")
-    for i,rule in enumerate(vocab["forbidden"], start=1):   # DB safety net seeded from the harness, same order
-        assert f"('{rule['id']}', {i}, '{rule['pattern'].replace(chr(92)+'b', chr(92)+'y')}'" in mig, rule["id"]
+    # 0141 created the guard with the first rule set; later vocabulary changes reach the DB through the
+    # generated seed (applied after every change), which must match the harness, same order.
+    seed=(ROOT/"prototype/supabase/sql/customer_vocabulary_seed.generated.sql").read_text(encoding="utf-8")
+    for i,rule in enumerate(vocab["forbidden"], start=1):
+        assert f"('{rule['id']}', {i}, '{rule['pattern'].replace(chr(92)+'b', chr(92)+'y')}'" in seed, rule["id"]
+    assert "delete from public.customer_vocabulary_rules where id not in" in seed
     assert "before insert or update of payload on public.report_snapshots" in mig
     assert "before insert or update of summary on public.visual_day_summaries" in mig
     vision=(ROOT/"prototype/supabase/functions/watchlog-vision-worker/index.ts").read_text(encoding="utf-8")

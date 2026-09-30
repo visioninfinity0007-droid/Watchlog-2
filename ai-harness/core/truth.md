@@ -22,6 +22,9 @@ Every statement about a window is scoped to coverage from `wl_site_coverage_repo
   occurrence time preserved, never relabelled live).
 - `UNVERIFIED` — not monitored. This is a `DETECTION_GAP`: say "we cannot verify", never "nothing
   happened".
+- **Business figures are not coverage.** Missing or zero restaurant/office figures mean "not ready
+  yet", never "not monitored" or "no visual data". Only monitoring coverage (business_day_monitoring,
+  period_monitoring) says what was monitored; when they differ, state both.
 
 ## Capability truth (evidence classes)
 Recorder ability is read from `device-knowledge/` (backed by `wl_recorder_capability/profile`):
