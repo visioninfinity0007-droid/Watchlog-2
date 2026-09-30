@@ -14,6 +14,7 @@ exception text is never surfaced.
 """
 from __future__ import annotations
 
+import threading
 from typing import Callable
 
 VALID_STATUS = ("pass", "warn", "blocked", "skipped")
@@ -31,7 +32,39 @@ def _normalize(outcome) -> tuple[str, str]:
     return status, detail
 
 
-def run_checks(checks: list[dict], *, log: Callable[[str], None] | None = None) -> dict:
+class _BudgetExceeded(Exception):
+    """A check did not finish inside its own time budget."""
+
+
+def _run_with_budget(run: Callable, budget: float):
+    """Run ``run()`` on a daemon thread and give up after ``budget`` seconds.
+
+    A probe that wedges (a recorder that accepts the TCP connection then never answers, a first
+    -time AI model load on a slow disk) must never be able to stall the whole acceptance suite --
+    that is what left the 0.4.5 installer spinning on "Running final acceptance checks". The
+    thread is a daemon and the agent exits right after reporting, so an abandoned probe cannot
+    keep the process alive.
+    """
+    box: dict = {}
+
+    def target():
+        try:
+            box["out"] = run()
+        except BaseException as exc:            # noqa: BLE001 - re-raised on the caller's thread
+            box["err"] = exc
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(budget)
+    if worker.is_alive():
+        raise _BudgetExceeded
+    if "err" in box:
+        raise box["err"]
+    return box.get("out")
+
+
+def run_checks(checks: list[dict], *, log: Callable[[str], None] | None = None,
+               on_progress: Callable[[str], None] | None = None) -> dict:
     """Execute an ordered list of acceptance checks and assemble an honest report.
 
     Each check is ``{key, label, hard: bool, run: callable() -> status | (status, detail)}``.
@@ -44,17 +77,26 @@ def run_checks(checks: list[dict], *, log: Callable[[str], None] | None = None) 
     whose archive is empty/unsupported — live monitoring is still accepted, the gap is flagged).
     """
     log = log or (lambda _message: None)
+    announce = on_progress or (lambda _message: None)
     results: list[dict] = []
     for chk in checks:
         key = chk.get("key")
         label = chk.get("label") or key
         hard = bool(chk.get("hard"))
         run = chk.get("run")
+        budget = chk.get("budget")
+        announce(f"Checking: {label}…")
         if run is None:
             status, detail = "skipped", "not applicable"
         else:
             try:
-                status, detail = _normalize(run())
+                outcome = _run_with_budget(run, budget) if budget else run()
+                status, detail = _normalize(outcome)
+            except _BudgetExceeded:
+                # FAIL CLOSED: a hard check that cannot finish in time is NOT a pass. A soft check
+                # only ever warns, so a slow optional probe degrades the report instead of the run.
+                status = "blocked" if hard else "warn"
+                detail = f"did not finish within {int(budget)}s"
             except Exception:  # noqa: BLE001 — a probe failure is a blocked check, not a crash
                 status, detail = "blocked", "check could not run on this site"
         results.append({"key": key, "label": label, "hard": hard,

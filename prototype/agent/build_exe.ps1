@@ -22,8 +22,11 @@ $common = @(
     "--onefile","--name","watchlog-agent","--console","--clean","--noconfirm",
     "--distpath","dist","--workpath","build","--specpath","build",
     "--hidden-import","requests",
+    "--hidden-import","psutil",
     "--hidden-import","zoneinfo",
+    "--hidden-import","cryptography.hazmat.primitives.asymmetric.ed25519",
     "--collect-all","tzdata",
+    "--collect-all","cryptography",
     "--exclude-module","torch","--exclude-module","ultralytics",
     "--exclude-module","matplotlib","--exclude-module","tkinter",
     "--exclude-module","pandas","--exclude-module","scipy",
@@ -76,12 +79,13 @@ if ($WithAI) {
   yolo export model=yolov8n.pt format=onnx
 then copy it there."
     }
-    Write-Host "Installing production dependencies (onnxruntime, numpy, pillow, tzdata)..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests onnxruntime numpy pillow tzdata
+    Write-Host "Installing production dependencies (AI + bundled FFmpeg archive decoder)..." -ForegroundColor Cyan
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata cryptography imageio-ffmpeg
     $ai = @(
         "--hidden-import","numpy",
         "--hidden-import","onnxruntime","--collect-all","onnxruntime",
         "--hidden-import","PIL.Image",
+        "--hidden-import","imageio_ffmpeg","--collect-all","imageio_ffmpeg",
         "--add-data","$model;."
     )
     Write-Host "Freezing WatchLog agent + Analytics Studio runtime..." -ForegroundColor Cyan
@@ -89,7 +93,7 @@ then copy it there."
 } else {
     $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
     Write-Host "Installing lean build dependencies..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests tzdata
+    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata cryptography
     Write-Host "Freezing lean diagnostic build (analytics measurement pauses without AI)..." -ForegroundColor Cyan
     python -m PyInstaller @common @lean $entry
 }
