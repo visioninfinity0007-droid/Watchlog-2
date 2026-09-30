@@ -8,8 +8,8 @@ policies layered in here:
   person/vehicle inference gate;
 * explicit incident-footage requests are serviced outbound-only by the site
   agent when the recorder exposes a validated playback/export path;
-* Dahua archive search/download is installed explicitly so the frozen build
-  includes the read-only recorded-media implementation;
+* Dahua and Hikvision archive search/download are installed explicitly so the frozen build
+  includes the read-only recorded-media implementations;
 * recording/storage current truth is refreshed separately from the immutable
   transition ledger, with Dahua recording positively proven from archive media;
 * Site Control always performs its outbound poll in the final package, while
@@ -25,9 +25,11 @@ import sys
 
 import analytics_agent as app
 import dahua_archive
+import hikvision_archive
 import incident_evidence
 import native_event_collector
 import recording_current
+import remote_update
 from drivers.native_recorder import NativeDahuaDriver
 
 _ORIGINAL_SETUP = app.analytics_setup.run
@@ -71,6 +73,7 @@ def main() -> None:
     # registered wrapper through the hardened search-before-download path so
     # there is one clip implementation and one channel-index rule.
     dahua_archive.install()
+    hikvision_archive.install()
     NativeDahuaDriver.get_clip = dahua_archive.get_clip
 
     # Durable transitions remain immutable/change-only; current proof is a
@@ -86,7 +89,8 @@ def main() -> None:
         app.analytics_setup.run = _strict_setup
         app.enhanced_cmd_run = _setup_validation_complete
     else:
-        app.enhanced_cmd_run = incident_evidence.wrap_cmd_run(_ORIGINAL_RUN)
+        runtime = incident_evidence.wrap_cmd_run(_ORIGINAL_RUN)
+        app.enhanced_cmd_run = remote_update.wrap_cmd_run(runtime)
     app.main()
 
 

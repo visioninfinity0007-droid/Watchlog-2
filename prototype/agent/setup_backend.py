@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import platform
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +86,10 @@ def read_public_defaults(config_path: Path) -> dict:
         "nvr_username": (credential_store.stored_nvr_username()
                          or section.get("nvr_username", "") or "admin"),
         "site_type": section.get("site_type", "custom"),
+        # PC-free reporting: where the recorder should POST its own alarms.
+        # Absent -> provisioning skips quietly and the agent reports as usual.
+        "push_bridge_url": (os.environ.get("WATCHLOG_PUSH_BRIDGE_URL")
+                            or section.get("push_bridge_url", "")),
     }
 
 
@@ -95,7 +100,50 @@ def migrate_legacy_credentials(config_path: Path) -> bool:
     the actual work lives in credential_store so the agent and the --migrate-only
     installer path share one authoritative implementation. Returns True if a
     credential was migrated."""
-    return credential_store.migrate_legacy_if_needed(config_path)
+    migrated = credential_store.migrate_legacy_if_needed(config_path)
+    merge_public_defaults(config_path)
+    return migrated
+
+
+def merge_public_defaults(config_path: Path, defaults_path: Path | None = None) -> list:
+    """Add public keys the build knows about but an EXISTING watchlog.ini predates.
+
+    NSIS writes watchlog.defaults.ini only when there is no watchlog.ini
+    (watchlog.nsi:124-125), which correctly preserves a site's recorder settings on
+    upgrade -- but also means an already-installed site can NEVER receive a new public
+    key. push_bridge_url is the live example: baking it into the build fixes new installs
+    and does nothing whatsoever for the existing fleet, which is the fleet that matters.
+
+    Merge semantics are deliberately narrow and safe: a key is copied ONLY when it is
+    present in the shipped defaults AND absent or empty in the existing ini. Nothing the
+    operator or setup has already written is ever overwritten. Returns the keys added.
+    """
+    added: list = []
+    try:
+        src = Path(defaults_path) if defaults_path else (config_path.parent / "watchlog.defaults.ini")
+        if not src.exists() or not config_path.exists():
+            return added
+        defaults = configparser.ConfigParser()
+        defaults.read(src, encoding="utf-8-sig")
+        current = configparser.ConfigParser()
+        current.read(config_path, encoding="utf-8-sig")
+        if not defaults.has_section("watchlog"):
+            return added
+        if not current.has_section("watchlog"):
+            current.add_section("watchlog")
+        for key, value in defaults.items("watchlog"):
+            # Never resurrect a consumed one-time code, and never touch recorder settings.
+            if key in ("enrollment_code", "nvr_url", "nvr_username", "nvr_driver",
+                       "nvr_password_protected"):
+                continue
+            if str(value or "").strip() and not str(current["watchlog"].get(key, "") or "").strip():
+                current["watchlog"][key] = value
+                added.append(key)
+        if added:
+            _write_ini(config_path, current)
+    except Exception:  # noqa: BLE001 - a config merge may never fail an upgrade
+        return added
+    return added
 
 
 def _write_ini(path: Path, ini: configparser.ConfigParser) -> None:
@@ -113,26 +161,95 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
     try:
         for item in wsdiscovery.discover(log=lambda _m: None):
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
-            results[item.ip] = {"ip": item.ip, "label": label or "Compatible recorder", "source": "ONVIF"}
+            vendor_hint = _vendor_hint_from_text(label)
+            row = {
+                "ip": item.ip,
+                "label": label or "Compatible recorder",
+                "source": "ONVIF",
+                "vendor_hint": vendor_hint,
+            }
+            if getattr(item, "port", None) in _WEB_PORTS:
+                row["preferred_web_port"] = int(item.port)
+            results[item.ip] = row
     except Exception:
         pass
 
     progress("Checking the local network for CCTV recorders…")
     try:
-        for ip, ports in discover.sweep(None, log=lambda _m: None):
+        # Keep this guard derived from discover.SWEEP_PORTS. It used to be a second
+        # hardcoded list that had drifted out of sync (it accepted 81/88/443/8081 that
+        # the sweep never probed), which hid HTTPS-only and alt-web-port recorders.
+        candidate_ports = set(discover.SWEEP_PORTS)
+        for ip, ports in discover.sweep(None, log=lambda _m: None, progress=progress):
             ports = sorted(ports)
-            if not any(port in ports for port in (80, 81, 88, 443, 554, 8000, 8080, 8081, 37777, 34567)):
+            if not any(port in candidate_ports for port in ports):
                 continue
+
+            # ONVIF may be disabled. Fingerprint only the ports we already know
+            # are open, using read-only HTTP/HTTPS banners/auth realms.
+            try:
+                fp = discover.fingerprint(ip, ports)
+            except Exception:
+                fp = {"vendor_guess": None, "rtsp": 554 in ports, "web": []}
+
+            vendor_hint = (_vendor_hint_from_ports(ports)
+                           or _vendor_hint_from_text(fp.get("vendor_guess")))
+            integration_state = None
+            integration_port = None
+            if not vendor_hint and any(p in ports for p in _WEB_PORTS):
+                deep = discover.probe_hikvision_isapi(ip, ports)
+                if deep.get("vendor_hint") == "hikvision":
+                    vendor_hint = "hikvision"
+                    integration_state = deep.get("state")
+                    integration_port = deep.get("port")
             hint = "Recorder candidate"
-            if 37777 in ports:
+            if vendor_hint == "dahua":
                 hint = "Dahua-family recorder candidate"
-            elif 8000 in ports:
+            elif vendor_hint == "hikvision":
                 hint = "Hikvision-family recorder candidate"
-            elif 34567 in ports:
+            elif vendor_hint == "uniview":
+                hint = "Uniview recorder candidate"
+            elif vendor_hint == "tiandy":
+                hint = "Tiandy recorder candidate"
+            elif vendor_hint == "xiongmai":
                 hint = "Unsupported Xiongmai-family device"
-            results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
-            results[ip]["ports"] = ports
-            results[ip]["vendor_hint"] = _vendor_hint_from_ports(ports)
+            elif fp.get("rtsp"):
+                hint = "RTSP CCTV device / recorder candidate"
+
+            row = results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
+            # Prefer the stronger non-ONVIF fingerprint when it identifies the box.
+            if vendor_hint:
+                row["label"] = hint
+                row["source"] = "Network fingerprint"
+            row["ports"] = ports
+            row["vendor_hint"] = vendor_hint
+            row["rtsp"] = bool(fp.get("rtsp"))
+
+            # Preserve the web endpoint that actually identified/answered as the first
+            # login target. Build 69 blindly preferred port 80 from a numeric list even
+            # when fingerprinting had already proven HTTPS/another port, wasting a full
+            # native-auth timeout before trying the useful endpoint.
+            web_rows = list(fp.get("web") or [])
+            preferred = None
+            if vendor_hint:
+                for web_row in web_rows:
+                    guess = _vendor_hint_from_text(web_row.get("vendor_guess"))
+                    if guess == vendor_hint and web_row.get("status") is not None:
+                        preferred = web_row.get("port")
+                        break
+            if preferred is None:
+                for web_row in web_rows:
+                    if web_row.get("status") is not None:
+                        preferred = web_row.get("port")
+                        break
+            if preferred in _WEB_PORTS:
+                row["preferred_web_port"] = int(preferred)
+
+            if integration_state:
+                row["integration_state"] = integration_state
+                row["source"] = "Hikvision ISAPI probe"
+            if vendor_hint == "hikvision" and integration_port in _WEB_PORTS:
+                row["preferred_web_port"] = int(integration_port)
     except Exception:
         pass
     return sorted(results.values(), key=lambda row: row["ip"])
@@ -149,10 +266,12 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-RECORDER_PROBE_TIMEOUT = 5          # seconds per driver probe
-RECORDER_DEADLINE = 18             # seconds hard cap for the whole login test
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
+RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
+RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
-_WEB_PORTS = (80, 8000, 8080, 81, 88, 8081, 443, 8443)
+_WEB_PORTS = (80, 8080, 81, 82, 88, 8081, 8888, 443, 8443)
+_HIKVISION_SDK_PORTS = (8000,)
 _DAHUA_SDK_PORTS = (37777, 37778)
 _XIONGMAI_PORTS = (34567, 9000)
 
@@ -163,6 +282,14 @@ _DRIVERS_BY_VENDOR = {
 
 _CUSTOMER_ERROR = {
     "wrong_credentials": "The recorder rejected that username or password.",
+    "hikvision_integration_auth":
+        "The Hikvision recorder answered, but its integration API rejected this login. "
+        "If the same login works in the normal browser page, enable ISAPI and set HTTP "
+        "Authentication to Digest (or Digest/Basic) in Hikvision System Service, then retry.",
+    "hikvision_integration_unavailable":
+        "This looks like a Hikvision recorder, but WatchLog could not reach an enabled ISAPI/ONVIF "
+        "integration service. Enable ISAPI in Hikvision System Service (or ONVIF Integration "
+        "Protocol) and restart the recorder if its settings require it, then retry.",
     "web_unreachable": "WatchLog found the recorder, but its web service is not reachable. "
                        "Check that the recorder's HTTP or HTTPS service is enabled.",
     "unsupported": "WatchLog found this recorder, but this model is not yet supported.",
@@ -179,10 +306,25 @@ def _vendor_hint_from_ports(ports) -> str | None:
     ps = set(ports or [])
     if ps & set(_DAHUA_SDK_PORTS):
         return "dahua"
-    if 8000 in ps:
+    if ps & set(_HIKVISION_SDK_PORTS):
         return "hikvision"
     if ps & set(_XIONGMAI_PORTS):
         return "xiongmai"
+    return None
+
+
+def _vendor_hint_from_text(value: str | None) -> str | None:
+    text = (value or "").lower()
+    if any(token in text for token in ("dahua", "cp plus", "imou")):
+        return "dahua"
+    if any(token in text for token in ("hikvision", "hilook", "ds-")):
+        return "hikvision"
+    if any(token in text for token in ("xiongmai", "xmeye", "netsurveillance")):
+        return "xiongmai"
+    if any(token in text for token in ("uniview", "unv")):
+        return "uniview"
+    if "tiandy" in text:
+        return "tiandy"
     return None
 
 
@@ -202,7 +344,8 @@ def _web_target_urls(host: str, open_ports) -> list[str]:
     return urls
 
 
-def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
+def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None,
+                         preferred_port: int | None = None):
     """Return (attempts, hard_error).
 
     attempts is an ordered, bounded list of (driver_name, url). hard_error is a
@@ -221,19 +364,52 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None):
     if not web_ports:
         if has_xiongmai and not has_dahua_sdk:
             return [], "unsupported"
-        return [], "web_unreachable"           # Dahua SDK-only, or web disabled
+        return [], "web_unreachable"           # vendor SDK/RTSP found, but HTTP(S) control is disabled
     if has_xiongmai and hint == "xiongmai" and not has_dahua_sdk:
         return [], "unsupported"
 
     targets = _web_target_urls(host, web_ports)
+    if preferred_port in web_ports:
+        preferred_url = _web_target_urls(host, [preferred_port])[0]
+        targets = [preferred_url] + [url for url in targets if url != preferred_url]
+
     drivers = _ordered_drivers(hint)
     attempts: list[tuple[str, str]] = []
-    for url in targets[:2]:                     # best web port, then one fallback
+
+    # Build 62 changed this to exhaust the native driver on HTTP *and* HTTPS before
+    # trying ONVIF. On field Dahua firmware a dead/slow secondary web endpoint consumes
+    # another full timeout; Build 69 could sometimes finish just under 30 seconds, while
+    # the 24s/22s watchdogs in Builds 70/71 cut the same valid login off every time.
+    #
+    # Keep the native API first (so a healthy Dahua/Hikvision never downgrades), but
+    # fall back on the SAME proven web endpoint before spending time on a second port.
+    # Only then try the alternate endpoint. This preserves native preference without
+    # serially stacking avoidable timeouts.
+    for url in targets[:2]:
         for driver_name in drivers:
             pair = (driver_name, url)
             if pair not in attempts:
                 attempts.append(pair)
     return attempts[:5], None                   # bounded: never minutes of probing
+
+
+def _probe_web_ports(host: str, timeout: float | None = None, deadline: float = 6.0) -> list[int]:
+    """Targeted rescue for the flaky 0.4s subnet sweep, which frequently finds a Dahua's SDK port
+    (37777) but misses its slower embedded HTTP port (80). Re-probe the standard web ports on THIS
+    host with the generous per-host timeout, stopping at the first that answers — one reachable web
+    port is enough to proceed. Returns [] when none respond (a genuine, fail-closed web_unreachable)."""
+    import socket
+    budget = discover.CONNECT_TIMEOUT if timeout is None else timeout
+    start = time.monotonic()
+    for port in _WEB_PORTS:
+        if time.monotonic() - start > deadline:
+            break
+        try:
+            with socket.create_connection((host, port), timeout=budget):
+                return [port]
+        except OSError:
+            continue
+    return []
 
 
 def _classify_exception(exc: Exception) -> str:
@@ -274,7 +450,8 @@ def _setup_log(message: str) -> None:
 
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
-                  hint: dict | None = None, _scan=None, _build=None) -> dict:
+                  hint: dict | None = None, _scan=None, _build=None, _probe=None,
+                  _hik_probe=None) -> dict:
     """Prove recorder identity + credentials + channel list — fast and bounded.
 
     `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
@@ -284,6 +461,8 @@ def test_recorder(address: str, username: str, password: str,
     progress = progress or (lambda _message: None)
     scan_fn = _scan or (lambda h: discover.scan(h, log=lambda _m: None))
     build_fn = _build or build
+    probe_fn = _probe or _probe_web_ports
+    hik_probe_fn = _hik_probe or discover.probe_hikvision_isapi
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
 
@@ -294,6 +473,8 @@ def test_recorder(address: str, username: str, password: str,
 
     hint = hint or {}
     vendor_hint = hint.get("vendor_hint")
+    integration_state = hint.get("integration_state")
+    preferred_web_port = hint.get("preferred_web_port")
     open_ports = list(hint.get("ports") or [])
 
     if is_url:
@@ -308,19 +489,40 @@ def test_recorder(address: str, username: str, password: str,
                 if not vendor_hint:
                     for r in results:
                         guess = (getattr(r, "vendor_guess", "") or "").lower()
-                        if "dahua" in guess or "cp plus" in guess:
-                            vendor_hint = "dahua"; break
-                        if "hikvision" in guess or "hilook" in guess:
-                            vendor_hint = "hikvision"; break
-                        if "xiongmai" in guess:
-                            vendor_hint = "xiongmai"; break
+                        parsed = _vendor_hint_from_text(guess)
+                        if parsed:
+                            vendor_hint = parsed
+                            break
             except Exception as exc:
                 _setup_log(f"scan failed host={host}: {_redact(str(exc), password)}")
                 open_ports = []
-        attempts, hard_error = plan_recorder_probes(host, open_ports, vendor_hint)
+        # Targeted web-port rescue: a recorder was found but no web port registered. The fast 0.4s
+        # subnet sweep (or a stale discovery hint) commonly misses a Dahua's slower embedded HTTP
+        # port (80) while catching its SDK port (37777). Re-probe the standard web ports on THIS host
+        # with the generous per-host timeout before declaring the web service unreachable. This is a
+        # rescue for a false negative, NOT a weakening: if HTTP is genuinely absent it still fails closed.
+        if open_ports and not any(p in open_ports for p in _WEB_PORTS):
+            rescued = probe_fn(host)
+            if rescued:
+                _setup_log(f"web-port rescue host={host} added={rescued}")
+                open_ports = sorted(set(open_ports) | set(rescued))
+
+        # Salman field path: discovery may initially see only RTSP, then the targeted
+        # rescue finds the web port. Re-identify AFTER rescue so Hikvision gets the
+        # Hikvision/ONVIF route and actionable integration diagnostics instead of the
+        # generic vendor loop.
+        if not vendor_hint and any(p in open_ports for p in _WEB_PORTS):
+            deep = hik_probe_fn(host, open_ports) or {}
+            if deep.get("vendor_hint") == "hikvision":
+                vendor_hint = "hikvision"
+                integration_state = deep.get("state") or integration_state
+
+        attempts, hard_error = plan_recorder_probes(
+            host, open_ports, vendor_hint, preferred_port=preferred_web_port)
 
     fam = vendor_hint or _vendor_hint_from_ports(open_ports)
     _setup_log(f"host={host} ports={sorted(open_ports)} vendor_hint={fam} "
+               f"preferred_web_port={preferred_web_port} "
                f"attempts={[(d, u.split('://')[-1]) for d, u in attempts]} hard={hard_error}")
 
     if hard_error:
@@ -334,7 +536,14 @@ def test_recorder(address: str, username: str, password: str,
         progress("Detected a compatible recorder.")
 
     last_class = "connect"
+    hikvision_auth_rejected = False
+    hikvision_api_unavailable = (vendor_hint == "hikvision" and integration_state == "unavailable")
     for driver_name, url in attempts:
+        # If ISAPI itself issued an authentication rejection, this host is now a
+        # strong Hikvision candidate. Do not let a generic Dahua attempt overwrite
+        # that diagnosis with another 401 before we try the standards fallback.
+        if hikvision_auth_rejected and driver_name not in ("hikvision-isapi", "onvif"):
+            continue
         if time.monotonic() - started > RECORDER_DEADLINE:
             last_class = "timeout"
             break
@@ -345,8 +554,26 @@ def test_recorder(address: str, username: str, password: str,
             driver = build_fn(driver_name, url, username.strip(), password,
                               RECORDER_PROBE_TIMEOUT)
             info = driver.probe()
-            progress("Reading camera channels…")
-            channels = driver.list_channels()
+
+            # Setup login is an AUTHENTICATION check, not a full inventory crawl.
+            # Field Hikvision DS-7608NI-Q1 and Dahua embedded web stacks can accept
+            # Digest auth/deviceInfo quickly, then stall on extra channel/config reads.
+            # Once the native identity call succeeds, trust the recorder's reported
+            # physical input count and let the background agent enrich names later.
+            # This keeps a correct password from being turned into a false 30s timeout.
+            if driver_name in ("hikvision-isapi", "dahua-cgi") and info.channel_count:
+                progress("Recorder login verified.")
+                channels = [
+                    SimpleNamespace(channel=str(i), name=f"Camera {i}")
+                    for i in range(1, int(info.channel_count) + 1)
+                ]
+                _setup_log(
+                    f"setup-fast-path driver={driver_name} "
+                    f"reported_channels={len(channels)}")
+            else:
+                progress("Reading camera channels…")
+                channels = driver.list_channels()
+
             _setup_log(f"OK driver={driver_name} identity=1 channels={len(channels)} "
                        f"elapsed={time.monotonic() - attempt_started:.1f}s")
             return {
@@ -354,6 +581,7 @@ def test_recorder(address: str, username: str, password: str,
                 "vendor": info.vendor or "Recorder",
                 "model": info.model or "Unknown model",
                 "firmware": info.firmware or "",
+                "serial": info.serial or "",
                 "driver": driver.name,
                 "verified_against_hardware": bool(driver.verified_against_hardware),
                 "channels": [{"channel": str(row.channel),
@@ -367,7 +595,20 @@ def test_recorder(address: str, username: str, password: str,
                        f"elapsed={time.monotonic() - attempt_started:.1f}s "
                        f"detail={_redact(str(exc), password)}")
             if cls == "wrong_credentials":
+                if driver_name == "hikvision-isapi":
+                    # A Hikvision browser login and its integration service are not the
+                    # same proof. Do not falsely tell the technician the password is wrong
+                    # after only the ISAPI attempt; try ONVIF too, then explain the exact
+                    # integration setting if neither API accepts the account.
+                    hikvision_auth_rejected = True
+                    last_class = cls
+                    continue
+                if driver_name == "onvif" and (vendor_hint == "hikvision" or hikvision_auth_rejected):
+                    last_class = cls
+                    continue
                 raise ValueError(_CUSTOMER_ERROR["wrong_credentials"]) from None
+            if driver_name == "hikvision-isapi" and cls == "unsupported" and vendor_hint == "hikvision":
+                hikvision_api_unavailable = True
             last_class = cls
         finally:
             if driver:
@@ -376,6 +617,11 @@ def test_recorder(address: str, username: str, password: str,
                 except Exception:
                     pass
 
+    if vendor_hint == "hikvision" or hikvision_auth_rejected:
+        if hikvision_auth_rejected:
+            raise ValueError(_CUSTOMER_ERROR["hikvision_integration_auth"])
+        if hikvision_api_unavailable:
+            raise ValueError(_CUSTOMER_ERROR["hikvision_integration_unavailable"])
     raise ValueError(_CUSTOMER_ERROR.get(last_class, _CUSTOMER_ERROR["connect"]))
 
 
@@ -452,21 +698,78 @@ def _write_proven_config(config_path: Path, public: dict, enrollment_code: str,
     section["supabase_publishable_key"] = public["supabase_publishable_key"]
     section["enrollment_code"] = enrollment_code.strip()
     section["nvr_url"] = recorder["url"]
-    section["nvr_driver"] = "auto"
+    # Persist the driver that was just PROVEN against this exact recorder, not "auto".
+    # Writing "auto" threw that away and made every later probe (the agent at boot, the
+    # acceptance suite) re-walk the vendor list -- trying Hikvision paths against a Dahua
+    # box, costing time and producing confusing failures on a recorder we had identified.
+    section["nvr_driver"] = recorder.get("driver") or "auto"
     # The recorder credential (username + password) is stored atomically in the
     # encrypted Secrets store, never in this INI.
     section["nvr_password_protected"] = "dpapi-secrets"
     section["site_type"] = site_type
+    if public.get("push_bridge_url"):
+        section["push_bridge_url"] = str(public["push_bridge_url"]).rstrip("/")
     section["camera_profiles_json"] = json.dumps(profiles, separators=(",", ":"))
     _write_ini(config_path, ini)
 
 
-def _clear_consumed_code(config_path: Path) -> None:
-    ini = configparser.ConfigParser()
-    ini.read(config_path, encoding="utf-8-sig")
-    if ini.has_section("watchlog"):
+def _seed_recorder_identity(config_path: Path, recorder: dict) -> None:
+    """Persist the proven recorder's NON-SECRET identity before the background task starts.
+
+    The production connector can then safely rediscover the same recorder after DHCP/IP
+    movement even if its very first background connection fails. Build 41 could otherwise
+    have a perfectly proven foreground setup but no recorder_identity.json, leaving the
+    background runtime unable to authenticate any rediscovery candidate.
+    """
+    try:
+        import connector_rediscovery
+        cfg = SimpleNamespace(
+            state_path=programdata_dir() / "agent_state.json",
+            nvr_driver=recorder.get("driver") or "auto",
+            nvr_url=recorder.get("url") or "",
+            _ini_path=config_path,
+        )
+        info = SimpleNamespace(
+            vendor=recorder.get("vendor") or "",
+            model=recorder.get("model") or "",
+            serial=recorder.get("serial") or "",
+            driver=recorder.get("driver") or "",
+        )
+        connector_rediscovery.save_identity(cfg, info, recorder.get("url") or "")
+    except Exception as exc:  # noqa: BLE001 — resilience metadata may never fail setup
+        _setup_log(f"recorder identity seed skipped ({type(exc).__name__})")
+
+
+def _clear_consumed_code(config_path: Path) -> bool:
+    """Blank the consumed enrollment code. MUST NOT be able to fail the install.
+
+    0.4.9: the background agent is now started BEFORE this runs, and it holds
+    watchlog.ini open. On Windows os.replace() onto a file another process has open
+    raises PermissionError, so the atomic write used here could turn a perfectly good,
+    already-connected install into a failure. A stale code in the ini is harmless -- it
+    is single-use and the server has already consumed it -- so this is best-effort:
+    retry briefly, fall back to an in-place rewrite, and give up quietly rather than
+    take down a working site.
+    """
+    try:
+        ini = configparser.ConfigParser()
+        ini.read(config_path, encoding="utf-8-sig")
+        if not ini.has_section("watchlog"):
+            return True
         ini["watchlog"]["enrollment_code"] = ""
-        _write_ini(config_path, ini)
+        for attempt in range(3):
+            try:
+                _write_ini(config_path, ini)
+                return True
+            except OSError:
+                time.sleep(0.5 * (attempt + 1))
+        # Last resort: rewrite in place (no rename), which does not need the
+        # destination to be unopened by other processes.
+        with config_path.open("w", encoding="utf-8", newline=chr(10)) as handle:
+            ini.write(handle)
+        return True
+    except Exception:  # noqa: BLE001 — a cosmetic tidy-up may never fail an install
+        return False
 
 
 class AgentSyncError(ValueError):
@@ -635,10 +938,159 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
     return mapping
 
 
+def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
+                            _run=None) -> dict:
+    """Register and START the background agent as soon as the site is genuinely connected.
+
+    WHY THIS EXISTS (0.4.7). The NSIS installer runs the setup wizard under ExecWait and
+    only registers the background task AFTERWARDS. So anything that stops the wizard from
+    exiting -- a wedged probe, a customer closing the window, a crash -- means
+    register-service.ps1 never runs, the scheduled task is never created, and the site
+    enrols, heartbeats exactly once from setup, and is then offline forever. That is
+    precisely what the field showed: agents at 0.4.1/0.4.5/0.4.6 each last seen 3-20
+    seconds after enrolling, while 0.4.3 -- whose wizard completed -- ran for three days.
+
+    Connectivity must not depend on a later, slower, failure-prone verification step. Once
+    enrollment and the recorder credential exist, the site can and should start reporting.
+    Acceptance is a REPORT, not a gate on whether the agent runs.
+
+    Safe to call twice: register-service.ps1 uses Register-ScheduledTask -Force, and the
+    installer still runs it again afterwards.
+
+    Fail-open and never raises -- returns {"started": bool, "detail": str}.
+    """
+    if os.name != "nt":
+        return {"started": False, "detail": "background registration is Windows-only"}
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    script = base / "register-service.ps1"
+    if not script.exists():
+        return {"started": False, "detail": f"register-service.ps1 not found beside {base}"}
+
+    runner = _run
+    if runner is None:
+        # SHARED hardened runner. The obvious subprocess.run(capture_output=True,
+        # timeout=...) does NOT bound anything when the child leaves a survivor holding
+        # the pipe -- that is what hung the 0.4.7 wizard on step 06 from right here.
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+
+    powershell = (Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
+                  / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    cmd = [str(powershell),
+           "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+           "-File", str(script), "-InstallDir", str(base)]
+    try:
+        code, out = runner(cmd, timeout)
+    except Exception as exc:  # noqa: BLE001 — never block a connected site
+        return {"started": False, "detail": f"could not start background agent ({type(exc).__name__})"}
+    if code == 0:
+        return {"started": True, "detail": "background agent registered and started"}
+    return {"started": False,
+            "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
+
+
+def confirm_background_agent(timeout: float = 20.0, since_offset: int | None = None,
+                             log_path: Path | None = None, _sleep=None) -> dict:
+    """Best-effort: has the background agent written a heartbeat since we started it?
+
+    NOT ON THE CRITICAL PATH, deliberately. 0.4.8 blocked setup for 75s waiting on this
+    and then reported a HEALTHY agent as failed, because run-agent.ps1 captured the agent
+    through a PowerShell redirection that does not reach disk promptly. The agent was
+    heartbeating to the cloud the whole time; only the local file was stale.
+
+    0.4.9 fixes that redirection so the log streams, which makes this signal meaningful
+    again -- but it stays advisory. Whether a site reports is proven by the scheduled task
+    running, and ultimately by the cloud, never by the presence of a local log line.
+    """
+    path = Path(log_path) if log_path else (programdata_dir() / "agent.log")
+    sleep = _sleep or time.sleep
+    start = since_offset if since_offset is not None else _log_size(path)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if path.exists():
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(start)
+                    if "heartbeat ok" in handle.read():
+                        return {"confirmed": True,
+                                "detail": "background agent is reporting to WatchLog"}
+        except OSError:
+            pass
+        sleep(2)
+    return {"confirmed": False,
+            "detail": f"no background heartbeat seen locally within {int(timeout)}s "
+                      "(not conclusive -- the agent may still be reporting)"}
+
+
+def _log_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def provision_recorder_push(cloud, state: dict, recorder: dict, public: dict,
+                            username: str, password: str,
+                            progress: Callable[[str], None] | None = None,
+                            timeout: float = 20.0, _run=None) -> dict:
+    """Point the RECORDER at WatchLog, so the site keeps reporting with no PC running.
+
+    RUNS OUT OF PROCESS (5.0). 0.4.11 did this inline and the very first time the feature
+    was enabled on real hardware it took the whole installer down with a native crash --
+    "WatchLog Setup has stopped working" -- mid-way through configuring the recorder. A
+    resilience BONUS must never be able to kill the thing that installs it, and a
+    try/except cannot catch a native crash. Delegating to `watchlog-agent.exe
+    --configure-push` makes that structural: a crash, a hang, or a recorder that wedges
+    mid-request is contained in a child process and the wizard just reads an exit code.
+
+    It is also why the recorder still gets configured when the wizard dies: the same
+    command runs from the background agent with no installer present.
+
+    Never raises. Returns {"configured", "verified", "detail"}.
+    """
+    progress = progress or (lambda _message: None)
+    base = (public.get("push_bridge_url")
+            or os.environ.get("WATCHLOG_PUSH_BRIDGE_URL") or "").strip().rstrip("/")
+    if not base:
+        return {"configured": False, "verified": False,
+                "detail": "no push bridge configured in this build"}
+
+    progress("Finishing optional recorder integration (up to 10 seconds)…")
+    try:
+        if _run is not None:
+            code, out = _run()
+        else:
+            import proc_util
+            exe = Path(sys.executable).resolve().parent / "watchlog-agent.exe"
+            cmd = ([str(exe)] if exe.exists()
+                   else [sys.executable, str(Path(__file__).resolve().parent / "watchlog_agent.py")])
+            code, out = proc_util.run_bounded(cmd + ["--configure-push"], timeout)
+    except Exception as exc:  # noqa: BLE001 - the launcher itself must not fail setup
+        return {"configured": False, "verified": False,
+                "detail": f"could not run recorder push setup ({type(exc).__name__})"}
+
+    for line in (out or "").splitlines():
+        if line.startswith("PUSH_JSON "):
+            try:
+                parsed = json.loads(line[len("PUSH_JSON "):])
+                return {"configured": bool(parsed.get("configured")),
+                        "verified": bool(parsed.get("verified")),
+                        "detail": str(parsed.get("detail") or "")}
+            except Exception:  # noqa: BLE001
+                break
+    # No report: the child crashed, was killed at the deadline, or printed nothing. That
+    # is a failed BONUS, never a failed install.
+    return {"configured": False, "verified": False,
+            "detail": f"recorder push setup did not report back (exit {code})"}
+
+
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
                      profiles: list[dict], progress: Callable[[str], None] | None = None,
-                     hint: dict | None = None) -> dict:
+                     hint: dict | None = None,
+                     verified_recorder: dict | None = None) -> dict:
     """Prove local recorder + WatchLog enrollment and persist only protected secrets."""
     progress = progress or (lambda _message: None)
     if not public.get("supabase_url") or not public.get("supabase_publishable_key"):
@@ -646,8 +1098,26 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     if not enrollment_code.strip():
         raise ValueError("Enter the WatchLog site code from the portal.")
 
-    progress("Verifying the recorder one more time…")
-    recorder = test_recorder(address, username, password, progress=progress, hint=hint)
+    # Step 04 already authenticated the recorder. Repeating that full hardware
+    # transaction in Step 06 was both redundant and a field source of false hangs:
+    # embedded Digest/ISAPI/CGI stacks can answer once and then stall on the immediate
+    # duplicate session. Reuse the exact successful proof when supplied by the UI.
+    if verified_recorder:
+        recorder = dict(verified_recorder)
+        required = ("url", "vendor", "model", "driver", "channels")
+        if any(key not in recorder for key in required):
+            raise ValueError("WatchLog lost the recorder verification. Please run setup again.")
+        try:
+            if discover.host_of(str(recorder["url"])) != discover.host_of(address):
+                raise ValueError("WatchLog recorder selection changed after login. Please test the recorder again.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("WatchLog could not reuse the recorder verification. Please test the recorder again.") from exc
+        progress("Recorder login already verified.")
+    else:
+        progress("Verifying the recorder…")
+        recorder = test_recorder(address, username, password, progress=progress, hint=hint)
 
     progress("Encrypting recorder credentials on this PC…")
     try:
@@ -655,6 +1125,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except SecretError as exc:
         raise ValueError("Windows could not securely store the recorder credential on this PC.") from exc
     _write_proven_config(config_path, public, enrollment_code, recorder, username, site_type, profiles)
+    _seed_recorder_identity(config_path, recorder)
 
     progress("Connecting this site to WatchLog…")
     cloud = core.Cloud(public["supabase_url"].rstrip("/"), public["supabase_publishable_key"])
@@ -697,9 +1168,38 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     except Exception as exc:
         raise ValueError("WatchLog linked the site but could not confirm the final connection. Try again.") from exc
 
-    _clear_consumed_code(config_path)
+    # =================================================================
+    # CORE CONNECTION IS PROVEN ABOVE. From here the ONLY installer-critical
+    # operation is starting the real background connector and proving that the
+    # SYSTEM-launched agent itself reaches WatchLog.
+    #
+    # Build 41 field evidence proved that recorder-push, although labelled
+    # "optional", was still executed synchronously here and could strand Step 06
+    # after the site/cameras were already connected. Optional recorder-side
+    # integration is therefore NEVER run by first-run setup.
+    # =================================================================
+    progress("Starting WatchLog in the background…")
+    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
+    core.log(f"background agent start: {agent_start.get('detail')}")
+    connected = bool(agent_start.get("started"))
+
+    # Recorder-side push remains an explicit support/diagnostic command only.
+    # It is intentionally absent from the installer critical path until it has
+    # been field-verified across supported recorder firmware.
+    push = {
+        "configured": False,
+        "verified": False,
+        "detail": "not run during installation; background Site Connector is authoritative",
+    }
+
+    cleared = _clear_consumed_code(config_path)
+    core.log(f"post-connect phase done "
+             f"(agent_started={connected} code_cleared={cleared})")
     return {
         "site_id": state["site_id"],
+        "recorder_push": push,
+        "agent_start": agent_start,
+        "connected": connected,
         "camera_count": len(mapping or recorder["channels"]),
         "vendor": recorder["vendor"],
         "model": recorder["model"],

@@ -114,6 +114,46 @@ def mask(secret: str | None) -> str:
     return f"{secret[:6]}...{secret[-4:]} ({len(secret)} chars)"
 
 
+_RUNTIME_HEALTH_LOCK = threading.Lock()
+
+
+def runtime_health_path() -> Path:
+    # Integrity-sensitive installer proof: keep it under the existing
+    # SYSTEM+Administrators-only Secrets ACL so a standard local user cannot
+    # forge a healthy-version marker and trick Repair/Upgrade into committing.
+    return default_state_dir() / "Secrets" / "runtime-health.json"
+
+
+def update_runtime_health(**fields) -> None:
+    """Atomically publish non-secret local proof that the runtime is actually healthy.
+
+    The repair upgrader reads this as SYSTEM after swapping binaries. It is deliberately
+    local/non-secret: version, timestamps, agent/site ids and recorder identity only.
+    """
+    path = runtime_health_path()
+    try:
+        with _RUNTIME_HEALTH_LOCK:
+            current = {}
+            if path.exists():
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    current = {}
+            current.update({
+                "schema": "watchlog.runtime_health.v1",
+                "agent_version": AGENT_VERSION,
+                "updated_at": iso(now_utc()),
+            })
+            current.update({k: v for k, v in fields.items() if v is not None})
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(current, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(path)
+    except Exception:
+        # Health proof is an installer aid; failure to write it must never kill monitoring.
+        pass
+
+
 def base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -129,10 +169,31 @@ def default_state_dir() -> Path:
 # --- config ------------------------------------------------------------
 
 class Config:
-    def __init__(self) -> None:
+    def __init__(self, config_path: Path | None = None, *, read_only_credentials: bool = False) -> None:
         ini = configparser.ConfigParser()
-        ini_path = base_dir() / "watchlog.ini"
+        ini_path = Path(config_path) if config_path else (base_dir() / "watchlog.ini")
+
+        # Public build defaults are a read-only fallback. Existing site-specific values
+        # in watchlog.ini always win. This lets a Repair/Upgrade deliver new public update
+        # metadata without rewriting recorder/enrollment configuration.
         section: dict[str, str] = {}
+        safe_public = {
+            "supabase_url", "supabase_publishable_key", "push_bridge_url",
+            "update_url", "update_public_key", "update_require_signature",
+            "update_channel",
+        }
+        defaults_path = base_dir() / "watchlog.defaults.ini"
+        if defaults_path.exists():
+            try:
+                defaults = configparser.ConfigParser()
+                defaults.read(defaults_path, encoding="utf-8-sig")
+                if defaults.has_section("watchlog"):
+                    for key, value in defaults.items("watchlog"):
+                        if key in safe_public and str(value or "").strip():
+                            section[key] = value
+            except configparser.Error:
+                pass
+
         if ini_path.exists():
             # utf-8-sig, not utf-8: Notepad and PowerShell's Set-Content
             # both write a BOM, and configparser treats a leading ﻿ as
@@ -150,7 +211,14 @@ class Config:
                 raise SystemExit(
                     f"FATAL: {ini_path} has no [watchlog] section. "
                     f"Compare it against watchlog.ini.example.")
-            section = dict(ini.items("watchlog"))
+            current = dict(ini.items("watchlog"))
+            # Existing site-specific values always win. For PUBLIC build metadata,
+            # however, an old explicitly-empty key must not suppress the newly
+            # shipped signed-update defaults; empty means "not configured yet".
+            for key, value in current.items():
+                if key in safe_public and not str(value or "").strip() and section.get(key):
+                    continue
+                section[key] = value
             log(f"config file: {ini_path}")
         else:
             log(f"config file: none at {ini_path}, using environment only")
@@ -167,11 +235,25 @@ class Config:
         self.nvr_username = get("nvr_username") or ""
         self.nvr_password = get("nvr_password") or ""
         self.nvr_driver = (get("nvr_driver") or "auto").strip().lower()
+        # PC-free ("recorder push") destination, baked in by the build. Empty = the
+        # feature is unavailable in this build and every push path no-ops.
+        self.push_bridge_url = (get("push_bridge_url") or "").strip().rstrip("/")
         self._ini_path = ini_path
-        # Production: the recorder credential lives in the encrypted split store
-        # and is self-decrypted here, so every launch context resolves it the
-        # same way. A corrupt/foreign store is fatal (no plaintext fallback).
-        self.load_recorder_credential()
+        # Production: the recorder credential lives in the encrypted split store.
+        # Staged repair validation MUST be read-only: it proves the existing DPAPI
+        # blob decrypts without migrating/deleting/changing any site file.
+        if read_only_credentials and os.name == "nt":
+            try:
+                cred = credential_store.load_nvr_credential_readonly()
+            except credential_store.SecretError as exc:
+                raise SystemExit(
+                    "FATAL: the recorder credential could not be read by this candidate. "
+                    f"The installed WatchLog has not been changed.\n  {exc}") from exc
+            if cred:
+                self.nvr_username = cred.get("username") or self.nvr_username
+                self.nvr_password = cred.get("password") or ""
+        else:
+            self.load_recorder_credential()
         self.snapshots = (str(get("snapshots") or "true").strip().lower()
                           not in ("0", "false", "no", "off"))
         self.snapshot_min_interval = int(
@@ -222,6 +304,10 @@ class Config:
         # recorder-native event replay). Bounded per chunk; degrades honestly when no frame/codec.
         self.recovery_ai_enabled = str(get("recovery_ai_enabled") or "true").strip().lower() == "true"
         self.recovery_ai_max_frames = int(get("recovery_ai_max_frames") or 40)
+        # Restore one historical visual checkpoint per camera every N seconds
+        # across a missed interval. 300s gives useful coverage without hammering
+        # the recorder; recovery remains bounded by recovery_ai_max_frames/chunk.
+        self.recovery_snapshot_seconds = int(get("recovery_snapshot_seconds") or 300)
         # In-app updates (0.4.4 §13/§14). Check-for-updates is READ-ONLY and never auto-applies.
         # update_public_key authenticates the signed release manifest; with no key configured an
         # update is refused (trust nothing) unless update_require_signature is explicitly false.
@@ -545,6 +631,12 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
         auth_error = False
         try:
             driver, info = open_driver(cfg)
+            if holder is not None:
+                holder["live_driver"] = driver
+                holder["recorder_live_at"] = time.monotonic()
+                holder["recorder_live_wall"] = now_utc()
+                holder["recorder_vendor"] = info.vendor
+                holder["recorder_model"] = info.model
             log(f"driver {driver.name}: {info.vendor} {info.model or ''} "
                 f"fw={info.firmware or '?'}".rstrip())
             if not driver.verified_against_hardware:
@@ -556,6 +648,9 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                if holder is not None:
+                    holder["recorder_live_at"] = time.monotonic()
+                    holder["recorder_live_wall"] = now_utc()
 
                 # The image is best-effort and strictly secondary. A
                 # camera that hangs, refuses auth or returns junk must
@@ -632,6 +727,8 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             log(f"ERROR: driver crashed: {type(e).__name__}: {e}")
         finally:
             if driver:
+                if holder is not None and holder.get("live_driver") is driver:
+                    holder.pop("live_driver", None)
                 driver.close()
         if not stop.is_set():
             auth_failures = auth_failures + 1 if auth_error else 0
@@ -677,6 +774,17 @@ def heartbeat(cloud: Cloud, state: dict, device) -> None:
                p_device_vendor=device.vendor if device else None,
                p_device_model=device.model if device else None,
                p_device_driver=device.driver if device else None)
+    stamp = iso(now_utc())
+    update_runtime_health(
+        heartbeat_at=stamp,
+        agent_id=state.get("agent_id"),
+        site_id=state.get("site_id"),
+        tenant_id=state.get("tenant_id"),
+        recorder_seen_at=(stamp if device else None),
+        recorder_vendor=(device.vendor if device else None),
+        recorder_model=(device.model if device else None),
+        recorder_driver=(device.driver if device else None),
+    )
     log("heartbeat ok")
 
 
@@ -978,6 +1086,10 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
         try:
             claimed = cloud.call("wl_agent_claim_command",
                                  p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+            # Runtime capability truth: advertise Site Control only after this
+            # worker has actually reached the claim RPC recently.
+            cfg.site_control_last_poll_monotonic = time.monotonic()
+            update_runtime_health(site_control_poll_at=iso(now_utc()))
             cmd = (claimed or {}).get("command")
             if cmd:
                 busy = True
@@ -1066,13 +1178,208 @@ def cmd_selftest() -> int:
         retained = bool(k2 and d2)
 
     print(det.summary())
-    if det.available and keep is False:
-        extra = "" if retained is None else f"; real-object retained={retained}"
-        print(f"RESULT: PASS (ONNX runtime + model loaded, inference ran, "
-              f"junk frame discarded{extra})")
-        return 0
-    print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
-    return 2
+    if not (det.available and keep is False):
+        print("RESULT: INCONCLUSIVE (detector loaded but junk frame not discarded)")
+        return 2
+
+    # Recovery is part of the production contract: prove the frozen executable
+    # also contains a working FFmpeg capable of turning historical recorder
+    # footage into a JPEG checkpoint. This catches "recovery code exists but
+    # codec was not packaged" before an installer can ship.
+    try:
+        import recovery_ai
+        dec = recovery_ai.decoder_selftest()
+    except Exception as exc:  # noqa: BLE001
+        dec = {"ok": False, "reason": type(exc).__name__}
+    print(f"archive recovery decoder -> ok={dec.get('ok')} reason={dec.get('reason') or '-'}")
+    if not dec.get("ok"):
+        print("RESULT: FAIL (historical footage decoder NOT packaged/working)")
+        return 2
+
+    extra = "" if retained is None else f"; real-object retained={retained}"
+    print(f"RESULT: PASS (ONNX runtime + model + archive FFmpeg decoder packaged; "
+          f"junk frame discarded{extra})")
+    return 0
+
+
+def cmd_existing_site_preflight(cfg: Config, *, result_path: str | None = None,
+                                mode: str = "full") -> int:
+    """Read-only staged validation for an already-installed WatchLog site.
+
+    This command is designed to run as SYSTEM from the Repair/Upgrade package
+    before any installed payload is replaced. mode="passive" performs checks that
+    cannot compete with the live recorder session while the current Agent is still
+    running. mode="recorder" adds recorder identity/channel validation after the
+    current Agent has been safely paused. It must never enroll, write recorder
+    settings, mutate credentials, heartbeat a staged version, or consume queued work.
+    """
+    result = {
+        "schema": "watchlog.existing_site_preflight.v1",
+        "agent_version": AGENT_VERSION,
+        "mode": mode,
+        "ok": False,
+        "checks": {},
+    }
+    driver = None
+
+    def mark(name: str, ok: bool, detail: str = "") -> None:
+        result["checks"][name] = {"ok": bool(ok), "detail": str(detail or "")[:300]}
+
+    try:
+        config_ok = bool(cfg.supabase_url and cfg.publishable_key and cfg.nvr_url)
+        mark("config", config_ok, "existing site config + staged public defaults loaded")
+        if not config_ok:
+            raise RuntimeError("existing WatchLog configuration is incomplete")
+
+        # Read-only DPAPI proof. Config(read_only_credentials=True) never migrates
+        # or removes legacy files; a missing authoritative blob blocks this repair path.
+        cred = credential_store.load_nvr_credential_readonly() if os.name == "nt" else {
+            "username": cfg.nvr_username, "password": cfg.nvr_password,
+        }
+        credential_ok = bool(cred and cred.get("password"))
+        mark("recorder_credential", credential_ok,
+             "machine credential decrypts" if credential_ok else "authoritative DPAPI recorder credential missing")
+        if not credential_ok:
+            raise RuntimeError("existing recorder credential is not repair-upgrade ready")
+
+        state = load_state(cfg.state_path)
+        identity_ok = bool(state and state.get("agent_id") and state.get("agent_key")
+                           and state.get("site_id") and state.get("tenant_id"))
+        mark("identity", identity_ok, f"agent={state.get('agent_id') if state else '-'}")
+        if not identity_ok:
+            raise RuntimeError("existing WatchLog enrollment identity is incomplete")
+
+        try:
+            import recovery_ai
+            decoder = recovery_ai.decoder_selftest()
+        except Exception as exc:  # noqa: BLE001
+            decoder = {"ok": False, "reason": type(exc).__name__}
+        mark("archive_decoder", bool(decoder.get("ok")), decoder.get("reason") or "bundled FFmpeg OK")
+        if not decoder.get("ok"):
+            raise RuntimeError("historical footage decoder is not working")
+
+        if mode not in ("passive", "recorder", "full"):
+            raise RuntimeError(f"unknown preflight mode {mode!r}")
+
+        if mode in ("recorder", "full"):
+            cfg.require_nvr()
+            driver, device = open_driver(cfg)
+            chans = driver.list_channels()
+            channel_count = len(chans or [])
+            recorder_ok = bool(device and channel_count > 0)
+            detail = f"{getattr(device, 'vendor', '')} {getattr(device, 'model', '')}; {channel_count} channel(s)".strip()
+            mark("recorder", recorder_ok, detail)
+            if not recorder_ok:
+                raise RuntimeError("candidate could not identify the existing recorder/cameras")
+        else:
+            mark("recorder", True, "deferred until current Agent is safely paused")
+
+        cfg.require_cloud()
+        cloud = Cloud(cfg.supabase_url, cfg.publishable_key)
+        auth = cloud.call("wl_agent_preflight_auth",
+                          p_agent_id=state["agent_id"], p_agent_key=state["agent_key"]) or {}
+        cloud_ok = (str(auth.get("agent_id") or "") == str(state["agent_id"])
+                    and str(auth.get("site_id") or "") == str(state["site_id"]))
+        mark("cloud_identity", cloud_ok,
+             f"site={auth.get('site_id') or '-'} tenant={auth.get('tenant_id') or '-'}")
+        if not cloud_ok:
+            raise RuntimeError("cloud did not authenticate this existing site identity")
+
+        update_ok = (str(cfg.update_url or "").lower().startswith("https://")
+                     and bool(cfg.update_public_key)
+                     and bool(cfg.update_require_signature))
+        mark("signed_remote_update", update_ok,
+             "HTTPS manifest + Ed25519 public key + signature-required"
+             if update_ok else "signed remote-update public configuration is incomplete")
+        if not update_ok:
+            raise RuntimeError("candidate is not configured for signed online updates")
+
+        result["ok"] = True
+    except BaseException as exc:  # includes SystemExit from strict config/driver checks
+        result["error"] = f"{type(exc).__name__}: {str(exc)}"[:500]
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:
+                pass
+
+    raw = json.dumps(result, separators=(",", ":"))
+    print("PREFLIGHT_JSON " + raw, flush=True)
+    if result_path:
+        try:
+            path = Path(result_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(raw, encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            print(f"preflight result write failed: {type(exc).__name__}", flush=True)
+            return 2
+    return 0 if result["ok"] else 2
+
+
+def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
+                       _open_driver=None) -> int:
+    """Point the RECORDER at WatchLog so the site reports with no PC running.
+
+    RUNS AS ITS OWN PROCESS, deliberately. The setup wizard used to do this inline, and
+    in 0.4.11 it took the whole installer down with a native crash the moment the feature
+    was first enabled on real hardware. Recorder-push is a resilience BONUS layered on a
+    working agent install -- it must never be able to kill the thing that installs it. As
+    a separate process, any failure here (Python exception, native crash, hang, a recorder
+    that wedges mid-request) is contained: the parent sees an exit code and moves on.
+
+    It also means the recorder still gets configured even when the wizard dies, because
+    the background agent can run this on its own schedule with no installer present.
+
+    Prints a single machine-readable PUSH_JSON line. Exit 0 = the recorder confirmed it.
+    """
+    result = {"configured": False, "verified": False, "detail": ""}
+    try:
+        base = (cfg.push_bridge_url or "").strip().rstrip("/")
+        if not base:
+            result["detail"] = "no push bridge configured in this build"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        state = _state if _state is not None else load_state(cfg.state_path)
+        if not state or not state.get("agent_id") or not state.get("agent_key"):
+            result["detail"] = "this site is not enrolled yet"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
+        issued = cloud.call("wl_agent_issue_push_token",
+                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+        token = (issued or {}).get("token") if isinstance(issued, dict) else None
+        if not token:
+            result["detail"] = "WatchLog did not issue a push token"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        driver = (_open_driver or open_driver)(cfg)
+        configure = getattr(driver, "configure_push", None)
+        if configure is None:
+            result["detail"] = "this recorder model does not support recorder-push"
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+            return 2
+
+        out = configure(f"{base}/push/{token}") or {}
+        result = {"configured": bool(out.get("applied")),
+                  "verified": bool(out.get("verified")),
+                  "detail": str(out.get("detail") or "")}
+        print("PUSH_JSON " + json.dumps(result), flush=True)
+        log(f"recorder push: configured={result['configured']} "
+            f"verified={result['verified']} {result['detail']}")
+        return 0 if result["verified"] else 2
+    except Exception as exc:  # noqa: BLE001 - a bonus layer never fails loudly
+        result["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+        try:
+            print("PUSH_JSON " + json.dumps(result), flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return 2
 
 
 def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=None,
@@ -1103,7 +1410,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         spool_factory = _spool_factory
     archive_fn = _archive or dahua_archive.prove_recorder_archive
     live_seconds = int(live_seconds if live_seconds is not None
-                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 20))
+                       else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 10))
     state = _state if _state is not None else load_state(cfg.state_path)
 
     print(f"watchlog-agent {AGENT_VERSION} — post-install acceptance self-test\n")
@@ -1225,19 +1532,39 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
             return "blocked", "a plaintext recorder password is present in watchlog.ini (must live only in the encrypted store)"
         return "pass", "no plaintext recorder password on disk"
 
+    # ORDER MATTERS (0.4.6). Every REQUIRED check runs first, so the Ready/Blocked verdict is
+    # decided from fast local+cloud probes in a few seconds. The three slow probes are all soft --
+    # they can only ever add a warning, never block -- so they must not stand between the customer
+    # and their answer. Dependencies are preserved: archive and live still run after the recorder
+    # is open and cameras are enumerated.
+    #
+    # Every check carries its own "budget" in seconds. A wedged probe is the thing that left 0.4.5
+    # spinning on "Running final acceptance checks", so no probe is allowed to run unbounded:
+    # a hard check over budget is BLOCKED (fail closed), a soft one only warns.
     checks = [
-        {"key": "config", "label": "Configuration present", "hard": True, "run": _config},
-        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True, "run": _identity},
-        {"key": "runtime", "label": "Runtime version + build identity", "hard": False, "run": _runtime},
-        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True, "run": _cloud},
-        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder},
-        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras},
+        {"key": "config", "label": "Configuration present", "hard": True, "run": _config,
+         "budget": 10},
+        {"key": "identity", "label": "Site enrolled (local identity)", "hard": True,
+         "run": _identity, "budget": 10},
+        {"key": "cloud", "label": "WatchLog cloud authenticates this agent", "hard": True,
+         "run": _cloud, "budget": 25},
+        {"key": "recorder", "label": "Recorder reachable", "hard": True, "run": _recorder,
+         "budget": 25},
+        {"key": "cameras", "label": "Cameras enumerated", "hard": True, "run": _cameras,
+         "budget": 30},
+        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool,
+         "budget": 20},
+        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True,
+         "run": _security, "budget": 10},
+        # --- soft from here: informational only, can never block Ready ---
+        {"key": "runtime", "label": "Runtime version + build identity", "hard": False,
+         "run": _runtime, "budget": 15},
         {"key": "archive", "label": "Recorded footage retrievable (outage recovery)",
-         "hard": False, "run": _archive_check},
-        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live},
-        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai},
-        {"key": "spool", "label": "Local spool healthy", "hard": True, "run": _spool},
-        {"key": "security", "label": "No plaintext recorder password on disk", "hard": True, "run": _security},
+         "hard": False, "run": _archive_check, "budget": 25},
+        {"key": "live", "label": "Live events flowing", "hard": False, "run": _live,
+         "budget": live_seconds + 10},
+        {"key": "ai", "label": "On-site AI false-alarm filter", "hard": False, "run": _ai,
+         "budget": 30},
     ]
 
     report = acceptance.run_checks(checks, log=print)
@@ -1743,7 +2070,7 @@ def cmd_probe(cfg: Config) -> None:
 
 
 def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
-                    spool, channels=None) -> None:
+                    spool, channels=None, holder=None) -> None:
     """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
     yields the missed interval, reported as a PENDING recovery interval. Then it claims pending
     intervals and backfills each from the recorder archive in bounded, resumable, idempotent
@@ -1754,7 +2081,14 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
-    cams = [str(c.channel) for c in (channels or [])] or None
+    def _channel_id(item):
+        if isinstance(item, dict):
+            return item.get("channel")
+        return getattr(item, "channel", None)
+
+    cams = [str(ch) for ch in (_channel_id(c) for c in (channels or []))
+            if ch is not None] or None
+    holder = holder if holder is not None else {}
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
     # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
@@ -1766,25 +2100,57 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         except Exception as e:                           # noqa: BLE001
             log(f"recovery: detector unavailable ({type(e).__name__}); event-replay only")
 
-    # Startup outage detection: a last-live from a previous run older than the threshold is an outage.
-    try:
-        last_live = rec.read_last_live(cfg.last_live_path)
-        outage = rec.detect_outage(last_live, now_utc(), cfg.recovery_threshold_seconds)
-        if outage:
-            cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
-                       p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
-                       p_ended_at=iso(outage[1]), p_cameras=[])
-            log(f"recovery: detected outage {iso(outage[0])}..{iso(outage[1])}; opened recovery candidate")
-    except Exception as e:                               # noqa: BLE001
-        log(f"recovery: startup detect skipped: {type(e).__name__}")
+    def recorder_is_live() -> bool:
+        drv = holder.get("live_driver")
+        activity = float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0)
+        if activity and time.monotonic() - activity < 150.0:
+            return True
+        seen = float(holder.get("recorder_live_at") or 0.0)
+        return bool(seen and time.monotonic() - seen < 150.0)
 
     while not stop.is_set():
+        # A very long Internet outage can fill the bounded local spool. trim() records
+        # exactly which local-observation interval had to be evicted; convert that durable
+        # marker into the same recorder-archive recovery pipeline once the NVR is live.
+        try:
+            overflow_gap = spool.pending_recovery_gap()
+            if overflow_gap and recorder_is_live():
+                cloud.call("wl_open_recovery_interval",
+                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                           p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
+                           p_cameras=cams or [])
+                if spool.clear_recovery_gap(*overflow_gap):
+                    log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
+                        "opened recorder-archive reconciliation")
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
+
+        # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
+        # interval after the recorder is live again; while it is still down there is
+        # nothing to backfill and no reason to hammer it.
+        try:
+            if recorder_is_live():
+                last_live = rec.read_last_live(cfg.last_live_path)
+                now = now_utc()
+                outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
+                if outage:
+                    cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
+                               p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
+                               p_ended_at=iso(outage[1]), p_cameras=cams or [])
+                    rec.persist_last_live(cfg.last_live_path, now)
+                    log(f"recovery: detected recorder gap {iso(outage[0])}..{iso(outage[1])}; "
+                        "opened resumable archive recovery")
+        except Exception as e:                           # noqa: BLE001
+            log(f"recovery: gap detector skipped: {type(e).__name__}")
+
         try:
             driver, _info = open_driver(cfg)
             try:
                 import dahua_archive
-                dahua_archive.install()                  # ensure the historical iface on the driver
-            except Exception:                            # noqa: BLE001
+                import hikvision_archive
+                dahua_archive.install()
+                hikvision_archive.install()             # both vendors expose bounded archive reads
+            except Exception:                           # noqa: BLE001
                 pass
             try:
                 runner = rec.RecoveryRunner(
@@ -1794,6 +2160,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     throttle_seconds=cfg.recovery_throttle_seconds,
                     live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
                     detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                    snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
                     log=log)
                 runner.run_once(limit=1)
             finally:
@@ -1860,7 +2227,8 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                                daemon=True, name="sitecontrol")
     sitectl.start()
     # Automatic NVR outage recovery (§1/§2). Read-only; yields to live; OFF only if disabled in ini.
-    recov = threading.Thread(target=recovery_worker, args=(cfg, state, cloud, stop, spool, channels),
+    recov = threading.Thread(target=recovery_worker,
+                             args=(cfg, state, cloud, stop, spool, channels, holder),
                              daemon=True, name="recovery")
     recov.start()
 
@@ -1897,12 +2265,19 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as e:
                     log(f"ERROR: heartbeat failed, will retry: "
                         f"{str(e).splitlines()[0][:200]}")
-                # Persist the last-live marker on the heartbeat cadence: the Agent is alive and
-                # observing now, so the NEXT startup can detect an outage as (this time -> restart).
+                # Persist RECORDER observation, not merely PC/cloud liveness. If the
+                # recorder is unreachable while the agent still heartbeats, this clock
+                # intentionally stops so the missing interval is recovered when contact returns.
                 if cfg.recovery_enabled:
                     try:
-                        import recovery as _rec
-                        _rec.persist_last_live(cfg.last_live_path, now_utc())
+                        drv = holder.get("live_driver")
+                        activity = float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0)
+                        seen = float(holder.get("recorder_live_at") or 0.0)
+                        fresh = ((activity and time.monotonic() - activity < 150.0)
+                                 or (seen and time.monotonic() - seen < 150.0))
+                        if fresh:
+                            import recovery as _rec
+                            _rec.persist_last_live(cfg.last_live_path, now_utc())
                     except Exception:                    # noqa: BLE001
                         pass
             time.sleep(1)
@@ -1948,6 +2323,8 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true",
                     help="prove the on-site AI false-alarm filter is packaged "
                          "and working in this build; needs no config")
+    ap.add_argument("--configure-push", action="store_true",
+                    help="point the recorder at the WatchLog push bridge (PC-free reporting)")
     ap.add_argument("--accept", action="store_true",
                     help="run the post-install acceptance self-test (identity, cloud, "
                          "recorder, cameras, archive, live events, spool) and exit")
@@ -1961,6 +2338,15 @@ def main() -> None:
                     help="print the machine-readable Site Status document (for the status panel) and exit")
     ap.add_argument("--recheck-archive-json", action="store_true",
                     help="run a fresh archive proof now (with media-decode diagnostics) and exit")
+    ap.add_argument("--config", metavar="PATH",
+                    help="explicit watchlog.ini path (used by staged repair validation)")
+    ap.add_argument("--preflight-existing-site", action="store_true",
+                    help="read-only staged compatibility validation for an existing enrolled site")
+    ap.add_argument("--preflight-json", metavar="PATH",
+                    help="write existing-site preflight result JSON to this path")
+    ap.add_argument("--preflight-mode", choices=("passive", "recorder", "full"), default="full",
+                    help="existing-site preflight phase; Repair/Upgrade uses passive before pause "
+                         "and recorder after pause")
     ap.add_argument("--version", action="store_true",
                     help="print the runtime version and exit (no config, no cloud) — used by "
                          "the installer to verify the actually-installed/running agent")
@@ -1999,11 +2385,19 @@ def main() -> None:
             print(f"  {name:18} {mark}")
         return
 
-    cfg = Config()
+    cfg = Config(Path(args.config) if args.config else None,
+                 read_only_credentials=bool(args.preflight_existing_site))
+
+    if args.preflight_existing_site:
+        raise SystemExit(cmd_existing_site_preflight(
+            cfg, result_path=args.preflight_json, mode=args.preflight_mode))
 
     # Post-install acceptance runs against the config as-is and must never launch the
     # setup wizard — an unconfigured site should report a 'blocked' config check, not
     # be walked through setup.
+    if args.configure_push:
+        raise SystemExit(cmd_configure_push(cfg))
+
     if args.accept:
         raise SystemExit(cmd_accept(cfg))
 
@@ -2123,8 +2517,15 @@ def main() -> None:
             mapping = cloud.call("wl_sync_cameras", p_agent_id=state["agent_id"],
                                  p_agent_key=state["agent_key"],
                                  p_cameras=channels)
-            log(f"cameras synced: {len(mapping)} channels")
-        except RuntimeError as e:
+            log(f"cameras synced: {len(mapping or [])} channels")
+        # BOOT SAFETY: catch the TRANSPORT failure too, not just CloudError(RuntimeError).
+        # The -AtStartup trigger fires before the network stack is ready. The NVR is on the
+        # same LAN so the recorder probe above SUCCEEDS, then this first cloud call raises
+        # requests.ConnectionError (an OSError, NOT a RuntimeError) and used to escape
+        # uncaught -- killing the agent before it ever reached its resilient run loop, and
+        # taking the launcher's restart loop down with it. The run loop below retries
+        # forever, so a startup sync failure must only WARN.
+        except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"WARNING: camera sync failed: {str(e).splitlines()[0][:160]}")
 
     # Report what analytics the recorder supports, so the portal can show
@@ -2135,7 +2536,7 @@ def main() -> None:
             cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
                        p_agent_key=state["agent_key"], p_capabilities=capabilities)
             log(f"analytics reported: {len(capabilities['channels'])} channel(s)")
-        except RuntimeError as e:
+        except (RuntimeError, requests.RequestException, OSError) as e:
             log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
 
     cmd_run(cfg, state, cloud, once=args.once, device=device, channels=channels)
