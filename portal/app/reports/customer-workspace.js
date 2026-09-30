@@ -30,11 +30,11 @@ function AnalyticsQuality({quality}){
   if(!Number(q.scored_frames||0)&&!cameras.length){
     return <section className={styles.qualityShell}>
       <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Camera geometry and image quality determine how trustworthy customer/table analytics can be.</p></div></div>
-      <div className={styles.qualityWaiting}><b>Camera-quality insights are not available for this period yet.</b><span>WatchLog only publishes visibility and counting-confidence guidance when it can support the result. A customer-count accuracy percentage is never shown without representative manual validation.</span></div>
+      <div className={styles.qualityWaiting}><b>Camera-quality insights are not available for this period yet.</b><span>WatchLog only shows reliability guidance when the available coverage supports it. An accuracy percentage is shown only when it can be supported reliably.</span></div>
     </section>;
   }
   return <section className={styles.qualityShell}>
-    <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Repeated camera-view problems are surfaced before WatchLog recommends operational changes.</p></div><span className={styles.qualityScored}>{val(q.scored_frames)} scored frames</span></div>
+    <div className={styles.sectionHead}><div><h3>Analytics quality & improvement recommendations</h3><p>Repeated camera-view problems are surfaced before WatchLog recommends operational changes.</p></div><span className={styles.qualityScored}>Quality reviewed</span></div>
     <div className={styles.qualityGrid}>{cameras.map(c=>{
       const visibility=scorePct(c.visibility_quality),count=scorePct(c.people_count_confidence),tables=scorePct(c.table_tracking_confidence),glare=scorePct(c.glare_level),occ=scorePct(c.occlusion_level),angle=scorePct(c.camera_angle_adequacy);
       return <article className={styles.qualityCard} key={c.camera_id||c.camera}>
@@ -57,8 +57,8 @@ function AnalyticsQuality({quality}){
       <p>{r.evidence}</p>
       <div className={styles.improvementAction}><b>Recommended improvement</b><span>{r.recommendation}</span></div>
       {(r.metrics_impacted||[]).length>0&&<small>Affects: {r.metrics_impacted.join(" · ")}</small>}
-    </article>):<div className={styles.qualityClear}>No repeated camera-quality problem has crossed the recommendation threshold in the analyzed frames.</div>}</div>
-    <div className={styles.accuracyNote}><b>Customer-count accuracy:</b> {validation.note||"Confidence is not the same as measured accuracy. Manual validation against representative Floor 1 and Floor 2 frames is required before publishing an accuracy percentage."}</div>
+    </article>):<div className={styles.qualityClear}>No repeated camera-quality problem has crossed the recommendation threshold during this period.</div>}</div>
+    <div className={styles.accuracyNote}><b>Customer-count accuracy:</b> {validation.note||"An accuracy percentage is shown only when the available evidence can support it reliably."}</div>
   </section>;
 }
 
@@ -81,15 +81,15 @@ function RestaurantOperations({data,periodLabel}){
   const peakKitchen=Math.max(0,...hourly.map(x=>Number(x.avg_kitchen_load||0)));
   const peakHandoff=Math.max(0,...hourly.map(x=>Number(x.avg_handoff_load||0)));
   return <section className={styles.restaurantShell}>
-    <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>{data.service_date?"Service day · "+dateLabel(data.service_date):"Restaurant service day"}</h2><p>Chai Wala operating view for the 4 PM–4 AM service window. Values marked estimated or observed are camera-derived, not POS data.</p></div><span className={styles.readyPill}>{coverage==null?observations+" analyzed frames":coverageLabel(coverage)+" coverage · "+observations+" frames"}</span></div>
+    <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>{data.service_date?"Service day · "+dateLabel(data.service_date):"Restaurant service day"}</h2><p>Chai Wala operating view for the 4 PM–4 AM service window. Values marked estimated or observed are based on visible activity, not POS data.</p></div><span className={styles.readyPill}>{coverage==null?"Coverage available":coverageLabel(coverage)+" coverage"}</span></div>
 
     <div className={styles.restaurantMetrics}>
       <div className={styles.restaurantMetric}><strong>{val(peakVisible)}</strong><span>Peak visible diners</span><small>Complete dining-floor composite only</small></div>
       <div className={styles.restaurantMetric}><strong>{val(peakOccupied)}</strong><span>Peak occupied tables</span><small>Observed simultaneously occupied tables</small></div>
-      <div className={styles.restaurantMetric}><strong>{val(sessions.estimated_covers)}</strong><span>Estimated covers</span><small>Camera-derived estimate across observed table sessions</small></div>
+      <div className={styles.restaurantMetric}><strong>{val(sessions.estimated_covers)}</strong><span>Estimated covers</span><small>Estimate based on visible table activity</small></div>
       <div className={styles.restaurantMetric}><strong>{val(sessions.served_sessions)}</strong><span>Served table sessions</span><small>Sessions where food became visibly present</small></div>
       <div className={styles.restaurantMetric}><strong>{sessions.median_observed_time_to_food_minutes==null?"—":String(sessions.median_observed_time_to_food_minutes)+" min"}</strong><span>Median observed time to food</span><small>Seated to first food visible, not POS timing</small></div>
-      <div className={styles.restaurantMetric}><strong>{coverageLabel(coverage)}</strong><span>Analytics coverage</span><small>Actual analyzed samples versus configured target</small></div>
+      <div className={styles.restaurantMetric}><strong>{coverageLabel(coverage)}</strong><span>Analytics coverage</span><small>Share of the service window with enough coverage for these figures</small></div>
     </div>
 
     <AnalyticsQuality quality={data.analytics_quality}/>
@@ -118,12 +118,12 @@ function RestaurantOperations({data,periodLabel}){
     </div>
 
     <div className={styles.restaurantPanel}>
-      <div className={styles.sectionHead}><div><h3>Table utilization</h3><p>Share of valid analyzed observations where each calibrated table was occupied.</p></div></div>
+      <div className={styles.sectionHead}><div><h3>Table utilization</h3><p>Share of the observed period where each tracked table was occupied.</p></div></div>
       <div className={styles.tableColumns}>{activeTables.length?activeTables.map(t=><div className={styles.utilRow} key={t.table_key}>
         <div className={styles.utilTop}><span>{t.label||t.table_key}</span><b>{t.occupancy_pct==null?"—":String(t.occupancy_pct)+"%"}</b></div>
         <div className={styles.utilTrack}><div className={styles.utilFill} style={{width:String(Math.max(0,Math.min(100,Number(t.occupancy_pct||0))))+"%"}}/></div>
-        <small>{t.samples} observations · peak party {val(t.peak_party)}</small>
-      </div>):<div className={styles.restaurantEmpty}>Table calibration is ready; table observations are still being processed.</div>}</div>
+        <small>Peak visible party {val(t.peak_party)}</small>
+      </div>):<div className={styles.restaurantEmpty}>Table-use figures are not available for this period yet.</div>}</div>
     </div>
 
     <div className={styles.truthNote}><b>How to read this:</b> “visible diners” is concurrent visible people, not unique footfall. “Estimated covers” can be affected by occlusion or customers moving tables. “Observed time to food” starts when a party is first visibly seated and ends when food first becomes visible; it is not POS order-to-serve time. Missing observation periods are missing coverage, not zero activity.</div>
@@ -155,7 +155,7 @@ function RestaurantPeriodReport({data,days}){
 
     {observed===0?<div className={styles.restaurantEmpty}>No reliable restaurant business analytics are available for this period yet. WatchLog will not fabricate demand, cover or service-time figures.</div>:<>
       <div className={styles.periodMetrics}>
-        <div className={styles.restaurantMetric}><strong>{val(summary.total_estimated_covers)}</strong><span>Estimated covers</span><small>Total camera-derived estimate for observed sessions</small></div>
+        <div className={styles.restaurantMetric}><strong>{val(summary.total_estimated_covers)}</strong><span>Estimated covers</span><small>Total estimate based on visible table activity</small></div>
         <div className={styles.restaurantMetric}><strong>{val(summary.avg_estimated_covers_per_observed_day)}</strong><span>Avg covers / observed day</span><small>Uses only service days with observations</small></div>
         <div className={styles.restaurantMetric}><strong>{val(summary.served_sessions)}</strong><span>Served table sessions</span><small>Food became visibly present</small></div>
         <div className={styles.restaurantMetric}><strong>{summary.median_observed_time_to_food_minutes==null?"—":summary.median_observed_time_to_food_minutes+" min"}</strong><span>Median observed time to food</span><small>Across observed sessions in this period</small></div>
@@ -191,14 +191,14 @@ function RestaurantPeriodReport({data,days}){
       </div>
 
       {days===30&&<div className={styles.restaurantPanel}>
-        <div className={styles.sectionHead}><div><h3>Weekday pattern</h3><p>Average camera-derived demand and service timing by day of week.</p></div></div>
+        <div className={styles.sectionHead}><div><h3>Weekday pattern</h3><p>Average visible demand and service timing by day of week.</p></div></div>
         <div className={styles.weekdayGrid}>{weekdays.map(w=><div className={styles.weekdayCard} key={w.iso_day}><b>{w.weekday}</b><strong>{val(w.avg_estimated_covers)}</strong><span>avg est. covers</span><small>{val(w.avg_peak_visible_diners)} avg peak diners · {w.avg_daily_median_time_to_food==null?"—":w.avg_daily_median_time_to_food+" min"} time to food</small></div>)}</div>
       </div>}
 
       <div className={styles.periodGrid}>
         <div className={styles.restaurantPanel}>
           <div className={styles.sectionHead}><div><h3>Floor comparison</h3><p>Customer-area demand by dining floor over this period.</p></div></div>
-          <div className={styles.floorCards}>{floors.length?floors.map(f=><div className={styles.floorCard} key={f.camera_id||f.floor}><div className={styles.floorName}>{f.floor}</div><div className={styles.floorStats}><span><b>{val(f.peak_visible_diners)}</b> peak diners</span><span><b>{val(f.avg_visible_diners)}</b> avg visible</span><span><b>{val(f.peak_occupied_tables)}</b> peak occupied tables</span></div><small>{f.observed_days} observed service days · {f.samples} samples</small></div>):<div className={styles.restaurantEmpty}>No floor comparison is available yet.</div>}</div>
+          <div className={styles.floorCards}>{floors.length?floors.map(f=><div className={styles.floorCard} key={f.camera_id||f.floor}><div className={styles.floorName}>{f.floor}</div><div className={styles.floorStats}><span><b>{val(f.peak_visible_diners)}</b> peak diners</span><span><b>{val(f.avg_visible_diners)}</b> avg visible</span><span><b>{val(f.peak_occupied_tables)}</b> peak occupied tables</span></div><small>{f.observed_days} observed service days</small></div>):<div className={styles.restaurantEmpty}>No floor comparison is available yet.</div>}</div>
         </div>
         <div className={styles.restaurantPanel}>
           <div className={styles.sectionHead}><div><h3>Observed service-time distribution</h3><p>Seated/occupied to first food visible. This is not POS ticket time.</p></div></div>
@@ -215,16 +215,16 @@ function RestaurantPeriodReport({data,days}){
       <div className={styles.periodGrid}>
         <div className={styles.restaurantPanel}>
           <div className={styles.sectionHead}><div><h3>Most-used calibrated tables</h3><p>Occupancy share across valid observations in this period.</p></div></div>
-          <div className={styles.utilList}>{topTables.length?topTables.map(t=><div className={styles.utilRow} key={t.table_key}><div className={styles.utilTop}><span>{t.label||t.table_key}</span><b>{val(t.occupancy_pct,"%")}</b></div><div className={styles.utilTrack}><div className={styles.utilFill} style={{width:String(Math.max(0,Math.min(100,Number(t.occupancy_pct||0))))+"%"}}/></div><small>{t.observed_days} observed days · {t.samples} observations · peak party {val(t.peak_party)}</small></div>):<div className={styles.restaurantEmpty}>No table observations are available yet.</div>}</div>
+          <div className={styles.utilList}>{topTables.length?topTables.map(t=><div className={styles.utilRow} key={t.table_key}><div className={styles.utilTop}><span>{t.label||t.table_key}</span><b>{val(t.occupancy_pct,"%")}</b></div><div className={styles.utilTrack}><div className={styles.utilFill} style={{width:String(Math.max(0,Math.min(100,Number(t.occupancy_pct||0))))+"%"}}/></div><small>{t.observed_days} observed days · peak visible party {val(t.peak_party)}</small></div>):<div className={styles.restaurantEmpty}>No table-use figures are available yet.</div>}</div>
         </div>
         <div className={styles.restaurantPanel}>
           <div className={styles.sectionHead}><div><h3>Lower-utilization tables</h3><p>Useful for layout review only when coverage is adequate and table anchors stayed visible.</p></div></div>
-          <div className={styles.utilList}>{lowTables.length?lowTables.map(t=><div className={styles.utilRow} key={t.table_key}><div className={styles.utilTop}><span>{t.label||t.table_key}</span><b>{val(t.occupancy_pct,"%")}</b></div><div className={styles.utilTrack}><div className={styles.utilFill} style={{width:String(Math.max(0,Math.min(100,Number(t.occupancy_pct||0))))+"%"}}/></div><small>{t.observed_days} observed days · {t.samples} valid observations</small></div>):<div className={styles.restaurantEmpty}>No comparable table utilization is available yet.</div>}</div>
+          <div className={styles.utilList}>{lowTables.length?lowTables.map(t=><div className={styles.utilRow} key={t.table_key}><div className={styles.utilTop}><span>{t.label||t.table_key}</span><b>{val(t.occupancy_pct,"%")}</b></div><div className={styles.utilTrack}><div className={styles.utilFill} style={{width:String(Math.max(0,Math.min(100,Number(t.occupancy_pct||0))))+"%"}}/></div><small>{t.observed_days} observed days</small></div>):<div className={styles.restaurantEmpty}>No comparable table utilization is available yet.</div>}</div>
         </div>
       </div>
     </>}
 
-    <div className={styles.truthNote}><b>Management boundary:</b> these are camera-derived operational measurements. Visible diners are not unique footfall; covers and sessions are estimates; service timing is visually observed, not POS order-to-serve. Period-to-period changes should only be acted on when coverage is sufficiently comparable.</div>
+    <div className={styles.truthNote}><b>Management boundary:</b> these figures describe visible activity during covered periods. Visible diners are not unique footfall; covers and sessions are estimates; service timing is visually observed, not POS order-to-serve. Period-to-period changes should only be acted on when coverage is sufficiently comparable.</div>
   </section>;
 }
 
@@ -319,6 +319,29 @@ function ManagementReading({answer,label}){
 function InsightCards({items=[]}){
   if(!items.length)return null;
   return <div className={styles.findings}>{items.map((f,i)=><article className={styles.finding} key={`${f.title}-${i}`}><div className={styles.findingTop}><span className={`${styles.dot} ${severityClass(f.severity)}`}/><b>{f.title}</b></div>{f.value&&<div className={styles.metricValue} style={{fontSize:20,marginTop:9}}>{f.value}</div>}<p>{f.body}</p></article>)}</div>;
+}
+
+
+function SavedReportHistory({windowData,siteId,mode="period",excludeDate=""}){
+  const rows=(windowData?.saved_reports||[]).filter(x=>x?.service_date&&String(x.service_date)!==String(excludeDate||""));
+  if(!rows.length)return null;
+  const shown=mode==="latest"?rows.slice(0,1):rows;
+  return <section className={styles.section}>
+    <div className={styles.sectionHead}><div>
+      <h3>{mode==="latest"?"Most recent completed report":"Completed daily reports in this period"}</h3>
+      <p>{mode==="latest"?"There is no saved report for the selected day. The most recent completed report is shown below.":"Open any completed daily report without losing the 7-day or 30-day management view."}</p>
+    </div></div>
+    <div className={styles.findings}>{shown.map((x,i)=>{
+      const d=String(x.service_date||"");
+      const highlights=(x.highlights||[]).slice(0,3);
+      return <article className={styles.finding} key={(x.report_id||d||i)+"-"+i}>
+        <div className={styles.findingTop}><span className={styles.dot+" "+styles.dotGood}/><b>{dateLabel(d)}</b></div>
+        <p>{x.summary||"A completed management report is available for this service day."}</p>
+        {highlights.length>0&&<div>{highlights.map((h,j)=><p key={j}>• {typeof h==="string"?h:(h?.body||h?.title||"")}</p>)}</div>}
+        <a className={ui.secondaryLink} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}>Open report</a>
+      </article>;
+    })}</div>
+  </section>;
 }
 
 function ReportIcon({kind}){
@@ -586,13 +609,17 @@ export default function CustomerReports(){
         : <>
             <RestaurantOperations data={r.restaurant} periodLabel={r.view==="daily"?"Today":"Yesterday"}/>
             <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Yesterday's management reading"}/>
-            {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved business report is available for this service day yet.</div>)}
+            {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<>
+              <div className={ui.emptyCard}>No saved business report is available for this service day yet.</div>
+              <SavedReportHistory windowData={r.reportWindow} siteId={r.siteId} mode="latest"/>
+            </>)}
           </>;
     }else if(r.view==="week"||r.view==="monthly"){
       const days=r.view==="week"?7:30;
       reportBody=<>
         <RestaurantPeriodReport data={r.restaurantPeriod} days={days}/>
         <ManagementReading answer={r.answer} label={days===7?"What the last 7 days suggest":"What the last 30 days suggest"}/>
+        <SavedReportHistory windowData={r.reportWindow} siteId={r.siteId}/>
       </>;
     }
   }else if(r.isOffice){
@@ -600,11 +627,14 @@ export default function CustomerReports(){
       reportBody=<>
         <OfficeDayReport data={r.officeDay} periodLabel={r.view==="daily"?"Today":"Last completed working day"}/>
         <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"Last completed working-day reading"}/>
-        {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved evidence report is available for this working day yet.</div>)}
+        {r.view==="yesterday"&&(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<>
+          <div className={ui.emptyCard}>No saved management report is available for this working day yet.</div>
+          <SavedReportHistory windowData={r.reportWindow} siteId={r.siteId} mode="latest"/>
+        </>)}
       </>;
     }else{
       const days=r.view==="week"?7:30;
-      reportBody=<><OfficePeriodReport data={r.officePeriod} days={days}/><ManagementReading answer={r.answer} label={days===7?"What the last 7 working days suggest":"What the last 30 days suggest"}/></>;
+      reportBody=<><OfficePeriodReport data={r.officePeriod} days={days}/><ManagementReading answer={r.answer} label={days===7?"What the last 7 working days suggest":"What the last 30 days suggest"}/><SavedReportHistory windowData={r.reportWindow} siteId={r.siteId}/></>;
     }
   }else{
     reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<div className={ui.emptyCard}>No saved evidence report is available for the last completed business day yet.</div>):<section className="daily-report-card"><div className="daily-report-head"><Mark size={26}/><b>{label} report</b></div><div className="daily-report-body">{r.answer?<RichText text={r.answer}/>:<p style={{margin:0}}>No report is available yet.</p>}</div></section>;

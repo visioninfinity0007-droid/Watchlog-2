@@ -23,3 +23,14 @@ assert "management brief" in low or "daily report" in low, \
     "Reports must present the real management brief, never a placeholder preview"
 
 print("OK: reports present real report data, never sample metrics as tenant data")
+
+
+# Saved daily reports must remain discoverable from rolling windows, and archived dates must open
+# the exact frozen report rather than disappearing when "Yesterday" advances.
+USE_REPORT = Path("portal/app/reports/use-report.js").read_text(encoding="utf-8")
+assert 'rpc("wl_my_report_window"' in USE_REPORT,     "Reports must load the saved-report rolling window for Yesterday/7-day/30-day history"
+assert 'params.get("date")' in USE_REPORT and 'requestedReportDate' in USE_REPORT,     "Reports must support opening an exact saved report date"
+
+assert "Completed daily reports in this period" in PAGE,     "7-day/30-day views must surface completed saved daily reports"
+assert '"/reports/?view=yesterday&date="' in PAGE,     "saved report history must provide an exact-date report link"
+assert "Most recent completed report" in PAGE,     "Yesterday must point customers to the latest saved report when the selected day has none"

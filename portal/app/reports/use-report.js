@@ -44,8 +44,10 @@ export default function useReport(){
   const[siteId,setSiteId]=useState("");
   const[site,setSite]=useState(null);
   const[view,setView]=useState("yesterday");
+  const[requestedReportDate,setRequestedReportDate]=useState("");
   const[answer,setAnswer]=useState("");
   const[snapshot,setSnapshot]=useState(null);
+  const[reportWindow,setReportWindow]=useState(null);
   const[restaurant,setRestaurant]=useState(null);
   const[restaurantPeriod,setRestaurantPeriod]=useState(null);
   const[restaurantConfig,setRestaurantConfig]=useState(null);
@@ -65,6 +67,8 @@ export default function useReport(){
     const sites=sitesResult.data||[];
     const params=new URLSearchParams(location.search),requestedView=params.get("view");
     if(VALID_VIEWS.has(requestedView))setView(requestedView);
+    const requestedDate=params.get("date")||"";
+    if(/^\d{4}-\d{2}-\d{2}$/.test(requestedDate))setRequestedReportDate(requestedDate);
     const requestedSite=params.get("site")||selectedSiteId()||"";
     const resolvedSite=allowedSite(sites,requestedSite)?requestedSite:(sites[0]?.id||"");
     if(!resolvedSite){setError("No site is available for this account yet.");setBusy(false);return}
@@ -82,7 +86,7 @@ export default function useReport(){
     if(!siteId)return;
     let live=true;
     (async()=>{
-      setBusy(true);setAnswer("");setSnapshot(null);setRestaurant(null);setRestaurantPeriod(null);setOfficeDay(null);setOfficePeriod(null);setError("");
+      setBusy(true);setAnswer("");setSnapshot(null);setReportWindow(null);setRestaurant(null);setRestaurantPeriod(null);setOfficeDay(null);setOfficePeriod(null);setError("");
       const sb=supabase();
       const [cfg,ctx]=await Promise.all([
         sb.rpc("wl_restaurant_site_config",{p_site_id:siteId}),
@@ -97,6 +101,18 @@ export default function useReport(){
       const chaiLayout=config?.report_layout_profile==="chaiwala_restaurant_ops_v1";
       const officeEnabled=context?.site_type==="office";
       const officeLayout=officeEnabled&&(context?.reporting_prefs?.report_layout_profile==="office_ops_v1"||true);
+
+      let savedWindow=null;
+      if(view==="yesterday"||view==="week"||view==="monthly"){
+        const windowDays=view==="monthly"?30:7;
+        const windowEnd=view==="yesterday"&&requestedReportDate?requestedReportDate:null;
+        const wr=await sb.rpc("wl_my_report_window",{p_site_id:siteId,p_days:windowDays,p_end_date:windowEnd});
+        if(!live)return;
+        if(!wr.error){
+          savedWindow=wr.data||null;
+          setReportWindow(savedWindow);
+        }
+      }
 
       if(officeLayout&&view==="week"){
         const period=await sb.rpc("wl_office_period",{p_site_id:siteId,p_days:7,p_working_only:true});
@@ -151,10 +167,12 @@ export default function useReport(){
       }
 
       if(view==="yesterday"){
-        let date=dateInZone(site?.timezone||"Asia/Karachi",-1),rest=null;
-        const resolved=await sb.rpc("wl_my_last_completed_business_date",{p_site_id:siteId});
-        if(!live)return;
-        if(!resolved.error&&resolved.data)date=String(resolved.data);
+        let date=requestedReportDate||dateInZone(site?.timezone||"Asia/Karachi",-1),rest=null;
+        if(!requestedReportDate){
+          const resolved=await sb.rpc("wl_my_last_completed_business_date",{p_site_id:siteId});
+          if(!live)return;
+          if(!resolved.error&&resolved.data)date=String(resolved.data);
+        }
         if(restaurantEnabled){
           const rr=await sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:date});
           if(!live)return;
@@ -216,9 +234,9 @@ export default function useReport(){
       setAnswer(r.data.answer||"");
     })();
     return()=>{live=false};
-  },[siteId,site?.timezone,view]);
+  },[siteId,site?.timezone,view,requestedReportDate]);
 
   const isChaiWalaRestaurant=restaurantConfig?.report_layout_profile==="chaiwala_restaurant_ops_v1";
   const isOffice=siteContext?.site_type==="office";
-  return{email,siteId,site,view,setView,answer,snapshot,restaurant,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
+  return{email,siteId,site,view,setView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
 }

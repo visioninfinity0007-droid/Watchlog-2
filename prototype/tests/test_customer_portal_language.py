@@ -126,7 +126,7 @@ def main():
             "Common camera purposes",
             "Activity analytics",
             "Area occupancy peak",
-            "requested still images",
+            "requested camera views",
         ],
         "portal/app/operations/page.js": [
             "Review operational exceptions that need attention.",
@@ -154,6 +154,22 @@ def main():
     reports_surface = _surface("reports")
     if "Recipient" not in reports_surface:
         problems.append("reports surface: recipient/delivery management copy missing")
+
+    # Rendered Reports copy must never describe how WatchLog reviews/processes camera material.
+    # Keep this focused on customer-workspace.js so internal variable names and hidden AI prompts
+    # do not create false positives.
+    reports_rendered = (ROOT / "portal/app/reports/customer-workspace.js").read_text(encoding="utf-8")
+    for phrase in (
+        "scored frames",
+        "analyzed frames",
+        "analyzed samples",
+        "camera-derived",
+        "manual validation",
+        "still being processed",
+        "requested still images",
+    ):
+        if phrase.lower() in reports_rendered.lower():
+            problems.append(f"reports surface: customer-facing process language found: {phrase!r}")
     # Saved Video (was "recorder archive"), across the archive surface (workspace + saved-video-*).
     archive_surface = _surface("archive")
     for phrase in ("Search saved video", "Recovered from saved video", "Not available at this site"):
