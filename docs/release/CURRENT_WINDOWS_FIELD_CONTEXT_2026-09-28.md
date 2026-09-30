@@ -1,168 +1,79 @@
-# WatchLog Windows — Current Field Context (2026-09-28)
+# WatchLog Windows — Mirror Field Handoff Reconciliation (2026-09-28)
 
-This document is the Windows/Site-Connector field handoff.
+Status: **SUPERSEDED MIRROR HANDOFF — preserved for reconciliation, not release authority.**
 
-For full product/database/site context, use:
+Source mirror commit:
+`visioninfinity0007-droid/Watchlog-2@d3b2d0a10a8f4be490b98e9e28dcb208e6f6426b`
 
-`Alkalid-security/Watchlog/docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`
+The mirror document created at that commit called Build 76 / 5.0.21 the current field installer.
+That statement is historical and must not override canonical release authority.
 
-## Current release authority
+Current authority:
+- product/source: `Alkalid-security/Watchlog/main`
+- release ledger: `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`
+- current live handoff: `docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`
+- authoritative source version: 5.0.24
+- field-proven discovery/connectivity baseline: Build 69 / 5.0.17 until a later exact authoritative artifact passes physical Hikvision + Dahua acceptance.
+- existing-site upgrade authority: `WatchLog-Repair-Upgrade.exe` staged bootstrap in 5.0.24; full Setup is for new-site/new-PC onboarding.
 
-Authoritative release branch:
+## Mirror facts reconciled into canonical
 
-`build/site-connector-v5-watchlog2`
+The useful field facts from the mirror handoff are retained in canonical context/release documentation:
 
-Current successful Windows release:
+1. **ONVIF physical-camera normalization**
+   - encoding profiles must not be exposed as separate physical cameras;
+   - Al-Khalid retains 8 canonical physical cameras plus hidden historical profile rows;
+   - historical evidence is preserved.
 
-- Build: **76**
-- Version: **5.0.21**
-- Source SHA: `26b036a654446b3e8c262b2f476118f2e2f41916`
-- Windows Release run: **#76**
-- Run ID: `36346424676`
-- Artifact: `WatchLog-Windows-76`
-- Artifact ID: `10941445308`
-- Artifact digest:
-  `sha256:0fdf73bc6421291e58413330ac73b439a6256f59c95227cc4dfd1e4c6eea54b5`
+2. **Hikvision historical footage compatibility**
+   - search-first recorded-media retrieval and recorder-returned playback URI handling were part of the Build-76 lineage;
+   - canonical 5.0.24 owns the bounded archive/gap recovery contract plus the staged existing-site Repair/Upgrade bootstrap;
+   - exact physical-recorder acceptance is still required before claiming a hardware path field-proven.
 
-Build 76 is the current installer for new field work.
+3. **Al-Khalid mapping boundary**
+   - Reception / Director's Office / Armory Gate / Admin Entrance remain valid business areas;
+   - contradictory legacy stream-profile labels must not be rebound to physical channels until the views are visually re-confirmed.
 
-## Build 76 changes relevant to live sites
+4. **HASCO Steel**
+   - Hikvision DS-7608NI-Q1, eight physical cameras, business camera roles governed from canonical product context.
 
-### ONVIF physical-camera normalization
+5. **Chai Wala**
+   - Build-69 lineage proved the request/worker transport path but did not prove video-byte export on that recorder;
+   - do not claim clip/archive extraction field-proven until an accepted authoritative build returns real bounded footage from the physical recorder.
 
-Older ONVIF builds could treat recorder encoding profiles as cameras.
+6. **Field acceptance guardrails**
+   - verify physical camera identity, still acquisition, bounded archive retrieval, real bytes, recovery after a gap, and exact recorder firmware;
+   - never treat CI/package success alone as field proof.
 
-Example failure:
+## Rule
 
-- Camera 1 MainStream
-- Camera 1 SubStream
+Do not copy product work back into Watchlog-2 and then treat the mirror as authority.
+All new product/runtime/reporting work belongs in canonical `Alkalid-security/Watchlog/main`.
 
-were exposed as two WatchLog cameras even though both came from one physical
-VideoSource.
 
-Build 76 collapses ONVIF profiles by physical video source and prefers one
-profile token for snapshot use.
+## 5.0.24 installer context supersession note
 
-The product/database sync path is also backward-compatible with older deployed
-Agents and preserves historical transport-profile evidence.
+This mirror handoff is historical. Current installer truth is in:
 
-### Hikvision incident footage compatibility
+- `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`
+- `docs/release/EXISTING_SITE_REPAIR_UPGRADE_5_0_24.md`
+- `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`
 
-Build 76 hardens bounded recorded-video retrieval:
+Current product behavior:
+- `WatchLog-Setup.exe` is the new-site/new-PC path;
+- `WatchLog-Repair-Upgrade.exe` is the existing enrolled-site path;
+- staged passive validation runs before the old Agent is stopped;
+- staged recorder validation runs before installed files are replaced;
+- health commit requires fresh heartbeat, recorder observation and real updater polling;
+- rollback success requires proof that the previous Agent actually restarted;
+- `remote_update_v1` is evidence-based, not code-presence-based.
 
-1. search recorded media first;
-2. use the recorder-returned playback URI;
-3. include Hikvision legacy search metadata fields;
-4. support firmware-dependent GET/POST behavior for
-   `/ISAPI/ContentMgmt/download`;
-5. retain existing byte/time bounds.
+Recent Al-Khalid Head Office field evidence:
+- a full-installer candidate failed post-install health and rolled back to 5.0.19;
+- 5.0.19 remains online-update incapable;
+- this is the field case that triggered the permanent staged Repair/Upgrade model.
 
-This is still a field-acceptance feature: code/workflow success does not prove
-every Hikvision firmware exports clips.
-
-## Current live field baselines
-
-### Al-Khalid Security Services
-
-Recorder:
-
-- Dahua `DH-XVR1B08-I`
-
-Last verified deployed Agent:
-
-- 5.0.16
-- persisted driver: ONVIF
-
-Production database now exposes:
-
-- 8 canonical physical cameras
-- 8 hidden historical transport/profile rows
-
-Historical events/snapshots were preserved.
-
-The old stream-profile role labels contained contradictions on physical Cameras
-1 and 2. Role-specific rules for Reception / Director's Office / Armory Gate /
-Admin Entrance were disabled until the actual physical views are re-confirmed.
-
-Build 76 should be used for the next Agent upgrade so Agent-side source-token
-normalization matches the live cloud normalization.
-
-### HASCO Steel — Head Office
-
-Recorder:
-
-- Hikvision `DS-7608NI-Q1`
-
-Last verified deployed Agent:
-
-- 5.0.19
-- driver: `hikvision-isapi`
-
-Physical cameras: 8.
-
-The customer/business camera roles are managed in the product repository/live
-database, not in this installer repo.
-
-### Chai Wala — Chota Bukhari
-
-Recorder:
-
-- Hikvision `DS-7608NI-Q1`
-
-Last verified deployed Agent:
-
-- 5.0.17 / Build-69 lineage
-- driver: `hikvision-isapi`
-
-A real cloud incident clip request was claimed successfully by the Build-69
-Agent, proving the request/worker transport path.
-
-The recorder returned no validated video bytes through the old download path,
-so the request ended `unsupported`.
-
-Therefore:
-
-- clip worker transport = proven
-- Build-69 on-demand video export on this NVR = **not proven**
-- Build-76 field clip export on this NVR = **pending field acceptance**
-
-Do not claim Chai Wala clip extraction is solved until Build 76 or later returns
-real bounded bytes from the physical recorder.
-
-## Mandatory field acceptance for Build 76
-
-For each pilot recorder:
-
-1. install/upgrade with Build 76;
-2. confirm one physical camera row per physical source;
-3. verify native driver where applicable;
-4. verify camera still acquisition;
-5. request a bounded historical window;
-6. prove actual video bytes are returned;
-7. verify clip hash/size/content type;
-8. induce a bounded connectivity/recording gap;
-9. prove recovery/backfill after connectivity returns;
-10. capture support logs and exact recorder firmware.
-
-For Al-Khalid specifically:
-
-- verify the 8-camera physical inventory remains stable;
-- visually map the real channel views;
-- only then restore the four ambiguous office role rules.
-
-For Chai Wala specifically:
-
-- repeat the bounded clip test that failed on Build 69;
-- record the recorder-returned playback URI behavior;
-- do not enable an automatic multi-camera clip workflow until one-camera export is proven.
-
-## Release guardrails
-
-- Recorder passwords must never be committed.
-- Do not hard-code a customer site code.
-- Do not treat ONVIF profile count as physical-camera count.
-- Do not delete historical evidence to repair camera identity.
-- Do not advertise `operations_evidence_clip` as field-proven until real bytes are returned.
-- Do not make recorder writes as part of clip retrieval.
-- Keep clip retrieval bounded in time and bytes.
-- Always resolve a field installer to build/version/source SHA before diagnosing it.
+Windows 5.0.24 validation remains in
+`visioninfinity0007-droid/Watchlog-2:fix/existing-site-repair-upgrader-v5`.
+No exact 5.0.24 artifact should be called field-ready until Windows Release and the
+controlled Al-Khalid acceptance are recorded.

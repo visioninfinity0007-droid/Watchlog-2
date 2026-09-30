@@ -1,6 +1,6 @@
 # Runbook — Deployment
 
-Five services run on the Coolify host `161.97.175.15:8000`, all built from `main` of
+Five existing services run on the Coolify host `161.97.175.15:8000`, all built from `main` of
 `github.com/Alkalid-security/Watchlog` via a read-only deploy key.
 
 | Service | Coolify app (uuid) | Build source | URL |
@@ -12,6 +12,35 @@ Five services run on the Coolify host `161.97.175.15:8000`, all built from `main
 | Billing service | `watchlog-billing` (`b89g6v1kspqyub48adap4wol`) | `/prototype/billing`, Dockerfile | https://watchlog-billing.\<domain\> |
 
 (During demo/staging these are `*.161.97.175.15.sslip.io`.)
+
+### Private vision stack
+
+WatchLog also has a private CCTV vision stack at `/prototype/vision_worker/docker-compose.coolify.yml`.
+Deploy it as a **Docker Compose** application in Coolify. It intentionally has no public application
+URL: MinIO and Ollama stay on the internal Docker network and only the worker talks to Supabase.
+
+The stack contains:
+- `minio` — private persistent CCTV media bucket (no public port);
+- `ollama` — private multimodal inference runtime;
+- `vision-worker` — claims service-authorized snapshot jobs, mirrors the JPEG into MinIO, analyses it,
+  writes structured visual findings to Supabase/AI evidence, and finalizes an owner-facing day summary.
+
+Required Coolify secrets:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `WATCHLOG_MEDIA_ACCESS_KEY` — long random value, Coolify secret
+- `WATCHLOG_MEDIA_SECRET_KEY` — long random value, Coolify secret
+
+Recommended runtime values:
+- `VISION_MODEL=gemma3:4b`
+- `VISION_AUTO_PULL=true`
+- `VISION_BATCH_SIZE=4`
+- `WATCHLOG_MEDIA_RETENTION_DAYS=30`
+
+Do **not** expose MinIO ports 9000/9001 or Ollama publicly. Git stores only the deployment/configuration
+code; CCTV bytes live in the private Coolify volume and the Supabase ingestion fallback during rollout.
+
+
 
 ---
 
@@ -55,6 +84,9 @@ Set on each Coolify app (never in git):
   demo sandbox; a tenant user still cannot self-mark paid — the authoritative writer is ungranted).
 - Site: `WORDPRESS_DB_*`, `SERVICE_FQDN_WORDPRESS`, `WATCHLOG_PORTAL_URL` (theme portal link; demo default
   is env-overridable).
+- Vision stack: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WATCHLOG_MEDIA_ACCESS_KEY`,
+  `WATCHLOG_MEDIA_SECRET_KEY`; optional `VISION_MODEL`, `VISION_BATCH_SIZE`,
+  `WATCHLOG_MEDIA_RETENTION_DAYS`. Keep the MinIO/Ollama services internal-only.
 Changing a **build-time** var (portal) requires a redeploy to take effect.
 
 **Healthcheck gotcha:** portal (nginx) uses Coolify's HTTP healthcheck. The three python services

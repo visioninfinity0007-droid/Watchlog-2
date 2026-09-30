@@ -1,5 +1,7 @@
 # WatchLog — Master Completion Plan
 
+> **2026-09-28 live rebaseline:** This historical master plan remains useful for architecture and backlog lineage, but current production/site/release truth is maintained in [CURRENT_LIVE_CONTEXT_2026-09-28.md](./CURRENT_LIVE_CONTEXT_2026-09-28.md) and [WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md](../release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md). Build 76 / 5.0.21 is the current Windows baseline. Do not use older installer/public-claim status in this plan as current evidence.
+
 **Re-baselined:** 2026-09-04  
 **Repository baseline:** `main` `07ca75e377f571079df440bdb452e17a183f4cce`  
 **Post-merge CI:** run `33868554241` — backend, portal, installer-contract and setup-ui-build all SUCCESS  
