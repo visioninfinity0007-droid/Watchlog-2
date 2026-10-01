@@ -20,12 +20,15 @@ def main():
     guardrails = read("prototype/supabase/migrations/0104_ai_runtime_guardrails.sql")
     hardening = read("prototype/supabase/migrations/0103_production_security_hardening.sql")
     portal = surface("portal/app/ai")
+    provider_openai = read("prototype/supabase/functions/watchlog-ai/providers/openai_compat.ts")
+    provider_ollama = read("prototype/supabase/functions/watchlog-ai/providers/ollama.ts")
+    provider_registry = read("prototype/supabase/functions/watchlog-ai/providers/registry.ts")
+    provider_router = read("prototype/supabase/functions/watchlog-ai/providers/router.ts")
 
     required_gateway = [
         'wl_ai_record_usage',
         'wl_ai_conversation_context',
         'conversation_site_mismatch',
-        'AbortSignal.timeout(35000)',
         'ACTION_KINDS',
         'SAFE_HREFS',
         'delete data.command',
@@ -36,6 +39,18 @@ def main():
     for token in required_gateway:
         if token not in gateway:
             problems.append(f"AI gateway missing production guard: {token}")
+
+    timeout_call = 'AbortSignal.timeout(opts.timeoutMs ?? this.config.timeoutMs)'
+    for provider_name, provider_source in (
+        ("OpenAI-compatible", provider_openai),
+        ("Ollama", provider_ollama),
+    ):
+        if timeout_call not in provider_source:
+            problems.append(f"{provider_name} provider must enforce the configured request timeout")
+    if 'timeoutMs: isOllamaWire ? 90000 : 35000' not in provider_registry:
+        problems.append("AI provider registry must keep explicit local/cloud timeout defaults")
+    if 'timeoutMs: Number(o.timeout_ms) > 0 ? Number(o.timeout_ms) : 35000' not in provider_router:
+        problems.append("AI provider router must preserve the 35-second fallback timeout")
 
     for token in [
         'create table if not exists public.ai_usage_events',

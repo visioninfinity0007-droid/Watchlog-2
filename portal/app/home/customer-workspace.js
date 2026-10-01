@@ -36,6 +36,43 @@ function faultLabel(f){
   return labels[key]||"Monitoring needs attention";
 }
 
+function metric(v){
+  if(v===null||v===undefined||v==="")return null;
+  const x=Number(v);
+  return Number.isFinite(x)?x:null;
+}
+function rounded(v){
+  const x=Math.abs(Number(v));
+  return Number.isInteger(x)?String(x):x.toFixed(1);
+}
+function comparisonView(windowData){
+  const period=windowData&&windowData.structured_restaurant_metrics;
+  if(!period||period.enabled!==true)return null;
+  const current=period.summary||{},previous=period.previous_period||{},delta=period.comparison||{};
+  const expected=Math.max(1,Number(current.expected_service_days||period.days||7));
+  const observed=Math.max(0,Number(current.observed_service_days||0));
+  const previousObserved=Math.max(0,Number(previous.observed_service_days||0));
+  const minimum=Math.min(4,expected);
+  const qualifier="Based on "+observed+" of "+expected+" observed service days versus "+previousObserved+" of "+expected+" previously. Missing periods are not treated as zero activity.";
+  if(observed<minimum||previousObserved<minimum)return{ready:false,items:[],qualifier};
+
+  const items=[];
+  const covers=metric(delta.estimated_covers_pct);
+  if(covers!==null&&Math.abs(covers)>=5){
+    items.push("Estimated covers were "+rounded(covers)+"% "+(covers>0?"higher":"lower")+" than the previous "+expected+"-day period.");
+  }
+  const service=metric(delta.median_time_to_food_delta_minutes);
+  if(service!==null&&Math.abs(service)>=1){
+    items.push("Median observed time to food was "+rounded(service)+" minute"+(Math.abs(service)===1?"":"s")+" "+(service<0?"faster":"slower")+" than the previous period.");
+  }
+  const coverageDelta=metric(delta.coverage_delta_points);
+  if(coverageDelta!==null&&Math.abs(coverageDelta)>=5){
+    items.push("Monitoring coverage was "+rounded(coverageDelta)+" percentage points "+(coverageDelta>0?"higher":"lower")+" than the previous period.");
+  }
+  if(!items.length)items.push("No material change stands out in the supported comparison.");
+  return{ready:true,items:items.slice(0,3),qualifier};
+}
+
 export default function CustomerHome(){
   const[email,setEmail]=useState("");
   const[sites,setSites]=useState([]);
@@ -47,6 +84,7 @@ export default function CustomerHome(){
   const[restaurantConfig,setRestaurantConfig]=useState(null);
   const[latestReport,setLatestReport]=useState(null);
   const[latestReportDate,setLatestReportDate]=useState("");
+  const[reportWindow,setReportWindow]=useState(null);
   const[busy,setBusy]=useState(true);
   const[partial,setPartial]=useState(false);
   const[error,setError]=useState("");
@@ -55,7 +93,7 @@ export default function CustomerHome(){
     if(!id)return;
     setBusy(true);setPartial(false);setError("");
     const sb=supabase();
-    setRestaurantConfig(null);setLatestReport(null);setLatestReportDate("");
+    setRestaurantConfig(null);setLatestReport(null);setLatestReportDate("");setReportWindow(null);
     const results=await Promise.all([
       sb.rpc("wl_ai_context",{p_site_id:id}),
       sb.rpc("wl_notifications",{p_site_id:id,p_limit:20}),
@@ -74,9 +112,13 @@ export default function CustomerHome(){
       const resolved=await sb.rpc("wl_my_last_completed_business_date",{p_site_id:id});
       const reportDate=!resolved.error&&resolved.data?String(resolved.data):"";
       if(reportDate){
-        const snap=await sb.rpc("wl_my_report_snapshot",{p_site_id:id,p_date:reportDate});
+        const[snap,windowResult]=await Promise.all([
+          sb.rpc("wl_my_report_snapshot",{p_site_id:id,p_date:reportDate}),
+          sb.rpc("wl_my_report_window",{p_site_id:id,p_days:7,p_end_date:reportDate})
+        ]);
         if(!snap.error){setLatestReport(snap.data||null);setLatestReportDate(reportDate)}
         else setPartial(true);
+        if(!windowResult.error)setReportWindow(windowResult.data||null);
       }
     }
     if(c.error||q.error||d.error||a.error||rc.error)setPartial(true);
@@ -124,6 +166,7 @@ export default function CustomerHome(){
   const coverageScope=currentCoverage!==null?"current reporting period":completedCoverage!==null?"latest completed service day":"current reporting period";
   const completedMetrics=((latestReport&&latestReport.payload&&latestReport.payload.metrics)||[]).slice(0,4);
   const completedHighlights=((latestReport&&latestReport.payload&&latestReport.payload.highlights)||[]).slice(0,3);
+  const change=comparisonView(reportWindow);
 
   const summary=(analytics&&analytics.summary)||{};
   const ruleCount=((analytics&&analytics.by_rule)||[]).length;
@@ -220,6 +263,12 @@ export default function CustomerHome(){
             <div className={styles.health}><i className={connected?styles.dotGood:seen?styles.dotBad:styles.dotUnknown}/><div><b>{connected?"Site connected":seen?"Site connection unavailable":"Site not connected yet"}</b><small>{cams.length?String(healthy)+" of "+String(cams.length)+" monitored cameras confirmed healthy":"Camera health will appear after setup"}</small></div></div>
           </aside>
         </section>
+
+        {restaurantConfig&&change&&<section className={styles.change}>
+          <div className={styles.sectionHead}><div><span>What changed</span><h2>Last 7 service days vs previous 7</h2></div><a href={withSite("/analytics/",siteId)}>Open insights</a></div>
+          {change.ready?<div className={styles.changeList}>{change.items.map(function(item,i){return <div className={styles.changeItem} key={item}><span>{String(i+1).padStart(2,"0")}</span><p>{item}</p></div>})}</div>:<div className={styles.changeEmpty}><h3>A reliable comparison is not ready yet.</h3><p>WatchLog will compare completed service periods after enough service days are observed in both periods.</p></div>}
+          <p className={styles.changeQualifier}>{change.qualifier}</p>
+        </section>}
 
         <section className={styles.ask}>
           <div><span>Ask WatchLog</span><h2>Need something specific?</h2><p>Ask a direct question about this site and continue from the supporting information.</p></div>

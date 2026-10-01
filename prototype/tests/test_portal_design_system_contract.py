@@ -14,6 +14,7 @@ icons = (APP / "icons.js").read_text(encoding="utf-8")
 system_css = (APP / "portal-system.css").read_text(encoding="utf-8")
 evidence = (APP / "incidents" / "legacy.js").read_text(encoding="utf-8")
 health = (APP / "site-health" / "health-workspace.js").read_text(encoding="utf-8")
+home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -69,6 +70,12 @@ for phrase in ("<strong>{rows.length}</strong>incident", "<small>Detection sourc
 for phrase in ("Monitoring is not fully verified", "recording states are still unverified", "Unknown states are not treated as healthy"):
     if phrase not in health:
         problems.append(f"system-health truth language missing: {phrase}")
+
+for phrase in ('rpc("wl_my_report_window"', "What changed", "A reliable comparison is not ready yet", "Missing periods are not treated as zero activity"):
+    if phrase not in home:
+        problems.append(f"owner Home governed-comparison contract missing: {phrase}")
+if 'estimated_covers_pct' not in home or 'median_time_to_food_delta_minutes' not in home:
+    problems.append("owner Home comparison must use governed period deltas, not raw detector counts")
 
 for phrase in ("statement timeout", "schema cache", "WatchLog could not complete that request. Try again."):
     if phrase not in error_helper:

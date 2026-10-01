@@ -41,6 +41,11 @@ The first customer viewport should answer as many of these as the available fact
 - What changed?
 - Can I trust the monitoring picture?
 
+"What changed?" must come from a governed comparable period, not ad hoc arithmetic over raw detections.
+Only show a directional change when both periods have enough observed service/working days to support the
+comparison. Missing or unverified periods are never filled with zero. When comparison evidence is too thin,
+say that a reliable comparison is not ready yet or omit the change block.
+
 Do not fill a dashboard grid with unsupported or decorative KPIs. If a figure is not ready, omit it or say
 why it is unavailable. AI is a primary capability, not the prerequisite for receiving value.
 
