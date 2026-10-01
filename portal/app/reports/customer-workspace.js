@@ -13,8 +13,8 @@ import UnifiedRestaurantReport from "./unified-restaurant-report";
 const VIEWS=[["daily","Today"],["yesterday","Yesterday"],["monthly","30 days"],["executive","Executive"]];
 const RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]];
 const OFFICE_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]];
-function dateLabel(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {weekday:"long",month:"long",day:"numeric",year:"numeric"})}
-function shortDate(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {month:"short",day:"numeric"})}
+function dateLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"long",day:"numeric",month:"long",year:"numeric"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
+function shortDate(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",day:"numeric",month:"short"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
 function severityClass(v){return v==="critical"?styles.dotCritical:v==="attention"?styles.dotAttention:v==="none"||v==="clear"?styles.dotGood:""}
 function val(v,suffix=""){return v==null?"—":String(v)+suffix}
 function num(v){return v==null||Number.isNaN(Number(v))?null:Number(v)}
@@ -82,7 +82,7 @@ function RestaurantOperations({data,periodLabel}){
   const peakKitchen=Math.max(0,...hourly.map(x=>Number(x.avg_kitchen_load||0)));
   const peakHandoff=Math.max(0,...hourly.map(x=>Number(x.avg_handoff_load||0)));
   return <section className={styles.restaurantShell}>
-    <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>{data.service_date?"Service day · "+dateLabel(data.service_date):"Restaurant service day"}</h2><p>Chai Wala operating view for the 4 PM–4 AM service window. Values marked estimated or observed are based on visible activity, not POS data.</p></div><span className={styles.readyPill}>{coverage==null?"Coverage available":coverageLabel(coverage)+" coverage"}</span></div>
+    <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>{data.service_date?"Service day · "+dateLabel(data.service_date):"Restaurant service day"}</h2><p>Restaurant operating view for the configured 4 PM–4 AM service window. Values marked estimated or observed are based on visible activity, not POS data.</p></div><span className={styles.readyPill}>{coverage==null?"Coverage available":coverageLabel(coverage)+" coverage"}</span></div>
 
     <div className={styles.restaurantMetrics}>
       <div className={styles.restaurantMetric}><strong>{val(peakVisible)}</strong><span>Peak visible diners</span><small>Complete dining-floor composite only</small></div>
@@ -147,7 +147,7 @@ function RestaurantPeriodReport({data,days}){
 
   return <section className={styles.periodShell}>
     <div className={styles.periodHero}>
-      <div><div className={styles.kicker}>Chai Wala · restaurant performance</div><h2>{title}</h2><p>{shortDate(data.period?.start_service_date)} – {shortDate(data.period?.end_service_date)} · service days run 4 PM–4 AM</p></div>
+      <div><div className={styles.kicker}>Restaurant performance</div><h2>{title}</h2><p>{shortDate(data.period?.start_service_date)} – {shortDate(data.period?.end_service_date)} · service days run 4 PM–4 AM</p></div>
       <div className={styles.periodHeroFacts}>
         <span><b>{observed}</b>/{days} observed days</span>
         <span><b>{coverageLabel(coverage)}</b> avg coverage</span>
@@ -587,11 +587,12 @@ export default function CustomerReports(){
   const r=useReport();
   const views=r.isChaiWalaRestaurant?RESTAURANT_VIEWS:r.isOffice?OFFICE_VIEWS:VIEWS;
   const label=views.find(([k])=>k===r.view)?.[1]||"Report";
+  const restaurantName=r.site?.name||"this restaurant";
   const prompts={
-    daily:"Explain today's Chai Wala restaurant operations. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.",
-    yesterday:"Explain yesterday's Chai Wala restaurant report. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.",
-    week:"Explain the last 7 Chai Wala service days. Identify repeated demand, table-utilization and observed service-time patterns, and practical improvements supported by the evidence.",
-    monthly:"Explain the last 30 Chai Wala service days. Identify weekly, weekday and hourly patterns, floor/table utilization, observed service-time trends and practical improvements supported by the evidence."
+    daily:`Explain today's restaurant operations at ${restaurantName}. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.`,
+    yesterday:`Explain yesterday's restaurant report for ${restaurantName}. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.`,
+    week:`Explain the last 7 service days for ${restaurantName}. Identify repeated demand, table-utilization and observed service-time patterns, and practical improvements supported by the evidence.`,
+    monthly:`Explain the last 30 service days for ${restaurantName}. Identify weekly, weekday and hourly patterns, floor/table utilization, observed service-time trends and practical improvements supported by the evidence.`
   };
   const officePrompts={
     daily:"Explain today's office report in natural management language. Lead with what needs attention, monitoring confidence and practical improvements. Do not call activity detections unique people.",
@@ -633,5 +634,5 @@ export default function CustomerReports(){
   }
 
   const periodHint=r.view==="daily"?"Live service day":r.view==="yesterday"?"Completed service day":r.view==="week"?"Rolling weekly view":"Rolling monthly view";
-  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className={"main "+styles.reportPageMain}><header className={"target-page-head "+styles.reportPageHead}><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Chai Wala - Chota Bukhari"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="daily"?"Live management view for the current service day.":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Completed business and security report.":"Completed business and security report."):(r.view==="week"?"Weekly business and security review.":"Monthly business and security review.")):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery & recipients</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={styles.periodToolbar}><div className={styles.periodToolbarLabel}><span>Reporting period</span><small>{periodHint}</small></div><div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div></div>{r.busy?<div className={styles.reportLoading}><span/><div><b>Preparing your report</b><p>Loading the management view for this period.</p></div></div>:reportBody}<div className={styles.askReportBar}><div><span className={styles.panelEyebrow}>Need more detail?</span><h2>Ask WatchLog about this report</h2><p>Drill into a business pattern, security exception or recommendation without leaving the report context.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
+  return <div className="shell"><Nav active="Reports" email={r.email} currentSiteId={r.siteId}/><main className={"main "+styles.reportPageMain}><header className={"target-page-head "+styles.reportPageHead}><div><div className="target-eyebrow">Reports</div><h1>{r.isChaiWalaRestaurant?(r.site?.name||"Restaurant site"):r.isOffice?(r.site?.name||"Office site"):"Management report"}</h1><p>{r.isChaiWalaRestaurant?(r.view==="daily"?"Live management view for the current service day.":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date)+" · Completed business and security report.":"Completed business and security report."):(r.view==="week"?"Weekly business and security review.":"Monthly business and security review.")):r.isOffice?"Security attention, working-day activity, after-hours exceptions, monitoring reliability and practical improvements.":"What happened, what needs attention, and whether WatchLog was watching reliably."}</p></div><div className="target-actions"><a className={ui.secondaryLink} href={withSite("/reports/delivery/",r.siteId)}>Delivery & recipients</a></div></header>{r.error&&<div className="err">{r.error}</div>}<div className={styles.periodToolbar}><div className={styles.periodToolbarLabel}><span>Reporting period</span><small>{periodHint}</small></div><div className={ui.tabs}>{views.map(([k,l])=><button key={k} className={ui.tab+" "+(r.view===k?ui.tabActive:"")} onClick={()=>r.setView(k)}>{l}</button>)}</div></div>{r.busy?<div className={styles.reportLoading}><span/><div><b>Preparing your report</b><p>Loading the management view for this period.</p></div></div>:reportBody}<div className={styles.askReportBar}><div><span className={styles.panelEyebrow}>Need more detail?</span><h2>Ask WatchLog about this report</h2><p>Drill into a business pattern, security exception or recommendation without leaving the report context.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent(prompt),r.siteId)}>Ask WatchLog</a></div></main></div>;
 }

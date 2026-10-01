@@ -170,6 +170,8 @@ def main():
         (ROOT / "portal/app/reports/customer-workspace.js").read_text(encoding="utf-8"),
         (ROOT / "portal/app/reports/unified-restaurant-report.js").read_text(encoding="utf-8"),
     ])
+    if "Chai Wala" in reports_rendered:
+        problems.append("reports surface must not hard-code a customer/site name")
     for phrase in (
         "scored frames",
         "analyzed frames",

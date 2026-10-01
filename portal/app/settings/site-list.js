@@ -4,7 +4,7 @@ import {setupPill} from "../shell";
 import {withSite} from "../site-context";
 import ui from "../portal.module.css";
 
-function fmt(ts){return ts?new Date(ts).toLocaleString():"No activity yet"}
+function fmt(ts,timeZone){if(!ts)return"No activity yet";try{return new Intl.DateTimeFormat("en-PK",{timeZone:timeZone||"Asia/Karachi",day:"numeric",month:"short",year:"numeric",hour:"numeric",minute:"2-digit",hour12:true}).format(new Date(ts))+" · site time"}catch{return String(ts)}}
 
 export default function SiteList({settings}){
   const[target,setTarget]=useState(null);
@@ -25,7 +25,7 @@ export default function SiteList({settings}){
         const[label,cls]=setupPill(s.setup_state,s.online);
         return <article className={`settings-site-card ${s.id===settings.siteId?"active":""}`} key={s.id} onClick={()=>settings.choose(s.id)}>
           <div className="settings-site-head">
-            <div><b>{s.name}</b><small>{fmt(s.last_event)}</small></div>
+            <div><b>{s.name}</b><small>{fmt(s.last_event,s.timezone)}</small></div>
             <span className={`pill ${cls}`}>{label}</span>
           </div>
           <div className="settings-site-facts">

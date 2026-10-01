@@ -23,6 +23,10 @@ home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
 attention = (APP / "notifications" / "customer-workspace.js").read_text(encoding="utf-8")
 settings_hook = (APP / "settings" / "use-customer-settings.js").read_text(encoding="utf-8")
 settings_sites = (APP / "settings" / "site-list.js").read_text(encoding="utf-8")
+reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
+unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
+incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
+archive_history = (APP / "archive" / "saved-video-history.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -96,6 +100,15 @@ for phrase in ("Ask WatchLog privacy","Written site information","Camera evidenc
         problems.append(f"owner privacy control missing: {phrase}")
 if 'kind==="text"&&privacy.evidence&&!allowed' not in settings_hook:
     problems.append("text-only consent must not appear independently disabled while broader evidence consent remains enabled")
+
+for source_name, source in (("Reports", reports), ("Unified restaurant report", unified_report)):
+    if "Chai Wala" in source:
+        problems.append(f"{source_name} must remain tenant-neutral")
+    if 'Intl.DateTimeFormat("en-PK"' not in source or 'timeZone:"UTC"' not in source:
+        problems.append(f"{source_name} must use deterministic Pakistan-English service-date formatting")
+for source_name, source in (("Incident review", incidents), ("Saved Video", archive_history), ("Settings sites", settings_sites)):
+    if 'Intl.DateTimeFormat("en-PK"' not in source or "· site time" not in source:
+        problems.append(f"{source_name} must render customer timestamps in site-local time")
 
 if '["Incidents","/incidents/","Incidents"]' in nav:
     problems.append("Incidents must not compete as a primary/More destination; use Attention then drill down")

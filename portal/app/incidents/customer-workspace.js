@@ -8,7 +8,7 @@ import ui from "../portal.module.css";
 import styles from "./customer.module.css";
 
 function human(v){return String(v||"Incident").replace(/^analytic_/,"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
-function when(v){if(!v)return"Not recorded";return new Date(v).toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}
+function when(v,timeZone){if(!v)return"Not recorded";try{return new Intl.DateTimeFormat("en-PK",{timeZone:timeZone||"Asia/Karachi",day:"numeric",month:"short",hour:"numeric",minute:"2-digit",hour12:true}).format(new Date(v))+" · site time"}catch{return String(v)}}
 function duration(v){const n=Math.max(0,Math.round(Number(v||0)));if(!n)return"—";if(n<60)return n+"s";const m=Math.floor(n/60),s=n%60;return s?m+"m "+s+"s":m+"m"}
 function severityClass(v){const x=String(v||"").toLowerCase();return x==="critical"?styles.critical:x==="warning"||x==="high"?styles.warning:x==="info"||x==="low"?styles.info:styles.neutral}
 function summaryText(r){const s=r?.summary||{};return s.headline||s.summary||s.description||r?.detail?.summary||r?.detail?.description||human(r?.incident_type)+" was grouped into one incident episode for review."}
@@ -149,7 +149,7 @@ export default function CustomerIncidents(){
           <div className={styles.queueHead}><h2>Needs review</h2><p>{reviewCount?reviewCount+" incident"+(reviewCount===1?"":"s")+" currently need attention.":"Recent incidents and their review state."}</p></div>
           <div className={styles.queueList}>{rows.map(r=><button className={styles.item+" "+(selected?.id===r.id?styles.selected:"")} key={r.id} onClick={()=>setSelected(r)}>
             <div className={styles.itemTop}><span className={styles.itemTitle}>{human(r.incident_type)}</span><span className={styles.severity+" "+severityClass(r.severity)}>{human(r.severity||"Recorded")}</span></div>
-            <div className={styles.itemMeta}><span>{r.camera||"Site"}</span><span>{when(r.started_at||r.opened_at)}</span><span>{human(r.review_status||"Open")}</span></div>
+            <div className={styles.itemMeta}><span>{r.camera||"Site"}</span><span>{when(r.started_at||r.opened_at,site?.timezone)}</span><span>{human(r.review_status||"Open")}</span></div>
             <div className={styles.itemSummary}>{summaryText(r)}</div>
           </button>)}</div>
         </div>
@@ -158,7 +158,7 @@ export default function CustomerIncidents(){
           <div className={styles.detailBody}>
             <div className={styles.facts}>
               <div className={styles.fact}><span>Camera</span><b>{selected.camera||"Site-wide"}</b></div>
-              <div className={styles.fact}><span>Started</span><b>{when(selected.started_at||selected.opened_at)}</b></div>
+              <div className={styles.fact}><span>Started</span><b>{when(selected.started_at||selected.opened_at,site?.timezone)}</b></div>
               <div className={styles.fact}><span>Duration</span><b>{duration(selected.duration_seconds)}</b></div>
               <div className={styles.fact}><span>Review state</span><b>{human(selected.review_status||"Open")}</b></div>
             </div>
@@ -177,18 +177,18 @@ export default function CustomerIncidents(){
             <h3 className={styles.sectionTitle}>Supporting evidence</h3>
             <div className={styles.evidenceGrid}>
               {(evidence.stills||[]).map(still=><div className={styles.evidenceCard} key={"still:"+still.id}>
-                <div className={styles.evidenceTop}><div><b>Evidence image</b><small>{still.captured_at?when(still.captured_at):"Capture time not available"}</small></div><span className={"pill "+evidenceState(still.status)}>{human(still.status)}</span></div>
+                <div className={styles.evidenceTop}><div><b>Evidence image</b><small>{still.captured_at?when(still.captured_at,site?.timezone):"Capture time not available"}</small></div><span className={"pill "+evidenceState(still.status)}>{human(still.status)}</span></div>
                 {images[still.id]?<img src={images[still.id]} alt="Incident evidence"/>:still.status==="ready"&&still.has_image?<button className="ghost small" disabled={busy==="still:"+still.id} onClick={()=>viewStill(still)}>{busy==="still:"+still.id?"Loading…":"View image"}</button>:<p>{still.error?"This evidence image is unavailable.":"No image is available for this evidence item."}</p>}
               </div>)}
               {(evidence.clips||[]).map(clip=><div className={styles.evidenceCard} key={"clip:"+clip.request_id}>
-                <div className={styles.evidenceTop}><div><b>Evidence footage</b><small>{clip.start_at&&clip.end_at?when(clip.start_at)+" – "+when(clip.end_at):"Requested footage window"}</small></div><span className={"pill "+evidenceState(clip.status)}>{human(clip.status)}</span></div>
+                <div className={styles.evidenceTop}><div><b>Evidence footage</b><small>{clip.start_at&&clip.end_at?when(clip.start_at,site?.timezone)+" – "+when(clip.end_at,site?.timezone):"Requested footage window"}</small></div><span className={"pill "+evidenceState(clip.status)}>{human(clip.status)}</span></div>
                 {clip.status==="ready"?<button className="ghost small" disabled={busy==="clip:"+clip.request_id} onClick={()=>downloadClip(clip)}>{busy==="clip:"+clip.request_id?"Preparing…":"Download "+(bytesLabel(clip.bytes)||"footage")}</button>:<p>{clip.status==="failed"?"This footage request could not be completed.":clip.status==="unsupported"?"This camera system did not provide footage for this request.":"WatchLog will show the footage here when the request is ready."}</p>}
               </div>)}
               {!(evidence.stills||[]).length&&!(evidence.clips||[]).length&&<div className={styles.emptyTimeline}>No supporting image or footage is attached to this incident yet.</div>}
             </div>
 
             <h3 className={styles.sectionTitle}>Incident lifecycle</h3>
-            {lifecycle.length?<div className={styles.timeline}>{lifecycle.map((x,i)=><div className={styles.timelineRow} key={String(x.event)+"-"+String(x.at)+"-"+i}><span className={styles.timelineDot}/><b>{human(x.event)}</b><small>{when(x.at)}</small></div>)}</div>:<div className={styles.emptyTimeline}>No additional lifecycle transitions are recorded for this incident yet.</div>}
+            {lifecycle.length?<div className={styles.timeline}>{lifecycle.map((x,i)=><div className={styles.timelineRow} key={String(x.event)+"-"+String(x.at)+"-"+i}><span className={styles.timelineDot}/><b>{human(x.event)}</b><small>{when(x.at,site?.timezone)}</small></div>)}</div>:<div className={styles.emptyTimeline}>No additional lifecycle transitions are recorded for this incident yet.</div>}
 
             <div className={styles.actions}>
               <a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent("Explain this incident: "+human(selected.incident_type)+" at "+(selected.camera||"this site")+". Tell me what matters and what action is appropriate."),siteId)}>Ask WatchLog</a>
