@@ -143,6 +143,15 @@ def main():
         if phrase not in insights:
             problems.append(f"Insights surface missing configuration-truth copy: {phrase!r}")
 
+    settings_hook = (ROOT / "portal/app/settings/use-customer-settings.js").read_text(encoding="utf-8")
+    settings_sites = (ROOT / "portal/app/settings/site-list.js").read_text(encoding="utf-8")
+    for rpc in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_egress"):
+        if f'"{rpc}"' not in settings_hook:
+            problems.append(f"Settings privacy control missing governed permission call: {rpc}")
+    for phrase in ("Ask WatchLog privacy","Written site information","Camera evidence","off by default","Only an account owner or admin can change these permissions."):
+        if phrase not in settings_sites:
+            problems.append(f"Settings privacy control missing customer copy: {phrase!r}")
+
     # Ask WatchLog remains the governed question workspace, but it is no longer the signed-in homepage.
     ai_home = _surface("ai")
     for phrase in ("WatchLog AI", "Ask WatchLog about ", "Device changes require approval."):

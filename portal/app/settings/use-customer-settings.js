@@ -9,6 +9,10 @@ export default function useCustomerSettings(){
   const[sites,setSites]=useState([]);
   const[siteId,setSiteId]=useState("");
   const[error,setError]=useState("");
+  const[role,setRole]=useState("viewer");
+  const[privacy,setPrivacy]=useState({loaded:false,text:false,evidence:false});
+  const[privacyBusy,setPrivacyBusy]=useState("");
+  const[privacyNote,setPrivacyNote]=useState("");
   const[removing,setRemoving]=useState(false);
 
   const loadSites=useCallback(async(preferred="")=>{
@@ -35,13 +39,42 @@ export default function useCustomerSettings(){
     const g=await requireTenant();
     if(!g)return;
     setEmail(g.session.user.email||"");
+    const roleResult=await supabase().rpc("wl_my_role");
+    if(!roleResult.error)setRole(roleResult.data||"viewer");
     await loadSites();
   })()},[loadSites]);
+
+  useEffect(()=>{let live=true;(async()=>{
+    if(!siteId){setPrivacy({loaded:false,text:false,evidence:false});return}
+    setPrivacy({loaded:false,text:false,evidence:false});setPrivacyNote("");
+    const r=await supabase().rpc("wl_ai_site_egress",{p_site_id:siteId});
+    if(!live)return;
+    if(r.error){setError(say(r.error));return}
+    setPrivacy({loaded:true,text:!!r.data?.external_text_egress_allowed,evidence:!!r.data?.external_egress_allowed});
+  })();return()=>{live=false}},[siteId]);
 
   function choose(id){
     setSiteId(id);
     rememberSite(id,sites.find(s=>s.id===id)?.name||"");
     history.replaceState(null,"",`/settings/?site=${encodeURIComponent(id)}`);
+  }
+
+  async function setPrivacyPermission(kind,allowed){
+    if(!siteId||privacyBusy||(role!=="owner"&&role!=="admin"))return false;
+    if(kind==="text"&&privacy.evidence&&!allowed){
+      setPrivacyNote("Camera-evidence permission also includes written site information. Turn off camera-evidence processing first.");
+      return false;
+    }
+    setPrivacyBusy(kind);setError("");setPrivacyNote("");
+    const rpc=kind==="evidence"?"wl_ai_set_site_egress":"wl_ai_set_site_text_egress";
+    const r=await supabase().rpc(rpc,{p_site_id:siteId,p_allowed:!!allowed});
+    setPrivacyBusy("");
+    if(r.error){setError(say(r.error));return false}
+    const refreshed=await supabase().rpc("wl_ai_site_egress",{p_site_id:siteId});
+    if(refreshed.error){setError(say(refreshed.error));return false}
+    setPrivacy({loaded:true,text:!!refreshed.data?.external_text_egress_allowed,evidence:!!refreshed.data?.external_egress_allowed});
+    setPrivacyNote(allowed?"Permission updated for this site.":"Permission turned off for this site.");
+    return true;
   }
 
   async function removeSite(site){
@@ -60,6 +93,8 @@ export default function useCustomerSettings(){
 
   return{
     email,sites,siteId,current:sites.find(s=>s.id===siteId),
-    error,setError,choose,removeSite,removing,reload:loadSites
+    error,setError,role,canManage:role==="owner"||role==="admin",
+    privacy,privacyBusy,privacyNote,setPrivacyPermission,
+    choose,removeSite,removing,reload:loadSites
   };
 }

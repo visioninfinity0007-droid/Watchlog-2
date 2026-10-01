@@ -46,6 +46,32 @@ export default function SiteList({settings}){
         <a className={ui.roleCard} href={withSite("/site-health/",settings.current.id)}><strong>System Health</strong><p>Check connection, camera health and recording verification.</p><span>Open system health →</span></a>
         <a className={ui.roleCard} href={withSite("/ai/",settings.current.id)}><strong>Ask WatchLog</strong><p>Ask what happened or explore information about this site.</p><span>Open Ask WatchLog →</span></a>
       </section>
+
+      <section className={ui.privacyCard} aria-busy={!settings.privacy.loaded||Boolean(settings.privacyBusy)}>
+        <div className={ui.privacyHead}>
+          <div><span>Ask WatchLog privacy</span><h3>Choose what can be used for online AI processing</h3><p>These permissions are controlled per site and are off by default. They only affect how Ask WatchLog may process information when answering questions.</p></div>
+          {!settings.canManage&&<span className="pill s-unk">View only</span>}
+        </div>
+        <div className={ui.privacyOptions}>
+          <div className={ui.privacyOption}>
+            <div><strong>Written site information</strong><p>Allows approved online AI processing to use text such as site status, reports and your questions. Camera images are not included by this permission.</p></div>
+            <div className={ui.privacyControl}>
+              <span className={"pill "+(settings.privacy.text?"s-ok":"s-unk")}>{settings.privacy.loaded?(settings.privacy.text?"Allowed":"Off"):"Checking…"}</span>
+              {settings.canManage&&<button type="button" className="ghost small" disabled={!settings.privacy.loaded||Boolean(settings.privacyBusy)||settings.privacy.evidence} onClick={()=>settings.setPrivacyPermission("text",!settings.privacy.text)}>{settings.privacyBusy==="text"?"Saving…":settings.privacy.text?"Turn off":"Allow text only"}</button>}
+            </div>
+          </div>
+          <div className={ui.privacyOption}>
+            <div><strong>Camera evidence</strong><p>Allows approved online AI processing to use camera evidence when a question needs it. Enabling this also allows written site information.</p></div>
+            <div className={ui.privacyControl}>
+              <span className={"pill "+(settings.privacy.evidence?"s-ok":"s-unk")}>{settings.privacy.loaded?(settings.privacy.evidence?"Allowed":"Off"):"Checking…"}</span>
+              {settings.canManage&&<button type="button" className="ghost small" disabled={!settings.privacy.loaded||Boolean(settings.privacyBusy)} onClick={()=>settings.setPrivacyPermission("evidence",!settings.privacy.evidence)}>{settings.privacyBusy==="evidence"?"Saving…":settings.privacy.evidence?"Turn off":"Allow evidence"}</button>}
+            </div>
+          </div>
+        </div>
+        <p className={ui.privacyFoot}>{settings.privacy.evidence?"Camera-evidence permission includes written site information. Turn off camera evidence before turning off text-only processing.":settings.canManage?"You can change these permissions at any time.":"Only an account owner or admin can change these permissions."}</p>
+        {settings.privacyNote&&<div className={ui.privacyNote} role="status">{settings.privacyNote}</div>}
+      </section>
+
       <section className={ui.dangerZone}>
         <div>
           <strong>Remove this site</strong>

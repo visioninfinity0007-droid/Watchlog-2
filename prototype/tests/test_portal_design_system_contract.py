@@ -21,6 +21,8 @@ evidence = (APP / "incidents" / "legacy.js").read_text(encoding="utf-8")
 health = (APP / "site-health" / "health-workspace.js").read_text(encoding="utf-8")
 home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
 attention = (APP / "notifications" / "customer-workspace.js").read_text(encoding="utf-8")
+settings_hook = (APP / "settings" / "use-customer-settings.js").read_text(encoding="utf-8")
+settings_sites = (APP / "settings" / "site-list.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -85,6 +87,15 @@ if 'Intl.DateTimeFormat("en-PK"' not in analytics or 'timeZone:"UTC"' not in ana
 for phrase in ('role="log"', 'role="alert"', 'aria-controls="watchlog-context-rail"', 'aria-expanded={!railCollapsed}'):
     if phrase not in ai_workspace:
         problems.append(f"Ask WatchLog interaction semantics missing: {phrase}")
+
+for phrase in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_egress"):
+    if phrase not in settings_hook:
+        problems.append(f"owner privacy control missing governed backend contract: {phrase}")
+for phrase in ("Ask WatchLog privacy","Written site information","Camera evidence"):
+    if phrase not in settings_sites:
+        problems.append(f"owner privacy control missing: {phrase}")
+if 'settings.privacy.evidence&&!allowed' not in settings_hook:
+    problems.append("text-only consent must not appear independently disabled while broader evidence consent remains enabled")
 
 if '["Incidents","/incidents/","Incidents"]' in nav:
     problems.append("Incidents must not compete as a primary/More destination; use Attention then drill down")
