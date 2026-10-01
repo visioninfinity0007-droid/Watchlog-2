@@ -27,6 +27,7 @@ reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8"
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
 archive_history = (APP / "archive" / "saved-video-history.js").read_text(encoding="utf-8")
+archive_detail = (APP / "archive" / "saved-video-detail.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -116,6 +117,11 @@ if '["Incidents","/incidents/","Incidents"]' in nav:
 for phrase in ("Camera evidence", "Camera event history", "Available for review"):
     if phrase not in evidence:
         problems.append(f"camera evidence semantic copy missing: {phrase}")
+for source_name, source in (("Camera evidence", evidence), ("Saved Video detail", archive_detail)):
+    if 'Intl.DateTimeFormat("en-PK"' not in source or "· site time" not in source:
+        problems.append(f"{source_name} must render event/evidence timestamps in site-local time")
+if "zoneFor(row)" not in evidence:
+    problems.append("multi-site camera evidence must resolve timezone per event/site")
 for phrase in ("<strong>{rows.length}</strong>incident", "<small>Detection source</small>", "<small>Review state</small>"):
     if phrase in evidence:
         problems.append(f"camera event surface collapses semantic layers: {phrase}")
