@@ -83,8 +83,10 @@ for token in ("--portal-violet", "--portal-canvas", ".target-page-head", ".produ
 for surface_name, source, token in (
     ("Home", home_css, ".primary,.secondary{flex:1;min-height:44px!important}"),
     ("Attention", attention_css, ".actions .markAll,.filterBar button,.openAction,.readAction{min-height:44px!important}"),
+    ("Attention filter layout", attention_css, ".filterBar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;overflow:visible}"),
     ("Ask WatchLog", ai_css, ".suggestionRow a{min-height:44px;display:inline-flex;align-items:center}"),
     ("Ask WatchLog composer", ai_css, ".composer button{width:44px!important;height:44px!important;min-width:44px!important}"),
+    ("Ask WatchLog nav clearance", ai_css, ".composerWrap{bottom:calc(64px + env(safe-area-inset-bottom));padding:10px 12px 13px}"),
 ):
     if token not in source:
         problems.append(f"{surface_name} mobile touch-target contract missing: {token}")
