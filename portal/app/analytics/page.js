@@ -12,6 +12,33 @@ function label(v){return String(v||"Activity").replaceAll("_"," ").replace(/\b\w
 function pct(v){if(v===null||v===undefined||v==="")return null;const x=Number(v);return Number.isFinite(x)?Math.round(Math.max(0,Math.min(1,x))*100):null}
 function dateLabel(v){if(!v)return"Latest completed service day";try{return new Date(v+"T12:00:00").toLocaleDateString([],{weekday:"long",month:"long",day:"numeric",year:"numeric"})}catch{return v}}
 function metricValue(metric){if(metric===null||metric===undefined)return"—";if(typeof metric==="object"&&metric.value!==undefined)return String(metric.value);return String(metric)}
+function numeric(v){if(v===null||v===undefined||v==="")return null;const x=Number(v);return Number.isFinite(x)?x:null}
+function compactNumber(v){const x=numeric(v);if(x===null)return"—";return Number.isInteger(x)?String(x):x.toFixed(1)}
+function restaurantPeriodView(windowData){
+  const period=windowData?.structured_restaurant_metrics;
+  if(!period||period.enabled!==true)return null;
+  const summary=period.summary||{},previous=period.previous_period||{},comparison=period.comparison||{};
+  const expected=Math.max(1,Number(summary.expected_service_days||period.days||7));
+  const observed=Math.max(0,Number(summary.observed_service_days||0));
+  const previousObserved=Math.max(0,Number(previous.observed_service_days||0));
+  const minimum=Math.min(4,expected);
+  const ready=observed>=minimum&&previousObserved>=minimum;
+  const changes=[];
+  const covers=numeric(comparison.estimated_covers_pct);
+  if(covers!==null&&Math.abs(covers)>=5)changes.push("Estimated covers were "+compactNumber(Math.abs(covers))+"% "+(covers>0?"higher":"lower")+" than the previous "+expected+"-day period.");
+  const service=numeric(comparison.median_time_to_food_delta_minutes);
+  if(service!==null&&Math.abs(service)>=1)changes.push("Median observed time to food was "+compactNumber(Math.abs(service))+" minute"+(Math.abs(service)===1?"":"s")+" "+(service<0?"faster":"slower")+" than the previous period.");
+  const coverageDelta=numeric(comparison.coverage_delta_points);
+  if(coverageDelta!==null&&Math.abs(coverageDelta)>=5)changes.push("Monitoring coverage was "+compactNumber(Math.abs(coverageDelta))+" percentage points "+(coverageDelta>0?"higher":"lower")+" than the previous period.");
+  if(ready&&!changes.length)changes.push("No material change stands out in the supported 7-day comparison.");
+  return{
+    expected,observed,previousObserved,ready,changes:changes.slice(0,3),
+    avgCovers:numeric(summary.avg_estimated_covers_per_observed_day),
+    medianFood:numeric(summary.median_observed_time_to_food_minutes),
+    coverage:pct(summary.avg_coverage_ratio),
+    busiestDay:summary.busiest_day||null
+  };
+}
 
 function RestaurantInsights({siteId,site,date,day,snapshot,windowData}){
   const payload=snapshot?.payload||{};
@@ -26,6 +53,7 @@ function RestaurantInsights({siteId,site,date,day,snapshot,windowData}){
   const saved=(windowData?.saved_reports||[]).slice(0,4);
   const manualMetrics=(payload.metrics||[]).slice(0,4);
   const highlights=(payload.highlights||[]).slice(0,4);
+  const period=restaurantPeriodView(windowData);
 
   const liveMetrics=[
     {value:peakVisible||"—",label:"Peak visible diners",note:"Concurrent visible diners, not unique footfall"},
@@ -70,6 +98,17 @@ function RestaurantInsights({siteId,site,date,day,snapshot,windowData}){
         </ul>
       </aside>
     </section>
+
+    {period&&<section className={styles.periodPanel}>
+      <div className={styles.sectionHead}><div><span className={styles.periodEyebrow}>7-day pattern</span><h2>What changed across recent service days</h2><p>{period.ready?"Compared with the previous 7 service days using only supported completed-period data.":"WatchLog is building a comparison from completed service days; missing periods are not treated as zero activity."}</p></div><a href={withSite("/reports/?view=week",siteId)}>Open 7-day report</a></div>
+      <div className={styles.periodMetrics}>
+        <div><strong>{period.avgCovers===null?"—":compactNumber(period.avgCovers)}</strong><span>Avg estimated covers</span><small>{period.observed+" of "+period.expected+" service days observed"}</small></div>
+        <div><strong>{period.medianFood===null?"—":compactNumber(period.medianFood)+" min"}</strong><span>Median observed time to food</span><small>Across supported table sessions</small></div>
+        <div><strong>{period.coverage===null?"—":period.coverage+"%"}</strong><span>Avg monitoring coverage</span><small>Missing time is not zero activity</small></div>
+        <div><strong>{period.busiestDay?.service_date?dateLabel(String(period.busiestDay.service_date)):"—"}</strong><span>Busiest observed service day</span><small>{period.busiestDay?.estimated_covers!=null?compactNumber(period.busiestDay.estimated_covers)+" estimated covers":"Not enough supported data"}</small></div>
+      </div>
+      {period.ready?<div className={styles.periodChanges}>{period.changes.map((item,i)=><div key={item}><span>{String(i+1).padStart(2,"0")}</span><p>{item}</p></div>)}</div>:<div className={styles.periodPending}><h3>Reliable comparison not ready yet</h3><p>Current period: {period.observed} of {period.expected} observed service days. Previous period: {period.previousObserved} of {period.expected}. WatchLog will show directional changes after both periods have enough observed days.</p></div>}
+    </section>}
 
     <section className={styles.section}>
       <div className={styles.sectionHead}><div><h2>Completed service days</h2><p>Use completed daily reports before treating a multi-day pattern as a trend.</p></div><a href={withSite("/reports/?view=week",siteId)}>Open 7-day view</a></div>

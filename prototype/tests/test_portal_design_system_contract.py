@@ -71,9 +71,12 @@ for surface_name, source, token in (
     if token not in source:
         problems.append(f"{surface_name} mobile touch-target contract missing: {token}")
 
-for phrase in ("Activity insights are not configured yet", "missing measurements into zero activity", 'aria-label="Choose insight period"'):
+for phrase in ("Activity insights are not configured yet", "missing measurements into zero activity", 'aria-label="Choose insight period"', "7-day pattern", "Reliable comparison not ready yet", "Previous period:"):
     if phrase not in analytics:
         problems.append(f"Insights truth/interaction contract missing: {phrase}")
+for token in ("structured_restaurant_metrics", "observed_service_days", "estimated_covers_pct", "median_time_to_food_delta_minutes", "coverage_delta_points"):
+    if token not in analytics:
+        problems.append(f"restaurant Insights must use governed rolling-period data: {token}")
 if "Chai Wala" in analytics:
     problems.append("Insights must not hard-code one tenant/site name into the reusable restaurant surface")
 for phrase in ('role="log"', 'role="alert"', 'aria-controls="watchlog-context-rail"', 'aria-expanded={!railCollapsed}'):
