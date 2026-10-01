@@ -94,7 +94,7 @@ for phrase in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_
 for phrase in ("Ask WatchLog privacy","Written site information","Camera evidence"):
     if phrase not in settings_sites:
         problems.append(f"owner privacy control missing: {phrase}")
-if 'settings.privacy.evidence&&!allowed' not in settings_hook:
+if 'kind==="text"&&privacy.evidence&&!allowed' not in settings_hook:
     problems.append("text-only consent must not appear independently disabled while broader evidence consent remains enabled")
 
 if '["Incidents","/incidents/","Incidents"]' in nav:
