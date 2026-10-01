@@ -15,6 +15,8 @@ system_css = (APP / "portal-system.css").read_text(encoding="utf-8")
 home_css = (APP / "home" / "home.module.css").read_text(encoding="utf-8")
 attention_css = (APP / "notifications" / "notifications.module.css").read_text(encoding="utf-8")
 ai_css = (APP / "ai" / "customer.module.css").read_text(encoding="utf-8")
+analytics = (APP / "analytics" / "page.js").read_text(encoding="utf-8")
+ai_workspace = (APP / "ai" / "customer-workspace.js").read_text(encoding="utf-8")
 evidence = (APP / "incidents" / "legacy.js").read_text(encoding="utf-8")
 health = (APP / "site-health" / "health-workspace.js").read_text(encoding="utf-8")
 home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -68,6 +70,15 @@ for surface_name, source, token in (
 ):
     if token not in source:
         problems.append(f"{surface_name} mobile touch-target contract missing: {token}")
+
+for phrase in ("Activity insights are not configured yet", "missing measurements into zero activity", 'aria-label="Choose insight period"'):
+    if phrase not in analytics:
+        problems.append(f"Insights truth/interaction contract missing: {phrase}")
+if "Chai Wala" in analytics:
+    problems.append("Insights must not hard-code one tenant/site name into the reusable restaurant surface")
+for phrase in ('role="log"', 'role="alert"', 'aria-controls="watchlog-context-rail"', 'aria-expanded={!railCollapsed}'):
+    if phrase not in ai_workspace:
+        problems.append(f"Ask WatchLog interaction semantics missing: {phrase}")
 
 if '["Incidents","/incidents/","Incidents"]' in nav:
     problems.append("Incidents must not compete as a primary/More destination; use Attention then drill down")

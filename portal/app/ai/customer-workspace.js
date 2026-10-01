@@ -34,18 +34,18 @@ export default function CustomerAI(){
     <div className={`${styles.workspace} ${railCollapsed?"watchlogContextCollapsed":""}`}>
       <main className={styles.main} aria-busy={c.booting}>
         {c.booting?<HeaderLoader/>:<CustomerHeader site={c.site} ctx={c.ctx} styles={styles}/>} 
-        <section className={styles.chat}>
-          {c.booting?<ChatLoader/>:c.messages.length?<div className={styles.thread}>{c.messages.map((m,i)=><CustomerMessage key={m.id||i} message={m} siteId={c.siteId} styles={styles}/>)}{c.busy&&<div className={`${styles.message} ${styles.assistant}`}><div className={styles.avatar}><Mark size={18}/></div><div className={styles.thinking}><span>Thinking</span><i/><i/><i/></div></div>}<div ref={endRef}/></div>:<CustomerWelcome site={c.site} ctx={c.ctx} send={c.send} styles={styles}/>} 
+        <section className={styles.chat} role="log" aria-live="polite" aria-relevant="additions text" aria-label="WatchLog conversation">
+          {c.booting?<ChatLoader/>:c.messages.length?<div className={styles.thread}>{c.messages.map((m,i)=><CustomerMessage key={m.id||i} message={m} siteId={c.siteId} styles={styles}/>)}{c.busy&&<div className={`${styles.message} ${styles.assistant}`} role="status" aria-label="WatchLog is preparing a response"><div className={styles.avatar}><Mark size={18}/></div><div className={styles.thinking}><span>Thinking</span><i aria-hidden="true"/><i aria-hidden="true"/><i aria-hidden="true"/></div></div>}<div ref={endRef}/></div>:<CustomerWelcome site={c.site} ctx={c.ctx} send={c.send} styles={styles}/>} 
         </section>
-        {c.error&&<div className={styles.error}>{c.error}</div>}
+        {c.error&&<div className={styles.error} role="alert">{c.error}</div>}
         {c.booting?<ComposerLoader/>:<CustomerComposer chat={c} styles={styles}/>} 
       </main>
 
-      <aside className={`${styles.contextRail} ${railCollapsed?"watchlogContextRailCollapsed":""}`} aria-label="Site and report context" aria-busy={c.booting}>
+      <aside id="watchlog-context-rail" className={`${styles.contextRail} ${railCollapsed?"watchlogContextRailCollapsed":""}`} aria-label="Site and report context" aria-busy={c.booting}>
         {c.booting?<ContextLoader/>:<>
           <div className={`${styles.contextHead} watchlogContextHead`}>
             {!railCollapsed&&<div><span>Site brief</span><b>{c.site?.name||"Selected site"}</b></div>}
-            <button type="button" className="watchlogContextToggle" onClick={()=>setRailCollapsed(v=>!v)} aria-label={railCollapsed?"Expand site and report context":"Minimize site and report context"} title={railCollapsed?"Expand context":"Minimize context"}>{railCollapsed?"←":"→"}</button>
+            <button type="button" className="watchlogContextToggle" onClick={()=>setRailCollapsed(v=>!v)} aria-controls="watchlog-context-rail" aria-expanded={!railCollapsed} aria-label={railCollapsed?"Expand site and report context":"Minimize site and report context"} title={railCollapsed?"Expand context":"Minimize context"}>{railCollapsed?"←":"→"}</button>
           </div>
           {!railCollapsed&&<div>
             <section className={styles.contextCard}><div className={styles.contextTitle}>Monitoring</div><div className={styles.contextRow}><span>WatchLog</span><b className={connected?styles.okText:seen?styles.warnText:styles.mutedText}>{connected?"Connected":seen?"Offline":"Not connected"}</b></div><div className={styles.contextRow}><span>Last contact</span><b>{ago(ctx.connectivity?.last_seen)}</b></div><div className={styles.contextRow}><span>Cameras</span><b>{cams.length?`${healthy}/${cams.length} confirmed healthy`:"Not configured"}</b></div></section>

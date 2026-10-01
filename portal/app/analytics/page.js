@@ -38,7 +38,7 @@ function RestaurantInsights({siteId,site,date,day,snapshot,windowData}){
   return <>
     <section className={styles.restaurantHero}>
       <div>
-        <span className={styles.restaurantEyebrow}>Chai Wala · completed service day</span>
+        <span className={styles.restaurantEyebrow}>{site?.name||"Restaurant"} · completed service day</span>
         <h2>{dateLabel(date)}</h2>
         <p>{businessReady?"A management view of visible dining demand, table use, service timing and supported operating observations.":"A completed report exists, but WatchLog is not presenting unsupported business figures for this service day."}</p>
       </div>
@@ -76,14 +76,20 @@ function RestaurantInsights({siteId,site,date,day,snapshot,windowData}){
       <div className={styles.savedDays}>{saved.length?saved.map((r,i)=>{const d=String(r.service_date||"");return <a key={r.report_id||d||i} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}><div><b>{dateLabel(d)}</b><small>{r.summary||((r.highlights||[])[0])||"Completed management report"}</small></div><span>Open →</span></a>}):<div className={styles.empty}>No completed daily reports are available in this period yet.</div>}</div>
     </section>
 
-    <div className={styles.explain}><div><h3>Need a specific answer?</h3><p>Ask WatchLog about the completed service day, supported business activity or monitoring coverage.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent("What should management know from the latest completed Chai Wala service day, and what is still unverified?"),siteId)}>Ask WatchLog</a></div>
+    <div className={styles.explain}><div><h3>Need a specific answer?</h3><p>Ask WatchLog about the completed service day, supported business activity or monitoring coverage.</p></div><a className={ui.primaryLink} href={withSite("/ai/?prompt="+encodeURIComponent("What should management know from the latest completed service day, and what is still unverified?"),siteId)}>Ask WatchLog</a></div>
   </>;
 }
 
 function GenericInsights({siteId,data}){
   const s=data?.summary||{},rules=data?.by_rule||[],after=Number(s.after_hours||0),visitors=Number(s.visitor_in||0),vehicles=Number(s.vehicles_in||0),areas=Number(s.zone_entries||0),total=visitors+vehicles+areas;
+  const configured=rules.length>0;
+  const measured=after>0||total>0;
+  if(!configured&&!measured)return <>
+    <section className={styles.summary}><div className={styles.summaryTop}><span className={styles.summaryBadge}>Setup needed</span></div><h2>Activity insights are not configured yet</h2><p>Choose what WatchLog should measure before this page can summarize visitor, vehicle, area or after-hours activity.</p></section>
+    <section className={styles.configure}><div><span>Insights setup</span><h2>Choose what to measure</h2><p>Add Activity Rules for the patterns that matter at this site. Until then, WatchLog will not turn missing measurements into zero activity.</p></div><a className={styles.configureAction} href={withSite("/analytics/studio/",siteId)}>Set up activity insights</a></section>
+  </>;
   const summaryTitle=after?"After-hours activity needs review":total?"Activity measured in this period":"No measured activity in this period";
-  const summaryText=after?String(after)+" activity "+(after===1?"item was":"items were")+" recorded outside normal hours.":total?n(visitors)+" visitor entries, "+n(vehicles)+" vehicle entries and "+n(areas)+" area entries were measured.":"WatchLog has no measured visitor, vehicle or area activity to summarize for this time range.";
+  const summaryText=after?String(after)+" activity "+(after===1?"item was":"items were")+" recorded outside normal hours.":total?n(visitors)+" visitor entries, "+n(vehicles)+" vehicle entries and "+n(areas)+" area entries were measured.":"Configured activity rules recorded no visitor, vehicle, area or after-hours activity in this time range.";
   return <>
     <section className={styles.summary}><div className={styles.summaryTop}><span className={styles.summaryBadge+" "+(after?styles.warn:total?styles.ok:"")}>{after?"Needs review":total?"Measured":"Summary"}</span></div><h2>{summaryTitle}</h2><p>{summaryText}</p></section>
     <section className={styles.metrics}><div className={styles.metric}><strong>{n(visitors)}</strong><span>Visitor entries</span><small>People crossing configured entry rules</small></div><div className={styles.metric}><strong>{n(vehicles)}</strong><span>Vehicle entries</span><small>Vehicles crossing configured entry rules</small></div><div className={styles.metric}><strong>{n(areas)}</strong><span>Area entries</span><small>Configured monitored-zone entries</small></div><div className={styles.metric}><strong>{n(after)}</strong><span>After-hours activity</span><small>Activity outside configured hours</small></div></section>
@@ -163,7 +169,7 @@ export default function Analytics(){
   const site=useMemo(()=>sites.find(x=>String(x.id)===String(siteId))||null,[sites,siteId]);
 
   return <div className="shell"><Nav active="Analytics" email={email} currentSiteId={siteId}/><main className={"main "+styles.page}>
-    <header className="target-page-head"><div><div className="target-eyebrow">Insights</div><h1>{restaurantConfig?"Understand the service day at "+(site?.name||"this site"):"What is happening at "+(site?.name||"this site")+"?"}</h1><p>{restaurantConfig?"Business activity first, with monitoring limits shown before conclusions.":"Understand useful activity patterns without digging through camera events."}</p></div><div className="target-actions">{sites.length>1&&<select value={siteId} onChange={e=>choose(e.target.value)}>{sites.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>}{!restaurantConfig&&<select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={1}>24 hours</option><option value={7}>7 days</option><option value={30}>30 days</option></select>}<a className={ui.secondaryLink} href={withSite("/analytics/studio/",siteId)}>What to measure</a></div></header>
+    <header className="target-page-head"><div><div className="target-eyebrow">Insights</div><h1>{restaurantConfig?"Understand the service day at "+(site?.name||"this site"):"What is happening at "+(site?.name||"this site")+"?"}</h1><p>{restaurantConfig?"Business activity first, with monitoring limits shown before conclusions.":"Understand useful activity patterns without digging through camera events."}</p></div><div className="target-actions">{sites.length>1&&<select aria-label="Choose site" value={siteId} onChange={e=>choose(e.target.value)}>{sites.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>}{!restaurantConfig&&<select aria-label="Choose insight period" value={days} onChange={e=>setDays(Number(e.target.value))}><option value={1}>24 hours</option><option value={7}>7 days</option><option value={30}>30 days</option></select>}<a className={ui.secondaryLink} href={withSite("/analytics/studio/",siteId)}>What to measure</a></div></header>
     {error&&<div className="err">{error}</div>}
     {busy?<div className={styles.empty}>Preparing management insights…</div>:restaurantConfig?<RestaurantInsights siteId={siteId} site={site} date={reportDate} day={restaurantDay} snapshot={snapshot} windowData={windowData}/>:<GenericInsights siteId={siteId} data={data}/>}
   </main></div>;

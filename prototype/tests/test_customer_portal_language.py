@@ -135,6 +135,14 @@ def main():
             if phrase not in text:
                 problems.append(f"{rel}: expected customer product phrase missing: {phrase!r}")
 
+    # Insights must remain tenant-neutral and must not translate missing configuration into zero activity.
+    insights = (ROOT / "portal/app/analytics/page.js").read_text(encoding="utf-8")
+    if "Chai Wala" in insights:
+        problems.append("Insights surface must not hard-code a customer/site name")
+    for phrase in ("Activity insights are not configured yet", "missing measurements into zero activity"):
+        if phrase not in insights:
+            problems.append(f"Insights surface missing configuration-truth copy: {phrase!r}")
+
     # Ask WatchLog remains the governed question workspace, but it is no longer the signed-in homepage.
     ai_home = _surface("ai")
     for phrase in ("WatchLog AI", "Ask WatchLog about ", "Device changes require approval."):
