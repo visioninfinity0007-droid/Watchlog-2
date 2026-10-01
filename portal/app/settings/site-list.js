@@ -23,7 +23,7 @@ export default function SiteList({settings}){
     <section className="settings-site-grid">
       {settings.sites.map(s=>{
         const[label,cls]=setupPill(s.setup_state,s.online);
-        return <article className={`settings-site-card ${s.id===settings.siteId?"active":""}`} key={s.id} onClick={()=>settings.choose(s.id)}>
+        return <article role="button" tabIndex={0} aria-pressed={s.id===settings.siteId} className={`settings-site-card ${s.id===settings.siteId?"active":""}`} key={s.id} onClick={()=>settings.choose(s.id)} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();settings.choose(s.id)}}}>
           <div className="settings-site-head">
             <div><b>{s.name}</b><small>{fmt(s.last_event,s.timezone)}</small></div>
             <span className={`pill ${cls}`}>{label}</span>
@@ -57,14 +57,14 @@ export default function SiteList({settings}){
             <div><strong>Written site information</strong><p>Allows approved online AI processing to use text such as site status, reports and your questions. Camera images are not included by this permission.</p></div>
             <div className={ui.privacyControl}>
               <span className={"pill "+(settings.privacy.text?"s-ok":"s-unk")}>{settings.privacy.loaded?(settings.privacy.text?"Allowed":"Off"):"Checking…"}</span>
-              {settings.canManage&&<button type="button" className="ghost small" disabled={!settings.privacy.loaded||Boolean(settings.privacyBusy)||settings.privacy.evidence} onClick={()=>settings.setPrivacyPermission("text",!settings.privacy.text)}>{settings.privacyBusy==="text"?"Saving…":settings.privacy.text?"Turn off":"Allow text only"}</button>}
+              {settings.canManage&&<button type="button" aria-pressed={settings.privacy.text} className="ghost small" disabled={!settings.privacy.loaded||Boolean(settings.privacyBusy)||settings.privacy.evidence} onClick={()=>settings.setPrivacyPermission("text",!settings.privacy.text)}>{settings.privacyBusy==="text"?"Saving…":settings.privacy.text?"Turn off":"Allow text only"}</button>}
             </div>
           </div>
           <div className={ui.privacyOption}>
             <div><strong>Camera evidence</strong><p>Allows approved online AI processing to use camera evidence when a question needs it. Enabling this also allows written site information.</p></div>
             <div className={ui.privacyControl}>
               <span className={"pill "+(settings.privacy.evidence?"s-ok":"s-unk")}>{settings.privacy.loaded?(settings.privacy.evidence?"Allowed":"Off"):"Checking…"}</span>
-              {settings.canManage&&<button type="button" className="ghost small" disabled={!settings.privacy.loaded||Boolean(settings.privacyBusy)} onClick={()=>settings.setPrivacyPermission("evidence",!settings.privacy.evidence)}>{settings.privacyBusy==="evidence"?"Saving…":settings.privacy.evidence?"Turn off":"Allow evidence"}</button>}
+              {settings.canManage&&<button type="button" aria-pressed={settings.privacy.evidence} className="ghost small" disabled={!settings.privacy.loaded||Boolean(settings.privacyBusy)} onClick={()=>settings.setPrivacyPermission("evidence",!settings.privacy.evidence)}>{settings.privacyBusy==="evidence"?"Saving…":settings.privacy.evidence?"Turn off":"Allow evidence"}</button>}
             </div>
           </div>
         </div>

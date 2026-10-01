@@ -30,6 +30,7 @@ archive_history = (APP / "archive" / "saved-video-history.js").read_text(encodin
 archive_detail = (APP / "archive" / "saved-video-detail.js").read_text(encoding="utf-8")
 archive_hook = (APP / "archive" / "use-saved-video.js").read_text(encoding="utf-8")
 archive_form = (APP / "archive" / "saved-video-form.js").read_text(encoding="utf-8")
+archive_history = (APP / "archive" / "saved-video-history.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -131,6 +132,16 @@ if "new Date(form.from)" in archive_hook or "new Date(form.to)" in archive_hook:
     problems.append("Saved Video must not interpret datetime-local inputs in the viewer browser timezone")
 if "Times are interpreted in this site’s local time" not in archive_form:
     problems.append("Saved Video must explain that request windows use site-local time")
+for token in ('role="button" tabIndex={0} aria-pressed={s.id===settings.siteId}', 'onKeyDown={e=>{if(e.key==="Enter"||e.key===" ")'):
+    if token not in settings_sites:
+        problems.append(f"Settings site selector keyboard contract missing: {token}")
+for token in ('role="tablist" aria-label="Reporting period"', 'role="tab" aria-selected={r.view===k}', 'aria-pressed={choice===code}'):
+    if token not in reports:
+        problems.append(f"Reports selection semantics missing: {token}")
+if '<button type="button" className="ghost small"' not in archive_history:
+    problems.append("Saved Video history action must use an explicit button type")
+if 'type="button" className={styles.searchButton}' not in archive_form or 'aria-busy={v.busy}' not in archive_form:
+    problems.append("Saved Video search action must expose explicit button/busy semantics")
 for phrase in ("<strong>{rows.length}</strong>incident", "<small>Detection source</small>", "<small>Review state</small>"):
     if phrase in evidence:
         problems.append(f"camera event surface collapses semantic layers: {phrase}")
