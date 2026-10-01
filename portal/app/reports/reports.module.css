@@ -197,7 +197,7 @@
   .actionRowsV3{grid-template-columns:1fr}.periodBuildDates{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 @media(max-width:760px){
-  .reportPageHead{margin-bottom:12px!important}.periodToolbar{position:static;align-items:flex-start;flex-direction:column;padding:10px}.periodToolbarLabel{padding-left:2px}.periodToolbar>div:last-child{width:100%;overflow:auto}
+  .reportPageHead{margin-bottom:12px!important}.periodToolbar{position:static;align-items:flex-start;flex-direction:column;padding:10px}.periodToolbarLabel{padding-left:2px}.periodToolbar>div:last-child{width:100%;overflow:visible}.periodToolbar>div:last-child[role="tablist"]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.periodToolbar>div:last-child[role="tablist"] button{width:100%!important;min-width:0!important;min-height:44px!important;white-space:normal}
   .askReportBar{align-items:flex-start;flex-direction:column}.askReportBar>a{width:100%}
   .reportControlBarV4{align-items:flex-start;flex-direction:column}.reportModeTabs{width:100%}.reportModeTabs button{flex:1;min-width:0}
   .reportHeroV4{padding:22px 20px;border-radius:16px}.reportHeroCopy h2{font-size:28px}.reportHighlightsV4>div{grid-template-columns:30px minmax(0,1fr)}

@@ -31,6 +31,8 @@ setup_cameras = (APP / "setup" / "camera-setup.js").read_text(encoding="utf-8")
 setup_review = (APP / "setup" / "review-setup.js").read_text(encoding="utf-8")
 setup_connect = (APP / "setup" / "connect-site.js").read_text(encoding="utf-8")
 setup_base = (APP / "setup" / "use-setup-base.js").read_text(encoding="utf-8")
+setup_css = (APP / "setup" / "customer.module.css").read_text(encoding="utf-8")
+reports_css = (APP / "reports" / "reports.module.css").read_text(encoding="utf-8")
 reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -140,6 +142,12 @@ for token in ('<option value="">Choose area</option>', 'Choose an area for every
 for source_name, source in (("Camera setup", setup_cameras), ("Review setup", setup_review), ("Connect site", setup_connect)):
     if "<button onClick=" in source:
         problems.append(f"{source_name} action buttons must use explicit button types")
+for token in ('.periodToolbar>div:last-child[role="tablist"]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}', 'min-height:44px!important;white-space:normal'):
+    if token not in reports_css:
+        problems.append(f"Reports mobile period-selector layout contract missing: {token}")
+for token in ('.card>button:disabled,.actions>button:disabled', 'cursor:not-allowed!important', 'opacity:1!important'):
+    if token not in setup_css:
+        problems.append(f"Guided Setup disabled-action visual contract missing: {token}")
 
 for phrase in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_egress"):
     if phrase not in settings_hook:
