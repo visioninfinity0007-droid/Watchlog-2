@@ -23,6 +23,8 @@ home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
 attention = (APP / "notifications" / "customer-workspace.js").read_text(encoding="utf-8")
 settings_hook = (APP / "settings" / "use-customer-settings.js").read_text(encoding="utf-8")
 settings_sites = (APP / "settings" / "site-list.js").read_text(encoding="utf-8")
+activity_studio = (APP / "analytics" / "studio" / "page.js").read_text(encoding="utf-8")
+control_legacy = (APP / "control-room" / "legacy.js").read_text(encoding="utf-8")
 reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -95,6 +97,16 @@ if 'Intl.DateTimeFormat("en-PK"' not in analytics or 'timeZone:"UTC"' not in ana
 for phrase in ('role="log"', 'role="alert"', 'aria-controls="watchlog-context-rail"', 'aria-expanded={!railCollapsed}'):
     if phrase not in ai_workspace:
         problems.append(f"Ask WatchLog interaction semantics missing: {phrase}")
+
+for phrase in ('Intl.DateTimeFormat("en-PK"', 'site?.timezone', "· site time"):
+    if phrase not in activity_studio:
+        problems.append(f"Activity Rules site-time contract missing: {phrase}")
+if "snapshotCapturedAt).toLocaleString(" in activity_studio:
+    problems.append("Activity Rules must not render camera-image timestamps in browser-local time")
+if 'setStamp(new Date().toISOString())' not in control_legacy or 'updated ${ago(stamp)}' not in control_legacy:
+    problems.append("multi-site advanced control refresh indicator must use timezone-neutral relative time")
+if "toLocaleTimeString(" in control_legacy:
+    problems.append("multi-site advanced control must not imply one browser-local clock across sites")
 
 for phrase in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_egress"):
     if phrase not in settings_hook:
