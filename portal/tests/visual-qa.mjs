@@ -129,6 +129,75 @@ const analytics = {
   ],
 };
 
+const reportSnapshot = {
+  report_id: "report-visual-qa",
+  report_date: "2026-09-30",
+  payload: {
+    report_date: "2026-09-30",
+    site_name: "Harbour Branch",
+    title: "Daily management brief",
+    ai_summary: "The site remained broadly stable. One rear-access recording check needs follow-up, while the rest of the monitored areas were represented normally.",
+    metrics: [
+      { label: "Monitoring coverage", value: "96%", note: "Verified portion of the reporting period" },
+      { label: "Visitor entries", value: "42", note: "Configured entrance-rule detections" },
+      { label: "After-hours activity", value: "1", note: "One item needs review" },
+      { label: "Cameras healthy", value: "3/4", note: "One camera remains not fully verified" },
+    ],
+    incidents: [
+      { title: "Rear access recording needs verification", body: "Recording status could not be confirmed for part of the period.", severity: "attention" },
+    ],
+    site_insights: [
+      { title: "Entrance activity was concentrated in business hours", body: "Configured entrance rules recorded most activity during the normal working period.", severity: "none" },
+      { title: "Service area remained active through the afternoon", body: "Activity was sustained without a separate security exception.", severity: "none" },
+    ],
+    coverage: {
+      status: "Mostly verified",
+      period: "23h 02m verified",
+      summary: "WatchLog verified most of the reporting period.",
+      note: "58 minutes could not be verified and are not treated as quiet time.",
+    },
+    camera_coverage: [
+      { camera: "Main entrance", status: "Covered", period: "Business hours", management_view: "Entrance flow", assessment: "The entrance was represented consistently." },
+      { camera: "Rear access", status: "Needs attention", period: "Partial", management_view: "Rear access", assessment: "Recording verification is incomplete for part of the period." },
+    ],
+    action_items: [],
+    priority_actions: [],
+  },
+};
+
+const tableData = {
+  cameras: [
+    { id: "c1", name: "Main entrance", channel: 1, site_id: SITE_ID },
+    { id: "c2", name: "Service area", channel: 2, site_id: SITE_ID },
+    { id: "c3", name: "Rear access", channel: 3, site_id: SITE_ID },
+  ],
+  monitoring_rules: [
+    { id: "r1", name: "Visitor flow", site_id: SITE_ID },
+    { id: "r2", name: "After-hours activity", site_id: SITE_ID },
+  ],
+  archive_scans: [
+    {
+      id: "scan-1",
+      site_id: SITE_ID,
+      status: "complete",
+      requested_at: "2026-10-01T07:10:00Z",
+      from_ts: "2026-09-30T18:00:00Z",
+      to_ts: "2026-09-30T20:00:00Z",
+      camera_ids: ["c1","c3"],
+    },
+    {
+      id: "scan-2",
+      site_id: SITE_ID,
+      status: "queued",
+      requested_at: "2026-10-01T06:15:00Z",
+      from_ts: "2026-09-29T17:00:00Z",
+      to_ts: "2026-09-29T18:30:00Z",
+      camera_ids: ["c2"],
+    },
+  ],
+  camera_snapshot_signals: [],
+};
+
 const rpcData = {
   wl_my_account: { account_status: "active" },
   wl_my_tenant: TENANT_ID,
@@ -143,6 +212,28 @@ const rpcData = {
   wl_my_daily_intelligence: { coverage: { coverage_ratio: 0.96 } },
   wl_analytics_overview: analytics,
   wl_restaurant_site_config: { enabled: false },
+  wl_my_site_context: null,
+  wl_my_report_window: {
+    saved_reports: [
+      { report_id: "report-visual-qa", service_date: "2026-09-30", summary: "Completed management report", highlights: ["Rear-access recording verification needs follow-up."] },
+    ],
+  },
+  wl_my_last_completed_business_date: "2026-09-30",
+  wl_my_report_snapshot: reportSnapshot,
+  wl_analytics_studio: {
+    can_manage: true,
+    sites: [
+      {
+        id: SITE_ID,
+        name: "Harbour Branch",
+        runtime_capabilities: ["archive_processing","operations_evidence_still"],
+        cameras: context.cameras,
+        schedules: [],
+      },
+    ],
+    primitives: [],
+  },
+  wl_camera_config_snapshot: null,
   wl_my_role: "owner",
   wl_ai_site_egress: { site_id: SITE_ID, external_egress_allowed: false, external_text_egress_allowed: true },
 };
@@ -185,7 +276,9 @@ async function installFixture(page) {
     }
 
     if (url.pathname.startsWith("/rest/v1/")) {
-      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+      const table = decodeURIComponent(url.pathname.slice("/rest/v1/".length)).split("/")[0];
+      const data = Object.prototype.hasOwnProperty.call(tableData, table) ? tableData[table] : [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
       return;
     }
 
@@ -209,7 +302,11 @@ const routes = [
   { slug: "home", path: `/home/?site=${SITE_ID}`, ready: "What matters now, what needs attention" },
   { slug: "attention", path: `/notifications/?site=${SITE_ID}`, ready: "What needs your attention" },
   { slug: "insights", path: `/analytics/?site=${SITE_ID}`, ready: "What is happening at Harbour Branch?" },
+  { slug: "reports", path: `/reports/?view=yesterday&site=${SITE_ID}`, ready: "Management report" },
   { slug: "ask", path: `/ai/?site=${SITE_ID}`, ready: "Ask WatchLog about Harbour Branch" },
+  { slug: "cameras", path: `/control-room/?site=${SITE_ID}`, ready: "See the site by business area" },
+  { slug: "saved-video", path: `/archive/?site=${SITE_ID}`, ready: "Find earlier activity at Harbour Branch" },
+  { slug: "setup", path: `/setup/?site=${SITE_ID}`, ready: "Set up Harbour Branch with WatchLog" },
   { slug: "settings", path: `/settings/?site=${SITE_ID}`, ready: "Account and sites" },
 ];
 
@@ -264,5 +361,5 @@ if (uncaught.length) {
   console.error("Visual QA page errors:\n" + uncaught.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Visual QA captured ${manifest.length} screenshots with no uncaught page errors.`);
+  console.log(`Visual QA captured ${manifest.length} screenshots across ${routes.length} owner routes with no uncaught page errors.`);
 }
