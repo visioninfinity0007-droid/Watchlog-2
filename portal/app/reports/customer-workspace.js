@@ -82,7 +82,7 @@ function RestaurantOperations({data,periodLabel}){
   const peakKitchen=Math.max(0,...hourly.map(x=>Number(x.avg_kitchen_load||0)));
   const peakHandoff=Math.max(0,...hourly.map(x=>Number(x.avg_handoff_load||0)));
   return <section className={styles.restaurantShell}>
-    <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>{data.service_date?"Service day · "+dateLabel(data.service_date):"Restaurant service day"}</h2><p>Restaurant operating view for the configured 4 PM–4 AM service window. Values marked estimated or observed are based on visible activity, not POS data.</p></div><span className={styles.readyPill}>{coverage==null?"Coverage available":coverageLabel(coverage)+" coverage"}</span></div>
+    <div className={styles.restaurantHead}><div><div className={styles.kicker}>Restaurant operations · {periodLabel||"service day"}</div><h2>{data.service_date?"Service day · "+dateLabel(data.service_date):"Restaurant service day"}</h2><p>Restaurant operating view for the configured service window. Values marked estimated or observed are based on visible activity, not POS data.</p></div><span className={styles.readyPill}>{coverage==null?"Coverage available":coverageLabel(coverage)+" coverage"}</span></div>
 
     <div className={styles.restaurantMetrics}>
       <div className={styles.restaurantMetric}><strong>{val(peakVisible)}</strong><span>Peak visible diners</span><small>Complete dining-floor composite only</small></div>
@@ -147,7 +147,7 @@ function RestaurantPeriodReport({data,days}){
 
   return <section className={styles.periodShell}>
     <div className={styles.periodHero}>
-      <div><div className={styles.kicker}>Restaurant performance</div><h2>{title}</h2><p>{shortDate(data.period?.start_service_date)} – {shortDate(data.period?.end_service_date)} · service days run 4 PM–4 AM</p></div>
+      <div><div className={styles.kicker}>Restaurant performance</div><h2>{title}</h2><p>{shortDate(data.period?.start_service_date)} – {shortDate(data.period?.end_service_date)} · service days follow the configured site hours</p></div>
       <div className={styles.periodHeroFacts}>
         <span><b>{observed}</b>/{days} observed days</span>
         <span><b>{coverageLabel(coverage)}</b> avg coverage</span>

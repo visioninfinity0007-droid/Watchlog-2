@@ -110,6 +110,8 @@ for source_name, source in (("Reports", reports), ("Unified restaurant report", 
         problems.append(f"{source_name} must remain tenant-neutral")
     if 'Intl.DateTimeFormat("en-PK"' not in source or 'timeZone:"UTC"' not in source:
         problems.append(f"{source_name} must use deterministic Pakistan-English service-date formatting")
+if "4 PM–4 AM" in reports or "4 PM-4 AM" in reports:
+    problems.append("reusable Reports must not hard-code one restaurant service window")
 for source_name, source in (("Incident review", incidents), ("Saved Video", archive_history), ("Settings sites", settings_sites)):
     if 'Intl.DateTimeFormat("en-PK"' not in source or "· site time" not in source:
         problems.append(f"{source_name} must render customer timestamps in site-local time")
