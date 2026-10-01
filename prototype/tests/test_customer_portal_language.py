@@ -347,6 +347,9 @@ def main():
     if 'p_overnight:overnight' not in setup_details:
         problems.append("Guided Setup must preserve overnight business-day semantics")
     setup_cameras = (ROOT / "portal/app/setup/camera-setup.js").read_text(encoding="utf-8")
+    setup_base = (ROOT / "portal/app/setup/use-setup-base.js").read_text(encoding="utf-8")
+    if 'purpose:c.purpose||"general"' in setup_base:
+        problems.append("Guided Setup must not silently rewrite an unknown camera purpose to General")
     if 'Choose an area for every monitored camera before saving.' not in setup_cameras:
         problems.append("Guided Setup must require an explicit purpose for each monitored camera")
     if 'p_purpose:c.purpose||"general"' in setup_cameras:

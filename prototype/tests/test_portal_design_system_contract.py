@@ -30,6 +30,7 @@ setup_details = (APP / "setup" / "site-details.js").read_text(encoding="utf-8")
 setup_cameras = (APP / "setup" / "camera-setup.js").read_text(encoding="utf-8")
 setup_review = (APP / "setup" / "review-setup.js").read_text(encoding="utf-8")
 setup_connect = (APP / "setup" / "connect-site.js").read_text(encoding="utf-8")
+setup_base = (APP / "setup" / "use-setup-base.js").read_text(encoding="utf-8")
 reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -129,6 +130,10 @@ for token in ('const overnight=close<open', 'p_overnight:overnight', 'WatchLog w
 for forbidden in ('p_purpose:c.purpose||"general"', 'value={c.purpose||"general"}'):
     if forbidden in setup_cameras:
         problems.append(f"Guided Setup must not invent a camera purpose: {forbidden}")
+if 'purpose:c.purpose||"general"' in setup_base:
+    problems.append("Guided Setup base state must not rewrite an unknown camera purpose to General")
+if 'purpose:c.purpose||""' not in setup_base:
+    problems.append("Guided Setup base state must preserve an unknown camera purpose as unset")
 for token in ('<option value="">Choose area</option>', 'Choose an area for every monitored camera before saving.', 'p_purpose:c.purpose||null'):
     if token not in setup_cameras:
         problems.append(f"Guided Setup camera-purpose truth contract missing: {token}")
