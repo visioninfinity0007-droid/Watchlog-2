@@ -234,6 +234,10 @@ def main():
             problems.append(f"control room must not imply an unvalidated live-video surface: {unsafe!r}")
     if "requireTenant" not in camera_view:
         problems.append("Camera View must use the shared tenant/account guard")
+    if 'c.purpose || "general"' in camera_view:
+        problems.append("Camera View must not silently label an unknown purpose as General")
+    if '"Purpose not set"' not in camera_view:
+        problems.append("Camera View must preserve an unknown camera purpose as not set")
 
     # Owner-first shell: signed-in customers land on Home, where WatchLog proactively shows
     # attention, monitoring confidence and available business activity before asking the customer

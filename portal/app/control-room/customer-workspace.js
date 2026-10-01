@@ -432,7 +432,7 @@ export default function CustomerCameraView() {
                               <div className="camera-view-title">
                                 <div>
                                   <b>{c.name || `Camera ${c.channel}`}</b>
-                                  <small>{role ? human(role) : human(c.purpose || "general")}</small>
+                                  <small>{role ? human(role) : c.purpose ? human(c.purpose) : "Purpose not set"}</small>
                                 </div>
                                 <span className={`pill ${health.cls}`}>
                                   {health.label}
@@ -449,7 +449,9 @@ export default function CustomerCameraView() {
                                 </span>
                               </div>
                               <button
+                                type="button"
                                 className="ghost small"
+                                aria-busy={busy === c.id}
                                 disabled={busy === c.id}
                                 onClick={() => refresh(c)}
                               >

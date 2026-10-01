@@ -25,6 +25,7 @@ settings_hook = (APP / "settings" / "use-customer-settings.js").read_text(encodi
 settings_sites = (APP / "settings" / "site-list.js").read_text(encoding="utf-8")
 activity_studio = (APP / "analytics" / "studio" / "page.js").read_text(encoding="utf-8")
 control_legacy = (APP / "control-room" / "legacy.js").read_text(encoding="utf-8")
+camera_view = (APP / "control-room" / "customer-workspace.js").read_text(encoding="utf-8")
 setup_details = (APP / "setup" / "site-details.js").read_text(encoding="utf-8")
 setup_cameras = (APP / "setup" / "camera-setup.js").read_text(encoding="utf-8")
 setup_review = (APP / "setup" / "review-setup.js").read_text(encoding="utf-8")
@@ -111,6 +112,11 @@ if 'setStamp(new Date().toISOString())' not in control_legacy or 'updated ${ago(
     problems.append("multi-site advanced control refresh indicator must use timezone-neutral relative time")
 if "toLocaleTimeString(" in control_legacy:
     problems.append("multi-site advanced control must not imply one browser-local clock across sites")
+if 'c.purpose || "general"' in camera_view:
+    problems.append("Cameras & Evidence must not display an unknown camera purpose as General")
+for token in ('"Purpose not set"', 'type="button"', 'aria-busy={busy === c.id}'):
+    if token not in camera_view:
+        problems.append(f"Cameras & Evidence interaction/truth contract missing: {token}")
 
 for forbidden in ('useState("08:00")','useState("19:00")','p_overnight:false'):
     if forbidden in setup_details:
