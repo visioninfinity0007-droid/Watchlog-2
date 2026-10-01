@@ -12,6 +12,9 @@ mobile = (APP / "mobile-launcher.js").read_text(encoding="utf-8")
 layout = (APP / "layout.js").read_text(encoding="utf-8")
 icons = (APP / "icons.js").read_text(encoding="utf-8")
 system_css = (APP / "portal-system.css").read_text(encoding="utf-8")
+home_css = (APP / "home" / "home.module.css").read_text(encoding="utf-8")
+attention_css = (APP / "notifications" / "notifications.module.css").read_text(encoding="utf-8")
+ai_css = (APP / "ai" / "customer.module.css").read_text(encoding="utf-8")
 evidence = (APP / "incidents" / "legacy.js").read_text(encoding="utf-8")
 health = (APP / "site-health" / "health-workspace.js").read_text(encoding="utf-8")
 home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -56,6 +59,15 @@ for stylesheet in ('import "./portal-system.css";', 'import "./auth-system.css";
 for token in ("--portal-violet", "--portal-canvas", ".target-page-head", ".productMobileBottom"):
     if token not in system_css:
         problems.append(f"owner portal design-system token/rule missing: {token}")
+
+for surface_name, source, token in (
+    ("Home", home_css, ".primary,.secondary{flex:1;min-height:44px!important}"),
+    ("Attention", attention_css, ".actions .markAll,.filterBar button,.openAction,.readAction{min-height:44px!important}"),
+    ("Ask WatchLog", ai_css, ".suggestionRow a{min-height:44px;display:inline-flex;align-items:center}"),
+    ("Ask WatchLog composer", ai_css, ".composer button{width:44px!important;height:44px!important;min-width:44px!important}"),
+):
+    if token not in source:
+        problems.append(f"{surface_name} mobile touch-target contract missing: {token}")
 
 if '["Incidents","/incidents/","Incidents"]' in nav:
     problems.append("Incidents must not compete as a primary/More destination; use Attention then drill down")
