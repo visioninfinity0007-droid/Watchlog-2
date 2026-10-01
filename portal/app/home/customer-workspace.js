@@ -14,9 +14,9 @@ function pct(v){
 function sev(v){return String(v||"info").toLowerCase()}
 function needsAttention(x){return ["critical","warning","attention"].includes(sev(x&&x.severity))}
 function n(v){return Number(v||0).toLocaleString()}
-function when(ts){
+function when(ts,timeZone){
   if(!ts)return "";
-  try{return new Date(ts).toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"})}
+  try{return new Intl.DateTimeFormat("en-PK",{timeZone:timeZone||"Asia/Karachi",day:"numeric",month:"short",year:"numeric",hour:"numeric",minute:"2-digit",hour12:true}).format(new Date(ts))+" · site time"}
   catch{return String(ts)}
 }
 function faultLabel(f){
@@ -239,7 +239,7 @@ export default function CustomerHome(){
           <div className={styles.sectionHead}><div><span>Attention</span><h2>What needs a look</h2></div><a href={withSite("/notifications/",siteId)}>View all</a></div>
           {attention.length?<div className={styles.list}>{attention.slice(0,4).map(function(item){
             const s=sev(item.severity);
-            return <article key={String(item.kind)+":"+String(item.id)}><em className={styles[s]||styles.warning}>{s==="critical"?"Urgent":"Attention"}</em><div><h3>{item.title}</h3><p>{item.body}</p><small>{when(item.created_at)}</small></div><a href={item.href||withSite("/notifications/",siteId)}>{item.kind==="health"?"Check monitoring":item.kind==="report"?"Open report":"Review"}</a></article>
+            return <article key={String(item.kind)+":"+String(item.id)}><em className={styles[s]||styles.warning}>{s==="critical"?"Urgent":"Attention"}</em><div><h3>{item.title}</h3><p>{item.body}</p><small>{when(item.created_at,site?.timezone)}</small></div><a href={item.href||withSite("/notifications/",siteId)}>{item.kind==="health"?"Check monitoring":item.kind==="report"?"Open report":"Review"}</a></article>
           })}</div>:faults.length?<div className={styles.list}>{faults.slice(0,3).map(function(f,i){return <article key={f.id||i}><em className={styles.warning}>Attention</em><div><h3>{f.camera||"Site monitoring"}</h3><p>{faultLabel(f)}</p></div><a href={withSite("/site-health/",siteId)}>Check monitoring</a></article>})}</div>:<div className={styles.clear}><b>✓</b><div><h3>Nothing needs your attention right now.</h3><p>No current issue is reported. Anything WatchLog cannot verify remains marked clearly.</p></div></div>}
         </section>
 

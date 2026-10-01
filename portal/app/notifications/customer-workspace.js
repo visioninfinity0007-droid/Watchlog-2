@@ -5,9 +5,9 @@ import {Nav,requireTenant} from "../shell";
 import {rememberSite,selectedSiteId} from "../site-context";
 import s from "./notifications.module.css";
 
-function when(ts){
+function when(ts,timeZone){
   if(!ts)return "";
-  try{return new Date(ts).toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"})}
+  try{return new Intl.DateTimeFormat("en-PK",{timeZone:timeZone||"Asia/Karachi",day:"numeric",month:"short",year:"numeric",hour:"numeric",minute:"2-digit",hour12:true}).format(new Date(ts))+" · site time"}
   catch{return String(ts)}
 }
 function severityLabel(v){
@@ -150,7 +150,7 @@ export default function CustomerNotifications(){
           const level=String(item.severity||"info").toLowerCase();
           return <article className={s.item+" "+(item.read?s.read:s.unread)} key={String(item.kind)+":"+String(item.id)}>
             <div className={s.itemTop}>
-              <div><span className={s.kind}>{kindLabel(item.kind)}</span><span className={s.severity+" "+(s[level]||"")}>{severityLabel(item.severity)}</span><small>{item.site_name} · {when(item.created_at)}</small></div>
+              <div><span className={s.kind}>{kindLabel(item.kind)}</span><span className={s.severity+" "+(s[level]||"")}>{severityLabel(item.severity)}</span><small>{item.site_name} · {when(item.created_at,site?.timezone)}</small></div>
               {!item.read&&<span className={s.dot} aria-label="Unread"/>}
             </div>
             <div className={s.itemBody}><div><h2>{item.title}</h2><p>{item.body}</p></div><button type="button" className={s.openAction} onClick={()=>open(item)}>{actionLabel(item)}</button></div>

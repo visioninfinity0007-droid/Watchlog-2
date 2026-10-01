@@ -10,7 +10,7 @@ import styles from "./customer-overview.module.css";
 function n(v){return Number(v||0).toLocaleString()}
 function label(v){return String(v||"Activity").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
 function pct(v){if(v===null||v===undefined||v==="")return null;const x=Number(v);return Number.isFinite(x)?Math.round(Math.max(0,Math.min(1,x))*100):null}
-function dateLabel(v){if(!v)return"Latest completed service day";try{return new Date(v+"T12:00:00").toLocaleDateString([],{weekday:"long",month:"long",day:"numeric",year:"numeric"})}catch{return v}}
+function dateLabel(v){if(!v)return"Latest completed service day";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"long",day:"numeric",month:"long",year:"numeric"}).format(new Date(v+"T00:00:00Z"))}catch{return v}}
 function metricValue(metric){if(metric===null||metric===undefined)return"—";if(typeof metric==="object"&&metric.value!==undefined)return String(metric.value);return String(metric)}
 function numeric(v){if(v===null||v===undefined||v==="")return null;const x=Number(v);return Number.isFinite(x)?x:null}
 function compactNumber(v){const x=numeric(v);if(x===null)return"—";return Number.isInteger(x)?String(x):x.toFixed(1)}

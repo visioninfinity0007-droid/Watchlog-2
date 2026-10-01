@@ -20,6 +20,7 @@ ai_workspace = (APP / "ai" / "customer-workspace.js").read_text(encoding="utf-8"
 evidence = (APP / "incidents" / "legacy.js").read_text(encoding="utf-8")
 health = (APP / "site-health" / "health-workspace.js").read_text(encoding="utf-8")
 home = (APP / "home" / "customer-workspace.js").read_text(encoding="utf-8")
+attention = (APP / "notifications" / "customer-workspace.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -79,6 +80,8 @@ for token in ("structured_restaurant_metrics", "observed_service_days", "estimat
         problems.append(f"restaurant Insights must use governed rolling-period data: {token}")
 if "Chai Wala" in analytics:
     problems.append("Insights must not hard-code one tenant/site name into the reusable restaurant surface")
+if 'Intl.DateTimeFormat("en-PK"' not in analytics or 'timeZone:"UTC"' not in analytics:
+    problems.append("Insights completed service dates must use deterministic Pakistan-English date formatting")
 for phrase in ('role="log"', 'role="alert"', 'aria-controls="watchlog-context-rail"', 'aria-expanded={!railCollapsed}'):
     if phrase not in ai_workspace:
         problems.append(f"Ask WatchLog interaction semantics missing: {phrase}")
@@ -100,6 +103,10 @@ for phrase in ("Monitoring is not fully verified", "recording states are still u
 for phrase in ('rpc("wl_my_report_window"', "What changed", "A reliable comparison is not ready yet", "Missing periods are not treated as zero activity"):
     if phrase not in home:
         problems.append(f"owner Home governed-comparison contract missing: {phrase}")
+for surface_name, source in (("Home", home), ("Attention", attention)):
+    for phrase in ('Intl.DateTimeFormat("en-PK"', 'timeZone:timeZone||"Asia/Karachi"', "· site time"):
+        if phrase not in source:
+            problems.append(f"{surface_name} site-local timestamp contract missing: {phrase}")
 if 'estimated_covers_pct' not in home or 'median_time_to_food_delta_minutes' not in home:
     problems.append("owner Home comparison must use governed period deltas, not raw detector counts")
 
