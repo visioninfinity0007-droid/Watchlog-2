@@ -28,6 +28,8 @@ unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(en
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
 archive_history = (APP / "archive" / "saved-video-history.js").read_text(encoding="utf-8")
 archive_detail = (APP / "archive" / "saved-video-detail.js").read_text(encoding="utf-8")
+archive_hook = (APP / "archive" / "use-saved-video.js").read_text(encoding="utf-8")
+archive_form = (APP / "archive" / "saved-video-form.js").read_text(encoding="utf-8")
 error_helper = (ROOT / "portal" / "lib" / "supabase.js").read_text(encoding="utf-8")
 
 problems = []
@@ -122,6 +124,13 @@ for source_name, source in (("Camera evidence", evidence), ("Saved Video detail"
         problems.append(f"{source_name} must render event/evidence timestamps in site-local time")
 if "zoneFor(row)" not in evidence:
     problems.append("multi-site camera evidence must resolve timezone per event/site")
+for token in ("inputInZone", "zonedDate", 'timezone||"Asia/Karachi"'):
+    if token not in archive_hook:
+        problems.append(f"Saved Video request-window timezone conversion missing: {token}")
+if "new Date(form.from)" in archive_hook or "new Date(form.to)" in archive_hook:
+    problems.append("Saved Video must not interpret datetime-local inputs in the viewer browser timezone")
+if "Times are interpreted in this site’s local time" not in archive_form:
+    problems.append("Saved Video must explain that request windows use site-local time")
 for phrase in ("<strong>{rows.length}</strong>incident", "<small>Detection source</small>", "<small>Review state</small>"):
     if phrase in evidence:
         problems.append(f"camera event surface collapses semantic layers: {phrase}")
