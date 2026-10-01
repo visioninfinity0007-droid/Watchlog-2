@@ -342,6 +342,11 @@ def main():
         problems.append("Guided Setup must tell the customer that business hours are not assumed")
     if 'p_overnight:overnight' not in setup_details:
         problems.append("Guided Setup must preserve overnight business-day semantics")
+    setup_cameras = (ROOT / "portal/app/setup/camera-setup.js").read_text(encoding="utf-8")
+    if 'Choose an area for every monitored camera before saving.' not in setup_cameras:
+        problems.append("Guided Setup must require an explicit purpose for each monitored camera")
+    if 'p_purpose:c.purpose||"general"' in setup_cameras:
+        problems.append("Guided Setup must not silently classify an unknown camera as General area")
 
     if problems:
         raise SystemExit("Customer portal language contract failed:\n- " + "\n- ".join(problems))

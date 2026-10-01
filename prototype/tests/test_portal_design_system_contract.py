@@ -26,6 +26,9 @@ settings_sites = (APP / "settings" / "site-list.js").read_text(encoding="utf-8")
 activity_studio = (APP / "analytics" / "studio" / "page.js").read_text(encoding="utf-8")
 control_legacy = (APP / "control-room" / "legacy.js").read_text(encoding="utf-8")
 setup_details = (APP / "setup" / "site-details.js").read_text(encoding="utf-8")
+setup_cameras = (APP / "setup" / "camera-setup.js").read_text(encoding="utf-8")
+setup_review = (APP / "setup" / "review-setup.js").read_text(encoding="utf-8")
+setup_connect = (APP / "setup" / "connect-site.js").read_text(encoding="utf-8")
 reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -115,6 +118,15 @@ for forbidden in ('useState("08:00")','useState("19:00")','p_overnight:false'):
 for token in ('const overnight=close<open', 'p_overnight:overnight', 'WatchLog will not assume them.', 'aria-pressed={siteType===v}', 'aria-pressed={days.includes(n)}'):
     if token not in setup_details:
         problems.append(f"Guided Setup business-hours truth contract missing: {token}")
+for forbidden in ('p_purpose:c.purpose||"general"', 'value={c.purpose||"general"}'):
+    if forbidden in setup_cameras:
+        problems.append(f"Guided Setup must not invent a camera purpose: {forbidden}")
+for token in ('<option value="">Choose area</option>', 'Choose an area for every monitored camera before saving.', 'p_purpose:c.purpose||null'):
+    if token not in setup_cameras:
+        problems.append(f"Guided Setup camera-purpose truth contract missing: {token}")
+for source_name, source in (("Camera setup", setup_cameras), ("Review setup", setup_review), ("Connect site", setup_connect)):
+    if "<button onClick=" in source:
+        problems.append(f"{source_name} action buttons must use explicit button types")
 
 for phrase in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_egress"):
     if phrase not in settings_hook:
