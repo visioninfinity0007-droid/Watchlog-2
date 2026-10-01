@@ -335,8 +335,13 @@ def main():
         if phrase not in setup_surface:
             problems.append(f"connected-site setup experience missing: {phrase!r}")
     setup_base = (ROOT / "portal/app/setup/use-setup-base.js").read_text(encoding="utf-8")
+    setup_details = (ROOT / "portal/app/setup/site-details.js").read_text(encoding="utf-8")
     if 's.key==="monitoring"' not in setup_base:
         problems.append("setup must distinguish a live monitoring site from pre-start onboarding")
+    if "WatchLog will not assume them." not in setup_details:
+        problems.append("Guided Setup must tell the customer that business hours are not assumed")
+    if 'p_overnight:overnight' not in setup_details:
+        problems.append("Guided Setup must preserve overnight business-day semantics")
 
     if problems:
         raise SystemExit("Customer portal language contract failed:\n- " + "\n- ".join(problems))

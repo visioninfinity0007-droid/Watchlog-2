@@ -25,6 +25,7 @@ settings_hook = (APP / "settings" / "use-customer-settings.js").read_text(encodi
 settings_sites = (APP / "settings" / "site-list.js").read_text(encoding="utf-8")
 activity_studio = (APP / "analytics" / "studio" / "page.js").read_text(encoding="utf-8")
 control_legacy = (APP / "control-room" / "legacy.js").read_text(encoding="utf-8")
+setup_details = (APP / "setup" / "site-details.js").read_text(encoding="utf-8")
 reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -107,6 +108,13 @@ if 'setStamp(new Date().toISOString())' not in control_legacy or 'updated ${ago(
     problems.append("multi-site advanced control refresh indicator must use timezone-neutral relative time")
 if "toLocaleTimeString(" in control_legacy:
     problems.append("multi-site advanced control must not imply one browser-local clock across sites")
+
+for forbidden in ('useState("08:00")','useState("19:00")','p_overnight:false'):
+    if forbidden in setup_details:
+        problems.append(f"Guided Setup must not invent customer business hours: {forbidden}")
+for token in ('const overnight=close<open', 'p_overnight:overnight', 'WatchLog will not assume them.', 'aria-pressed={siteType===v}', 'aria-pressed={days.includes(n)}'):
+    if token not in setup_details:
+        problems.append(f"Guided Setup business-hours truth contract missing: {token}")
 
 for phrase in ("wl_ai_site_egress","wl_ai_set_site_text_egress","wl_ai_set_site_egress"):
     if phrase not in settings_hook:
