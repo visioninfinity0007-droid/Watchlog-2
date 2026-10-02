@@ -136,9 +136,9 @@ def sql_for_execution(path: Path) -> str:
         # that vanilla PostgreSQL rejects when replaying the full chain. Keep
         # tracked migration bytes immutable to preserve production checksums;
         # normalize only the disposable-CI execution copy.
-        sql = re.sub(r"(?m)^(\\s*as) \\$", r"\\1 $$", sql)
-        sql = re.sub(r"(?m)^(\\s*)\\$;$", r"\\1$$;", sql)
-        sql = re.sub(r"(?m)^(\\s*end \\$function\\$)\\s*$", r"\\1;", sql)
+        sql = re.sub(r"(?m)^(\s*as) \$", r"\1 $", sql)
+        sql = re.sub(r"(?m)^(\s*)\$;$", r"\1$;", sql)
+        sql = re.sub(r"(?m)^(\s*end \$function\$)\s*$", r"\1;", sql)
     return sql
 
 
