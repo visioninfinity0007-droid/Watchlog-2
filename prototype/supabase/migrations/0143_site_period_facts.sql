@@ -101,7 +101,7 @@ as $$
     from d, jsonb_array_elements(coalesce(x->'by_purpose','[]'::jsonb)) b group by 1
   ),
   h as (
-    select (b->>'hour')::integer hour, sum((b->>'episodes')::integer) n
+    select (b->>'hour')::integer as hour_bucket, sum((b->>'episodes')::integer) as n
     from d, jsonb_array_elements(coalesce(x->'hourly','[]'::jsonb)) b group by 1
   )
   select jsonb_build_object(
@@ -120,7 +120,7 @@ as $$
     'activity_detections', (select coalesce(sum((x->>'activity_detections')::integer),0) from d),
     'vehicle_episodes', (select coalesce(sum((x->>'vehicle_episodes')::integer),0) from d),
     'by_purpose', (select coalesce(jsonb_agg(jsonb_build_object('purpose',purpose,'episodes',ep,'vehicle_episodes',vep,'detections',det) order by purpose),'[]'::jsonb) from p),
-    'hourly', (select coalesce(jsonb_agg(jsonb_build_object('hour',hour,'episodes',n) order by hour),'[]'::jsonb) from h)
+    'hourly', (select coalesce(jsonb_agg(jsonb_build_object('hour',hour_bucket,'episodes',n) order by hour_bucket),'[]'::jsonb) from h)
   );
 $$;
 
