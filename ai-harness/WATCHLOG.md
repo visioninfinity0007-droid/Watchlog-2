@@ -18,6 +18,7 @@ If nothing matches, say so and propose a new row; do not improvise.
 | If you are… | Read, in order |
 |---|---|
 | **Answering a customer or tenant** (chat, WhatsApp, email) | `core/customer-language.md` → `core/customer-vocabulary.yaml` → `core/truth.md` → `site-types/<type>.yaml` → `tenants/<tenant>/context.yaml`. The chat function receives this automatically as the compiled brief. |
+| **Changing customer portal UI, UX or customer-visible portal copy** | `core/customer-language.md` → `core/customer-vocabulary.yaml` → `core/truth.md` → `../03_Design/BRAND_GUIDELINES.md` → `../03_Design/DESIGN_STANDARDS.md`. Preserve owner-first information hierarchy and never expose internal implementation language. |
 | **Writing or publishing any report** | `skills/restaurant-daily-business-report.md` (restaurants) → `tenants/<tenant>/reporting/methods/visual-snapshot-analysis.md` → `core/customer-vocabulary.yaml`. The database rewrites any leftover internal wording, but write it right the first time. |
 | **Reviewing camera images** (vision worker, manual review) | `tenants/<tenant>/reporting/methods/visual-snapshot-analysis.md` → `site-types/<type>.yaml` camera roles → `core/customer-vocabulary.yaml` for every owner-visible sentence |
 | **Counting people / visitors / diners** | `methods/people-counting.md` |

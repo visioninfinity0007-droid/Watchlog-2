@@ -152,7 +152,7 @@ export default function ControlRoom() {
     setAnalytics(analyticsResult);
     setError("");
     setAnalyticsError(analyticsRpcError ? say(analyticsRpcError) : "");
-    setStamp(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    setStamp(new Date().toISOString());
   }, [selectedSite]);
 
   useEffect(() => {
@@ -445,7 +445,7 @@ export default function ControlRoom() {
 
   return <div className="shell">
     <Nav active="Control Room" email={email} right={
-      <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{stamp ? `updated ${stamp}` : ""}</span>
+      <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{stamp ? `updated ${ago(stamp)}` : ""}</span>
     } />
     <main className="main">
       <header className={ui.pageHead}>

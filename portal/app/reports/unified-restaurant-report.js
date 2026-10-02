@@ -7,8 +7,9 @@ import styles from "./reports.module.css";
 function num(v){return v==null||Number.isNaN(Number(v))?null:Number(v)}
 function val(v,suffix=""){return v==null?"—":String(v)+suffix}
 function pct(v){const n=num(v);return n==null?"—":Math.round(n*100)+"%"}
-function shortDate(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {month:"short",day:"numeric"})}
-function dateLabel(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {weekday:"long",month:"long",day:"numeric",year:"numeric"})}
+function shortDate(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",day:"numeric",month:"short"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
+function dateLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"long",day:"numeric",month:"long",year:"numeric"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
+function weekdayLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"short"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
 function clampLevel(v,max){const n=num(v),m=num(max);if(n==null||!m)return 0;return Math.max(0,Math.min(4,Math.round((n/m)*4)))}
 function periodName(view){return view==="daily"?"Today":view==="yesterday"?"Yesterday":view==="week"?"Last 7 days":"Last 30 days"}
 
@@ -116,7 +117,7 @@ function SavedReports({windowData,siteId,limit=8}){
   const rows=all.slice(0,limit),extra=all.slice(limit);
   if(!rows.length)return null;
   const renderRow=function(x,i,prefix){const d=String(x.service_date||"");const highlights=x.highlights||[];return <a key={(prefix||"row")+"-"+(x.report_id||d||i)+"-"+i} className={styles.savedReportRow} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}>
-    <span className={styles.savedReportDate}><b>{shortDate(d)}</b><small>{new Date(d+"T12:00:00").toLocaleDateString([], {weekday:"short"})}</small></span>
+    <span className={styles.savedReportDate}><b>{shortDate(d)}</b><small>{weekdayLabel(d)}</small></span>
     <span className={styles.savedReportCopy}><b>{x.title||"Daily management report"}</b><small>{x.summary||highlights[0]||"Completed daily report"}</small></span>
     <span className={styles.savedReportState}><i/>Completed</span>
     <em aria-hidden="true">→</em>

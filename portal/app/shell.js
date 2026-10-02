@@ -2,6 +2,7 @@
 import {useEffect,useMemo,useState} from "react";
 import Mark from "./mark";
 import MobileLauncher from "./mobile-launcher";
+import {PortalIcon} from "./icons";
 import {supabase} from "../lib/supabase";
 import {rememberSite,selectedSiteId,selectedSiteName,withSite} from "./site-context";
 import {MAIN_TABS,MORE_TABS,MORE_ACTIVE,ACTIVE_ROUTE} from "./nav-config";
@@ -58,20 +59,19 @@ export function Nav({active,email,right,currentSiteId=""}){
   },[currentSiteId,siteId,sites]);
 
   const currentSite=useMemo(()=>sites.find(x=>x.id===siteId)||null,[sites,siteId]);
-  const route=ACTIVE_ROUTE[active]||"/ai/";
+  const route=ACTIVE_ROUTE[active]||"/home/";
   function choose(id,name){setSiteId(id);rememberSite(id,name);setMobileOpen(false)}
   async function signOut(){await supabase().auth.signOut();location.replace("/login/")}
 
   return <>
-    <MobileLauncher open={mobileOpen} onToggle={()=>setMobileOpen(v=>!v)}/>
+    <MobileLauncher href={withSite("/home/",siteId)}/>
     {mobileOpen&&<button className="productRailScrim" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"/>}
     <aside className={`productRail ${mobileOpen?"open":""}`} aria-busy={!navReady}>
       <div className="productRailMobileHead">
-        <a href={withSite("/ai/",siteId)} className="productRailBrand"><Mark size={28}/><b>WatchLog</b></a>
+        <a href={withSite("/home/",siteId)} className="productRailBrand"><Mark size={28}/><b>WatchLog</b></a>
         <button className="productRailMenu" onClick={()=>setMobileOpen(false)} aria-label="Close WatchLog navigation">×</button>
       </div>
 
-      <a className="productRailNewChat" href={withSite("/ai/",siteId)}><span className="productRailPlus">＋</span><span>New chat</span></a>
 
       <div className="productRailSectionLabel">Sites</div>
       <div className="productRailSites">
@@ -79,30 +79,38 @@ export function Nav({active,email,right,currentSiteId=""}){
       </div>
 
       <nav className="productRailNav" aria-label="WatchLog navigation">
-        {MAIN_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailLink"+(active===match?" active":"")}>{label}</a>)}
-        <button type="button" className={"productRailLink productRailTools"+(MORE_ACTIVE.has(active)?" active":"")} onClick={()=>setMoreOpen(v=>!v)} aria-expanded={moreOpen}>More <span>{moreOpen?"−":"+"}</span></button>
-        {moreOpen&&<div className="productRailSubnav">{MORE_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} className={"productRailSubLink"+(active===match?" active":"")}>{label}</a>)}</div>}
+        {MAIN_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} aria-current={active===match?"page":undefined} className={"productRailLink"+(active===match?" active":"")}><PortalIcon name={label}/><span>{label}</span></a>)}
+        <button type="button" className={"productRailLink productRailTools"+(MORE_ACTIVE.has(active)?" active":"")} onClick={()=>setMoreOpen(v=>!v)} aria-expanded={moreOpen}><PortalIcon name="More"/><span>More</span><b>{moreOpen?"−":"+"}</b></button>
+        {moreOpen&&<div className="productRailSubnav">{MORE_TABS.map(([label,href,match])=><a key={href} href={withSite(href,siteId)} aria-current={active===match?"page":undefined} className={"productRailSubLink"+(active===match?" active":"")}><PortalIcon name={label}/><span>{label}</span></a>)}</div>}
       </nav>
 
-      <div className="productRailSectionLabel productRailRecentLabel">Recent</div>
-      <div className="productRailRecent">
-        {!navReady?<RailSkeleton lines={5}/>:conversations.slice(0,8).map(c=>{
-          const title=c.title||"WatchLog conversation";
-          const siteName=c.site_name||"Site conversation";
-          const conversationSite=allowedSite(sites,c.site_id)?c.site_id:siteId;
-          const isCurrent=Boolean(convId)&&String(c.id)===String(convId);
-          return <a key={c.id} title={`${title} · ${siteName}`} aria-current={isCurrent?"page":undefined} href={`/ai/?site=${encodeURIComponent(conversationSite||"")}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>conversationSite&&choose(conversationSite,c.site_name||"")} className={"productRailConversation"+(isCurrent?" active":"")}><span>{title}</span><small>{siteName}</small></a>;
-        })}
-        {navReady&&!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}
-      </div>
+      {active==="WatchLog AI"&&<>
+        <div className="productRailSectionLabel productRailRecentLabel">Recent conversations</div>
+        <div className="productRailRecent">
+          {!navReady?<RailSkeleton lines={5}/>:conversations.slice(0,8).map(c=>{
+            const title=c.title||"WatchLog conversation";
+            const siteName=c.site_name||"Site conversation";
+            const conversationSite=allowedSite(sites,c.site_id)?c.site_id:siteId;
+            const isCurrent=Boolean(convId)&&String(c.id)===String(convId);
+            return <a key={c.id} title={`${title} · ${siteName}`} aria-current={isCurrent?"page":undefined} href={`/ai/?site=${encodeURIComponent(conversationSite||"")}&conversation=${encodeURIComponent(c.id)}`} onClick={()=>conversationSite&&choose(conversationSite,c.site_name||"")} className={"productRailConversation"+(isCurrent?" active":"")}><span>{title}</span><small>{siteName}</small></a>;
+          })}
+          {navReady&&!conversations.length&&<div className="productRailEmpty">Your recent conversations will appear here.</div>}
+        </div>
+      </>}
 
       <div className="productRailBottom">
-        <a className="productRailAsk" href={withSite("/ai/",siteId)} onClick={()=>setMobileOpen(false)}><span>✦</span> Ask WatchLog</a>
         {right&&<div className="productRailUtility">{right}</div>}
         {platform&&<a href="/admin/" className="productRailAdmin">WatchLog Admin</a>}
         <button className="productRailSignout" onClick={signOut}>Sign out</button>
       </div>
     </aside>
+    <nav className="productMobileBottom" aria-label="WatchLog mobile navigation">
+      <a href={withSite("/home/",siteId)} aria-current={active==="Home"?"page":undefined} className={active==="Home"?"active":""}><PortalIcon name="Home"/><span>Home</span></a>
+      <a href={withSite("/notifications/",siteId)} aria-current={active==="Notifications"?"page":undefined} className={active==="Notifications"?"active":""}><PortalIcon name="Attention"/><span>Attention</span></a>
+      <a href={withSite("/ai/",siteId)} aria-current={active==="WatchLog AI"?"page":undefined} className={"ask"+(active==="WatchLog AI"?" active":"")}><PortalIcon name="Ask"/><span>Ask</span></a>
+      <a href={withSite("/reports/?view=yesterday",siteId)} aria-current={active==="Reports"?"page":undefined} className={active==="Reports"?"active":""}><PortalIcon name="Reports"/><span>Reports</span></a>
+      <button type="button" aria-haspopup="true" aria-expanded={mobileOpen} className={MORE_ACTIVE.has(active)?"active":""} onClick={()=>setMobileOpen(true)}><PortalIcon name="More"/><span>More</span></button>
+    </nav>
   </>;
 }
 

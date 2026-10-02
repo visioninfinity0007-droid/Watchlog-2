@@ -93,7 +93,7 @@ export default function SignUp() {
 
         <h1>Create your account</h1>
         <p className="sub">
-          Works with compatible CCTV recorders already installed at your site.
+          Use compatible CCTV already installed at your site to get useful business and security information.
         </p>
 
         {error && <div className="err">{error}</div>}

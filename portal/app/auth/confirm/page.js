@@ -4,6 +4,13 @@ import { useEffect, useState } from "react";
 import { supabase, say } from "../../../lib/supabase";
 import Mark from "../../mark";
 
+function hasConfirmationPayload() {
+  if (typeof window === "undefined") return false;
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const query = new URLSearchParams(window.location.search);
+  return Boolean(hash.get("access_token") || hash.get("refresh_token") || hash.get("type") || query.get("code") || query.get("token_hash"));
+}
+
 function hashError() {
   if (typeof window === "undefined") return "";
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -22,6 +29,12 @@ export default function ConfirmEmail() {
     const urlError = hashError();
     if (urlError) {
       setError(urlError);
+      setWaiting(false);
+      return;
+    }
+
+    if (!hasConfirmationPayload()) {
+      setError("Open the confirmation link from your email to complete confirmation.");
       setWaiting(false);
       return;
     }
@@ -50,6 +63,7 @@ export default function ConfirmEmail() {
       if (finish(data.session)) return;
       timer = setTimeout(() => {
         if (!active) return;
+        setError("This confirmation link could not be verified. Return to sign in and send a new confirmation email.");
         setWaiting(false);
       }, 4000);
     });
@@ -65,11 +79,11 @@ export default function ConfirmEmail() {
     <div className="center">
       <div className="auth-card">
         <div className="brand"><Mark /><span className="brand-name">WatchLog</span></div>
-        <h1>{waiting ? "Confirming email" : error ? "Confirmation link problem" : "Email confirmed"}</h1>
+        <h1>{waiting ? "Confirming email" : error ? "Confirmation link problem" : "Confirmation not completed"}</h1>
         <p className="sub">
           {waiting
             ? "Verifying your confirmation and returning you to WatchLog..."
-            : error || "Your email is confirmed. You can now sign in."}
+            : error || "Use the confirmation link from your email to continue."}
         </p>
         {error && <div className="err">{error}</div>}
         {!waiting && <a href="/login/"><button type="button">Go to sign in</button></a>}

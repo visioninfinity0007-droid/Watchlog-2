@@ -6,7 +6,7 @@ import { Nav, requireTenant } from "../shell";
 import ui from "../portal.module.css";
 
 const ROLES=["owner","admin","viewer"];
-const ROLE_COPY={owner:["Owner","Full account control","Plan, billing, team roles and all operations"],admin:["Admin","Day-to-day operations","Sites, analytics, reports and team invites"],viewer:["Viewer","Read-only visibility","Overview, incidents, health, analytics and reports"]};
+const ROLE_COPY={owner:["Owner","Full account control","Account, billing, team roles and all WatchLog settings"],admin:["Admin","Day-to-day management","Sites, insights, reports and team access"],viewer:["Viewer","Read-only access","Home, Attention, Insights, Reports and supporting evidence"]};
 function fmt(ts){return ts?new Date(ts).toLocaleDateString():"-";}
 
 export default function Team(){
@@ -21,14 +21,11 @@ export default function Team(){
   async function revoke(id){if(!confirm("Revoke this pending invitation?"))return;const{error}=await supabase().rpc("wl_revoke_invite",{p_id:id});if(error)setErr(say(error));else setNote("Invitation revoked.");load();}
 
   return <div className="shell"><Nav active="Team" email={email}/><main className="main">
-    <header className={ui.pageHead}><div><div className={ui.eyebrow}>Team access</div><h1>Give each person the access they need.</h1><p>Owners control the account, Admins manage day-to-day operations, and Viewers can review WatchLog without changing account settings.</p></div></header>
+    <header className="target-page-head"><div><div className="target-eyebrow">Team</div><h1>Give each person the access they need</h1><p>Owners control the account, Admins manage day-to-day WatchLog settings, and Viewers can review information without changing the account.</p></div></header>
     {err&&<div className="err">{err}</div>}{note&&<div className="ok-note">{note}</div>}
-    <section className={ui.metricGrid}><div className={ui.metric}><div className={ui.metricValue}>{members?.length??0}</div><div className={ui.metricLabel}>Team members</div></div><div className={ui.metric}><div className={ui.metricValue}>{invites.filter((i)=>!i.expired).length}</div><div className={ui.metricLabel}>Open invitations</div></div><div className={ui.metric}><div className={ui.metricValue}>{(members||[]).filter((m)=>m.role==="owner").length}</div><div className={ui.metricLabel}>Owners</div></div><div className={ui.metric}><div className={ui.metricValue} style={{textTransform:"capitalize"}}>{myRole}</div><div className={ui.metricLabel}>Your role</div></div></section>
+    <section className={ui.callout}><span className={ui.statusDot}/><div><strong>{members?.length??0} team member{(members?.length??0)===1?"":"s"} · {invites.filter((i)=>!i.expired).length} open invitation{invites.filter((i)=>!i.expired).length===1?"":"s"}</strong><p>Your role is <b style={{textTransform:"capitalize"}}>{myRole}</b>. Keep access limited to the people who need WatchLog.</p></div></section>
 
-    <div className={ui.sectionHead}><div><h2>Roles</h2><p>Choose the level of access each person needs.</p></div></div>
-    <section className={ui.threeCol}>{ROLES.map((r)=>{const c=ROLE_COPY[r];return <div className={ui.roleCard} key={r}><strong>{c[0]}</strong><p>{c[1]}</p><span>{c[2]}</span></div>;})}</section>
-
-    <div className={ui.sectionHead}><div><h2>Invite someone</h2><p>Create an invitation for a specific email address. Invitations expire after seven days and can be revoked at any time.</p></div></div>
+        <div className={ui.sectionHead}><div><h2>Invite someone</h2><p>Choose the access level they need. Invitations expire after seven days.</p></div></div>
     {canManage?<div className={ui.card}><form className="row" onSubmit={invite}><div className="field"><label>Work email</label><input type="email" required placeholder="name@company.com" value={inviteEmail} onChange={(e)=>setInviteEmail(e.target.value)}/></div><div className="field" style={{maxWidth:230}}><label>Role</label><select value={inviteRole} onChange={(e)=>setInviteRole(e.target.value)}><option value="viewer">Viewer (read only)</option><option value="admin">Admin (operations)</option>{myRole==="owner"&&<option value="owner">Owner (full access)</option>}</select></div><button className="small" disabled={busy} style={{width:"auto"}}>{busy?"Creating invite...":"Create invite"}</button></form>{latestLink&&<div style={{marginTop:16}}><label>Invitation link</label><div className={ui.copyBox}><span>{latestLink}</span><button className="ghost small" type="button" onClick={copyLink}>Copy</button></div></div>}</div>:<div className={ui.callout}><span className={ui.statusDot}/><div><strong>Read-only team access</strong><p>Only an Owner or Admin can invite people. You can still see who has access to this account.</p></div></div>}
 
     <div className={ui.sectionHead}><div><h2>Team members</h2><p>Review everyone with access and keep roles up to date.</p></div></div>

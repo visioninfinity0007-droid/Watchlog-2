@@ -1,0 +1,29 @@
+/* Owner-first shell overrides. Keep after legacy portal polish layers. */
+.shell{background:#fbfbfc!important}.productRail{background:#fff!important;border-right-color:#e8e8ed!important;padding-left:12px!important;padding-right:12px!important}.productRailBrand svg{fill:#5b21ff!important}.productRailBrand b{font-weight:760!important;letter-spacing:-.035em!important}.productRailSectionLabel{color:#9a9ca5!important;font-size:10px!important}.productRailLink.active,.productRailSubLink.active,.productRailSite.active,.productRailConversation.active{background:#f0ecff!important;color:#4a1bd2!important}.productRailLink.active:before,.productRailSubLink.active:before,.productRailSite.active:before,.productRailConversation.active:before{background:#5b21ff!important}.productRailLink:hover,.productRailSubLink:hover,.productRailAdmin:hover,.productRailSignout:hover{background:#f5f5f7!important}.productRailNewChat{border-color:#ddd6ff!important;background:#f8f6ff!important;color:#4b1fd0!important}.productRailBottom{background:#fff!important;border-top-color:#ececf0!important}.productRailAdmin{color:#5b21ff!important}.shell>.main{background:#fbfbfc!important}.productMobileBottom{display:none}
+@media(max-width:760px){.productMobileBottom{position:fixed;left:0;right:0;bottom:0;z-index:90;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));min-height:64px;padding:6px 7px calc(6px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid #e6e6eb;backdrop-filter:blur(16px);box-shadow:0 -8px 24px rgba(15,23,42,.035)}.productMobileBottom a,.productMobileBottom button{display:flex!important;align-items:center!important;justify-content:center!important;width:100%!important;min-width:0!important;min-height:46px!important;margin:0!important;padding:7px 4px!important;border:0!important;border-radius:9px!important;background:transparent!important;box-shadow:none!important;color:#70737d!important;text-decoration:none!important;font-size:10.5px!important;font-weight:650!important;white-space:nowrap}.productMobileBottom a.active,.productMobileBottom button.active{background:#f0ecff!important;color:#4b1fd0!important}.productMobileBottom .ask{color:#4b1fd0!important;font-weight:760!important}.productMobileBottom .ask:before{content:"✦";margin-right:4px}.shell>.main{padding-bottom:100px!important}.productMobileBar{background:rgba(255,255,255,.96)!important}}
+
+/* Retire the blue drift introduced by the temporary AI-first polish layer. Violet is the single
+   WatchLog interaction colour; green/amber/red remain status-only. */
+.shell{--wl-blue:#5b21ff;--wl-blue-bright:#6f43ff;--wl-ice:#5b21ff}
+.shell a{color:#5b21ff}
+.shell .target-eyebrow,[class*="portal_eyebrow"]{color:#5b21ff!important}
+[class*="portal_primaryLink"],[class*="analytics_primaryAction"]{background:#5b21ff!important;color:#fff!important}
+[class*="portal_roleCard"] span,[class*="analytics_badge"],[class*="analytics_cameraBtnActive"]{color:#5b21ff!important}
+[class*="portal_statusDot"]{background:#5b21ff!important}
+[class*="portal_progress"]>span{background:#5b21ff!important}
+[class*="portal_tabActive"]{color:#5b21ff!important}
+[class*="analytics_subnav"] [class*="current"]{color:#5b21ff!important;border-bottom-color:#5b21ff!important}
+.shell input:focus,.shell select:focus,.shell textarea:focus{border-color:#c9baff!important;box-shadow:0 0 0 3px rgba(91,33,255,.08)!important}
+
+/* Phase 2 evidence grouping: organize camera views by business meaning, not channel number. */
+.evidence-groups{display:grid;gap:30px;margin-top:26px}
+.evidence-group{display:grid;gap:12px}
+.evidence-group-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px}
+.evidence-group-head h2{margin:0!important;color:#17171c!important;font-size:19px!important;text-transform:none!important;letter-spacing:-.03em!important}
+.evidence-group-head p{margin:5px 0 0;color:#7a7f89;font-size:12.5px;line-height:1.5}
+.evidence-group-head>span{color:#8f939c;font-size:11px;white-space:nowrap}
+.camera-view-card{border-color:#e6e6eb!important;border-radius:14px!important;background:#fff!important;box-shadow:0 1px 2px rgba(16,24,40,.02)!important}
+.camera-view-media{background:#f3f3f5!important}
+.camera-view-title small{color:#7d818b!important}
+.camera-view-meta>span:first-child{color:#90949d!important}
+@media(max-width:760px){.evidence-groups{gap:24px}.evidence-group-head{align-items:flex-start}.evidence-group-head>span{display:none}}

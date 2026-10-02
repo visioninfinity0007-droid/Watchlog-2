@@ -1,0 +1,75 @@
+name: Portal CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - '03_Design/**'
+      - 'ai-harness/WATCHLOG.md'
+      - 'ai-harness/core/**'
+      - 'prototype/tests/test_customer_portal_language.py'
+      - 'prototype/tests/test_portal_design_system_contract.py'
+      - 'prototype/tests/test_auth_flow_contract.py'
+      - 'prototype/tests/test_portal_alignment_contract.py'
+      - 'prototype/tests/test_ai_first_production_contract.py'
+      - '.github/workflows/portal-ci.yml'
+  push:
+    branches: ['**']
+    paths:
+      - 'portal/**'
+      - '03_Design/**'
+      - 'ai-harness/WATCHLOG.md'
+      - 'ai-harness/core/**'
+      - 'prototype/tests/test_customer_portal_language.py'
+      - 'prototype/tests/test_portal_design_system_contract.py'
+      - 'prototype/tests/test_auth_flow_contract.py'
+      - 'prototype/tests/test_portal_alignment_contract.py'
+      - 'prototype/tests/test_ai_first_production_contract.py'
+      - '.github/workflows/portal-ci.yml'
+
+concurrency:
+  group: portal-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Production build (static export)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder
+
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Customer portal language contract
+        run: python prototype/tests/test_customer_portal_language.py
+      - name: Owner portal design-system contract
+        run: python prototype/tests/test_portal_design_system_contract.py
+      - name: Auth redirect + confirmation truth contract
+        run: python prototype/tests/test_auth_flow_contract.py
+      - name: Portal alignment contract
+        run: python prototype/tests/test_portal_alignment_contract.py
+      - name: Ask WatchLog production contract
+        run: python prototype/tests/test_ai_first_production_contract.py

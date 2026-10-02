@@ -1,0 +1,156 @@
+/* WatchLog owner portal design system.
+   Scope: authenticated customer shell only. Auth/marketing retain their own presentation. */
+.shell{
+  --portal-canvas:#fbfbfc;
+  --portal-surface:#fff;
+  --portal-surface-subtle:#f7f7fa;
+  --portal-ink:#15151a;
+  --portal-text:#3f434b;
+  --portal-muted:#747984;
+  --portal-line:#e6e6eb;
+  --portal-line-strong:#dadbe2;
+  --portal-violet:var(--color-violet);
+  --portal-violet-deep:var(--color-violet-deep);
+  --portal-violet-soft:#f0ecff;
+  --portal-radius:12px;
+  --portal-shadow:0 1px 2px rgba(15,23,42,.025);
+  background:var(--portal-canvas)!important;
+  color:var(--portal-text)!important;
+}
+.shell,.shell button,.shell input,.shell select,.shell textarea{font-family:var(--font-family-sans)}
+.shell .main{color:var(--portal-text)!important}
+.shell h1,.shell h2,.shell h3,.shell h4,.shell strong,.shell b{color:var(--portal-ink)}
+.shell .muted{color:var(--portal-muted)!important}
+.shell a{color:var(--portal-violet)}
+.shell a:hover{color:var(--portal-violet-deep)}
+.shell input,.shell select,.shell textarea{
+  background:#fff!important;
+  border-color:#dddfe5!important;
+  color:#25272d!important;
+  box-shadow:none!important;
+}
+.shell input:focus,.shell select:focus,.shell textarea:focus{
+  border-color:#bbaaff!important;
+  box-shadow:0 0 0 3px rgba(91,33,255,.08)!important;
+}
+.shell button{box-shadow:none}
+.shell button:not(.ghost):not(.btn-danger):not(.productRailTools):not(.productRailSignout):not(.productRailMenu):not(.watchlogContextToggle):not([class*="tab"]):not([class*="filter"]):not([class*="readAction"]){
+  background:var(--portal-violet);
+}
+.shell button:not(.ghost):not(.btn-danger):hover:not(:disabled){
+  background:var(--portal-violet-deep);
+}
+.shell button.ghost{
+  background:#fff!important;
+  color:#4e535d!important;
+  border:1px solid #dddfe5!important;
+}
+.shell button.ghost:hover:not(:disabled){background:#f7f7f9!important;border-color:#d0d2d9!important}
+.shell .panel,.shell .card{
+  background:#fff!important;
+  color:var(--portal-text)!important;
+  border-color:var(--portal-line)!important;
+  box-shadow:var(--portal-shadow)!important;
+}
+.shell table{color:#41464f!important}
+.shell th{color:#8a8f99!important;border-color:var(--portal-line)!important}
+.shell td{border-color:var(--portal-line)!important}
+.shell .pill{font-size:11px}
+.shell .s-ok{color:var(--color-status-ok);background:color-mix(in srgb,var(--color-status-ok) 10%,white)}
+.shell .s-warn{color:var(--color-status-warn);background:color-mix(in srgb,var(--color-status-warn) 10%,white)}
+.shell .s-bad{color:var(--color-status-bad);background:color-mix(in srgb,var(--color-status-bad) 9%,white)}
+.shell .s-unk{color:#777b85;background:#f0f0f3}
+.shell .err{color:#9f3535;background:#fff5f5;border:1px solid #efcece}
+.shell .ok-note{color:#146c4b;background:#eff9f4;border:1px solid #cdebdc}
+
+.target-page-head{
+  display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+  margin-bottom:26px;
+}
+.target-page-head h1{
+  margin:7px 0 0!important;color:var(--portal-ink)!important;
+  font-size:clamp(30px,3vw,43px)!important;line-height:1.06!important;
+  letter-spacing:-.045em!important;text-transform:none!important;
+}
+.target-page-head p{
+  max-width:68ch;margin:9px 0 0;color:var(--portal-muted)!important;
+  font-size:13.5px;line-height:1.6;
+}
+.target-eyebrow{
+  color:var(--portal-violet)!important;font-size:10px!important;font-weight:800!important;
+  letter-spacing:.11em!important;text-transform:uppercase;
+}
+.target-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.target-actions select{width:auto!important;min-width:160px;margin:0!important;min-height:40px!important}
+
+.productRail{width:232px!important;flex:0 0 232px!important}
+.productRailNav{display:grid!important;gap:2px!important}
+.productRailLink,.productRailSubLink{
+  display:grid!important;grid-template-columns:20px minmax(0,1fr) auto!important;
+  align-items:center!important;gap:9px!important;text-align:left!important;
+}
+.productRailLink>svg,.productRailSubLink>svg{width:17px;height:17px;color:#8b8f99;transition:color .16s var(--motion-ease)}
+.productRailLink>span,.productRailSubLink>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.productRailLink.active>svg,.productRailSubLink.active>svg{color:var(--portal-violet)}
+.productRailTools>b{margin-left:auto;color:#9a9da5!important;font-size:12px}
+.productRailSubnav{display:grid!important;gap:2px!important;margin:2px 0 5px 10px!important;padding-left:7px!important;border-left:1px solid #e7e5ef!important}
+.productRailSubLink{padding-left:9px!important}
+.productRailSite{border:1px solid transparent}
+.productRailSite.active{border-color:#e4dcff!important}
+.productRailBrand{color:#17171c!important}
+.productRailBrand:hover{text-decoration:none!important}
+
+.productMobileBottom a,.productMobileBottom button{
+  flex-direction:column!important;gap:3px!important;
+}
+.productMobileBottom svg{width:18px;height:18px}
+.productMobileBottom span{display:block;font-size:9.5px;line-height:1}
+.productMobileBottom .ask:before{display:none!important;content:none!important}
+
+.shell [class*="portal_card"],.shell [class*="portal_featureCard"],
+.shell [class*="analytics_metric"],.shell [class*="analytics_panel"],
+.shell [class*="analytics_summary"]{
+  box-shadow:var(--portal-shadow)!important;
+}
+.shell [class*="portal_eyebrow"],.shell [class*="analytics_eyebrow"]{color:var(--portal-violet)!important}
+.shell [class*="portal_primaryLink"]{background:var(--portal-violet)!important}
+.shell [class*="portal_primaryLink"]:hover{background:var(--portal-violet-deep)!important}
+.shell [class*="portal_secondaryLink"]{border-color:#dddfe5!important;color:#4d525b!important}
+.shell [class*="portal_callout"]{background:#f8f6ff!important;border-color:#e2dcf5!important}
+.shell [class*="portal_statusDot"]{background:var(--portal-violet)!important}
+.shell [class*="portal_progress"]>span{background:var(--portal-violet)!important}
+
+@media(max-width:760px){
+  .target-page-head{align-items:flex-start;flex-direction:column}
+  .target-actions{width:100%;justify-content:flex-start}
+  .target-actions>*{flex:1}
+  .target-actions select{min-width:0!important}
+}
+
+/* Phase 6 accessibility and responsive interaction rules. */
+.shell :where(a,button,input,select,textarea,[tabindex]):focus-visible{
+  outline:3px solid rgba(91,33,255,.38)!important;
+  outline-offset:2px!important;
+}
+.shell :where(.productRailLink,.productRailSubLink,.productRailSite,.productMobileBottom a,.productMobileBottom button):focus-visible{
+  border-radius:8px;
+}
+.shell :where([class*="metric"],[class*="Metric"],td,th,.pill){
+  font-variant-numeric:tabular-nums;
+}
+.shell button:disabled,.shell a[aria-disabled="true"]{cursor:not-allowed!important}
+.productMobileBottom a,.productMobileBottom button{min-height:56px!important}
+@media(max-width:760px){
+  .shell button,.shell a[class*="Link"],.shell .ghost,.shell .productRailLink,.shell .productRailSubLink{min-height:44px}
+  .shell select,.shell input{min-height:44px!important}
+  .productRailMenu,.productRailSignout{min-height:44px!important}
+  .productRailSite{min-height:52px}
+}
+@media(prefers-reduced-motion:reduce){
+  .shell *,.shell *::before,.shell *::after,.auth-card *,.auth-card *::before,.auth-card *::after{
+    animation-duration:.01ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:.01ms!important;
+    scroll-behavior:auto!important;
+  }
+}

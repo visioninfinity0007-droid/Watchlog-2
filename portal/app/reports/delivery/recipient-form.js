@@ -1,3 +1,34 @@
 "use client";
-import {useState} from "react";import ui from "../../portal.module.css";
-export default function RecipientForm({delivery}){const[form,setForm]=useState({name:"",email:"",whatsapp:"",channel:"email",site:""}),[busy,setBusy]=useState(false);const canManage=delivery.role==="owner"||delivery.role==="admin";if(!canManage)return null;async function submit(e){e.preventDefault();setBusy(true);if(await delivery.add(form))setForm({name:"",email:"",whatsapp:"",channel:"email",site:""});setBusy(false)}return <form className={ui.card} onSubmit={submit}><div className="row"><div className="field"><label>Name</label><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Operations team"/></div><div className="field"><label>Send by</label><select value={form.channel} onChange={e=>setForm({...form,channel:e.target.value})}><option value="email">Email</option><option value="whatsapp">WhatsApp</option><option value="both">Both</option></select></div><div className="field"><label>Site</label><select value={form.site} onChange={e=>setForm({...form,site:e.target.value})}><option value="">All sites</option>{delivery.sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div></div><div className="row">{form.channel!=="whatsapp"&&<div className="field"><label>Email</label><input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></div>}{form.channel!=="email"&&<div className="field"><label>WhatsApp</label><input value={form.whatsapp} onChange={e=>setForm({...form,whatsapp:e.target.value})}/></div>}<button className="small" disabled={busy}>{busy?"Saving…":"Add recipient"}</button></div></form>}
+import {useEffect,useState} from "react";
+import ui from "../../portal.module.css";
+
+export default function RecipientForm({delivery}){
+  const[form,setForm]=useState({name:"",email:"",whatsapp:"",channel:"email",site:""});
+  const[busy,setBusy]=useState(false);
+  const canManage=delivery.role==="owner"||delivery.role==="admin";
+
+  useEffect(()=>{
+    if(delivery.siteId&&!form.site)setForm(current=>({...current,site:current.site||delivery.siteId}));
+  },[delivery.siteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if(!canManage)return null;
+
+  async function submit(e){
+    e.preventDefault();setBusy(true);
+    if(await delivery.add(form))setForm({name:"",email:"",whatsapp:"",channel:"email",site:delivery.siteId||""});
+    setBusy(false);
+  }
+
+  return <form className={ui.card} onSubmit={submit}>
+    <div className="row">
+      <div className="field"><label>Name</label><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Owner, Operations team"/></div>
+      <div className="field"><label>Send by</label><select value={form.channel} onChange={e=>setForm({...form,channel:e.target.value})}><option value="email">Email</option><option value="whatsapp">WhatsApp</option><option value="both">Email + WhatsApp</option></select></div>
+      <div className="field"><label>Site</label><select value={form.site} onChange={e=>setForm({...form,site:e.target.value})}><option value="">All sites</option>{delivery.sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+    </div>
+    <div className="row">
+      {form.channel!=="whatsapp"&&<div className="field"><label>Email</label><input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="owner@business.com"/></div>}
+      {form.channel!=="email"&&<div className="field"><label>WhatsApp</label><input value={form.whatsapp} onChange={e=>setForm({...form,whatsapp:e.target.value})} placeholder="+92 3XX XXXXXXX"/></div>}
+      <button className="small" disabled={busy}>{busy?"Saving…":"Add recipient"}</button>
+    </div>
+  </form>;
+}

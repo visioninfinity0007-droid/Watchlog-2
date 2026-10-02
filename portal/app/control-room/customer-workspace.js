@@ -59,6 +59,7 @@ export default function CustomerCameraView() {
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState("");
   const [ctx, setCtx] = useState(null);
+  const [restaurantConfig, setRestaurantConfig] = useState(null);
   const [shots, setShots] = useState({});
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -107,13 +108,22 @@ export default function CustomerCameraView() {
     setShots({});
     shotsRef.current = {};
     (async () => {
-      const r = await supabase().rpc("wl_ai_context", { p_site_id: siteId });
+      const sb = supabase();
+      const [contextResult, restaurantResult] = await Promise.all([
+        sb.rpc("wl_ai_context", { p_site_id: siteId }),
+        sb.rpc("wl_restaurant_site_config", { p_site_id: siteId }),
+      ]);
       if (!live) return;
-      if (r.error) {
-        setError(say(r.error));
+      if (contextResult.error) {
+        setError(say(contextResult.error));
         return;
       }
-      setCtx(r.data || null);
+      setCtx(contextResult.data || null);
+      setRestaurantConfig(
+        !restaurantResult.error && restaurantResult.data?.enabled === true
+          ? restaurantResult.data
+          : null,
+      );
       setError("");
     })();
     return () => {
@@ -286,26 +296,57 @@ export default function CustomerCameraView() {
     (c) => String(c.recording_state || "").toLowerCase() === "recording",
   ).length;
 
+  const roleByCamera = useMemo(() => {
+    const map = new Map();
+    for (const row of restaurantConfig?.cameras || []) {
+      map.set(String(row.camera_id), row.role || "");
+    }
+    return map;
+  }, [restaurantConfig]);
+
+  const cameraGroups = useMemo(() => {
+    if (!restaurantConfig) {
+      return [{ key: "all", label: "Monitored cameras", description: "Recent camera views from this site.", cameras }];
+    }
+    const defs = [
+      { key: "dining", label: "Customer areas", description: "Dining-floor views used for visible diner and table activity.", roles: new Set(["dining_floor"]) },
+      { key: "operations", label: "Service operations", description: "Kitchen, service handoff, cash-counter and service-access views.", roles: new Set(["kitchen","service_handoff","cash_counter","service_access"]) },
+      { key: "security", label: "Management & security", description: "Office and management views used for security context.", roles: new Set(["office_security"]) },
+      { key: "other", label: "Other cameras", description: "Configured cameras without a restaurant role.", roles: new Set([]) },
+    ];
+    const groups = defs.map((d) => ({ ...d, cameras: [] }));
+    for (const camera of cameras) {
+      const role = roleByCamera.get(String(camera.id)) || "";
+      let target = groups.find((g) => g.roles.has(role));
+      if (!target) target = groups[groups.length - 1];
+      target.cameras.push(camera);
+    }
+    return groups.filter((g) => g.cameras.length);
+  }, [cameras, restaurantConfig, roleByCamera]);
+
   return (
     <div className="shell">
       <Nav active="Control Room" email={email} currentSiteId={siteId} />
       <main className="main">
         <header className="target-page-head">
           <div>
-            <div className="target-eyebrow">Cameras</div>
-            <h1>{site?.name || "Site"} cameras</h1>
+            <div className="target-eyebrow">Cameras &amp; Evidence</div>
+            <h1>See the site by business area</h1>
             <p>
               {cameras.length
-                ? `${cameras.length} monitored · ${recording} with recording currently confirmed`
+                ? `${site?.name || "This site"} · ${cameras.length} monitored cameras · ${recording} with recording currently confirmed. Recent views are organized by what they help management understand.`
                 : "See the cameras WatchLog is monitoring at this site."}
             </p>
           </div>
           <div className="target-actions">
-            <a
-              className={ui.secondaryLink}
-              href={withSite("/control-room/advanced/", siteId)}
-            >
-              Edit layouts
+            <a className={ui.secondaryLink} href={withSite("/incidents/evidence/", siteId)}>
+              Camera evidence
+            </a>
+            <a className={ui.secondaryLink} href={withSite("/archive/", siteId)}>
+              Saved video
+            </a>
+            <a className={ui.secondaryLink} href={withSite("/site-control/", siteId)}>
+              Camera settings
             </a>
           </div>
         </header>
@@ -330,14 +371,14 @@ export default function CustomerCameraView() {
                     attention.
                   </strong>
                   <p>
-                    Review the affected cameras below or open Site Health for
+                    Review the affected cameras below or open System Health for
                     more context.
                   </p>
                   <a
                     className={ui.primaryLink}
                     href={withSite("/site-health/", siteId)}
                   >
-                    Open Site Health
+                    Open System Health
                   </a>
                 </div>
               </div>
@@ -355,59 +396,75 @@ export default function CustomerCameraView() {
             )}
 
             {cameras.length > 0 && (
-              <section className="camera-view-grid">
-                {cameras.map((c) => {
-                  const shot = shots[c.id];
-                  const health = healthView(c.health_state);
-                  const recordingState = recordingView(c.recording_state);
-                  return (
-                    <article className="camera-view-card" key={c.id}>
-                      <div className="camera-view-media">
-                        {shot?.image ? (
-                          <img
-                            src={shot.image}
-                            alt={`Preview from ${c.name || `camera ${c.channel}`}`}
-                          />
-                        ) : (
-                          <span>
-                            {shot === undefined
-                              ? "Loading preview…"
-                              : "No recent preview"}
-                          </span>
-                        )}
+              <div className="evidence-groups">
+                {cameraGroups.map((group) => (
+                  <section className="evidence-group" key={group.key}>
+                    <div className="evidence-group-head">
+                      <div>
+                        <h2>{group.label}</h2>
+                        <p>{group.description}</p>
                       </div>
-                      <div className="camera-view-body">
-                        <div className="camera-view-title">
-                          <div>
-                            <b>{c.name || `Camera ${c.channel}`}</b>
-                            <small>{human(c.purpose || "general")}</small>
-                          </div>
-                          <span className={`pill ${health.cls}`}>
-                            {health.label}
-                          </span>
-                        </div>
-                        <div className="camera-view-meta">
-                          <span>
-                            {shot?.captured
-                              ? `Preview ${ago(shot.captured)}`
-                              : "No recent preview"}
-                          </span>
-                          <span className={`pill ${recordingState.cls}`}>
-                            {recordingState.label}
-                          </span>
-                        </div>
-                        <button
-                          className="ghost small"
-                          disabled={busy === c.id}
-                          onClick={() => refresh(c)}
-                        >
-                          {busy === c.id ? "Refreshing…" : "Refresh preview"}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </section>
+                      <span>{group.cameras.length} camera{group.cameras.length === 1 ? "" : "s"}</span>
+                    </div>
+                    <div className="camera-view-grid">
+                      {group.cameras.map((c) => {
+                        const shot = shots[c.id];
+                        const health = healthView(c.health_state);
+                        const recordingState = recordingView(c.recording_state);
+                        const role = roleByCamera.get(String(c.id));
+                        return (
+                          <article className="camera-view-card" key={c.id}>
+                            <div className="camera-view-media">
+                              {shot?.image ? (
+                                <img
+                                  src={shot.image}
+                                  alt={`Recent view from ${c.name || `camera ${c.channel}`}`}
+                                />
+                              ) : (
+                                <span>
+                                  {shot === undefined
+                                    ? "Loading recent view…"
+                                    : "No recent view"}
+                                </span>
+                              )}
+                            </div>
+                            <div className="camera-view-body">
+                              <div className="camera-view-title">
+                                <div>
+                                  <b>{c.name || `Camera ${c.channel}`}</b>
+                                  <small>{role ? human(role) : c.purpose ? human(c.purpose) : "Purpose not set"}</small>
+                                </div>
+                                <span className={`pill ${health.cls}`}>
+                                  {health.label}
+                                </span>
+                              </div>
+                              <div className="camera-view-meta">
+                                <span>
+                                  {shot?.captured
+                                    ? `Recent view ${ago(shot.captured)}`
+                                    : "No recent view"}
+                                </span>
+                                <span className={`pill ${recordingState.cls}`}>
+                                  {recordingState.label}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="ghost small"
+                                aria-busy={busy === c.id}
+                                disabled={busy === c.id}
+                                onClick={() => refresh(c)}
+                              >
+                                {busy === c.id ? "Refreshing…" : "Refresh view"}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
             )}
           </>
         )}
