@@ -189,7 +189,7 @@ begin
     ),
     'measurement_note','Quality scores describe visible image/geometry conditions in analyzed frames. Recommendations require repeated evidence and do not imply that a physical fix has already been made.'
   );
-end $function$
+end $function$;
 
 
 revoke execute on function public.wl_restaurant_quality_summary(uuid,timestamptz,timestamptz) from public,anon,authenticated;
@@ -432,7 +432,7 @@ begin
       )
     )
   );
-end $function$
+end $function$;
 
 
 CREATE OR REPLACE FUNCTION public.wl_restaurant_period(p_site_id uuid, p_days integer DEFAULT 7, p_end_date date DEFAULT NULL::date)
@@ -811,7 +811,7 @@ begin
       'Missing observation periods are missing coverage, not zero business activity.'
     )
   );
-end $function$
+end $function$;
 
 
 CREATE OR REPLACE FUNCTION public.wl_generate_daily_report(p_site_id uuid, p_date date DEFAULT NULL::date, p_force boolean DEFAULT false)
@@ -904,7 +904,7 @@ begin
     'report_id',v_id,'frozen',false,'revision',v_rev,
     'generated_at',now(),'payload',v_payload
   );
-end $function$
+end $function$;
 
 
 CREATE OR REPLACE FUNCTION public.wl_ai_context(p_site_id uuid)
@@ -991,7 +991,7 @@ begin
       'recorder_writes_require_approval',true,
       'unknown_capability_must_not_be_assumed',true)
   );
-end $function$
+end $function$;
 
 
 update public.site_business_context

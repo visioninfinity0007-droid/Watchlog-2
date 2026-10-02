@@ -7,7 +7,7 @@ Rolled-back txn over the full derived stack.
 """
 from __future__ import annotations
 
-import re, sys
+import json, re, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +39,9 @@ def run() -> int:
             for p in MIGS: cur.execute(p.read_text(encoding="utf-8"))
             tid = cur.execute("insert into tenants (name) values ('v3') returning id").fetchone()[0]
             sid = cur.execute("insert into sites (tenant_id,name,timezone) values (%s,'v3','Asia/Karachi') returning id",(tid,)).fetchone()[0]
+            uid = cur.execute("insert into auth.users (id,email) values (gen_random_uuid(),%s) returning id", ("v3-e2e@watchlog.test",)).fetchone()[0]
+            cur.execute("insert into memberships (user_id,tenant_id,role) values (%s,%s,'owner')", (uid,tid))
+            cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": str(uid), "role": "authenticated"}),))
             g = cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,'1','Gate','entrance') returning id",(tid,sid)).fetchone()[0]
             o = cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,'2','Office','office') returning id",(tid,sid)).fetchone()[0]
             cur.execute("""insert into site_business_context (site_id,tenant_id,open_time,close_time,entrance_camera_ids,internal_camera_ids)

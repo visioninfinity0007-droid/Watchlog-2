@@ -373,7 +373,7 @@ begin
       'Missing observation periods are missing coverage, not zero business activity.'
     )
   );
-end $function$
+end $function$;
 
 
 revoke execute on function public.wl_restaurant_period(uuid,integer,date) from public,anon;
@@ -446,7 +446,7 @@ begin
       where t.site_id=p_site_id and t.tenant_id=v_tenant and t.active
     ),'[]'::jsonb)
   );
-end $function$
+end $function$;
 
 
 revoke execute on function public.wl_restaurant_site_config(uuid) from public,anon;

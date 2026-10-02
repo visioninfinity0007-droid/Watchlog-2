@@ -140,12 +140,12 @@ returns boolean
 language sql
 immutable
 set search_path=public,pg_temp
-as $
+as $$
   select p in (
     'retail','warehouse_logistics','manufacturing','office_commercial',
     'school_campus','parking_yard','residential_community','restaurant','custom'
   )
-$;
+$$;
 
 create or replace function public.wl_restaurant_site_config(p_site_id uuid)
 returns jsonb

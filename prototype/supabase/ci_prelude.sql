@@ -52,3 +52,76 @@ as $$
 $$;
 
 -- auth.email() is not referenced by the migrations, so it is intentionally omitted.
+
+
+-- Supabase platform-service shims for disposable vanilla Postgres only.
+-- Production never runs this file.
+create schema if not exists vault;
+create table if not exists vault.secrets (
+  id uuid primary key default gen_random_uuid(),
+  secret text not null,
+  name text not null unique,
+  description text,
+  created_at timestamptz not null default now()
+);
+create or replace function vault.create_secret(
+  new_secret text,
+  new_name text,
+  new_description text default null
+) returns uuid
+language plpgsql
+security definer
+as $$
+declare v_id uuid;
+begin
+  insert into vault.secrets(secret,name,description)
+  values (new_secret,new_name,new_description)
+  on conflict(name) do update
+    set secret=excluded.secret,description=excluded.description
+  returning id into v_id;
+  return v_id;
+end $$;
+create or replace view vault.decrypted_secrets as
+select id,name,description,secret as decrypted_secret,created_at
+from vault.secrets;
+
+create schema if not exists cron;
+create table if not exists cron.job (
+  jobid bigserial primary key,
+  jobname text not null unique,
+  schedule text not null,
+  command text not null
+);
+create or replace function cron.schedule(
+  p_jobname text,
+  p_schedule text,
+  p_command text
+) returns bigint
+language plpgsql
+as $$
+declare v_id bigint;
+begin
+  insert into cron.job(jobname,schedule,command)
+  values (p_jobname,p_schedule,p_command)
+  on conflict(jobname) do update
+    set schedule=excluded.schedule,command=excluded.command
+  returning jobid into v_id;
+  return v_id;
+end $$;
+create or replace function cron.unschedule(p_jobname text) returns boolean
+language plpgsql
+as $$
+begin
+  delete from cron.job where jobname=p_jobname;
+  return found;
+end $$;
+
+create schema if not exists net;
+create or replace function net.http_post(
+  url text,
+  headers jsonb default '{}'::jsonb,
+  body jsonb default '{}'::jsonb,
+  timeout_milliseconds integer default 1000
+) returns bigint
+language sql
+as $$ select 1::bigint $$;

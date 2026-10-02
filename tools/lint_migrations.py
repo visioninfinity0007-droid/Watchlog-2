@@ -3,9 +3,9 @@
 Static sanity checks on the SQL migrations (no database needed).
 
   * filenames are NNNN_name.sql, numbered with no gaps and no duplicates
-    (a number listed in tools/reserved_migrations.json may be absent — it is
-    owned by another in-flight branch, e.g. PR #36's 0040/0041 — but must not
-    duplicate; every OTHER gap still fails)
+    unless tools/reserved_migrations.json explicitly lists the exact historical
+    duplicate filenames. A number listed as reserved may be absent because
+    another in-flight branch owns it; every other gap still fails.
   * every migration is non-empty and valid UTF-8 without a BOM
   * a heads-up (not a failure) on unguarded destructive statements
 
@@ -31,6 +31,17 @@ def load_reserved() -> set[int]:
         return set()
     data = json.loads(RESERVED_FILE.read_text(encoding="utf-8"))
     return {int(k) for k in data.get("reserved", {})}
+
+
+def load_historical_duplicates() -> dict[int, set[str]]:
+    """Exact legacy filename sets allowed to retain a shared migration number."""
+    if not RESERVED_FILE.exists():
+        return {}
+    data = json.loads(RESERVED_FILE.read_text(encoding="utf-8"))
+    return {
+        int(number): {str(name) for name in names}
+        for number, names in data.get("historical_duplicates", {}).items()
+    }
 
 
 def main() -> int:
@@ -68,8 +79,28 @@ def main() -> int:
         # but then it must be removed from the reservation to keep intent clear.
         warns.append(f"reserved migration(s) {sorted(dup)} are present — "
                      f"drop them from reserved_migrations.json")
-    if len(set(nums)) != len(nums):
-        errs.append("duplicate migration numbers")
+
+    historical = load_historical_duplicates()
+    by_number: dict[int, list[str]] = {}
+    for f in files:
+        m = NAME.match(f.name)
+        if m:
+            by_number.setdefault(int(m.group(1)), []).append(f.name)
+    for number, names in sorted(by_number.items()):
+        if len(names) < 2:
+            continue
+        actual = set(names)
+        expected = historical.get(number)
+        if expected is not None and actual == expected:
+            warns.append(
+                f"historical duplicate {number:04d} retained intentionally: "
+                + ", ".join(sorted(names))
+            )
+        else:
+            errs.append(
+                f"duplicate migration number {number:04d}: "
+                + ", ".join(sorted(names))
+            )
 
     for w in warns:
         print("  WARN " + w)
