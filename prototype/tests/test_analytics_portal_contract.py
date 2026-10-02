@@ -32,7 +32,7 @@ def check() -> None:
     assert "Site Health','note','Always on" in MIG
     assert "rule_type<>'health'" in MIG
     assert '"/site-health/"' in NAV and '"Site Health"' in NAV   # Site Health remains navigable (productRail)
-    assert 'Nav active="Site Health"' in HEALTH
+    assert 'active="Site Health"' in HEALTH  # OwnerPage passes the nav highlight through to Nav
     # AI-first Site Health draws on the tenant-scoped AI context + sites (was wl_portal_overview).
     assert 'rpc("wl_ai_context"' in HEALTH
     assert 'rpc("wl_sites"' in HEALTH

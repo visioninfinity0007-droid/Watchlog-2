@@ -273,7 +273,8 @@ def main():
     if 'location.replace(tenant ? "/home/" : "/onboarding/")' not in home:
         problems.append("signed-in tenants must land on owner Home")
     for phrase in (
-        "What matters now, what needs attention, and what WatchLog can verify.",
+        'title="Needs attention"',
+        "What changed",
         "Monitoring coverage",
         "Nothing needs your attention right now.",
         "Business activity insights are not ready yet.",

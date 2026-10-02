@@ -8,12 +8,12 @@ APP = ROOT / "portal" / "app"
 shell = (APP / "shell.js").read_text(encoding="utf-8")
 nav = (APP / "nav-config.js").read_text(encoding="utf-8")
 entry = (APP / "page.js").read_text(encoding="utf-8")
-mobile = (APP / "mobile-launcher.js").read_text(encoding="utf-8")
 layout = (APP / "layout.js").read_text(encoding="utf-8")
 icons = (APP / "icons.js").read_text(encoding="utf-8")
 system_css = (APP / "portal-system.css").read_text(encoding="utf-8")
-home_css = (APP / "home" / "home.module.css").read_text(encoding="utf-8")
-attention_css = (APP / "notifications" / "notifications.module.css").read_text(encoding="utf-8")
+# Phase 27: the owner surfaces render inside the Signal Ledger system (owner/owner.css + owner/ui.js).
+owner_css = (APP / "owner" / "owner.css").read_text(encoding="utf-8")
+owner_ui = (APP / "owner" / "ui.js").read_text(encoding="utf-8")
 ai_css = (APP / "ai" / "customer.module.css").read_text(encoding="utf-8")
 analytics = (APP / "analytics" / "page.js").read_text(encoding="utf-8")
 ai_workspace = (APP / "ai" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -32,7 +32,6 @@ setup_review = (APP / "setup" / "review-setup.js").read_text(encoding="utf-8")
 setup_connect = (APP / "setup" / "connect-site.js").read_text(encoding="utf-8")
 setup_base = (APP / "setup" / "use-setup-base.js").read_text(encoding="utf-8")
 setup_css = (APP / "setup" / "customer.module.css").read_text(encoding="utf-8")
-reports_css = (APP / "reports" / "reports.module.css").read_text(encoding="utf-8")
 reports = (APP / "reports" / "customer-workspace.js").read_text(encoding="utf-8")
 unified_report = (APP / "reports" / "unified-restaurant-report.js").read_text(encoding="utf-8")
 incidents = (APP / "incidents" / "customer-workspace.js").read_text(encoding="utf-8")
@@ -68,25 +67,44 @@ for name in (
     if f'key==="{name}"' not in icons:
         problems.append(f"canonical icon missing: {name}")
 
-if "productMobileBottom" not in shell:
+if "ow-bottom" not in shell or ".ow-bottom{" not in owner_css:
     problems.append("mobile owner navigation missing")
-if "productMobileLauncher" in mobile or "☰" in mobile:
+if "MobileLauncher" in shell or "☰" in shell:
     problems.append("duplicate mobile hamburger must not return; bottom More is the secondary navigation entry")
 if 'onClick={()=>setMobileOpen(true)}' not in shell:
     problems.append("mobile More must open the secondary navigation drawer")
 
-for stylesheet in ('import "./portal-system.css";', 'import "./auth-system.css";'):
+for stylesheet in ('import "./portal-system.css";', 'import "./auth-system.css";', 'import "./owner/owner.css";'):
     if stylesheet not in layout:
         problems.append(f"root layout missing design layer: {stylesheet}")
 
-for token in ("--portal-violet", "--portal-canvas", ".target-page-head", ".productMobileBottom"):
-    if token not in system_css:
+for token in ("--ow-violet:", "--ow-paper:", "--ow-nav:", "--ow-verified:", "--ow-unknown:", ".ow-rail{", ".ow-summary", ".ow-ledger-strip", ".ow-bottom{"):
+    if token not in owner_css:
         problems.append(f"owner portal design-system token/rule missing: {token}")
+for component in ("export function OwnerPage", "export function Ledger", "export function Lead", "export function Summary", "<Nav active={active}"):
+    if component not in owner_ui:
+        problems.append(f"owner portal shared component missing: {component}")
+# The coverage ledger shows a verified PROPORTION; it must not pretend to know when coverage was missing.
+if "never a time axis" not in owner_ui:
+    problems.append("coverage ledger must stay a proportion, not an implied timeline")
+# Unknown stays Unknown: no coverage figure renders as a hatched "Not verified yet" strip, and partial
+# coverage is worded "could not be verified" (Signal Ledger coverage component), never as zero or green.
+for token in ('ow-ledger-strip none', "Not verified yet", "could not be verified"):
+    if token not in owner_ui:
+        problems.append(f"coverage ledger truth wording missing: {token}")
+# Category/period tabs never clip on a phone: the shared tab strip scrolls rather than hiding tabs,
+# and Attention keeps real tab semantics (was: a 2x2 grid pinned in notifications.module.css).
+if ".ow-tabs{display:flex;" not in owner_css or "overflow-x:auto" not in owner_css.split(".ow-tabs{",1)[1].split("}",1)[0]:
+    problems.append("owner tab strip must scroll horizontally instead of clipping tabs on mobile")
+for token in ('role="tablist" aria-label="Attention categories"', 'role="tab" aria-selected={filter===key}'):
+    if token not in attention:
+        problems.append(f"Attention category tab semantics missing: {token}")
 
 for surface_name, source, token in (
-    ("Home", home_css, ".primary,.secondary{flex:1;min-height:44px!important}"),
-    ("Attention", attention_css, ".actions .markAll,.filterBar button,.openAction,.readAction{min-height:44px!important}"),
-    ("Attention filter layout", attention_css, ".filterBar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;overflow:visible}"),
+    ("Owner controls", owner_css, ".ow-btn,.ow .ow-btn,.ow select,.ow input{min-height:44px}"),
+    ("Owner tabs", owner_css, ".ow-tab,.ow .ow-tab{min-height:44px}"),
+    ("Owner row actions", owner_css, ".ow-row-act a,.ow-row-act button{min-height:44px;display:inline-flex;align-items:center}"),
+    ("Owner bottom navigation", owner_css, "justify-content:center;gap:3px;min-height:56px"),
     ("Ask WatchLog", ai_css, ".suggestionRow a{min-height:44px;display:inline-flex;align-items:center}"),
     ("Ask WatchLog composer", ai_css, ".composer button{width:44px!important;height:44px!important;min-width:44px!important}"),
     ("Ask WatchLog nav clearance", ai_css, ".composerWrap{bottom:calc(64px + env(safe-area-inset-bottom));padding:10px 12px 13px}"),
@@ -142,9 +160,8 @@ for token in ('<option value="">Choose area</option>', 'Choose an area for every
 for source_name, source in (("Camera setup", setup_cameras), ("Review setup", setup_review), ("Connect site", setup_connect)):
     if "<button onClick=" in source:
         problems.append(f"{source_name} action buttons must use explicit button types")
-for token in ('.periodToolbar>div:last-child[role="tablist"]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}', 'min-height:44px!important;white-space:normal'):
-    if token not in reports_css:
-        problems.append(f"Reports mobile period-selector layout contract missing: {token}")
+if 'className="ow-tab"' not in reports:
+    problems.append("Reports period selector must use the shared owner tabs (44px mobile targets)")
 for token in ('.card>button:disabled,.actions>button:disabled', 'cursor:not-allowed!important', 'opacity:1!important'):
     if token not in setup_css:
         problems.append(f"Guided Setup disabled-action visual contract missing: {token}")

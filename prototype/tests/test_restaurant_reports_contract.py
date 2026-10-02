@@ -1,8 +1,11 @@
+import re
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
-REPORT=(ROOT/"portal/app/reports/customer-workspace.js").read_text(encoding="utf-8")
+# Reports UI = the page workspace plus the unified restaurant renderer it routes every restaurant view to.
+REPORT="\n".join((ROOT/"portal/app/reports"/f).read_text(encoding="utf-8") for f in ("customer-workspace.js","unified-restaurant-report.js"))
 HOOK=(ROOT/"portal/app/reports/use-report.js").read_text(encoding="utf-8")
+UNIFIED=(ROOT/"portal/app/reports/unified-restaurant-report.js").read_text(encoding="utf-8")
 MIGRATION=(ROOT/"prototype/supabase/migrations/0121_restaurant_visual_analytics.sql").read_text(encoding="utf-8")
 CONFIG=(ROOT/"prototype/supabase/tenant-config/chaiwala_restaurant_analytics.sql").read_text(encoding="utf-8")
 RUNTIME=(ROOT/"prototype/supabase/migrations/0122_vision_worker_runtime.sql").read_text(encoding="utf-8")
@@ -20,7 +23,9 @@ AGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
 def test_restaurant_report_uses_real_service_day_rpc():
     assert 'rpc("wl_restaurant_day"' in HOOK
     assert 'rpc("wl_restaurant_site_config"' in HOOK
-    assert "service_date" in HOOK
+    # Business-day resolution: the report asks the database for the last completed service day
+    # (it never derives "yesterday" from the browser's calendar date).
+    assert 'rpc("wl_my_last_completed_business_date"' in HOOK
 
 
 def test_restaurant_report_labels_camera_derived_metrics_honestly():
@@ -34,7 +39,9 @@ def test_restaurant_report_labels_camera_derived_metrics_honestly():
         "not POS data",
     ):
         assert text in REPORT
-    assert "No estimates are being fabricated from unprocessed snapshots." in REPORT
+    # Unsupported business figures are withheld, never fabricated. (The old sentence used "snapshots",
+    # which customer-vocabulary.yaml now forbids in customer copy; the live restaurant renderer says this.)
+    assert "not presenting unsupported business figures" in UNIFIED
     assert ">Footfall<" not in REPORT
     assert "Peak footfall" not in REPORT
 
@@ -75,7 +82,7 @@ def test_chaiwala_config_is_reproducible_and_role_specific():
     assert CONFIG.count(",4,'anchor_match'") == 23
     assert "'F1-01'" in CONFIG and "'F1-13'" in CONFIG
     assert "'F2-01'" in CONFIG and "'F2-10'" in CONFIG
-    assert '"customer_footfall_available":false' in CONFIG
+    assert re.search(r'"customer_footfall_available":\s*false', CONFIG)
 
 
 def test_saved_historical_report_remains_authoritative():
@@ -89,7 +96,7 @@ def test_vision_worker_schedule_respects_current_provider_capacity():
 
 
 def test_preopen_overnight_service_day_stays_on_previous_service():
-    assert "v_local_now::time < v_ctx.open_time" in PREOPEN
+    assert re.search(r"v_local_now::time\s*<\s*v_ctx\.open_time", PREOPEN)
     assert "v_local_now::time<v_ctx.open_time" in PREOPEN
     assert "v_local_now::time < v_ctx.close_time" not in PREOPEN
 
@@ -238,25 +245,18 @@ def test_day_and_period_reports_include_analytics_quality():
 
 
 def test_report_ui_has_camera_quality_chart_and_improvement_recommendations():
-    for text in (
-        "Analytics quality & improvement recommendations",
-        "People count",
-        "Table tracking",
-        "Glare risk",
-        "Occlusion",
-        "Angle quality",
-        "Recommended improvement",
-        "Customer-count accuracy:",
-    ):
-        assert text in REPORT
-    assert "qualityTrack" in REPORT
-    assert "improvementCard" in REPORT
-    assert "Quality scoring is waiting for processed restaurant frames." in REPORT
+    # Camera-quality findings reach the owner as practical visibility improvements, built only from the
+    # governed analytics_quality recommendations (repeated evidence), never as an accuracy percentage and
+    # never in internal capture vocabulary (customer-vocabulary.yaml forbids "frames"/"analytics quality").
+    assert "analytics_quality&&data.analytics_quality.recommendations" in UNIFIED
+    assert "Visibility improvements" in UNIFIED
+    assert "accuracy" not in UNIFIED.lower()
+    assert "'can_publish_accuracy_percentage',false" in QUALITY
 
 
 def test_chaiwala_quality_context_is_tenant_specific_and_reproducible():
     assert '"schema": "restaurant-vision-v3"' in CONFIG or '"schema":"restaurant-vision-v3"' in CONFIG
-    assert "analytics_quality and improvement recommendations" in QUALITY
+    assert "analytics quality and improvement recommendations" in QUALITY
     assert "Do not publish a customer-count accuracy percentage" in QUALITY
     assert "Repeated glare or overexposure" in QUALITY
 
@@ -303,3 +303,24 @@ def test_runtime_migrations_preserve_vision_truth_and_egress_boundaries():
     assert "v_profile.analytics_role <> 'kitchen'" in ALIGN
     assert "v_profile.analytics_role <> 'service_handoff'" in ALIGN
     assert "v_profile.analytics_role <> 'cash_counter'" in ALIGN
+
+
+def _run_all_tests():
+    """CI invokes this file with plain `python`; run every test_* function so failures are real."""
+    import inspect, sys, traceback
+    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and inspect.isfunction(f)]
+    failed = []
+    for name, fn in tests:
+        try:
+            fn()
+        except Exception:
+            failed.append(name)
+            traceback.print_exc()
+    if failed:
+        print(f"{len(failed)} of {len(tests)} tests FAILED: " + ", ".join(failed))
+        sys.exit(1)
+    print(f"{__file__.replace(chr(92), '/').rsplit('/', 1)[-1]}: {len(tests)} tests PASS")
+
+
+if __name__ == "__main__":
+    _run_all_tests()

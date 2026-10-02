@@ -62,6 +62,7 @@ const sites = [
 
 const context = {
   connectivity: { agent_online: true, last_seen: "2026-10-01T07:58:00Z" },
+  coverage: { coverage_ratio: 0.96, classes: { live_seconds: 82920, recovered_seconds: 0, unverified_seconds: 3480 } },
   recorder: { identified: true, vendor: "Hikvision", model: "NVR" },
   capability_known: true,
   cameras: [
@@ -160,7 +161,10 @@ const reportSnapshot = {
       { camera: "Main entrance", status: "Covered", period: "Business hours", management_view: "Entrance flow", assessment: "The entrance was represented consistently." },
       { camera: "Rear access", status: "Needs attention", period: "Partial", management_view: "Rear access", assessment: "Recording verification is incomplete for part of the period." },
     ],
-    action_items: [],
+    action_items: [
+      { id: "rec-1", title: "Confirm rear-access recording", body: "Check the recorder channel for Rear access so the full working period is verifiable.", priority: "Priority" },
+      { id: "rec-2", title: "Review the after-hours entry", body: "Open the evidence for the 9:41 pm rear-access activity and confirm whether it was expected.", priority: "Next" },
+    ],
     priority_actions: [],
   },
 };
@@ -198,7 +202,72 @@ const tableData = {
   camera_snapshot_signals: [],
 };
 
+// Visual-QA fixture only: a governed office working-day period with one unobserved day, so the
+// owner surfaces can be checked rendering a gap (never a zero) and a qualified comparison.
+const officeDays = [
+  ["2026-09-22", 0.94, 96, 0], ["2026-09-23", 0.97, 104, 1], ["2026-09-24", 0.91, 88, 0],
+  ["2026-09-25", 0, 0, 0], ["2026-09-28", 0.95, 121, 2], ["2026-09-29", 0.92, 97, 0], ["2026-09-30", 0.96, 106, 1],
+];
+const officePeriod = {
+  enabled: true,
+  schema: "office-period-v1",
+  window_type: "completed_working_days",
+  period: { start_date: "2026-09-22", end_date: "2026-09-30", previous_start_date: "2026-09-11", previous_end_date: "2026-09-21" },
+  summary: { days: 7, observed_days: 6, avg_coverage_ratio: 0.807, incidents_total: 3, critical_total: 0, after_hours_total: 4, activity_detections: 612 },
+  previous_period: { days: 7, observed_days: 7, avg_coverage_ratio: 0.912, incidents_total: 2, critical_total: 0, after_hours_total: 1, activity_detections: 574 },
+  comparison: { coverage_delta_points: -10.5, incidents_delta: 1, critical_delta: 0, after_hours_delta: 3, activity_detections_delta: 38 },
+  daily: officeDays.map(([date, coverage_ratio, activity_detections, after_hours_count]) => ({
+    date, working_day: true, coverage_ratio, incidents_total: after_hours_count, critical: 0, after_hours_count, activity_detections,
+  })),
+};
+
+// Visual-QA fixture only: the multi-site Control Room overview (one site connection quiet).
+const portalOverview = {
+  tenant: { id: TENANT_ID, name: "Visual QA tenant" },
+  totals: { events: 2573, sites: 2, cameras: 10 },
+  agents: [
+    { site: "Harbour Branch", hostname: "HB-OFFICE-PC", last_seen_at: "2026-10-01T07:58:00Z" },
+    { site: "North Warehouse", hostname: "NW-STORE-PC", last_seen_at: "2026-10-01T05:21:00Z" },
+  ],
+  recent: [
+    { event_id: "ev-1", site: "Harbour Branch", camera: "Main entrance", event_type: "person", device_ts: "2026-10-01T07:41:00Z", has_snapshot: false },
+    { event_id: "ev-2", site: "Harbour Branch", camera: "Rear access", event_type: "vehicle", device_ts: "2026-10-01T06:58:00Z", has_snapshot: false },
+    { event_id: "ev-3", site: "North Warehouse", camera: "Loading bay", event_type: "person", device_ts: "2026-10-01T05:02:00Z", has_snapshot: false },
+  ],
+  health: {
+    offline_agents: [{ site: "North Warehouse", hostname: "NW-STORE-PC", last_seen_at: "2026-10-01T05:21:00Z" }],
+    silent_cameras: [{ site: "Harbour Branch", camera: "Rear access", last_event_at: "2026-09-30T21:41:00Z" }],
+  },
+  sites: [{ id: SITE_ID, name: "Harbour Branch" }, { id: SITE_2_ID, name: "North Warehouse" }],
+};
+
 const rpcData = {
+  wl_portal_overview: portalOverview,
+  // Camera Settings: mixed capability evidence so verified / documented / unsupported / unknown all render.
+  wl_my_site_diagnosis: {
+    site_control_enabled: true, role: "owner", tiers: { recommend: true, approve: true },
+    recorder: { identified: true, vendor: "Hikvision", model: "NVR" },
+    connectivity: { agent_online: true, last_seen: "2026-10-01T07:58:00Z" },
+    cameras: [
+      { channel: 1, name: "Main entrance", purpose: "entrance" }, { channel: 2, name: "Service area", purpose: "queue" },
+      { channel: 3, name: "Rear access", purpose: null }, { channel: 4, name: "Office", purpose: "management" },
+    ],
+    capabilities: [
+      { capability: "time_sync", verdict: "supported", evidence_class: "FIELD_VERIFIED" },
+      { capability: "motion_detection", verdict: "supported", evidence_class: "OFFICIAL_DOCUMENTED" },
+      { capability: "line_crossing", verdict: "unsupported", evidence_class: "UNSUPPORTED", reason: "This recorder does not offer line crossing." },
+      { capability: "face_detection", verdict: "unknown", evidence_class: "UNKNOWN" },
+    ],
+  },
+  wl_onboarding_status: context.onboarding,
+  wl_members: [
+    { user_id: USER_ID, email: "owner@example.com", role: "owner", is_you: true, joined: "2026-08-02T09:00:00Z" },
+    { user_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", email: "operations@example.com", role: "admin", is_you: false, joined: "2026-08-20T09:00:00Z" },
+  ],
+  wl_invitations: [
+    { id: "inv-1", email: "manager@example.com", role: "viewer", created_at: "2026-09-29T09:00:00Z", expires_at: "2026-10-06T09:00:00Z", expired: false },
+  ],
+  wl_office_period: officePeriod,
   wl_my_account: { account_status: "active" },
   wl_my_tenant: TENANT_ID,
   wl_platform_me: {},
@@ -209,10 +278,28 @@ const rpcData = {
   ],
   wl_ai_context: context,
   wl_notifications: notifications,
-  wl_my_daily_intelligence: { coverage: { coverage_ratio: 0.96 } },
+  wl_my_daily_intelligence: {
+    meta: { date: "2026-09-30" },
+    coverage: { coverage_ratio: 0.96, classes: { live_seconds: 82920, recovered_seconds: 0, unverified_seconds: 3480 } },
+    attention: { incidents_total: 1, critical: 0, warning: 1 },
+    after_hours: { count: 1 },
+    day_boundaries: { opening_at: "08:52", closing_at: "18:41" },
+    office: {
+      coverage: { person_events: 106 },
+      peak_hour: { hour: 11, count: 19 },
+      by_area: [
+        { camera: "Main entrance", events: 42 },
+        { camera: "Service area", events: 31 },
+        { camera: "Office", events: 22 },
+        { camera: "Rear access", events: 11 },
+      ],
+    },
+    restricted: [],
+    incidents: [],
+  },
   wl_analytics_overview: analytics,
   wl_restaurant_site_config: { enabled: false },
-  wl_my_site_context: null,
+  wl_my_site_context: { site_type: "office", reporting_prefs: { report_layout_profile: "office_ops_v1" } },
   wl_my_report_window: {
     saved_reports: [
       { report_id: "report-visual-qa", service_date: "2026-09-30", summary: "Completed management report", highlights: ["Rear-access recording verification needs follow-up."] },
@@ -244,7 +331,60 @@ function rpcName(url) {
   return i >= 0 ? decodeURIComponent(url.pathname.slice(i + marker.length)) : "";
 }
 
-async function installFixture(page) {
+// Visual-QA fixture only: a restaurant site with a governed 7-day service period (one service day
+// not observed) so restaurant semantics (estimated covers, visible diners, observed time to food)
+// and gap rendering are checked separately from the office path.
+const restaurantDaily = [
+  ["2026-09-24", 61, 0.82], ["2026-09-25", 74, 0.86], ["2026-09-26", 92, 0.9], ["2026-09-27", null, 0],
+  ["2026-09-28", 58, 0.79], ["2026-09-29", 66, 0.84], ["2026-09-30", 71, 0.88],
+];
+const restaurantHourly = ["16:00","17:00","18:00","19:00","20:00","21:00","22:00","23:00","00:00","01:00"].map((h, i) => ({
+  local_hour: h, samples: i === 9 ? 0 : 12, peak_visible_customers: [6, 9, 14, 22, 27, 24, 18, 11, 7, 0][i], peak_occupied_tables: [3, 4, 6, 9, 11, 10, 8, 5, 3, 0][i],
+}));
+const restaurantOverrides = {
+  wl_restaurant_site_config: { enabled: true, report_layout_profile: "chaiwala_restaurant_ops_v1" },
+  wl_my_site_context: { site_type: "restaurant" },
+  wl_office_period: { enabled: false, site_type: "restaurant" },
+  wl_restaurant_day: {
+    enabled: true, service_date: "2026-09-30",
+    data_quality: { camera_observations: 118, table_observations: 96, business_analytics_coverage_ratio: 0.88 },
+    sessions: { estimated_covers: 71, served_sessions: 24, median_observed_time_to_food_minutes: 14 },
+    hourly: restaurantHourly, floors: [], tables: [],
+  },
+  wl_my_daily_intelligence: { coverage: { coverage_ratio: 0.88 }, incidents: [], attention: { incidents_total: 0 } },
+  wl_my_report_snapshot: {
+    report_id: "restaurant-report-visual-qa", report_date: "2026-09-30",
+    payload: {
+      report_date: "2026-09-30", site_type: "restaurant", coverage: { coverage_ratio: 0.88 },
+      metrics: [
+        { label: "Estimated covers", value: "71" }, { label: "Peak visible diners", value: "27" },
+        { label: "Observed time to food", value: "14 min" }, { label: "Served table sessions", value: "24" },
+      ],
+      highlights: ["Visible demand peaked around 8 pm, when 27 diners were visible at once."],
+      incidents: [], action_items: [
+        { id: "rest-rec-1", title: "Add a server at 7–9 pm", body: "Observed time to food rose during the busiest two hours.", priority: "Priority" },
+      ],
+    },
+  },
+  wl_my_report_window: {
+    saved_reports: restaurantDaily.filter(d => d[1] !== null).map(([d]) => ({ report_id: "r-" + d, service_date: d, summary: "Completed service day" })),
+    structured_restaurant_metrics: {
+      enabled: true, schema: "restaurant-period-v2", days: 7,
+      period: { start_service_date: "2026-09-24", end_service_date: "2026-09-30" },
+      summary: { expected_service_days: 7, observed_service_days: 6, total_estimated_covers: 422, avg_estimated_covers_per_observed_day: 70.3, served_sessions: 141, median_observed_time_to_food_minutes: 13.5, avg_coverage_ratio: 0.727, busiest_day: { service_date: "2026-09-26", estimated_covers: 92 }, busiest_hour: { local_hour: "20:00" } },
+      previous_period: { observed_service_days: 7, total_estimated_covers: 395, avg_estimated_covers_per_observed_day: 56.4, median_observed_time_to_food_minutes: 12.1, avg_coverage_ratio: 0.81 },
+      comparison: { estimated_covers_delta: 27, estimated_covers_pct: 6.8, served_sessions_delta: 9, median_time_to_food_delta_minutes: 1.4, coverage_delta_points: -8.3 },
+      daily: restaurantDaily.map(([service_date, covers, coverage_ratio]) => ({
+        service_date, camera_observations: covers === null ? 0 : 110, table_observations: covers === null ? 0 : 90,
+        estimated_covers: covers ?? 0, coverage_ratio,
+      })),
+      hour_profile: restaurantHourly.slice(0, 9).map(h => ({ local_hour: h.local_hour, observed_days: 6, avg_peak_visible_diners: Math.round(h.peak_visible_customers * 0.9 * 10) / 10 })),
+    },
+  },
+};
+
+async function installFixture(page, overrides = {}) {
+  const fixture = { ...rpcData, ...overrides };
   await page.addInitScript(({ session, siteId, siteName }) => {
     localStorage.setItem("sb-visual-qa-auth-token", JSON.stringify(session));
     localStorage.setItem("watchlog:selected-site-id", siteId);
@@ -260,7 +400,7 @@ async function installFixture(page) {
 
     if (url.pathname.startsWith("/rest/v1/rpc/")) {
       const name = rpcName(url);
-      const data = Object.prototype.hasOwnProperty.call(rpcData, name) ? rpcData[name] : null;
+      const data = Object.prototype.hasOwnProperty.call(fixture, name) ? fixture[name] : null;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -299,15 +439,37 @@ async function installFixture(page) {
 }
 
 const routes = [
-  { slug: "home", path: `/home/?site=${SITE_ID}`, ready: "What matters now, what needs attention" },
+  { slug: "home", path: `/home/?site=${SITE_ID}`, ready: "Needs attention" },
   { slug: "attention", path: `/notifications/?site=${SITE_ID}`, ready: "What needs your attention" },
-  { slug: "insights", path: `/analytics/?site=${SITE_ID}`, ready: "What is happening at Harbour Branch?" },
-  { slug: "reports", path: `/reports/?view=yesterday&site=${SITE_ID}`, ready: "Management report" },
+  { slug: "insights", path: `/analytics/?site=${SITE_ID}`, ready: "Where activity came from" },
+  { slug: "reports", path: `/reports/?view=yesterday&site=${SITE_ID}`, ready: "Recommended action" },
   { slug: "ask", path: `/ai/?site=${SITE_ID}`, ready: "Ask WatchLog about Harbour Branch" },
-  { slug: "cameras", path: `/control-room/?site=${SITE_ID}`, ready: "See the site by business area" },
+  { slug: "cameras", path: `/control-room/?site=${SITE_ID}`, ready: "Cameras & evidence at Harbour Branch" },
   { slug: "saved-video", path: `/archive/?site=${SITE_ID}`, ready: "Find earlier activity at Harbour Branch" },
   { slug: "setup", path: `/setup/?site=${SITE_ID}`, ready: "Set up Harbour Branch with WatchLog" },
   { slug: "settings", path: `/settings/?site=${SITE_ID}`, ready: "Account and sites" },
+  { slug: "health", path: `/site-health/?site=${SITE_ID}`, ready: "Can WatchLog observe this site?" },
+  { slug: "incidents", path: `/incidents/?site=${SITE_ID}`, ready: "Security review for" },
+  { slug: "delivery", path: `/reports/delivery/?site=${SITE_ID}`, ready: "Report delivery" },
+  { slug: "team", path: `/team/?site=${SITE_ID}`, ready: "Who has access" },
+  { slug: "activity-rules", path: `/analytics/studio/?site=${SITE_ID}`, ready: "Activity Rules" },
+  { slug: "camera-settings", path: `/site-control/?site=${SITE_ID}`, ready: "Camera channels" },
+  { slug: "account", path: `/settings/account/?site=${SITE_ID}`, ready: "Account and plan" },
+  { slug: "control-room-all-sites", path: `/control-room/advanced/?site=${SITE_ID}`, ready: "See what needs attention across every site." },
+  { slug: "operations-report", path: `/control-room/reports/?site=${SITE_ID}`, ready: "operations report" },
+  { slug: "evidence", path: `/incidents/evidence/?site=${SITE_ID}`, ready: "Camera evidence" },
+];
+
+// The restaurant scenario re-checks the surfaces whose semantics differ by site type.
+const restaurantRoutes = [
+  { slug: "home-restaurant", path: `/home/?site=${SITE_ID}`, ready: "Latest completed service day" },
+  { slug: "insights-restaurant", path: `/analytics/?site=${SITE_ID}`, ready: "Service-day trend" },
+  { slug: "reports-restaurant", path: `/reports/?view=yesterday&site=${SITE_ID}`, ready: "Demand pattern" },
+  { slug: "reports-restaurant-week", path: `/reports/?view=week&site=${SITE_ID}`, ready: "Service-day trend" },
+];
+const scenarios = [
+  { name: "office", overrides: {}, routes },
+  { name: "restaurant", overrides: restaurantOverrides, routes: restaurantRoutes },
 ];
 
 const viewports = [
@@ -322,17 +484,19 @@ const browser = await chromium.launch({ headless: true });
 const manifest = [];
 
 try {
-  for (const viewport of viewports) {
+  for (const scenario of scenarios) for (const viewport of viewports) {
     const contextBrowser = await browser.newContext({
       viewport: { width: viewport.width, height: viewport.height },
       deviceScaleFactor: 1,
     });
     const page = await contextBrowser.newPage();
+    // Freeze the clock at the fixture's "now" so time-relative views (last 24 hours) are deterministic.
+    await page.clock.setFixedTime(new Date(now));
     const pageErrors = [];
     page.on("pageerror", error => pageErrors.push(String(error.message || error)));
-    await installFixture(page);
+    await installFixture(page, scenario.overrides);
 
-    for (const route of routes) {
+    for (const route of scenario.routes) {
       const target = BASE + route.path;
       await page.goto(target, { waitUntil: "domcontentloaded" });
       await page.getByText(route.ready, { exact: false }).first().waitFor({ state: "visible", timeout: 15000 });
@@ -361,5 +525,5 @@ if (uncaught.length) {
   console.error("Visual QA page errors:\n" + uncaught.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Visual QA captured ${manifest.length} screenshots across ${routes.length} owner routes with no uncaught page errors.`);
+  console.log(`Visual QA captured ${manifest.length} screenshots across ${routes.length + restaurantRoutes.length} owner routes with no uncaught page errors.`);
 }

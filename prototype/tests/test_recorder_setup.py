@@ -213,10 +213,33 @@ def test_progress_sequence_and_error_copy():
     assert "Checking recorder at 192.168.1.10" in joined
     assert "Detected Dahua-compatible recorder." in joined
     assert "Signing in to the recorder" in joined
-    assert "Reading camera channels" in joined
+    # Identity calls that report a channel count take the field fast path ("Recorder login verified.",
+    # channel names enriched later by the background agent); otherwise channels are read explicitly.
+    assert "Recorder login verified." in joined or "Reading camera channels" in joined
     # every customer error key maps to a non-technical, non-empty sentence
     for key, msg in backend._CUSTOMER_ERROR.items():
         assert msg and "cgi" not in msg.lower() and "http://" not in msg
     # bounded timeouts are sane
     assert backend.RECORDER_PROBE_TIMEOUT <= 8
     assert backend.RECORDER_DEADLINE <= 20
+
+
+def _run_all_tests():
+    """CI invokes this file with plain `python`; run every test_* function so failures are real."""
+    import inspect, sys, traceback
+    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and inspect.isfunction(f)]
+    failed = []
+    for name, fn in tests:
+        try:
+            fn()
+        except Exception:
+            failed.append(name)
+            traceback.print_exc()
+    if failed:
+        print(f"{len(failed)} of {len(tests)} tests FAILED: " + ", ".join(failed))
+        sys.exit(1)
+    print(f"{__file__.replace(chr(92), '/').rsplit('/', 1)[-1]}: {len(tests)} tests PASS")
+
+
+if __name__ == "__main__":
+    _run_all_tests()

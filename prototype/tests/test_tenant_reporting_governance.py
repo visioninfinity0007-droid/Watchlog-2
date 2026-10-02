@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -183,4 +184,29 @@ def test_office_brief_uses_configured_working_window_not_midnight_day():
     assert "s.close_time" in MIG
     assert "monitoring_coverage" in MIG
     assert "wl_assert_my_site(p_site_id)" in MIG
-    assert "revoke execute on function public.wl_office_brief(uuid,date) from public,anon,authenticated" in MIG
+    # The internal office brief stays non-callable by customers: 0060 revoked it from
+    # public/anon/authenticated, 0129's CREATE OR REPLACE keeps that ACL, and nothing re-grants it.
+    office_brief_0060 = (ROOT/"prototype/supabase/migrations/0060_office_brief.sql").read_text(encoding="utf-8")
+    assert "revoke all on function public.wl_office_brief(uuid,date) from public,anon,authenticated" in office_brief_0060
+    assert not re.search(r"grant\s+execute\s+on\s+function\s+public\.wl_office_brief", MIG, re.I)
+
+
+def _run_all_tests():
+    """CI invokes this file with plain `python`; run every test_* function so failures are real."""
+    import inspect, sys, traceback
+    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and inspect.isfunction(f)]
+    failed = []
+    for name, fn in tests:
+        try:
+            fn()
+        except Exception:
+            failed.append(name)
+            traceback.print_exc()
+    if failed:
+        print(f"{len(failed)} of {len(tests)} tests FAILED: " + ", ".join(failed))
+        sys.exit(1)
+    print(f"{__file__.replace(chr(92), '/').rsplit('/', 1)[-1]}: {len(tests)} tests PASS")
+
+
+if __name__ == "__main__":
+    _run_all_tests()

@@ -40,6 +40,7 @@ INCIDENTS=_surface("incidents")
 SITE_HEALTH=_surface("site-health")
 LAYOUT=(ROOT/"portal/app/layout.js").read_text()
 PORTAL_SYSTEM=(ROOT/"portal/app/portal-system.css").read_text()
+OWNER_CSS=(ROOT/"portal/app/owner/owner.css").read_text(encoding="utf-8")
 ICONS=(ROOT/"portal/app/icons.js").read_text()
 DOCKERFILE=(ROOT/"portal/Dockerfile").read_text()
 RECIP=(ROOT/"prototype/supabase/migrations/0031_report_recipient_destinations.sql").read_text()
@@ -126,8 +127,9 @@ def check():
     # The canonical owner portal design layer is loaded after legacy compatibility CSS.
     assert 'import "./portal-system.css"' in LAYOUT
     assert 'import "./auth-system.css"' in LAYOUT
-    assert "--portal-violet" in PORTAL_SYSTEM and "--portal-canvas" in PORTAL_SYSTEM
-    assert ".productMobileBottom" in PORTAL_SYSTEM
+    assert 'import "./owner/owner.css"' in LAYOUT
+    assert "--ow-violet" in OWNER_CSS and "--ow-paper" in OWNER_CSS
+    assert ".ow-bottom" in OWNER_CSS
     assert "PortalIcon" in ICONS and 'key==="home"' in ICONS and 'key==="attention"' in ICONS
 
     # Owner-first customer hierarchy: Home tells first, Attention prioritizes, Incident Review handles
@@ -137,7 +139,7 @@ def check():
         assert token.replace(" ","") in NAV.replace(" ","").replace("\n","")
     assert '["Incidents","/incidents/","Incidents"]' not in NAV
     assert 'rpc("wl_ai_context"' in HOME and 'rpc("wl_notifications"' in HOME
-    assert "What matters now, what needs attention, and what WatchLog can verify." in HOME
+    assert 'title="Needs attention"' in HOME and "What changed" in HOME
     assert 'rpc("wl_notifications"' in ATTENTION and "What needs your attention" in ATTENTION
     assert 'rpc("wl_operations_incidents_v2"' in INCIDENTS
     assert 'rpc("wl_operations_incident_detail"' in INCIDENTS
