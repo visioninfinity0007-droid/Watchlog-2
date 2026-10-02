@@ -65,6 +65,7 @@ const context = {
   coverage: { coverage_ratio: 0.96, classes: { live_seconds: 82920, recovered_seconds: 0, unverified_seconds: 3480 } },
   recorder: { identified: true, vendor: "Hikvision", model: "NVR" },
   capability_known: true,
+  business_context: { site_type: "office", open_time: "09:00:00", close_time: "18:00:00", working_days: [1, 2, 3, 4, 5] },
   cameras: [
     { id: "c1", channel: 1, name: "Main entrance", monitor: true, health_state: "operational", recording_state: "recording", purpose: "entrance" },
     { id: "c2", channel: 2, name: "Service area", monitor: true, health_state: "operational", recording_state: "recording", purpose: "queue" },
@@ -282,8 +283,13 @@ const rpcData = {
     meta: { date: "2026-09-30" },
     coverage: { coverage_ratio: 0.96, classes: { live_seconds: 82920, recovered_seconds: 0, unverified_seconds: 3480 } },
     attention: { incidents_total: 1, critical: 0, warning: 1 },
-    after_hours: { count: 1 },
-    day_boundaries: { opening_at: "08:52", closing_at: "18:41" },
+    after_hours: { count: 1, verified: true },
+    day_boundaries: { opening_at: "08:52", closing_at: "18:41", confidence: "high" },
+    access_windows: [
+      ["Main entrance", "entrance", "08:52", "09:05"], ["Main entrance", "entrance", "09:20", "09:40"], ["Main entrance", "entrance", "11:00", "11:30"],
+      ["Main entrance", "entrance", "13:05", "13:40"], ["Main entrance", "entrance", "17:45", "18:41"],
+      ["Office", "management", "09:30", "12:30"], ["Office", "management", "14:00", "17:30"],
+    ].map(([camera, purpose, start, end]) => ({ camera, purpose, type: "presence", object_class: "person", start, end, detections: 6 })),
     office: {
       coverage: { person_events: 106 },
       peak_hour: { hour: 11, count: 19 },
@@ -383,6 +389,152 @@ const restaurantOverrides = {
   },
 };
 
+// Visual-QA fixtures only (Phase 28): one governed business day per site type, built from activity
+// episodes on cameras with configured purposes. Coverage is fully verified so operational-gap claims are
+// allowed; the period comparison is enabled:false until migration 0143 is applied in production.
+const hm = m => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+const toM = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+function windows(camera, purpose, ranges, objectClass = "person") {
+  return ranges.map(([s, e]) => ({ camera, purpose, type: "presence", object_class: objectClass, start: s, end: e, dwell_seconds: (toM(e) - toM(s)) * 60, detections: 6 }));
+}
+// n short episodes spread through each hour (retail traffic shape).
+function hourly(camera, purpose, counts, minutes) {
+  const out = [];
+  for (const [h, n] of Object.entries(counts)) for (let i = 0; i < n; i++) {
+    const s = Number(h) * 60 + Math.floor((i * 60) / n) + 2;
+    out.push({ camera, purpose, type: "presence", object_class: "person", start: hm(s), end: hm(s + minutes), dwell_seconds: minutes * 60, detections: 4 });
+  }
+  return out;
+}
+const verifiedCoverage = { coverage_ratio: 1, classes: { live_seconds: 86400, recovered_seconds: 0, unverified_seconds: 0 }, gaps: [] };
+function siteCamera(id, channel, name, purpose) {
+  return { id, channel, name, purpose, monitor: true, health_state: "operational", recording_state: "recording" };
+}
+function siteTypeOverrides({ type, name, cameras, open, close, episodes, opening, closing }) {
+  const byArea = cameras.map(c => ({ camera: c.name, events: episodes.filter(e => e.camera === c.name).reduce((n, e) => n + e.detections, 0) })).filter(a => a.events > 0).sort((a, b) => b.events - a.events);
+  const perHour = {};
+  for (const e of episodes) { const h = Number(e.start.slice(0, 2)); perHour[h] = (perHour[h] || 0) + e.detections; }
+  const peak = Object.entries(perHour).sort((a, b) => b[1] - a[1])[0];
+  const site = { ...sites[0], name, site_type: type };
+  return {
+    wl_sites: [site, ...sites.slice(1)],
+    wl_ai_context: { ...context, cameras, faults: [], business_context: { site_type: type, open_time: open + ":00", close_time: close + ":00", working_days: [1, 2, 3, 4, 5, 6] }, coverage: { coverage_ratio: 1, classes: verifiedCoverage.classes } },
+    wl_my_site_context: { site_type: type },
+    wl_office_period: { enabled: false, site_type: type },
+    wl_my_daily_intelligence: {
+      meta: { date: "2026-09-30", timezone: "Asia/Karachi" },
+      coverage: verifiedCoverage,
+      attention: { incidents_total: 0, critical: 0, warning: 0 },
+      after_hours: { count: 0, verified: true },
+      day_boundaries: { opening_at: opening, closing_at: closing, confidence: "high", after_hours: { count: 0, verified: true } },
+      office: { coverage: { person_events: byArea.reduce((n, a) => n + a.events, 0), first: opening, last: closing }, peak_hour: { hour: Number(peak[0]), count: peak[1] }, by_area: byArea },
+      access_windows: episodes.sort((a, b) => a.start.localeCompare(b.start)),
+      restricted: [], incidents: [],
+    },
+    wl_my_report_snapshot: {
+      report_id: "report-" + type, report_date: "2026-09-30",
+      payload: {
+        report_date: "2026-09-30", site_name: name, title: "Daily management brief", site_type: type,
+        ai_summary: "Monitoring covered the full " + (type === "factory" ? "shift day" : type === "retail" ? "trading day" : "working day") + " and no security exception was recorded.",
+        metrics: [{ label: "Monitoring coverage", value: "100%" }],
+        incidents: [], site_insights: [], camera_coverage: [],
+        coverage: { status: "Verified", period: "24h verified", summary: "WatchLog verified the whole reporting period." },
+        action_items: [{ id: type + "-rec-1", title: "Review the operating pattern below", body: "Use the area timeline to confirm the day ran as planned.", priority: "Next" }],
+        priority_actions: [],
+      },
+    },
+  };
+}
+
+const warehouseCameras = [
+  siteCamera("w1", 1, "Main gate", "gate"), siteCamera("w2", 2, "Truck yard", "yard"),
+  siteCamera("w3", 3, "Dock 1", "loading_dock"), siteCamera("w4", 4, "Dock 2", "loading_dock"),
+  siteCamera("w5", 5, "Receiving bay", "receiving"), siteCamera("w6", 6, "Dispatch lane", "dispatch"),
+  siteCamera("w7", 7, "Bonded store", "restricted_storage"),
+];
+const warehouseOverrides = siteTypeOverrides({
+  type: "warehouse", name: "Port Qasim Warehouse", cameras: warehouseCameras, open: "08:00", close: "18:00", opening: "07:58", closing: "18:06",
+  episodes: [
+    ...windows("Main gate", "gate", [["07:55", "08:05"], ["12:30", "12:40"], ["17:55", "18:06"]]),
+    ...windows("Main gate", "gate", [["08:10", "08:25"], ["10:05", "10:12"], ["13:30", "13:40"], ["15:50", "16:20"]], "vehicle"),
+    ...windows("Truck yard", "yard", [["08:30", "09:10"], ["14:20", "15:05"]], "vehicle"),
+    ...windows("Dock 1", "loading_dock", [["08:40", "09:50"], ["10:10", "11:40"], ["14:05", "15:30"], ["16:00", "17:20"]]),
+    ...windows("Dock 1", "loading_dock", [["08:45", "09:40"], ["14:10", "15:20"]], "vehicle"),
+    ...windows("Dock 2", "loading_dock", [["09:00", "10:30"], ["10:45", "11:35"], ["14:10", "16:40"]]),
+    ...windows("Receiving bay", "receiving", [["08:20", "09:30"], ["10:00", "11:20"], ["12:00", "13:40"], ["14:30", "16:30"], ["17:00", "17:40"]]),
+    ...windows("Dispatch lane", "dispatch", [["09:30", "11:00"], ["11:30", "12:30"], ["13:00", "14:00"], ["14:30", "17:45"]]),
+    ...windows("Bonded store", "restricted_storage", [["10:15", "10:20"]]),
+  ],
+});
+
+// Visual-QA fixture only: the site-neutral period (site-period-v1) a warehouse receives once migration
+// 0143 is applied. One working day not observed. Factory and retail keep the pre-migration state (no
+// wl_site_period available), so their period views show the honest "not available yet" state.
+const whDays = [["2026-09-23", 0.98, 38, 9], ["2026-09-24", 0.97, 41, 8], ["2026-09-25", 0, 0, 0], ["2026-09-26", 0.99, 44, 11],
+  ["2026-09-27", 0.96, 36, 7], ["2026-09-29", 1, 39, 10], ["2026-09-30", 1, 31, 8]];
+warehouseOverrides.wl_site_period = {
+  enabled: true, schema: "site-period-v1", site_type: "warehouse", window_type: "completed_working_days",
+  period: { start_date: "2026-09-23", end_date: "2026-09-30", previous_start_date: "2026-09-15", previous_end_date: "2026-09-22" },
+  summary: {
+    days: 7, observed_days: 6, avg_coverage_ratio: 0.843, incidents_total: 1, critical_total: 0, after_hours_total: 2,
+    activity_episodes: 229, activity_detections: 1374, vehicle_episodes: 53,
+    by_purpose: [
+      { purpose: "loading_dock", episodes: 58, vehicle_episodes: 12, detections: 348 }, { purpose: "receiving", episodes: 41, vehicle_episodes: 0, detections: 246 },
+      { purpose: "dispatch", episodes: 33, vehicle_episodes: 0, detections: 198 }, { purpose: "gate", episodes: 30, vehicle_episodes: 27, detections: 180 },
+      { purpose: "yard", episodes: 0, vehicle_episodes: 14, detections: 0 }, { purpose: "restricted_storage", episodes: 4, vehicle_episodes: 0, detections: 24 },
+    ],
+  },
+  previous_period: {
+    days: 7, observed_days: 7, avg_coverage_ratio: 0.97, incidents_total: 0, critical_total: 0, after_hours_total: 1,
+    activity_episodes: 251, activity_detections: 1506, vehicle_episodes: 61,
+    by_purpose: [
+      { purpose: "loading_dock", episodes: 74, vehicle_episodes: 15 }, { purpose: "receiving", episodes: 39 }, { purpose: "dispatch", episodes: 36 },
+      { purpose: "gate", episodes: 31, vehicle_episodes: 30 }, { purpose: "yard", vehicle_episodes: 16 }, { purpose: "restricted_storage", episodes: 2 },
+    ],
+  },
+  comparison: { coverage_delta_points: -12.7, incidents_delta: 1, critical_delta: 0, after_hours_delta: 1, activity_episodes_delta: -22, activity_detections_delta: -132, vehicle_episodes_delta: -8 },
+  daily: whDays.map(([date, coverage_ratio, activity_episodes, vehicle_episodes]) => ({ date, working_day: true, coverage_ratio, activity_episodes, vehicle_episodes, after_hours_count: 0, incidents_total: 0 })),
+  measurement_notes: [],
+};
+
+const factoryCameras = [
+  siteCamera("f1", 1, "Factory gate", "gate"), siteCamera("f2", 2, "Line A", "production_zone"),
+  siteCamera("f3", 3, "Assembly hall", "assembly"), siteCamera("f4", 4, "Packing", "packing"),
+  siteCamera("f5", 5, "Raw material store", "raw_materials"), siteCamera("f6", 6, "Finished goods", "finished_goods"),
+  siteCamera("f7", 7, "Dispatch", "dispatch"), siteCamera("f8", 8, "Maintenance bay", "maintenance"),
+];
+const factoryOverrides = siteTypeOverrides({
+  type: "factory", name: "Lahore Plant", cameras: factoryCameras, open: "07:00", close: "19:00", opening: "06:52", closing: "19:08",
+  episodes: [
+    ...windows("Factory gate", "gate", [["06:50", "07:10"], ["18:55", "19:08"]]),
+    ...windows("Factory gate", "gate", [["09:00", "09:20"], ["15:00", "15:30"]], "vehicle"),
+    ...windows("Line A", "production_zone", [["07:05", "12:55"], ["14:15", "18:50"]]),
+    ...windows("Assembly hall", "assembly", [["07:20", "12:40"], ["13:30", "18:40"]]),
+    ...windows("Packing", "packing", [["08:00", "11:00"], ["11:30", "17:30"]]),
+    ...windows("Raw material store", "raw_materials", [["07:30", "07:50"], ["10:00", "10:20"], ["14:00", "14:25"]]),
+    ...windows("Finished goods", "finished_goods", [["11:00", "11:30"], ["16:00", "16:40"]]),
+    ...windows("Dispatch", "dispatch", [["16:30", "17:30"]]),
+    ...windows("Dispatch", "dispatch", [["16:35", "17:20"]], "vehicle"),
+    ...windows("Maintenance bay", "maintenance", [["13:00", "13:50"]]),
+  ],
+});
+
+const retailCameras = [
+  siteCamera("s1", 1, "Store entrance", "entrance"), siteCamera("s2", 2, "Sales floor", "sales_floor"),
+  siteCamera("s3", 3, "Promotion stand", "promotional_zone"), siteCamera("s4", 4, "Checkout", "checkout"),
+  siteCamera("s5", 5, "Stock room", "stock_room"),
+];
+const retailOverrides = siteTypeOverrides({
+  type: "retail", name: "Gulberg Store", cameras: retailCameras, open: "10:00", close: "21:00", opening: "09:48", closing: "21:12",
+  episodes: [
+    ...hourly("Store entrance", "entrance", { 10: 3, 11: 4, 12: 6, 13: 7, 14: 5, 15: 5, 16: 6, 17: 9, 18: 12, 19: 10, 20: 6 }, 2),
+    ...hourly("Sales floor", "sales_floor", { 10: 2, 11: 2, 12: 3, 13: 4, 14: 3, 15: 3, 16: 3, 17: 5, 18: 6, 19: 5, 20: 3 }, 9),
+    ...hourly("Promotion stand", "promotional_zone", { 12: 1, 13: 2, 17: 2, 18: 3, 19: 1 }, 4),
+    ...hourly("Checkout", "checkout", { 10: 1, 11: 2, 12: 4, 13: 4, 14: 3, 15: 3, 16: 4, 17: 6, 18: 8, 19: 7, 20: 4 }, 4),
+    ...windows("Stock room", "stock_room", [["09:30", "09:50"], ["15:00", "15:15"]]),
+  ],
+});
+
 async function installFixture(page, overrides = {}) {
   const fixture = { ...rpcData, ...overrides };
   await page.addInitScript(({ session, siteId, siteName }) => {
@@ -475,8 +627,23 @@ const fullyVerifiedOverrides = {
 const fullyVerifiedRoutes = [
   { slug: "health-fully-verified", path: `/site-health/?site=${SITE_ID}`, ready: "No unverified period today" },
 ];
+// Phase 28: each business site type renders its own operating story from the same governed day.
+const siteTypeRoutes = (type, home, dayNoun, week = "A period comparison is not available for this site yet.") => [
+  { slug: `home-${type}`, path: `/home/?site=${SITE_ID}`, ready: home },
+  { slug: `insights-${type}`, path: `/analytics/?site=${SITE_ID}`, ready: `Latest completed ${dayNoun}` },
+  { slug: `reports-${type}`, path: `/reports/?view=yesterday&site=${SITE_ID}`, ready: `${dayNoun[0].toUpperCase()}${dayNoun.slice(1)} activity` },
+  { slug: `reports-${type}-week`, path: `/reports/?view=week&site=${SITE_ID}`, ready: week },
+  { slug: `ask-${type}`, path: `/ai/?site=${SITE_ID}`, ready: "Ask WatchLog about" },
+  { slug: `setup-${type}`, path: `/setup/?site=${SITE_ID}`, ready: "Set up" },
+];
+const warehouseRoutes = siteTypeRoutes("warehouse", "Dock and area comparison", "working day", "Area activity vs the previous period");
+const factoryRoutes = siteTypeRoutes("factory", "Production areas", "shift day");
+const retailRoutes = siteTypeRoutes("retail", "Checkout activity", "trading day");
 const scenarios = [
   { name: "office", overrides: {}, routes },
+  { name: "warehouse", overrides: warehouseOverrides, routes: warehouseRoutes },
+  { name: "factory", overrides: factoryOverrides, routes: factoryRoutes },
+  { name: "retail", overrides: retailOverrides, routes: retailRoutes },
   { name: "restaurant", overrides: restaurantOverrides, routes: restaurantRoutes },
   { name: "coverage-complete", overrides: fullyVerifiedOverrides, routes: fullyVerifiedRoutes },
 ];
@@ -541,5 +708,5 @@ if (uncaught.length) {
   console.error("Visual QA page errors:\n" + uncaught.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Visual QA captured ${manifest.length} screenshots across ${routes.length + restaurantRoutes.length + fullyVerifiedRoutes.length} owner routes with no uncaught page errors.`);
+  console.log(`Visual QA captured ${manifest.length} screenshots across ${scenarios.reduce((n, x) => n + x.routes.length, 0)} owner routes with no uncaught page errors.`);
 }
