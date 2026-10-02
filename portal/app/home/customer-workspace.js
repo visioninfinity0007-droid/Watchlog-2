@@ -4,7 +4,7 @@ import {useCallback,useEffect,useState} from "react";
 import {supabase} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
-import {OwnerPage,AskBar,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Empty,Loading,Notice,AskLinks,Timeline,ratioPct,num,fmt,tone} from "../owner/ui";
+import {coverageTruth,OwnerPage,AskBar,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Empty,Loading,Notice,AskLinks,Timeline,ratioPct,num,fmt,tone} from "../owner/ui";
 
 function sev(v){return String(v||"info").toLowerCase()}
 function needsAttention(x){return ["critical","warning","attention"].includes(sev(x&&x.severity))}
@@ -190,7 +190,7 @@ export default function CustomerHome(){
   const unread=items.filter(function(x){return !x.read});
   const attention=unread.filter(needsAttention);
   const urgent=attention.filter(function(x){return sev(x.severity)==="critical"});
-  const currentCoverage=ratioPct(daily&&daily.coverage&&daily.coverage.coverage_ratio);
+  const currentCoverage=coverageTruth(daily&&daily.coverage).pct;
   const completedCoverage=ratioPct(latestReport&&latestReport.payload&&latestReport.payload.coverage&&latestReport.payload.coverage.coverage_ratio);
   const coverage=currentCoverage!==null?currentCoverage:completedCoverage;
   const coverageScope=currentCoverage!==null?"current reporting period":completedCoverage!==null?"latest completed service day":"current reporting period";

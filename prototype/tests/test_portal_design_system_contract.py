@@ -221,6 +221,21 @@ for phrase in ("<strong>{rows.length}</strong>incident", "<small>Detection sourc
 for phrase in ("Monitoring is not fully verified", "recording states are still unverified", "Unknown states are not treated as healthy"):
     if phrase not in health:
         problems.append(f"system-health truth language missing: {phrase}")
+# One governed coverage truth per page: the rail, summary and "What could not be verified today" all read
+# coverageTruth(ctx.coverage). "No unverified period today" may render ONLY when that truth is fully
+# verified; partial coverage without exact windows says how much could not be verified, never when.
+if "export function coverageTruth" not in owner_ui:
+    problems.append("shared coverageTruth model missing from owner/ui.js")
+if "coverageTruth(coverage)" not in health:
+    problems.append("System Health must derive every coverage statement from coverageTruth")
+if "coverage?.unverified_seconds" in health or "ratioPct(coverage" in health:
+    problems.append("System Health must not read coverage fields outside the shared coverage truth")
+if "No unverified period today" in health:
+    guard = health[:health.index("No unverified period today")][-160:]
+    if "truth.fullyVerified?" not in guard:
+        problems.append("'No unverified period today' must be guarded by truth.fullyVerified")
+if "could not be verified today" not in health or "Exact times are not available" not in health:
+    problems.append("partial coverage without gap windows must state the unverified amount without inventing times")
 
 for phrase in ('rpc("wl_my_report_window"', "What changed", "A reliable comparison is not ready yet", "Missing periods are not treated as zero activity"):
     if phrase not in home:

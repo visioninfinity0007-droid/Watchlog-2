@@ -111,6 +111,25 @@ function coverageClasses(classes){
   const L=live||0,R=rec||0,U=unv||0,T=L+R+U;
   return T>0?{live:L,rec:R,unv:U,total:T}:null;
 }
+// One coverage truth for a window, so every statement on a page agrees. Classes (live / recovered /
+// unverified seconds) win over the ratio; any unverified time means "partial" and the verified share is
+// never rounded up to 100%. fullyVerified is true only when the governed data says nothing is unverified.
+export function coverageTruth(coverage){
+  const empty={known:false,partial:false,fullyVerified:false,pct:null,unverifiedSeconds:null,recoveredSeconds:null,verifiedSeconds:null};
+  if(!coverage||typeof coverage!=="object")return empty;
+  const k=coverageClasses(coverage.classes||coverage);
+  const ratio=num(coverage.coverage_ratio);
+  if(k){
+    const share=(k.live+k.rec)/k.total;
+    const pct=k.unv>0?Math.min(99,Math.round(share*100)):100;
+    return{known:true,partial:k.unv>0,fullyVerified:k.unv===0,pct,unverifiedSeconds:k.unv,recoveredSeconds:k.rec,verifiedSeconds:k.live+k.rec};
+  }
+  if(ratio===null)return empty;
+  const r=Math.max(0,Math.min(1,ratio));
+  const unv=num(coverage.unverified_seconds);
+  const partial=r<1||(unv!==null&&unv>0);
+  return{known:true,partial,fullyVerified:!partial,pct:partial?Math.min(99,Math.round(r*100)):100,unverifiedSeconds:unv!==null&&unv>0?unv:null,recoveredSeconds:null,verifiedSeconds:null};
+}
 export function coverageText(ratio,classes){
   const k=coverageClasses(classes);
   if(k)return duration(k.live+k.rec)+" verified"+(k.unv>0?" · "+duration(k.unv)+" could not be verified":"");
@@ -120,7 +139,7 @@ export function coverageText(ratio,classes){
 }
 export function Ledger({ratio,label,recovered,classes}){
   const k=coverageClasses(classes);
-  const p=k?Math.round(((k.live+k.rec)/k.total)*100):ratioPct(ratio);
+  const p=k?(k.unv>0?Math.min(99,Math.round(((k.live+k.rec)/k.total)*100)):100):ratioPct(ratio);
   if(p===null)return <div className="ow-ledger">
     <div className="ow-ledger-strip none" role="img" aria-label="Monitoring coverage not verified yet"/>
     {label!==false&&<div className="ow-ledger-key"><span className="unk">Not verified yet</span></div>}

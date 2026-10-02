@@ -4,7 +4,7 @@ import {useCallback,useEffect,useMemo,useState} from "react";
 import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
-import {OwnerPage,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Empty,Loading,Notice,AskLinks,ratioPct} from "../owner/ui";
+import {coverageTruth,OwnerPage,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Empty,Loading,Notice,AskLinks,ratioPct} from "../owner/ui";
 
 function human(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
 function ago(ts){
@@ -121,7 +121,9 @@ export default function HealthWorkspace(){
   const lastSeen=ctx?.connectivity?.last_seen;
   const system=ctx?.recorder||{};
   const coverage=ctx?.coverage||null;
-  const coveragePct=ratioPct(coverage?.coverage_ratio);
+  // One governed coverage truth for the whole page (rail, summary and the "could not be verified" section).
+  const truth=coverageTruth(coverage);
+  const coveragePct=truth.pct;
   const generatedAt=ctx?.generated_at?Date.parse(ctx.generated_at):Date.now();
   const gaps=(coverage?.gaps||[]).filter(g=>g&&g.start).map(g=>{
     const start=Date.parse(g.start),end=g.end?Date.parse(g.end):generatedAt;
@@ -186,7 +188,7 @@ export default function HealthWorkspace(){
     <RailSection label="Coverage today">
       {coveragePct===null?<Figure value="—" unit="not verified yet"/>:<Figure value={coveragePct+"%"} unit="verified since midnight"/>}
       <div style={{marginTop:10}}><Ledger ratio={coveragePct===null?null:coveragePct/100} classes={coverage?.classes}/></div>
-      {coverage?.unverified_seconds>0&&<p className="ow-rail-note">{duration(coverage.unverified_seconds)} not verified today. Unverified time is not treated as quiet time.</p>}
+      {truth.partial&&<p className="ow-rail-note">{truth.unverifiedSeconds===null?(100-coveragePct)+"% of today could not be verified. ":""}Unverified time is not treated as quiet time.</p>}
     </RailSection>
     <RailSection label="Site">
       <Stat label="Connection" note={ever?"Last contact "+ago(lastSeen):null} value={<Status tone={connectionTone}>{connectionWord}</Status>}/>
@@ -228,8 +230,11 @@ export default function HealthWorkspace(){
 
       <Section title="What could not be verified today" note={"Since midnight · site time"+(coveragePct!==null?" · "+coveragePct+"% verified":"")}>
         {coveragePct===null?<Empty title="Today's coverage is not verified yet.">Unverified time is not treated as quiet time.</Empty>
-        :gaps.length?<div className="ow-rows">{gaps.slice(0,6).map((g,i)=><Row key={i} compact tone={g.ongoing?"bad":"unknown"} title={siteTime(g.start,tz)+" – "+(g.ongoing?"now":siteTime(g.end,tz))} body={gapCause(g.cause)} meta={[duration(g.seconds),g.ongoing?"Ongoing":"Not verified"]}/>)}</div>
-        :<Row compact tone="verified" title="No unverified period today" meta={[coveragePct+"% verified since midnight"]}/>}
+        :gaps.length?<div className="ow-rows">{gaps.slice(0,6).map((g,i)=><Row key={i} compact tone={g.ongoing?"bad":"unknown"} title={siteTime(g.start,tz)+" – "+(g.ongoing?"now":siteTime(g.end,tz))} body={gapCause(g.cause)} meta={[duration(g.seconds),g.ongoing?"Ongoing":"Not verified"]}/>)}
+          {truth.unverifiedSeconds!==null&&truth.unverifiedSeconds-gaps.reduce((n,g)=>n+g.seconds,0)>60?<Row compact tone="unknown" title={duration(truth.unverifiedSeconds-gaps.reduce((n,g)=>n+g.seconds,0))+" more could not be verified today"} body="Exact times for this time are not available." meta={["Not verified"]}/>:null}</div>
+        :truth.partial?<div className="ow-rows"><Row compact tone="unknown" title={(truth.unverifiedSeconds!==null?duration(truth.unverifiedSeconds):(100-coveragePct)+"% of today")+" could not be verified today"} body="Exact times are not available for this site. Unverified time is not treated as quiet time." meta={["Since midnight · site time","Not verified"]}/></div>
+        :truth.fullyVerified?<Row compact tone="verified" title="No unverified period today" meta={[coveragePct+"% verified since midnight"]}/>
+        :<Empty title="Today's coverage is not verified yet.">Unverified time is not treated as quiet time.</Empty>}
       </Section>
 
       <Section title="Cameras" count={cams.length||null} note="Health and recording are shown separately so one confirmed state never hides an unknown one.">

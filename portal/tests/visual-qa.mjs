@@ -467,9 +467,18 @@ const restaurantRoutes = [
   { slug: "reports-restaurant", path: `/reports/?view=yesterday&site=${SITE_ID}`, ready: "Demand pattern" },
   { slug: "reports-restaurant-week", path: `/reports/?view=week&site=${SITE_ID}`, ready: "Service-day trend" },
 ];
+// System Health with coverage that really is complete: the only case where "No unverified period today"
+// may appear.
+const fullyVerifiedOverrides = {
+  wl_ai_context: { ...context, coverage: { coverage_ratio: 1, classes: { live_seconds: 86400, recovered_seconds: 0, unverified_seconds: 0 } } },
+};
+const fullyVerifiedRoutes = [
+  { slug: "health-fully-verified", path: `/site-health/?site=${SITE_ID}`, ready: "No unverified period today" },
+];
 const scenarios = [
   { name: "office", overrides: {}, routes },
   { name: "restaurant", overrides: restaurantOverrides, routes: restaurantRoutes },
+  { name: "coverage-complete", overrides: fullyVerifiedOverrides, routes: fullyVerifiedRoutes },
 ];
 
 const viewports = [
@@ -501,6 +510,13 @@ try {
       await page.goto(target, { waitUntil: "domcontentloaded" });
       await page.getByText(route.ready, { exact: false }).first().waitFor({ state: "visible", timeout: 15000 });
       await page.waitForTimeout(500);
+      // Truth guard: a page must never claim no unverified period while also reporting unverified time.
+      const bodyText = await page.locator("body").innerText();
+      // An unverified AMOUNT ("58 min / 1h 05m / 4% of today could not be verified"), not the section heading.
+      const unverifiedAmount = /\b\d+\s*(?:min|h\b[^\n]*?)\s*(?:\d+m\s*)?could not be verified|\b\d+% (?:of today )?could not be verified/i;
+      if (/No unverified period today/i.test(bodyText) && unverifiedAmount.test(bodyText)) {
+        pageErrors.push("contradictory coverage: 'No unverified period today' shown alongside unverified time");
+      }
       const filename = `${route.slug}-${viewport.name}.png`;
       await page.screenshot({ path: path.join(OUT, filename), fullPage: true });
       manifest.push({
@@ -525,5 +541,5 @@ if (uncaught.length) {
   console.error("Visual QA page errors:\n" + uncaught.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Visual QA captured ${manifest.length} screenshots across ${routes.length + restaurantRoutes.length} owner routes with no uncaught page errors.`);
+  console.log(`Visual QA captured ${manifest.length} screenshots across ${routes.length + restaurantRoutes.length + fullyVerifiedRoutes.length} owner routes with no uncaught page errors.`);
 }
