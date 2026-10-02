@@ -1,0 +1,240 @@
+version: 1
+id: factory
+status: IMPLEMENTED
+kind: site_type
+purpose: >
+  Reusable semantic and reporting policy for factories, plants and workshops where WatchLog
+  combines security evidence with production-area, materials and dispatch activity.
+  Camera activity is not production output.
+
+authority:
+  factual_state: watchlog_database
+  semantic_policy: ai_harness
+  rule: >
+    The harness defines meaning, allowed interpretations and report structure. Live camera
+    mappings, coverage, activity, incidents and rule counts come only from governed runtime data.
+    Production output, machine state, orders and attendance are external data WatchLog does not hold.
+
+working_day:
+  default_days_iso: [1, 2, 3, 4, 5, 6]
+  yesterday_rule: >
+    "Yesterday" means the latest completed configured business day, not the previous
+    midnight-to-midnight calendar date. Non-working days are skipped.
+  last_7_days_rule: last 7 completed configured business days
+  last_30_days_rule: >
+    last 30 completed calendar days with business-day and non-business-day activity separated
+  incomplete_day_rule: >
+    Do not present the current business day as complete before its configured closing time.
+  shift_rule: >
+    Only the configured opening and closing times define the day. Do not invent shift boundaries
+    that are not configured.
+
+camera_roles:
+  entrance:
+    purpose: pedestrian entry/exit activity
+    allowed_outputs: [person_activity, first_last_activity, after_hours_activity]
+    forbidden_outputs: [attendance, shift_compliance, unique_people]
+  gate:
+    purpose: vehicle and pedestrian gate activity
+    allowed_outputs: [vehicle_activity, person_activity, gate_vehicle_dwell, after_hours_activity]
+    forbidden_outputs: [deliveries_completed, vehicle_site_time_without_journey_logic]
+  production_zone:
+    purpose: production-floor activity level
+    allowed_outputs: [person_activity, busy_periods, quiet_periods, after_hours_activity]
+    forbidden_outputs: [production_output, machine_downtime, oee, staff_productivity, headcount]
+  assembly:
+    purpose: assembly-area activity level
+    allowed_outputs: [person_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [units_assembled, line_speed, staff_productivity]
+  packing:
+    purpose: packing-area activity level
+    allowed_outputs: [person_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [units_packed, output_count, staff_productivity]
+  raw_materials:
+    purpose: raw-material store access and movement
+    allowed_outputs: [person_activity, vehicle_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [material_consumption, stock_level, theft]
+  finished_goods:
+    purpose: finished-goods store access and movement
+    allowed_outputs: [person_activity, vehicle_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [finished_output, stock_level, theft]
+  dispatch:
+    purpose: outbound dispatch-area activity
+    allowed_outputs: [person_activity, vehicle_activity, vehicle_dwell, busy_periods]
+    forbidden_outputs: [shipments_dispatched, tonnes, order_count]
+  maintenance:
+    purpose: maintenance/workshop-area activity
+    allowed_outputs: [person_activity, after_hours_activity]
+    forbidden_outputs: [machine_health, repairs_completed, downtime_cause]
+  restricted:
+    purpose: sensitive/restricted-area access
+    allowed_outputs: [person_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [wrongdoing, identity]
+  parking:
+    purpose: vehicle and parking-area activity
+    allowed_outputs: [vehicle_activity, vehicle_dwell, after_hours_parking]
+    forbidden_outputs: [vehicle_identity_without_validated_plate_reading]
+  perimeter:
+    purpose: external boundary movement
+    allowed_outputs: [person_activity, vehicle_activity, after_hours_activity]
+    forbidden_outputs: [intrusion_without_incident_evidence]
+  general:
+    purpose: general site activity
+    allowed_outputs: [person_activity, vehicle_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [unique_people]
+
+metric_definitions:
+  person_activity:
+    class: observed-derived
+    definition: person activity events and activity periods per camera in the report window
+    never_call: [headcount, attendance, staff_productivity, workforce_size]
+  production_area_activity:
+    class: observed-derived
+    definition: person activity on production, assembly and packing cameras
+    never_call: [production_output, units_produced, oee, line_efficiency]
+  quiet_periods:
+    class: observed-derived
+    definition: business-hours periods with no activity on a camera that had verified coverage
+    never_call: [machine_downtime, line_stoppage, idle_workers]
+    caveat: only valid where coverage was verified
+  materials_area_access:
+    class: observed-derived
+    definition: activity on raw-material and finished-goods cameras, including after hours
+    never_call: [stock_movement, material_consumption, theft]
+  dispatch_vehicle_dwell:
+    class: observed-derived
+    definition: how long a vehicle stayed continuously visible on one dispatch or gate camera
+    never_call: [turnaround_time, site_time, loading_time]
+    caveat: one camera only; not a full vehicle visit
+  after_hours_activity:
+    class: observed
+    definition: activity outside configured business hours
+  activity_rule_counts:
+    class: measured
+    definition: crossings or zone presence counted by a configured activity rule
+    never_call: [unique_people, units, output]
+  monitoring_coverage:
+    class: measured
+    definition: verified LIVE / RECOVERED / UNVERIFIED monitoring coverage for the window
+
+metric_status:
+  person_activity: {evidence: daily intelligence person activity per camera (events, 10-minute periods, first/last time), status: implemented}
+  peak_activity_hour: {evidence: daily intelligence peak hour, status: implemented}
+  opening_closing_activity: {evidence: configured opening/closing + first/last activity per camera, status: implemented}
+  after_hours_activity: {evidence: configured after-hours window + daily intelligence, status: implemented}
+  attention_items: {evidence: incidents/attention, status: implemented}
+  monitoring_coverage: {evidence: live/recovered/unverified seconds, status: implemented}
+  activity_rule_counts: {evidence: line crossing / zone presence counts per rule, status: implemented}
+  production_area_activity: {evidence: activity episodes filtered by production_zone/assembly/packing purpose, status: derivable}
+  quiet_periods: {evidence: activity episodes + coverage classes for the same window, status: derivable}
+  materials_area_access: {evidence: episodes on raw_materials/finished_goods cameras, status: derivable}
+  maintenance_after_hours: {evidence: episodes on maintenance cameras outside configured hours, status: derivable}
+  dispatch_vehicle_dwell: {evidence: per-camera vehicle episode dwell_seconds, status: derivable}
+  period_comparison: {evidence: site-neutral period facts (wl_site_period, site-period-v1; pending migration 0143), status: derivable}
+  vehicle_site_time: {evidence: needs cross-camera vehicle correlation, status: requires_journey_logic}
+  shift_level_activity: {evidence: only opening/closing are configured; shifts need configuration and validation, status: field_gated}
+  ppe_safety_compliance: {evidence: no validated PPE/safety capability, status: field_gated}
+  staff_count_per_zone: {evidence: no validated unique counting, status: field_gated}
+  production_output: {evidence: requires MES/ERP production records, status: external_data_required}
+  machine_downtime_or_oee: {evidence: requires machine/MES data, status: external_data_required}
+  orders_or_tonnes: {evidence: requires ERP/dispatch/weighbridge data, status: external_data_required}
+  attendance: {evidence: requires HR/access-control records, status: external_data_required}
+
+owner_questions:
+  - Did anything need my attention yesterday?
+  - Were all cameras watching the whole day?
+  - When did activity start and finish at the plant?
+  - Was there activity on the production floor outside working hours?
+  - Which production areas were busiest, and when?
+  - Were any production areas quiet for long stretches during working hours?
+  - Was anyone in the raw-material or finished-goods stores after hours?
+  - How active was dispatch, and how long did vehicles stay there?
+  - What came through the gate after hours?
+  - Was the perimeter active while the plant was closed?
+  - How does yesterday compare with a normal day?
+
+home_modules:
+  - {id: attention, label: What needs attention}
+  - {id: coverage, label: Monitoring coverage}
+  - {id: opening_closing, label: Opening and closing}
+  - {id: after_hours, label: After-hours activity}
+  - {id: production_area_activity, label: Production-area activity}
+  - {id: peak_hour, label: Busiest hour}
+
+insight_modules:
+  - {id: after_hours_stores, label: After-hours store and maintenance access}
+  - {id: production_quiet_periods, label: Quiet production periods during working hours}
+  - {id: area_comparison, label: Busiest areas}
+  - {id: dispatch_activity, label: Dispatch and gate activity}
+  - {id: period_trend, label: Compared with recent days}
+
+report_windows:
+  today: {label: Today, purpose: current business-day status; incomplete until close}
+  yesterday: {label: Yesterday, purpose: latest completed configured business-day report}
+  last_7_days: {label: Last 7 days, purpose: pattern review across the last 7 completed business days}
+  last_30_days: {label: Last 30 days, purpose: trend with business/non-business days separated}
+
+report_sections:
+  - what needs attention
+  - monitoring coverage and evidence gaps
+  - opening and closing activity
+  - after-hours activity (production, stores, maintenance, perimeter)
+  - production, assembly and packing area activity
+  - raw-material and finished-goods store access
+  - dispatch and gate vehicle activity
+  - quiet periods with verified coverage
+  - comparison with recent days
+  - evidence-based recommendations
+
+comparison_metrics:
+  production_area_activity_vs_recent_days: {compares: production-area activity periods, basis: same weekday or 7-day average, status: derivable}
+  after_hours_activity_vs_recent_days: {compares: after-hours activity, basis: 7/30 completed business days, status: derivable}
+  opening_closing_vs_usual: {compares: first/last activity time, basis: 7-day median, status: derivable}
+  store_access_vs_recent_days: {compares: materials-store activity, basis: 7-day average, status: derivable}
+  coverage_vs_recent_days: {compares: verified coverage, basis: 7/30 days, status: derivable}
+
+recommended_questions:
+  - Was anyone on the production floor after hours yesterday?
+  - Which production area was busiest this week?
+  - Was there any activity in the stores after closing?
+  - When did activity start and finish yesterday?
+  - Were any cameras not covering the plant last week?
+
+prohibited_interpretations:
+  - camera activity as production output, units, OEE or line efficiency
+  - quiet periods as machine downtime, stoppages or idle workers
+  - person activity as headcount, attendance, shift compliance or productivity
+  - store activity as stock movement, consumption or theft without incident evidence
+  - dispatch activity as shipments, orders or tonnes
+  - single-camera dwell as vehicle site time
+  - any safety/PPE compliance claim
+  - any cause for a quiet or busy period
+
+unknown_behaviour:
+  rule: >
+    Unverified coverage is unknown, not quiet. If an area had no verified coverage for a window,
+    say activity there cannot be confirmed. Never fill gaps from other days.
+  missing_external_data: >
+    For output, downtime, orders or attendance, say WatchLog does not hold that data and offer the
+    observed area activity instead, clearly labelled as activity.
+
+coverage_requirements:
+  quiet_or_inactive_claims: verified LIVE or RECOVERED coverage for the whole window on the named camera
+  site_wide_totals: every configured camera in the role had verified coverage, otherwise state which were missing
+  comparisons: both periods need comparable verified coverage; otherwise flag the comparison as partial
+  role_specific_claims: camera purpose must be configured for the camera
+
+truth_boundaries:
+  - camera activity is not production output, downtime or efficiency
+  - a quiet period needs verified coverage for that window, otherwise it is unknown
+  - activity is not attendance, headcount or productivity
+  - vehicle dwell is per camera; site time needs cross-camera journeys
+  - recommendations may suggest a check, never assert a cause
+
+response_policy:
+  tone: natural_management_brief
+  rules:
+    - lead with what needs attention and after-hours activity in production and stores
+    - describe production areas by activity level, never by output
+    - missing coverage is missing evidence, not zero activity
+    - recommendations suggest what to check; they never assert why something happened

@@ -81,7 +81,7 @@ logic lives in code (`functions/watchlog-ai/providers/router.ts`), not in these 
 | `taxonomy/` | ontology primitives — observations, activities, entities, incident-families, severity | IMPLEMENTED |
 | `schemas/` | JSON Schemas for machine actions — `incident.schema.json` | IMPLEMENTED (other schemas PLANNED) |
 | `device-knowledge/` | 47-model Dahua/Hikvision capability registry | IMPLEMENTED |
-| `site-types/` | per-vertical policy (camera roles, schedules, metric semantics, quality rules) | IMPLEMENTED (`restaurant.yaml`, `office.yaml`) |
+| `site-types/` | per-vertical policy (camera roles, schedules, metric semantics, quality rules) | IMPLEMENTED (`office.yaml`, `restaurant.yaml`, `warehouse.yaml`, `factory.yaml`, `retail.yaml`; each with owner questions, modules, comparisons and per-metric evidence status) |
 | `tenants/` | stable tenant/site context folders; each can contain `context.yaml` + governed `reporting/` archive/methods; never duplicates live IDs/evidence | IMPLEMENTED (Chai Wala, Al-Khalid Main site, HASCO Steel Head Office) |
 | `skills/` | repeatable harness procedures for tenant intelligence/report setup | IMPLEMENTED (`tenant-intelligence-setup.md`) |
 | `risk-profiles/` | risk overlays (e.g. high-security, armory) composed onto a site type | **PLANNED** |

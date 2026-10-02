@@ -1,0 +1,229 @@
+version: 1
+id: retail
+status: IMPLEMENTED
+kind: site_type
+purpose: >
+  Reusable semantic and reporting policy for shops, showrooms and retail stores where WatchLog
+  combines security evidence with entrance, sales-floor, checkout and stock-room activity.
+  Entrance activity is not sales or conversion.
+
+authority:
+  factual_state: watchlog_database
+  semantic_policy: ai_harness
+  rule: >
+    The harness defines meaning, allowed interpretations and report structure. Live camera
+    mappings, coverage, activity, incidents and rule counts come only from governed runtime data.
+    Sales, transactions, basket and till timings are external POS data WatchLog does not hold.
+
+working_day:
+  default_days_iso: [1, 2, 3, 4, 5, 6, 7]
+  yesterday_rule: >
+    "Yesterday" means the latest completed configured trading day, not the previous
+    midnight-to-midnight calendar date. Non-trading days are skipped.
+  last_7_days_rule: last 7 completed configured trading days
+  last_30_days_rule: >
+    last 30 completed calendar days with trading-day and non-trading-day activity separated
+  incomplete_day_rule: >
+    Do not present the current trading day as complete before its configured closing time.
+
+camera_roles:
+  entrance:
+    purpose: store entrance activity
+    allowed_outputs: [person_activity, entrance_activity, first_last_activity, after_hours_activity]
+    forbidden_outputs: [footfall_without_validated_counting_line, unique_visitors, conversion, sales]
+  sales_floor:
+    purpose: sales-floor activity level
+    allowed_outputs: [person_activity, busy_periods, quiet_periods, dwell]
+    forbidden_outputs: [sales, conversion, staff_productivity, customer_demographics]
+  product_zone:
+    purpose: activity and dwell at a product area
+    allowed_outputs: [person_activity, zone_dwell, busy_periods]
+    forbidden_outputs: [product_interest_as_sales, purchases, basket]
+  promotional_zone:
+    purpose: activity and dwell at a promotional display
+    allowed_outputs: [person_activity, zone_dwell, busy_periods]
+    forbidden_outputs: [promotion_effectiveness_as_sales, conversion, uplift]
+  checkout:
+    purpose: checkout-area activity
+    allowed_outputs: [person_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [transactions, sales, revenue, till_timing, queue_length_without_validation]
+  queue_area:
+    purpose: waiting-area activity near checkout
+    allowed_outputs: [person_activity, busy_periods]
+    forbidden_outputs: [queue_length_without_validation, wait_time_without_validation]
+  stock_room:
+    purpose: stock-room access
+    allowed_outputs: [person_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [stock_level, shrinkage, theft]
+  restricted:
+    purpose: sensitive/restricted-area access
+    allowed_outputs: [person_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [wrongdoing, identity]
+  parking:
+    purpose: customer/staff parking activity
+    allowed_outputs: [vehicle_activity, vehicle_dwell, after_hours_parking]
+    forbidden_outputs: [customer_count, vehicle_identity_without_validated_plate_reading]
+  perimeter:
+    purpose: external boundary and shopfront movement
+    allowed_outputs: [person_activity, vehicle_activity, after_hours_activity]
+    forbidden_outputs: [intrusion_without_incident_evidence]
+  general:
+    purpose: general store activity
+    allowed_outputs: [person_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [unique_visitors]
+
+metric_definitions:
+  entrance_activity:
+    class: observed-derived
+    definition: person activity events and activity periods on entrance cameras
+    never_call: [footfall, unique_visitors, customers, conversion]
+  sales_floor_activity:
+    class: observed-derived
+    definition: person activity on sales-floor, product and promotional cameras
+    never_call: [sales, shoppers_converted, customer_count]
+  zone_dwell:
+    class: observed-derived
+    definition: how long activity stayed continuously visible in one product or promotional camera view
+    never_call: [purchase_intent, promotion_uplift, sales]
+    caveat: people are not separated into staff and customers
+  checkout_activity:
+    class: observed-derived
+    definition: person activity on checkout and waiting-area cameras
+    never_call: [transactions, queue_length, wait_time, till_speed]
+  quiet_periods:
+    class: observed-derived
+    definition: trading-hours periods with no activity on a camera that had verified coverage
+    never_call: [no_customers, lost_sales]
+    caveat: only valid where coverage was verified
+  after_hours_activity:
+    class: observed
+    definition: activity outside configured trading hours, especially stock room and restricted areas
+  activity_rule_counts:
+    class: measured
+    definition: crossings or zone presence counted by a configured activity rule
+    never_call: [unique_visitors, customers, footfall_unless_validated]
+  monitoring_coverage:
+    class: measured
+    definition: verified LIVE / RECOVERED / UNVERIFIED monitoring coverage for the window
+
+metric_status:
+  person_activity: {evidence: daily intelligence person activity per camera (events, 10-minute periods, first/last time), status: implemented}
+  peak_activity_hour: {evidence: daily intelligence peak hour, status: implemented}
+  opening_closing_activity: {evidence: configured opening/closing + first/last activity per camera, status: implemented}
+  after_hours_activity: {evidence: configured after-hours window + daily intelligence, status: implemented}
+  attention_items: {evidence: incidents/attention, status: implemented}
+  monitoring_coverage: {evidence: live/recovered/unverified seconds, status: implemented}
+  activity_rule_counts: {evidence: line crossing / zone presence counts per rule, status: implemented}
+  entrance_activity: {evidence: daily intelligence + episodes on entrance cameras, status: derivable}
+  sales_floor_activity: {evidence: activity episodes filtered by sales_floor/product_zone/promotional_zone purpose, status: derivable}
+  zone_dwell: {evidence: per-camera person episode dwell_seconds, status: derivable}
+  checkout_activity: {evidence: episodes on checkout/queue_area cameras, status: derivable}
+  quiet_periods: {evidence: activity episodes + coverage classes for the same window, status: derivable}
+  stock_room_after_hours: {evidence: episodes on stock_room cameras outside configured hours, status: derivable}
+  period_comparison: {evidence: site-neutral period facts (wl_site_period, site-period-v1; pending migration 0143), status: derivable}
+  footfall_unique_visitors: {evidence: needs a validated counting line, status: field_gated}
+  queue_length_or_wait: {evidence: no validated queue capability, status: field_gated}
+  staff_vs_customer_split: {evidence: no validated staff/customer separation, status: field_gated}
+  customer_journey_in_store: {evidence: needs cross-camera correlation, status: requires_journey_logic}
+  sales_or_revenue: {evidence: requires POS data, status: external_data_required}
+  conversion_rate: {evidence: requires POS transactions + validated footfall, status: external_data_required}
+  basket_or_till_timing: {evidence: requires POS data, status: external_data_required}
+  attendance: {evidence: requires HR/rota records, status: external_data_required}
+
+owner_questions:
+  - Did anything need my attention yesterday?
+  - Were all cameras watching the whole day?
+  - When did the store open and close, going by activity?
+  - Was there any activity after closing, especially in the stock room?
+  - How busy was the entrance, and at what hours?
+  - What was the busiest hour on the sales floor?
+  - Which product or promotional areas held activity longest?
+  - How busy was the checkout area, and when?
+  - Were there quiet stretches during trading hours?
+  - How does yesterday compare with the same day last week?
+  - Was the shopfront or parking active while the store was closed?
+
+home_modules:
+  - {id: attention, label: What needs attention}
+  - {id: coverage, label: Monitoring coverage}
+  - {id: opening_closing, label: Opening and closing}
+  - {id: after_hours, label: After-hours activity}
+  - {id: entrance_activity, label: Entrance activity}
+  - {id: peak_hour, label: Busiest hour}
+
+insight_modules:
+  - {id: after_hours_stock_room, label: After-hours stock-room access}
+  - {id: checkout_busy_periods, label: Checkout busy periods}
+  - {id: zone_dwell, label: Product and promotion areas}
+  - {id: quiet_periods, label: Quiet trading periods}
+  - {id: period_trend, label: Compared with recent days}
+
+report_windows:
+  today: {label: Today, purpose: current trading-day status; incomplete until close}
+  yesterday: {label: Yesterday, purpose: latest completed configured trading-day report}
+  last_7_days: {label: Last 7 days, purpose: pattern review across the last 7 completed trading days}
+  last_30_days: {label: Last 30 days, purpose: trend with trading/non-trading days separated}
+
+report_sections:
+  - what needs attention
+  - monitoring coverage and evidence gaps
+  - opening and closing activity
+  - after-hours activity (stock room, restricted, shopfront)
+  - entrance activity and busiest hours
+  - sales-floor, product and promotional area activity
+  - checkout-area busy periods
+  - quiet periods with verified coverage
+  - comparison with recent days
+  - evidence-based recommendations
+
+comparison_metrics:
+  entrance_activity_vs_same_weekday: {compares: entrance activity periods, basis: same weekday last week, status: derivable}
+  peak_hour_vs_recent_days: {compares: busiest hour, basis: 7 completed trading days, status: derivable}
+  after_hours_activity_vs_recent_days: {compares: after-hours activity, basis: 7/30 completed trading days, status: derivable}
+  zone_dwell_vs_recent_days: {compares: product/promotional dwell, basis: 7-day median, status: derivable}
+  coverage_vs_recent_days: {compares: verified coverage, basis: 7/30 days, status: derivable}
+
+recommended_questions:
+  - What was the busiest hour yesterday?
+  - Was there any activity in the stock room after closing?
+  - How did entrance activity compare with last week?
+  - When was the checkout area busiest this week?
+  - Were any cameras not covering the store yesterday?
+
+prohibited_interpretations:
+  - entrance activity as sales, footfall, unique visitors or conversion
+  - checkout activity as transactions, revenue, queue length or wait time
+  - zone dwell as purchase intent, promotion uplift or sales
+  - quiet periods as lost sales or no customers
+  - any staff-versus-customer split, demographics or identity
+  - stock-room activity as shrinkage or theft without incident evidence
+  - person activity as attendance or staff productivity
+
+unknown_behaviour:
+  rule: >
+    Unverified coverage is unknown, not quiet. If an area had no verified coverage for a window,
+    say activity there cannot be confirmed. Never fill gaps from other days.
+  missing_external_data: >
+    For sales, conversion, basket or till timing, say WatchLog does not hold that data and offer
+    the observed activity instead, clearly labelled as activity.
+
+coverage_requirements:
+  quiet_or_inactive_claims: verified LIVE or RECOVERED coverage for the whole window on the named camera
+  site_wide_totals: every configured camera in the role had verified coverage, otherwise state which were missing
+  comparisons: both periods need comparable verified coverage; otherwise flag the comparison as partial
+  role_specific_claims: camera purpose must be configured for the camera
+
+truth_boundaries:
+  - entrance activity is not sales, footfall or conversion
+  - checkout activity is not transactions or queue length
+  - a quiet period needs verified coverage for that window, otherwise it is unknown
+  - people are not separated into staff and customers
+  - recommendations may suggest a check, never assert a cause
+
+response_policy:
+  tone: natural_management_brief
+  rules:
+    - lead with what needs attention and after-hours stock-room activity
+    - describe the entrance and floor by activity, never by sales or customers converted
+    - missing coverage is missing evidence, not zero activity
+    - recommendations suggest what to check; they never assert why something happened

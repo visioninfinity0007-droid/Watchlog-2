@@ -49,6 +49,28 @@ camera_roles:
   perimeter:
     purpose: external access/perimeter movement
     allowed_outputs: [access_activity, visible_presence, after_hours_activity]
+  # Portal camera-purpose values. management_office and general_office above remain valid tenant
+  # role keys; management and workspace/general are the portal purpose names for the same areas.
+  workspace:
+    purpose: open-plan or desk-area activity level
+    allowed_outputs: [activity_detections, visible_presence, busy_periods, quiet_periods]
+    forbidden_outputs: [attendance, employee_productivity, desk_occupancy_rate, unique_people]
+  meeting_area:
+    purpose: meeting-room and meeting-area activity
+    allowed_outputs: [activity_detections, visible_presence, meeting_area_dwell]
+    forbidden_outputs: [meeting_count, attendee_count, identity]
+  common_area:
+    purpose: kitchen, break and shared-area activity
+    allowed_outputs: [activity_detections, busy_periods, after_hours_movement]
+    forbidden_outputs: [break_time_per_employee, employee_productivity]
+  management:
+    purpose: management/private office access
+    allowed_outputs: [visible_presence, after_hours_presence, unusual_access]
+    forbidden_outputs: [identity, wrongdoing]
+  general:
+    purpose: general office activity level
+    allowed_outputs: [activity_detections, visible_presence, busy_periods, quiet_periods]
+    forbidden_outputs: [unique_people, attendance]
 
 metric_definitions:
   activity_detections:
@@ -63,7 +85,7 @@ metric_definitions:
     class: observed-derived
     rule: >
       Only use visitor/reception language where the physical reception/entrance camera mapping
-      is confirmed. Never translate detector-event counts into unique visitors.
+      is confirmed. Never translate detection-event counts into unique visitors.
   opening_activity:
     class: observed-derived
     caveat: confidence depends on entrance mapping and monitoring coverage
@@ -108,8 +130,8 @@ report_windows:
     purpose: management trend across 30 completed calendar days with working/non-working split
 
 report_sections:
-  - coverage and data quality
   - security incidents and management attention
+  - coverage and data quality
   - opening/closing activity
   - entrance/reception activity where mapping is confirmed
   - general office and corridor activity
@@ -128,3 +150,92 @@ response_policy:
     - never infer identity, demographics, intent, wrongdoing or employee productivity
     - missing coverage is missing evidence, not zero activity
     - state camera-mapping uncertainty before role-specific conclusions
+
+metric_status:
+  activity_detections: {evidence: daily intelligence person activity per camera (events, 10-minute periods, first/last time), status: implemented}
+  peak_activity_hour: {evidence: daily intelligence peak hour, status: implemented}
+  opening_activity: {evidence: configured opening + first activity per camera, status: implemented}
+  closing_activity: {evidence: configured closing + last activity per camera, status: implemented}
+  after_hours_presence: {evidence: configured after-hours window + daily intelligence, status: implemented}
+  attention_items: {evidence: incidents/attention, status: implemented}
+  monitoring_coverage: {evidence: live/recovered/unverified seconds, status: implemented}
+  period_comparison_7_30: {evidence: office 7/30-day comparison (person activity, after-hours, attention, coverage), status: implemented}
+  activity_rule_counts: {evidence: line crossing / zone presence counts per rule, status: implemented}
+  reception_activity: {evidence: activity episodes on reception cameras, status: derivable}
+  meeting_area_dwell: {evidence: per-camera person episode dwell_seconds on meeting_area cameras, status: derivable}
+  restricted_area_activity: {evidence: episodes on restricted/management cameras, status: derivable}
+  parking_vehicle_dwell: {evidence: per-camera vehicle episode dwell_seconds, status: derivable}
+  quiet_periods: {evidence: activity episodes + coverage classes for the same window, status: derivable}
+  vehicle_site_time: {evidence: needs cross-camera vehicle correlation, status: requires_journey_logic}
+  visitor_count: {evidence: needs a validated counting line and visitor separation, status: field_gated}
+  staff_vs_visitor_split: {evidence: no validated staff/visitor separation, status: field_gated}
+  attendance_or_hours_worked: {evidence: requires HR/access-control records, status: external_data_required}
+
+owner_questions:
+  - Did anything need my attention yesterday?
+  - Were all cameras watching the whole working day?
+  - What time did the office open and close, going by activity?
+  - Was anyone in the office after hours or on a non-working day?
+  - Was there activity in management or restricted areas, and when?
+  - How busy was reception, and at what hours?
+  - Which areas were busiest, and when was the peak?
+  - Was the parking or perimeter active after hours?
+  - How does yesterday compare with the last 7 and 30 days?
+  - Were there long quiet stretches during working hours?
+
+home_modules:
+  - {id: attention, label: What needs attention}
+  - {id: coverage, label: Monitoring coverage}
+  - {id: opening_closing, label: Opening and closing}
+  - {id: after_hours, label: After-hours activity}
+  - {id: peak_hour, label: Busiest hour}
+  - {id: period_trend, label: Compared with recent days}
+
+insight_modules:
+  - {id: restricted_access, label: Management and restricted-area access}
+  - {id: reception_activity, label: Reception activity}
+  - {id: area_comparison, label: Busiest areas}
+  - {id: parking_perimeter, label: Parking and perimeter}
+  - {id: quiet_periods, label: Quiet working-hour periods}
+
+comparison_metrics:
+  person_activity_7_30: {compares: person activity, basis: last 7 / 30 completed working days, status: implemented}
+  after_hours_7_30: {compares: after-hours activity, basis: last 7 / 30 days, status: implemented}
+  attention_7_30: {compares: attention items, basis: last 7 / 30 days, status: implemented}
+  coverage_7_30: {compares: verified coverage, basis: last 7 / 30 days, status: implemented}
+  opening_closing_vs_usual: {compares: first/last activity time, basis: 7-day median, status: derivable}
+
+recommended_questions:
+  - Was anyone in the office after hours yesterday?
+  - What time did the office open and close yesterday?
+  - How does this week compare with last month?
+  - Was there any activity in restricted areas this week?
+  - Were any cameras not covering the office yesterday?
+
+prohibited_interpretations:
+  - activity as attendance, hours worked or punctuality
+  - activity as employee productivity or performance
+  - detections as unique people, employees or visitors
+  - after-hours presence as wrongdoing without incident evidence
+  - quiet periods as nobody working or absence
+  - identity, demographics or intent from appearance
+  - single-camera vehicle dwell as vehicle site time
+
+unknown_behaviour:
+  rule: >
+    Unverified coverage is unknown, not quiet. If an area had no verified coverage for a window,
+    say activity there cannot be confirmed. Never fill gaps from other days.
+  missing_external_data: >
+    For attendance or hours worked, say WatchLog does not hold that data and offer the observed
+    opening/closing activity instead, clearly labelled as activity.
+
+coverage_requirements:
+  quiet_or_inactive_claims: verified LIVE or RECOVERED coverage for the whole window on the named camera
+  site_wide_totals: every configured camera in the role had verified coverage, otherwise state which were missing
+  comparisons: both periods need comparable verified coverage; otherwise flag the comparison as partial
+  role_specific_claims: camera mapping must be confirmed for the camera
+
+truth_boundaries:
+  - activity is not attendance, hours worked or productivity
+  - a quiet period needs verified coverage for that window, otherwise it is unknown
+  - recommendations may suggest a check, never assert a cause

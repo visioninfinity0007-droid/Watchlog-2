@@ -313,7 +313,7 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
     setup_advisor: null, daily_intelligence: null, visual_day: null, frozen_report: null, analytics: null,
     business_day_monitoring: null,
     restaurant_day: null, restaurant_period: null, restaurant_config: null,
-    office_period: null, report_config: null
+    office_period: null, site_period: null, report_config: null
   };
   if (/setup|configure|configuration|support|capabilit|recorder|nvr|dvr|monitoring rule|what can/.test(p)) out.setup_advisor = deterministicSetupAdvice(ctx);
   if (serviceDayIntent) {
@@ -349,6 +349,11 @@ async function gatherTools(sb: any, prompt: string, siteId: string, ctx: Json) {
   if (officeIntent) {
     const periodDays = /30 day|last 30|month/.test(p) ? 30 : /7 day|last 7|week/.test(p) ? 7 : null;
     if (periodDays) out.office_period = await rpcOptional(sb, "wl_office_period", { p_site_id: siteId, p_days: periodDays, p_working_only: periodDays === 7 });
+  }
+  // Warehouse, factory and retail read the site-neutral period facts (site-period-v1), never office semantics;
+  // the site-type brief interprets them. Unavailable until migration 0143 is applied (rpcOptional -> not ok).
+  if (periodWindow && (siteType === "warehouse" || siteType === "factory" || siteType === "retail")) {
+    out.site_period = await rpcOptional(sb, "wl_site_period", { p_site_id: siteId, p_days: periodWindow, p_working_only: periodWindow === 7 });
   }
   const visualIntent = /what happened|yesterday|today|activity|people|visitor|staff|opening|closing|restricted|armory|dwell|incident|report|management brief|daily brief|last completed/.test(p);
   if (visualIntent) {

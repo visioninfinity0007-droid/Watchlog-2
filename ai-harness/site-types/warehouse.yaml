@@ -1,0 +1,234 @@
+version: 1
+id: warehouse
+status: IMPLEMENTED
+kind: site_type
+purpose: >
+  Reusable semantic and reporting policy for warehouses, distribution centres and storage yards
+  where WatchLog combines security evidence with gate, yard, dock and storage-area activity.
+  Loading-area activity is not shipment throughput.
+
+authority:
+  factual_state: watchlog_database
+  semantic_policy: ai_harness
+  rule: >
+    The harness defines meaning, allowed interpretations and report structure. Live camera
+    mappings, coverage, activity, incidents and rule counts come only from governed runtime data.
+    Shipments, orders, tonnes and dock schedules are external business data WatchLog does not hold.
+
+working_day:
+  default_days_iso: [1, 2, 3, 4, 5, 6]
+  yesterday_rule: >
+    "Yesterday" means the latest completed configured business day, not the previous
+    midnight-to-midnight calendar date. Non-working days are skipped.
+  last_7_days_rule: last 7 completed configured business days
+  last_30_days_rule: >
+    last 30 completed calendar days with business-day and non-business-day activity separated
+  incomplete_day_rule: >
+    Do not present the current business day as complete before its configured closing time.
+
+camera_roles:
+  entrance:
+    purpose: pedestrian entry/exit activity
+    allowed_outputs: [person_activity, first_last_activity, after_hours_activity]
+    forbidden_outputs: [attendance, unique_people, identity]
+  gate:
+    purpose: vehicle and pedestrian gate activity
+    allowed_outputs: [vehicle_activity, person_activity, gate_vehicle_dwell, after_hours_activity]
+    forbidden_outputs: [vehicle_site_time_without_journey_logic, deliveries_completed, shipment_count]
+  yard:
+    purpose: yard vehicle and movement activity
+    allowed_outputs: [vehicle_activity, vehicle_dwell, person_activity, after_hours_activity]
+    forbidden_outputs: [vehicle_turnaround_time, shipment_count]
+  receiving:
+    purpose: inbound receiving-area activity
+    allowed_outputs: [person_activity, vehicle_activity, vehicle_dwell, busy_periods, quiet_periods]
+    forbidden_outputs: [goods_received, inbound_volume, tonnes, order_count]
+  loading_dock:
+    purpose: loading-dock activity
+    allowed_outputs: [person_activity, vehicle_activity, dock_vehicle_dwell, busy_periods, quiet_periods]
+    forbidden_outputs: [shipment_throughput, loads_completed, tonnes, staff_productivity]
+  dispatch:
+    purpose: outbound dispatch-area activity
+    allowed_outputs: [person_activity, vehicle_activity, vehicle_dwell, busy_periods]
+    forbidden_outputs: [shipments_dispatched, order_count, on_time_dispatch]
+  storage:
+    purpose: storage-aisle and racking activity
+    allowed_outputs: [person_activity, vehicle_activity, after_hours_activity]
+    forbidden_outputs: [stock_level, inventory_accuracy, picking_rate]
+  restricted_storage:
+    purpose: high-value or restricted storage access
+    allowed_outputs: [person_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [theft, wrongdoing, identity]
+  restricted:
+    purpose: sensitive/restricted-area access
+    allowed_outputs: [person_activity, access_activity, after_hours_activity]
+    forbidden_outputs: [wrongdoing, identity]
+  parking:
+    purpose: staff/visitor parking activity
+    allowed_outputs: [vehicle_activity, vehicle_dwell, after_hours_parking]
+    forbidden_outputs: [vehicle_identity_without_validated_plate_reading]
+  perimeter:
+    purpose: external boundary movement
+    allowed_outputs: [person_activity, vehicle_activity, after_hours_activity]
+    forbidden_outputs: [intrusion_without_incident_evidence]
+  general:
+    purpose: general site activity
+    allowed_outputs: [person_activity, vehicle_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [unique_people]
+
+metric_definitions:
+  person_activity:
+    class: observed-derived
+    definition: person activity events and activity periods per camera in the report window
+    never_call: [headcount, unique_people, attendance, staff_productivity]
+  dock_activity:
+    class: observed-derived
+    definition: person and vehicle activity on receiving, loading-dock and dispatch cameras
+    never_call: [shipments, loads_completed, throughput, tonnes]
+  dock_vehicle_dwell:
+    class: observed-derived
+    definition: how long a vehicle stayed continuously visible on one dock or yard camera
+    never_call: [turnaround_time, site_time, loading_time]
+    caveat: one camera only; not a full vehicle visit
+  gate_vehicle_activity:
+    class: observed-derived
+    definition: vehicle activity periods on gate cameras
+    never_call: [deliveries, unique_vehicles, trucks_processed]
+  quiet_periods:
+    class: observed-derived
+    definition: business-hours periods with no activity on a camera that had verified coverage
+    never_call: [downtime, idle_staff, no_work_done]
+    caveat: only valid where coverage was verified
+  after_hours_activity:
+    class: observed
+    definition: activity outside configured business hours, especially storage and restricted areas
+  activity_rule_counts:
+    class: measured
+    definition: crossings or zone presence counted by a configured activity rule
+    never_call: [unique_people, unique_vehicles, shipments]
+  monitoring_coverage:
+    class: measured
+    definition: verified LIVE / RECOVERED / UNVERIFIED monitoring coverage for the window
+
+metric_status:
+  person_activity: {evidence: daily intelligence person activity per camera (events, 10-minute periods, first/last time), status: implemented}
+  peak_activity_hour: {evidence: daily intelligence peak hour, status: implemented}
+  opening_closing_activity: {evidence: configured opening/closing + first/last activity per camera, status: implemented}
+  after_hours_activity: {evidence: configured after-hours window + daily intelligence, status: implemented}
+  attention_items: {evidence: incidents/attention, status: implemented}
+  monitoring_coverage: {evidence: live/recovered/unverified seconds, status: implemented}
+  activity_rule_counts: {evidence: line crossing / zone presence counts per rule, status: implemented}
+  dock_activity: {evidence: activity episodes filtered by receiving/loading_dock/dispatch camera purpose, status: derivable}
+  dock_vehicle_dwell: {evidence: per-camera vehicle episode dwell_seconds, status: derivable}
+  gate_vehicle_activity: {evidence: vehicle episodes on gate cameras, status: derivable}
+  quiet_periods: {evidence: activity episodes + coverage classes for the same window, status: derivable}
+  restricted_storage_after_hours: {evidence: episodes on restricted_storage cameras outside configured hours, status: derivable}
+  period_comparison: {evidence: site-neutral period facts (wl_site_period, site-period-v1; pending migration 0143), status: derivable}
+  vehicle_site_time: {evidence: needs cross-camera vehicle correlation gate-to-dock-to-gate, status: requires_journey_logic}
+  vehicle_turnaround: {evidence: needs cross-camera vehicle correlation, status: requires_journey_logic}
+  forklift_activity: {evidence: no validated forklift object class (person/vehicle only), status: field_gated}
+  ppe_safety_compliance: {evidence: no validated PPE/safety capability, status: field_gated}
+  staff_vs_visitor_split: {evidence: no validated staff/visitor separation, status: field_gated}
+  unique_people_or_vehicles: {evidence: no validated unique counting, status: field_gated}
+  shipment_throughput: {evidence: requires WMS/dispatch records, status: external_data_required}
+  orders_or_tonnes: {evidence: requires WMS/ERP/weighbridge data, status: external_data_required}
+  attendance: {evidence: requires HR/access-control records, status: external_data_required}
+
+owner_questions:
+  - Did anything need my attention yesterday?
+  - Were all cameras watching the whole day?
+  - What time did activity start and finish at the site?
+  - Was there any activity after hours, especially in storage or restricted areas?
+  - How busy were the loading docks, receiving and dispatch areas, and when?
+  - Were the docks quiet for long stretches during working hours?
+  - How long did vehicles stay at the docks or in the yard?
+  - What came through the gate after hours?
+  - Was the yard or perimeter active when the site was closed?
+  - How does yesterday compare with a normal day?
+  - Which area is busiest, and at what hour?
+
+home_modules:
+  - {id: attention, label: What needs attention}
+  - {id: coverage, label: Monitoring coverage}
+  - {id: opening_closing, label: Opening and closing}
+  - {id: after_hours, label: After-hours activity}
+  - {id: dock_activity, label: Dock and yard activity}
+  - {id: peak_hour, label: Busiest hour}
+
+insight_modules:
+  - {id: after_hours_storage, label: After-hours storage and restricted access}
+  - {id: dock_quiet_periods, label: Quiet dock periods during working hours}
+  - {id: dock_vehicle_dwell, label: Vehicle time at the dock}
+  - {id: gate_activity, label: Gate activity}
+  - {id: area_comparison, label: Busiest areas}
+  - {id: period_trend, label: Compared with recent days}
+
+report_windows:
+  today: {label: Today, purpose: current business-day status; incomplete until close}
+  yesterday: {label: Yesterday, purpose: latest completed configured business-day report}
+  last_7_days: {label: Last 7 days, purpose: pattern review across the last 7 completed business days}
+  last_30_days: {label: Last 30 days, purpose: trend with business/non-business days separated}
+
+report_sections:
+  - what needs attention
+  - monitoring coverage and evidence gaps
+  - opening and closing activity
+  - after-hours activity (storage, restricted, yard, perimeter)
+  - dock, receiving and dispatch activity
+  - gate and yard vehicle activity
+  - quiet periods with verified coverage
+  - comparison with recent days
+  - evidence-based recommendations
+
+comparison_metrics:
+  dock_activity_vs_recent_days: {compares: dock activity periods, basis: same weekday or 7-day average, status: derivable}
+  after_hours_activity_vs_recent_days: {compares: after-hours activity, basis: 7/30 completed business days, status: derivable}
+  opening_closing_vs_usual: {compares: first/last activity time, basis: 7-day median, status: derivable}
+  dock_vehicle_dwell_vs_recent_days: {compares: per-camera vehicle dwell, basis: 7-day median, status: derivable}
+  coverage_vs_recent_days: {compares: verified coverage, basis: 7/30 days, status: derivable}
+
+recommended_questions:
+  - Was there any after-hours activity in storage yesterday?
+  - How busy were the loading docks this week?
+  - When did activity start and finish yesterday?
+  - Were any cameras not covering the site last week?
+  - How long did vehicles stay at the dock yesterday?
+
+prohibited_interpretations:
+  - dock or loading-area activity as shipments, loads, orders, tonnes or throughput
+  - vehicle activity as deliveries completed or unique vehicles
+  - single-camera dwell as vehicle site time or turnaround
+  - person activity as headcount, attendance or staff productivity
+  - quiet periods as downtime or idle staff
+  - after-hours activity as theft or wrongdoing without incident evidence
+  - storage activity as stock level or inventory accuracy
+  - any safety/PPE compliance claim
+
+unknown_behaviour:
+  rule: >
+    Unverified coverage is unknown, not quiet. If an area had no verified coverage for a window,
+    say activity there cannot be confirmed. Never fill gaps from other days.
+  missing_external_data: >
+    For shipments, orders, tonnes or schedules, say WatchLog does not hold that data and offer the
+    observed dock/gate activity instead, clearly labelled as activity.
+
+coverage_requirements:
+  quiet_or_inactive_claims: verified LIVE or RECOVERED coverage for the whole window on the named camera
+  site_wide_totals: every configured camera in the role had verified coverage, otherwise state which were missing
+  comparisons: both periods need comparable verified coverage; otherwise flag the comparison as partial
+  role_specific_claims: camera purpose must be configured for the camera
+
+truth_boundaries:
+  - loading-area activity is not shipment throughput, loads or tonnes
+  - vehicle dwell is per camera; site time needs cross-camera journeys
+  - a quiet period needs verified coverage for that window, otherwise it is unknown
+  - activity is not attendance, headcount or productivity
+  - recommendations may suggest a check, never assert a cause
+
+response_policy:
+  tone: natural_management_brief
+  rules:
+    - lead with what needs attention and after-hours activity in storage/restricted areas
+    - describe dock activity as activity, never as shipments or output
+    - missing coverage is missing evidence, not zero activity
+    - recommendations suggest what to check; they never assert why something happened
