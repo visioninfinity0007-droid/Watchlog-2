@@ -10,10 +10,12 @@ def read(rel):
 def main():
     problems = []
     migration = read("prototype/supabase/migrations/0111_visual_snapshot_pipeline.sql")
+    media_migration = read("prototype/supabase/migrations/0113_private_media_mirror.sql")
     context_migration = read("prototype/supabase/migrations/0115_context_aware_visual_review.sql")
     worker = read("prototype/vision_worker/worker.py")
     compose = read("prototype/vision_worker/docker-compose.coolify.yml")
     gateway = read("prototype/supabase/functions/watchlog-ai/index.ts")
+    browser_supabase = read("portal/lib/supabase.js")
 
     for token in [
         "snapshot_visual_reviews",
@@ -24,12 +26,21 @@ def main():
         "wl_vision_day_for_worker",
         "wl_vision_save_day_summary",
         "wl_my_visual_day",
-        "wl_vision_mark_media",
         "service role required",
         "operational_snapshot",
     ]:
         if token not in migration:
             problems.append(f"visual pipeline migration missing: {token}")
+
+    for token in [
+        "wl_vision_mark_media",
+        "media_bucket",
+        "media_key",
+        "media_sha256",
+        "grant execute on function public.wl_vision_mark_media",
+    ]:
+        if token not in media_migration:
+            problems.append(f"private media migration missing: {token}")
 
     for token in [
         "business_context",
@@ -72,8 +83,10 @@ def main():
         if token not in gateway:
             problems.append(f"Watch AI is not wired to visual findings: {token}")
 
-    if "SUPABASE_SERVICE_ROLE_KEY" in gateway:
-        problems.append("service role key must never enter the customer Watch AI browser/runtime payload")
+    if "SUPABASE_SERVICE_ROLE_KEY" in browser_supabase:
+        problems.append("service role key must never enter the customer portal browser payload")
+    if "SUPABASE_SERVICE_ROLE_KEY" not in gateway:
+        problems.append("Watch AI server runtime must keep service-role usage server-side")
 
     if problems:
         raise SystemExit("visual snapshot pipeline contract failed:\n- " + "\n- ".join(problems))
