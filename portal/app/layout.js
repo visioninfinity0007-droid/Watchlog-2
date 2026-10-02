@@ -7,6 +7,7 @@ import "./visual-hotfix.css";
 import "./owner-shell.css";
 import "./portal-system.css";
 import "./auth-system.css";
+import "./owner/owner.css";
 
 export const metadata = {
   title: "WatchLog",

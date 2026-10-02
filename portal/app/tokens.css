@@ -22,6 +22,20 @@
   --color-status-warn-dark: #F0A93B; /** Attention, on DARK surfaces. 8.86:1 on panel. */
   --color-status-bad: #C22B2B; /** Fault, on LIGHT surfaces. 5.72:1 on white. STATUS ONLY, and rationed - a dashboard that is often red trains people to ignore red. */
   --color-status-bad-dark: #FF8079; /** Fault, on DARK surfaces. 7.31:1 on panel. */
+  --color-ledger-nav: #0B1220; /** Signal Ledger: midnight-ink navigation foundation, taken from the owner-selected concept (Image 1, 'Midnight'). ledger-nav-text is 15.67:1 on it; violet-bright 5.03:1. */
+  --color-ledger-nav-raised: #172036; /** Signal Ledger: hover/active row on the navigation foundation. DERIVED from ledger-nav; ledger-nav-text is 13.56:1 on it. */
+  --color-ledger-nav-text: #E7EBF3; /** Signal Ledger: primary text on ledger-nav. 15.67:1. */
+  --color-ledger-nav-muted: #9AA6BA; /** Signal Ledger: secondary text on ledger-nav. 7.61:1. Never on a light surface. */
+  --color-ledger-paper: #F5F3EE; /** Signal Ledger: the warm neutral management workspace. Body text ledger-text is 12.24:1 on it; ledger-muted 5.35:1; violet 6.10:1. */
+  --color-ledger-raised: #FBFAF7; /** Signal Ledger: a raised surface on paper, used sparingly for genuinely discrete items. ledger-muted is 5.69:1 on it. */
+  --color-ledger-line: #E2DED5; /** Signal Ledger: the thin ledger hairline and section divider. A SURFACE colour, never text. */
+  --color-ledger-line-strong: #CFCAC0; /** Signal Ledger: emphasised divider, control borders and chart axes. Never text. */
+  --color-ledger-text: #2F2D35; /** Signal Ledger: body text on paper. 12.24:1. */
+  --color-ledger-muted: #66626E; /** Signal Ledger: secondary text on paper. 5.35:1 on paper, 5.69:1 on raised. */
+  --color-verified: #3F909F; /** Signal Ledger: muted cyan for VERIFIED monitoring coverage and available evidence. A graphic fill (coverage strips, evidence markers) at 3.32:1 on paper - never body text, never a health status (green stays the only healthy colour). */
+  --color-verified-text: #1D6774; /** Signal Ledger: verified-coverage wording on paper. 5.84:1. */
+  --color-verified-soft: #DCEDEF; /** Signal Ledger: quiet background behind verified-coverage figures. A SURFACE colour. */
+  --color-unknown: #7F8899; /** Signal Ledger: 'could not be verified' / unknown graphic fill (cool slate, per the Signal Ledger palette), always hatched and always labelled. 3.22:1 on paper. Unknown is neutral grey - never green, never red, never zero. */
   --layout-max-width: 1280px; /** Marketing content. */
   --layout-max-width-app: 1440px; /** Dashboard. Wider because tables of sites and cameras need horizontal room. */
   --layout-measure: 68ch; /** Maximum readable line length for long-form paragraphs. */
