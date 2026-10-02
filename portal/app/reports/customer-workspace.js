@@ -5,7 +5,9 @@ import {withSite} from "../site-context";
 import {supabase,say} from "../../lib/supabase";
 import useReport from "./use-report";
 import UnifiedRestaurantReport from "./unified-restaurant-report";
-import {OwnerPage,Lead,Section,Row,Metrics,Status,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Delta,Empty,Loading,Notice,fmt as fmtN} from "../owner/ui";
+import {deriveSiteDay,eligible,askQuestions,acceptPeriod,periodMeasure,periodAreas} from "../owner/site-profiles";
+import {SiteOperations,SiteRailFacts,operationalLead} from "../owner/site-modules";
+import {coverageTruth,OwnerPage,Lead,Section,Row,Metrics,Status,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Delta,Empty,Loading,Notice,fmt as fmtN} from "../owner/ui";
 
 const VIEWS=[["daily","Today"],["yesterday","Yesterday"],["monthly","30 days"],["executive","Executive"]];
 const RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]];
@@ -34,57 +36,76 @@ function firstSentences(text,n=2){
 function plural(n,one,many){return n+" "+(n===1?one:many)}
 function sevTone(v){const s=String(v||"").toLowerCase();return s==="critical"?"bad":s==="attention"||s==="warning"?"warn":s==="none"||s==="clear"?"ok":"unknown"}
 
-function OfficeDayReport({data,periodLabel,title="Operations"}){
-  if(!data)return <Empty title="No structured office intelligence is available for this working day yet.">The report fills in once monitoring for the day is complete.</Empty>;
+// Day facts. Offices read the office brief (office semantics); every other business profile reads only the
+// site-neutral governed keys (access windows, day boundaries, after-hours), never data.office.
+function siteNeutralDay(data,siteDay){
+  const eps=(data.access_windows||[]).filter(e=>e.object_class!=="vehicle");
+  const byCamera={};for(const e of eps){const k=e.camera||"Camera";byCamera[k]=(byCamera[k]||0)+1}
+  const peak=siteDay&&siteDay.peakHour!=null?siteDay.timeline.find(t=>t.hour===siteDay.peakHour):null;
+  return{activity:eps.length,activityLabel:"Activity episodes",activityNote:"camera observations, not unique people",
+    peak:peak?{hour:peak.hour,count:peak.episodes,unit:"episodes"}:null,
+    byArea:Object.entries(byCamera).sort((a,b)=>b[1]-a[1]).map(([camera,events])=>({camera,events}))};
+}
+function OfficeDayReport({data,periodLabel,title="Operations",dayNoun="working day",showAreas=true,profile,siteDay}){
+  if(!data)return <Empty title={"No structured activity intelligence is available for this "+dayNoun+" yet."}>The report fills in once monitoring for the day is complete.</Empty>;
   const office=data.office||{},attn=data.attention||{},bounds=data.day_boundaries||{};
-  const byArea=office.by_area||[],restricted=data.restricted||[];
-  const activity=Number(office?.coverage?.person_events||0);
-  const afterHours=Number(data?.after_hours?.count??office.after_hours_total??0);
+  const neutral=profile&&profile.key!=="office"?siteNeutralDay(data,siteDay):null;
+  const byArea=neutral?neutral.byArea:(office.by_area||[]),restricted=data.restricted||[];
+  const activity=neutral?neutral.activity:Number(office?.coverage?.person_events||0);
+  const afterHours=Number(data?.after_hours?.count??(neutral?0:office.after_hours_total)??0);
   const restrictedEpisodes=restricted.reduce((n,x)=>n+Number(x.episodes||0),0);
-  return <Section title={title} note={periodLabel+" · activity detections, not unique people"}>
+  const peak=neutral?neutral.peak:(office?.peak_hour?.hour==null?null:{hour:office.peak_hour.hour,count:office.peak_hour.count,unit:"detections"});
+  const verifiedStart=Boolean(siteDay?.opening?.verified);
+  return <Section title={title} note={periodLabel+" · "+(neutral?neutral.activityNote:"activity detections, not unique people")}>
     <Metrics items={[
-      {value:fmtN(activity),label:"Activity detections",note:"camera detections, not unique people",primary:true},
+      {value:fmtN(activity),label:neutral?neutral.activityLabel:"Activity detections",note:neutral?neutral.activityNote:"camera detections, not unique people",primary:true},
       {value:fmtN(afterHours),label:"After-hours observations",note:"outside configured hours"},
-      {value:office?.peak_hour?.hour==null?null:String(office.peak_hour.hour).padStart(2,"0")+":00",label:"Peak activity hour",note:office?.peak_hour?.count!=null?fmtN(office.peak_hour.count)+" detections":undefined,unknown:"Not observed"},
-      {value:bounds.opening_at||null,label:"Observed opening",unknown:"Not observed"},
-      {value:bounds.closing_at||null,label:"Observed closing",unknown:"Not observed"},
+      {value:peak?String(peak.hour).padStart(2,"0")+":00":null,label:"Peak activity hour",note:peak&&peak.count!=null?fmtN(peak.count)+" "+peak.unit:undefined,unknown:"Not observed"},
+      {value:bounds.opening_at||null,label:verifiedStart?"Opening activity":"First observed activity",note:verifiedStart?"earlier part of the day verified":"not proof of the operating start",unknown:"Not observed"},
+      {value:bounds.closing_at||null,label:"Last observed activity",unknown:"Not observed"},
     ]}/>
-    {byArea.length>0&&<div style={{marginTop:18}}><HBars question="Activity by monitored area" items={byArea.slice(0,6).map((a,i)=>({key:(a.camera||"area")+i,label:a.camera||"Area",value:a.events}))}/></div>}
+    {showAreas&&byArea.length>0&&<div style={{marginTop:18}}><HBars question="Activity by monitored camera" items={byArea.slice(0,6).map((a,i)=>({key:(a.camera||"area")+i,label:a.camera||"Area",value:a.events}))}/></div>}
     {restrictedEpisodes>0&&<p className="ow-muted" style={{fontSize:12.5,marginTop:10}}>{plural(restrictedEpisodes,"restricted-area episode","restricted-area episodes")} recorded{Number(attn.critical||0)?", "+plural(Number(attn.critical),"critical item","critical items"):""}.</p>}
     <p className="ow-muted" style={{fontSize:12,marginTop:10}}>Role-specific conclusions need confirmed camera mapping. Missing monitoring is missing evidence, not zero activity.</p>
   </Section>;
 }
 
-function OfficePeriodReport({data,days}){
-  if(!data?.enabled)return <Empty title="No structured office period data is available yet.">The period view fills in as completed working days are reported.</Empty>;
+function OfficePeriodReport({data,days,profile}){
+  const dayNoun=profile?.dayNoun||"working day";
+  // Only the profile's own governed period schema is read (office-period-v1 or site-period-v1).
+  if(!acceptPeriod(profile,data))return <Empty title={"A period comparison is not available for this site yet."}>{profile&&profile.key!=="office"?"Each completed "+dayNoun+" report remains available under Yesterday. The "+days+"-day comparison for this site type has not been enabled.":"The period view fills in as completed working days are reported."}</Empty>;
   const s=data.summary||{},p=data.previous_period||{},c=data.comparison||{},daily=data.daily||[];
+  const m=periodMeasure(profile),areas=periodAreas(profile,data);
   const observed=Number(s.observed_days||0),prevObserved=Number(p.observed_days||0),minimum=Math.min(4,Number(s.days||days));
   const comparable=observed>=minimum&&prevObserved>=minimum;
-  const series=daily.map(d=>{const seen=Number(d.coverage_ratio||0)>0;return{label:days===7?dayShort(d.date):shortDate(d.date).replace(/ .*/,""),value:seen?Number(d.activity_detections||0):0,gap:!seen,prev:!d.working_day&&seen,title:d.date+": "+(seen?fmtN(d.activity_detections)+" activity detections":"not observed")}});
+  const series=daily.map(d=>{const seen=Number(d.coverage_ratio||0)>0;return{label:days===7?dayShort(d.date):shortDate(d.date).replace(/ .*/,""),value:seen?Number(d[m.key]||0):0,gap:!seen,prev:!d.working_day&&seen,title:d.date+": "+(seen?fmtN(d[m.key])+" · "+m.note:"not observed")}});
   const working=daily.filter(x=>x.working_day),nonWorking=daily.filter(x=>!x.working_day);
   const sum=(rows,key)=>rows.reduce((n,x)=>n+Number(x[key]||0),0);
   return <>
-    <Section title="What changed" note={(days===7?"Last 7 completed working days":"Last 30 completed days")+" vs the previous period"}>
+    <Section title="What changed" note={(days===7?"Last 7 completed "+dayNoun+"s":"Last 30 completed days")+" vs the previous period"}>
       <div className="ow-grid2">
-        <Bars height={120} question={days===7?"Activity detections by working day":"Activity detections by day"} series={series} showValues={days===7}
+        <Bars height={120} question={(profile?.comparisonLabel||"Activity detections")+(days===7?" by "+dayNoun:" by day")} series={series} showValues={days===7}
           legend={<><span>{days===7?"Observed":"Working day"}</span>{days===30&&<span className="prev">Non-working day</span>}{series.some(x=>x.gap)&&<span className="gap">Not observed</span>}</>}/>
         <div>{comparable?<Compare rows={[
-          {label:"Activity detections",note:"not unique people",current:s.activity_detections,previous:p.activity_detections,delta:c.activity_detections_delta,deltaLabel:signed(c.activity_detections_delta)},
+          {label:m.label,note:m.note,current:s[m.key],previous:p[m.key],delta:c[m.delta],deltaLabel:signed(c[m.delta])},
           {label:"Attention items",current:s.incidents_total,previous:p.incidents_total,delta:c.incidents_delta,deltaLabel:signed(c.incidents_delta)},
           {label:"After-hours activity",current:s.after_hours_total,previous:p.after_hours_total,delta:c.after_hours_delta,deltaLabel:signed(c.after_hours_delta)},
           ...(num(s.avg_coverage_ratio)!=null&&num(p.avg_coverage_ratio)!=null?[{label:"Monitoring coverage",note:"period average",current:s.avg_coverage_ratio,previous:p.avg_coverage_ratio,delta:c.coverage_delta_points,deltaLabel:signed(c.coverage_delta_points," pts")}]:[])
         ]}/>:<Empty title="A reliable comparison is not ready yet.">{observed} of {val(s.days)} days observed now, {prevObserved} of {val(p.days)} before.</Empty>}
         {comparable&&<div className="ow-legend" style={{marginTop:10}}><span>This period</span><span className="prev">Previous period</span></div>}</div>
       </div>
-      <p className="ow-muted" style={{fontSize:12,marginTop:10}}>{observed} of {val(s.days)} days observed. Activity detections are not unique people; missing monitoring is missing evidence, not zero activity.</p>
+      <p className="ow-muted" style={{fontSize:12,marginTop:10}}>{observed} of {val(s.days)} days observed. Figures are {m.note}; missing monitoring is missing evidence, not zero activity.</p>
     </Section>
+    {comparable&&areas.length>0&&<Section title="Area activity vs the previous period" note="Activity episodes at configured camera purposes · observations, not output or sales">
+      <Compare rows={areas.map(a=>({label:a.label,note:"episodes",current:a.current,previous:a.previous,delta:a.delta,deltaLabel:signed(a.delta)}))}/>
+    </Section>}
     <Section title="Period totals">
       <Metrics items={[
         {value:fmtN(s.incidents_total),label:"Attention items",note:fmtN(s.critical_total)+" critical"},
         {value:fmtN(s.after_hours_total),label:"After-hours observations"},
-        {value:fmtN(s.activity_detections),label:"Activity detections",note:"not unique people"},
-        days===30?{value:fmtN(sum(working,"activity_detections")),label:"Working-day detections",note:working.length+" working days"}:{value:coverageLabel(s.avg_coverage_ratio),label:"Average coverage"},
-        ...(days===30?[{value:fmtN(sum(nonWorking,"activity_detections")),label:"Non-working-day detections",note:nonWorking.length+" days"}]:[]),
+        {value:fmtN(s[m.key]),label:m.label,note:m.note},
+        days===30?{value:fmtN(sum(working,m.key)),label:"On "+dayNoun+"s",note:working.length+" "+dayNoun+"s"}:{value:coverageLabel(s.avg_coverage_ratio),label:"Average coverage"},
+        ...(days===30?[{value:fmtN(sum(nonWorking,m.key)),label:"On other days",note:nonWorking.length+" days"}]:[]),
       ]}/>
     </Section>
   </>;
@@ -241,9 +262,10 @@ function EvidenceReport({snapshot,siteId,activity}){
     <Section title="Security" count={exceptions.length||null} first>
       {incidents.length?<InsightCards items={incidents}/>:<Empty title="No security exception recorded in the available coverage."/>}
     </Section>
-    <Section title={restaurant?"Business":"Operations"}>
+    {/* With structured day activity below, an empty saved-observations box would read as "nothing happened". */}
+    {(insights.length>0||!activity)&&<Section title={restaurant?"Business":"Operations"}>
       {insights.length?<InsightCards items={insights}/>:<Empty title="No operating observations were saved for this day."/>}
-    </Section>
+    </Section>}
     {activity||null}
     {(actionItems.length>0||actions.length>0)&&<PriorityActions items={actionItems} fallback={actions} siteId={siteId} reportId={snapshot?.report_id}/>}
     <MonitoringDetail coverage={coverage} cameras={cameras} restaurant={restaurant}/>
@@ -257,7 +279,7 @@ function reportLead(r){
   const cov=covRatio==null?null:Math.round(Math.max(0,Math.min(1,covRatio))*100);
   const covText=cov==null?(snap?.coverage?.period?"monitoring "+snap.coverage.period:"monitoring not verified"):"monitoring "+cov+"% verified";
   if(r.isOffice&&(r.view==="week"||r.view==="monthly")){
-    const s=r.officePeriod?.summary;if(!s)return null;
+    const s=acceptPeriod(r.profile,r.officePeriod)?r.officePeriod.summary:null;if(!s)return null;
     const items=Number(s.incidents_total||0),crit=Number(s.critical_total||0),after=Number(s.after_hours_total||0);
     const pc=num(s.avg_coverage_ratio);
     return{tone:crit?"bad":items||after?"warn":"ok",
@@ -270,9 +292,10 @@ function reportLead(r){
     const critical=savedIncidents.filter(x=>sevTone(x.severity)==="bad").length||Number(attn.critical||0);
     if(!r.snapshot&&!r.officeDay)return null;
     const summary=firstSentences(snap.narrative_summary||snap.ai_summary||snap.executive_summary||"",2);
+    const op=r.isOffice&&r.siteDay?operationalLead(r.profile,r.siteDay):null;
     return{tone:critical?"bad":n?"warn":cov==null?"unknown":"ok",
       title:(n?plural(n,"item needs","items need")+" review":"No security exception recorded")+" · "+covText,
-      body:summary||(n?"":"Nothing needed management attention in the available coverage.")};
+      body:summary||(op?op+".":"")||(n?"":"Nothing needed management attention in the available coverage.")};
   }
   return null;
 }
@@ -282,11 +305,13 @@ function ReportRail({r,lead}){
   const covRatio=num(snap?.coverage?.coverage_ratio)??num(r.officeDay?.coverage?.coverage_ratio)??(r.view==="week"||r.view==="monthly"?num(r.officePeriod?.summary?.avg_coverage_ratio):null);
   const cov=covRatio==null?null:Math.round(Math.max(0,Math.min(1,covRatio))*100);
   const metrics=(snap.metrics||[]).filter(m=>!/coverage/i.test(m.label||"")).slice(0,4);
-  const c=r.officePeriod?.comparison;
+  const c=acceptPeriod(r.profile,r.officePeriod)?r.officePeriod.comparison:null;
   const reportDate=r.snapshot?.report_date||snap.report_date||r.requestedReportDate;
+  const typeAsks=r.isOffice&&r.siteDay?askQuestions(r.profile,eligible(r.profile,r.siteDay,r.officePeriod)).slice(0,2).map(q=>[q,q]):[];
   const asks=[
     ["Explain this report",r.prompt],
     ["What should I do first?","From this report, what is the single most important action and why?"],
+    ...typeAsks,
     ["What could WatchLog not verify?","For this reporting period, what time or areas could WatchLog not verify, and does it change the conclusion?"],
   ];
   return <>
@@ -298,9 +323,10 @@ function ReportRail({r,lead}){
     <RailSection label="Report">
       <Stat label="Period" value={r.periodLabel}/>
       {(r.view==="yesterday")&&<Stat label="Saved report" value={<Status tone={r.snapshot?"verified":"unknown"}>{r.snapshot?"Completed":"Not saved yet"}</Status>}/>}
-      {reportDate&&r.view==="yesterday"&&<Stat label="Service day" value={shortDate(reportDate)}/>}
+      {reportDate&&r.view==="yesterday"&&<Stat label={r.isOffice?r.profile.dayNoun.charAt(0).toUpperCase()+r.profile.dayNoun.slice(1):"Service day"} value={shortDate(reportDate)}/>}
       <a className="ow-rail-link" href={withSite("/reports/delivery/",r.siteId)}><span>Delivery & recipients</span><i>Manage</i></a>
     </RailSection>
+    {r.isOffice&&r.siteDay&&(r.view==="daily"||r.view==="yesterday")&&<SiteRailFacts profile={r.profile} label={r.profile.label+" · "+(r.view==="daily"?"today":r.profile.dayNoun)} day={r.siteDay}/>}
     {metrics.length>0&&<RailSection label="Key figures">{metrics.map((m,i)=><Stat key={(m.label||"")+i} label={m.label} note={m.note} value={m.value}/>)}</RailSection>}
     {c&&(r.view==="week"||r.view==="monthly")&&<RailSection label="Vs previous period">
       <Stat label="Attention items" value={<Delta value={c.incidents_delta} label={signed(c.incidents_delta)}/>}/>
@@ -315,6 +341,8 @@ function ReportRail({r,lead}){
 
 export default function CustomerReports(){
   const r=useReport();
+  // One governed day dataset -> the site type's operating picture (same derivation as Home and Insights).
+  const siteDay=r.isOffice&&r.officeDay&&(r.view==="daily"||r.view==="yesterday")?deriveSiteDay({profile:r.profile,daily:r.officeDay,cameras:r.siteAi?.cameras||[],hours:r.siteAi?.business_context,coverage:coverageTruth(r.officeDay.coverage)}):null;
   const views=r.isChaiWalaRestaurant?RESTAURANT_VIEWS:r.isOffice?OFFICE_VIEWS:VIEWS;
   const label=views.find(([k])=>k===r.view)?.[1]||"Report";
   const restaurantName=r.site?.name||"this restaurant";
@@ -330,7 +358,14 @@ export default function CustomerReports(){
     week:"Explain the last 7 completed working days for this office. Identify repeated security/activity/coverage patterns and practical improvements.",
     monthly:"Explain the last 30 completed calendar days for this office, separating working and non-working patterns and surfacing repeated improvements."
   };
-  const prompt=r.isChaiWalaRestaurant?(prompts[r.view]||prompts.daily):r.isOffice?(officePrompts[r.view]||officePrompts.daily):(r.view==="yesterday"?"Explain the last completed business-day report for this site.":"Explain this management report and tell me the priority action.");
+  const place=r.siteType==="retail"?"store":r.siteType;
+  const typePrompts=r.isOffice&&r.siteType!=="office"?{
+    daily:`Explain today's ${place} report so far. Lead with what needs attention, then ${r.profile.activityNoun||"activity"} and monitoring confidence. Suggest what to check; do not assert causes.`,
+    yesterday:`Explain the last completed ${r.profile.dayNoun} report for this ${place}. Lead with security attention, notable quiet periods and monitoring confidence. A quiet period is an observation, not downtime or delay. Suggest what to check; do not assert causes.`,
+    week:`Explain the last 7 completed ${r.profile.dayNoun}s for this ${place}. Identify repeated activity, gap and coverage patterns, and what to check next.`,
+    monthly:`Explain the last 30 days for this ${place}, separating working and non-working patterns and what to check next.`
+  }:officePrompts;
+  const prompt=r.isChaiWalaRestaurant?(prompts[r.view]||prompts.daily):r.isOffice?(typePrompts[r.view]||typePrompts.daily):(r.view==="yesterday"?"Explain the last completed business-day report for this site.":"Explain this management report and tell me the priority action.");
   const periodHint=r.view==="daily"?"Today, in progress":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date):"Last completed day"):r.view==="week"?"Last 7 days":r.view==="monthly"?"Last 30 days":"Executive summary";
 
   let reportBody=null;
@@ -349,26 +384,36 @@ export default function CustomerReports(){
     />;
   }else if(r.isOffice){
     if(r.view==="daily"||r.view==="yesterday"){
+      const dayNoun=r.profile.dayNoun;
+      const dayLabel=r.view==="daily"?"Today":"Last completed "+dayNoun;
+      const capitalDay=dayNoun.charAt(0).toUpperCase()+dayNoun.slice(1);
+      // Site-type operations (timeline, areas, gaps, vehicles, checkout) replace the per-camera bars when the
+      // site's cameras have configured purposes; otherwise the camera-level view stays.
+      const zoned=Boolean(siteDay?.configuredZones?.length);
+      const activity=<>
+        <OfficeDayReport title={capitalDay+" activity"} data={r.officeDay} periodLabel={dayLabel} dayNoun={dayNoun} showAreas={!zoned} profile={r.profile} siteDay={siteDay}/>
+        <SiteOperations profile={r.profile} day={siteDay} siteId={r.siteId} include={["timeline","zones","gaps","logistics","vehicles","checkout"]}/>
+      </>;
       reportBody=<>
-        {r.view==="yesterday"&&r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId} activity={<OfficeDayReport title="Working-day activity" data={r.officeDay} periodLabel="Last completed working day"/>}/>
-          :<OfficeDayReport data={r.officeDay} periodLabel={r.view==="daily"?"Today":"Last completed working day"}/>}
+        {r.view==="yesterday"&&r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId} activity={activity}/>
+          :activity}
         {r.view==="yesterday"&&!r.snapshot&&<>
-          <Empty title="No saved management report is available for this working day yet."/>
+          <Empty title={"No saved management report is available for this "+r.profile.dayNoun+" yet."}/>
           <SavedReportHistory windowData={r.reportWindow} siteId={r.siteId} mode="latest"/>
         </>}
-        <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"WatchLog's reading of the working day"}/>
+        <ManagementReading answer={r.answer} label={r.view==="daily"?"Today's management reading":"WatchLog's reading of the "+r.profile.dayNoun}/>
       </>;
     }else{
       const days=r.view==="week"?7:30;
-      reportBody=<><OfficePeriodReport data={r.officePeriod} days={days}/><SavedReportHistory windowData={r.reportWindow} siteId={r.siteId}/><ManagementReading answer={r.answer} label={days===7?"What the last 7 working days suggest":"What the last 30 days suggest"}/></>;
+      reportBody=<><OfficePeriodReport data={r.officePeriod} days={days} profile={r.profile}/><SavedReportHistory windowData={r.reportWindow} siteId={r.siteId}/><ManagementReading answer={r.answer} label={days===7?"What the last 7 "+r.profile.dayNoun+"s suggest":"What the last 30 days suggest"}/></>;
     }
   }else{
     reportBody=r.view==="yesterday"?(r.snapshot?<EvidenceReport snapshot={r.snapshot} siteId={r.siteId}/>:<Empty title="No saved management brief is available for the last completed business day yet.">The daily report appears here once the business day is complete.</Empty>)
       :<Section first title={label+" report"}>{r.answer?<div style={{fontSize:14,lineHeight:1.65}}><RichText text={r.answer}/></div>:<Empty title="No report is available yet."/>}</Section>;
   }
 
-  const lead=r.isChaiWalaRestaurant?null:reportLead(r);
-  const rr={...r,prompt,periodLabel:label};
+  const lead=r.isChaiWalaRestaurant?null:reportLead({...r,siteDay});
+  const rr={...r,siteDay,prompt,periodLabel:label};
   const summaryCov=num(r.snapshot?.payload?.coverage?.coverage_ratio)??num(r.officeDay?.coverage?.coverage_ratio);
   return <OwnerPage active="Reports" email={r.email} siteId={r.siteId}
     kicker={["Reports",periodHint]}

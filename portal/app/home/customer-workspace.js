@@ -4,6 +4,8 @@ import {useCallback,useEffect,useState} from "react";
 import {supabase} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
+import {selectSiteProfile,deriveSiteDay,eligible,askQuestions,acceptPeriod,periodMeasure} from "../owner/site-profiles";
+import {SiteOperations,SiteRailFacts,operationalLead} from "../owner/site-modules";
 import {coverageTruth,OwnerPage,AskBar,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Empty,Loading,Notice,AskLinks,Timeline,ratioPct,num,fmt,tone} from "../owner/ui";
 
 function sev(v){return String(v||"info").toLowerCase()}
@@ -75,28 +77,32 @@ function restaurantChange(windowData){
   else if(service!==null&&Math.abs(service)>=1)headline="Observed time to food was "+Math.abs(service)+" min "+(service<0?"faster":"slower")+" than the previous period.";
   return{ready:true,kind:"restaurant",headline,qualifier,days,rows};
 }
-function officeChange(period){
-  if(!period||period.enabled!==true)return null;
+// Working-day comparison for business profiles. Only a period whose schema matches the profile is read
+// (office-period-v1 for offices, site-period-v1 for warehouse/factory/retail), using the profile's measure.
+function officeChange(period,profile){
+  if(!acceptPeriod(profile,period))return null;
+  const m=periodMeasure(profile),dn=((profile&&profile.dayNoun)||"working day")+"s";
   const s=period.summary||{},p=period.previous_period||{},c=period.comparison||{};
   const days=Math.max(1,Number(s.days||7));
   const observed=Number(s.observed_days||0),prevObserved=Number(p.observed_days||0);
   const minimum=Math.min(4,days);
-  const qualifier=observed+" of "+days+" working days observed, "+prevObserved+" of "+Number(p.days||days)+" previously. Missing periods are not treated as zero activity.";
+  const qualifier=observed+" of "+days+" "+dn+" observed, "+prevObserved+" of "+Number(p.days||days)+" previously. Missing periods are not treated as zero activity.";
   const series=(period.daily||[]).map(d=>{
     const seen=Number(d.coverage_ratio||0)>0;
-    return{label:dayLabel(d.date),value:seen?Number(d.activity_detections||0):0,gap:!seen,title:d.date+": "+(seen?fmt(d.activity_detections)+" activity detections":"not observed")};
+    return{label:dayLabel(d.date),value:seen?Number(d[m.key]||0):0,gap:!seen,title:d.date+": "+(seen?fmt(d[m.key])+" · "+m.note:"not observed")};
   });
-  if(observed<minimum||prevObserved<minimum)return{ready:false,kind:"office",qualifier,days:series,rows:[]};
+  const chart=m.label+" by "+((profile&&profile.dayNoun)||"working day");
+  if(observed<minimum||prevObserved<minimum)return{ready:false,kind:"office",chart,qualifier,days:series,rows:[]};
   const rows=[
-    {label:"Activity detections",note:"camera detections, not unique people",current:s.activity_detections,previous:p.activity_detections,delta:c.activity_detections_delta,deltaLabel:signedNum(c.activity_detections_delta)},
+    {label:m.label,note:m.note,current:s[m.key],previous:p[m.key],delta:c[m.delta],deltaLabel:signedNum(c[m.delta])},
     {label:"After-hours activity",note:"outside working hours",current:s.after_hours_total,previous:p.after_hours_total,delta:c.after_hours_delta,deltaLabel:signedNum(c.after_hours_delta)},
   ];
   if(num(s.avg_coverage_ratio)!==null&&num(p.avg_coverage_ratio)!==null)rows.push({label:"Monitoring coverage",note:"average of the period",current:s.avg_coverage_ratio,previous:p.avg_coverage_ratio,delta:c.coverage_delta_points,deltaLabel:signedNum(c.coverage_delta_points," pts")});
-  const after=num(c.after_hours_delta),act=num(c.activity_detections_delta);
+  const after=num(c.after_hours_delta),act=num(c[m.delta]);
   let headline="No material change stands out in the supported comparison.";
-  if(after!==null&&after!==0)headline="After-hours activity "+(after>0?"rose by ":"fell by ")+Math.abs(after)+" against the previous "+days+" working days.";
-  else if(act!==null&&num(p.activity_detections)&&Math.abs(act)/Number(p.activity_detections)>=0.1)headline="Activity was "+(act>0?"higher":"lower")+" than the previous "+days+" working days.";
-  return{ready:true,kind:"office",headline,qualifier,days:series,rows};
+  if(after!==null&&after!==0)headline="After-hours activity "+(after>0?"rose by ":"fell by ")+Math.abs(after)+" against the previous "+days+" "+dn+".";
+  else if(act!==null&&num(p[m.key])&&Math.abs(act)/Number(p[m.key])>=0.1)headline="Activity was "+(act>0?"higher":"lower")+" than the previous "+days+" "+dn+".";
+  return{ready:true,kind:"office",chart,headline,qualifier,days:series,rows};
 }
 
 export default function CustomerHome(){
@@ -116,7 +122,7 @@ export default function CustomerHome(){
   const[partial,setPartial]=useState(false);
   const[error,setError]=useState("");
 
-  const loadSite=useCallback(async(id)=>{
+  const loadSite=useCallback(async(id,studioType)=>{
     if(!id)return;
     setBusy(true);setPartial(false);setError("");
     const sb=supabase();
@@ -148,8 +154,9 @@ export default function CustomerHome(){
       if(!snap.error&&snap.data){setLatestReport(snap.data);setLatestReportDate(reportDate)}
       if(!windowResult.error)setReportWindow(windowResult.data||null);
     }
-    if(!isRestaurant){
-      const op=await sb.rpc("wl_office_period",{p_site_id:id,p_days:7,p_working_only:true});
+    const loaded=selectSiteProfile({restaurantConfig:isRestaurant?rc.data:null,contextType:c.data?.business_context?.site_type,studioType});
+    if(loaded.composer==="business"&&loaded.period){
+      const op=await sb.rpc(loaded.period.rpc,{p_site_id:id,p_days:7,p_working_only:true});
       if(!op.error)setOfficePeriod(op.data||null);
     }
   },[]);
@@ -168,7 +175,7 @@ export default function CustomerHome(){
     if(id){
       const row=list.find(function(x){return String(x.id)===String(id)});
       rememberSite(id,(row&&row.name)||"");
-      await loadSite(id);
+      await loadSite(id,row&&row.site_type);
     }else setBusy(false);
   })();return function(){live=false}},[loadSite]);
 
@@ -177,7 +184,7 @@ export default function CustomerHome(){
     const row=sites.find(function(x){return String(x.id)===String(id)});
     rememberSite(id,(row&&row.name)||"");
     history.replaceState(null,"",id?"/home/?site="+encodeURIComponent(id):"/home/");
-    await loadSite(id);
+    await loadSite(id,row&&row.site_type);
   }
 
   const site=sites.find(function(x){return String(x.id)===String(siteId)})||null;
@@ -196,7 +203,15 @@ export default function CustomerHome(){
   const coverageScope=currentCoverage!==null?"current reporting period":completedCoverage!==null?"latest completed service day":"current reporting period";
   const completedMetrics=((latestReport&&latestReport.payload&&latestReport.payload.metrics)||[]).slice(0,4);
   const completedHighlights=((latestReport&&latestReport.payload&&latestReport.payload.highlights)||[]).slice(0,3);
-  const change=restaurantConfig?restaurantChange(reportWindow):officeChange(officePeriod);
+  // Phase 28: one registry selects the profile and its composer for every site type, restaurant included.
+  const profile=selectSiteProfile({restaurantConfig,contextType:ctx&&ctx.business_context&&ctx.business_context.site_type,studioType:site&&site.site_type});
+  const restaurantComposer=profile.composer==="restaurant";
+  const businessProfile=profile.composer==="business";
+  const day=businessProfile?deriveSiteDay({profile,daily,cameras:(ctx&&ctx.cameras)||[],hours:ctx&&ctx.business_context,coverage:coverageTruth(daily&&daily.coverage)}):null;
+  const can=day?eligible(profile,day,officePeriod):{};
+  const opLead=businessProfile?operationalLead(profile,day,can):null;
+  const askList=profile.key==="general"?["What needs my attention right now?","What happened during the latest completed business day?","Was the latest reporting period fully monitored?"]:askQuestions(profile,can);
+  const change=restaurantComposer?restaurantChange(reportWindow):businessProfile?officeChange(officePeriod,profile):null;
 
   const summary=(analytics&&analytics.summary)||{};
   const rules=(analytics&&analytics.by_rule)||[];
@@ -246,6 +261,11 @@ export default function CustomerHome(){
     body="Monitoring coverage for the current period is not verified yet.";
   }
 
+  // Lead with the site's operating story when no urgent or connection issue takes precedence.
+  if(opLead&&connected&&!urgent.length){
+    title=opLead+(attention.length?" · "+attention.length+" "+(attention.length===1?"item needs":"items need")+" review":" · "+coverageText);
+  }
+
   const now=new Date();
   const dayAgo=new Date(now.getTime()-24*3600*1000);
   const recent=unread.filter(x=>x.created_at&&new Date(x.created_at)>=dayAgo);
@@ -261,16 +281,17 @@ export default function CustomerHome(){
         <Stat label="Cameras confirmed healthy" value={cams.length?healthy+" of "+cams.length:null}/>
       </div>
     </RailSection>
+    {businessProfile&&<SiteRailFacts profile={profile} day={day}/>}
     <RailSection label="Attention" action={<a href={withSite("/notifications/",siteId)}>Open</a>}>
       <Stat label="Needs review" value={String(attention.length)}/>
       <Stat label="Urgent" value={String(urgent.length)}/>
       <Stat label="Monitoring issues" value={String(faults.length)}/>
     </RailSection>
     <RailSection label="Latest report">
-      {latestReportDate?<a className="ow-rail-link" href={reportHref}><span>{restaurantConfig?"Completed service day":"Completed day"}<br/><small>{latestReportDate}</small></span><i>Open</i></a>:<p className="ow-rail-note">No completed report is available yet.</p>}
+      {latestReportDate?<a className="ow-rail-link" href={reportHref}><span>{restaurantComposer?"Completed service day":"Completed day"}<br/><small>{latestReportDate}</small></span><i>Open</i></a>:<p className="ow-rail-note">No completed report is available yet.</p>}
     </RailSection>
     <RailSection label="Ask WatchLog">
-      <AskLinks siteId={siteId} prompts={["What needs my attention right now?","What happened during the latest completed business day?","Was the latest reporting period fully monitored?"]}/>
+      <AskLinks siteId={siteId} prompts={askList.slice(0,4)}/>
     </RailSection>
   </>;
 
@@ -278,7 +299,7 @@ export default function CustomerHome(){
     {value:String(attention.length),label:"Need review"},
     {value:coverage===null?"Not verified":coverage+"%",label:"Monitoring coverage",muted:coverage===null,ledger:coverage===null?null:coverage/100,classes:currentCoverage!==null?daily?.coverage?.classes:null},
     {value:cams.length?healthy+"/"+cams.length:"—",label:"Cameras healthy",muted:!cams.length},
-    restaurantConfig&&completedMetrics.length?{value:String(completedMetrics[0].value??"—"),label:completedMetrics[0].label||"Latest business figure"}:analyticsReady?{value:fmt(activity),label:"Activity · 24 hours"}:null,
+    restaurantComposer&&completedMetrics.length?{value:String(completedMetrics[0].value??"—"),label:completedMetrics[0].label||"Latest business figure"}:day&&(day.opening||day.firstActivity)?{value:(day.opening&&day.opening.at)||day.firstActivity,label:day.opening&&day.opening.verified?"Activity began today":"First observed activity"}:analyticsReady?{value:fmt(activity),label:"Activity · 24 hours"}:null,
   ]}/>;
 
   return <OwnerPage active="Home" email={email} siteId={siteId}
@@ -301,11 +322,11 @@ export default function CustomerHome(){
         :<Empty title="Nothing needs your attention right now.">Anything WatchLog cannot verify stays marked as not verified.</Empty>}
       </Section>
 
-      {change&&<Section title="What changed" note={(change.kind==="restaurant"?"Last 7 service days vs the previous 7":"Last 7 working days vs the previous 7")} action={<a href={withSite("/analytics/",siteId)}>Insights</a>}>
+      {change&&<Section title="What changed" note={(change.kind==="restaurant"?"Last 7 service days vs the previous 7":"Last 7 "+profile.dayNoun+"s vs the previous 7")} action={<a href={withSite("/analytics/",siteId)}>Insights</a>}>
         {change.ready?<>
           <p style={{fontSize:15,fontWeight:600,color:"var(--ow-ink)",marginBottom:14}}>{change.headline}</p>
           <div className="ow-grid2">
-            {change.days.length>0&&<Bars height={96} question={change.kind==="restaurant"?"Estimated covers by service day":"Activity detections by working day"} series={change.days} showValues={false}
+            {change.days.length>0&&<Bars height={96} question={change.kind==="restaurant"?"Estimated covers by service day":change.chart} series={change.days} showValues={false}
               legend={<><span>Observed</span>{change.days.some(d=>d.gap)&&<span className="gap">Not observed</span>}</>}/>}
             <div><Compare rows={change.rows}/><div className="ow-legend" style={{marginTop:10}}><span>This period</span><span className="prev">Previous period</span></div></div>
           </div>
@@ -313,8 +334,10 @@ export default function CustomerHome(){
         <p className="ow-muted" style={{fontSize:12,marginTop:10}}>{change.qualifier}</p>
       </Section>}
 
-      <Section title={restaurantConfig&&completedMetrics.length?"Latest completed service day":"Activity · last 24 hours"} action={<a href={withSite("/analytics/",siteId)}>Open insights</a>}>
-        {restaurantConfig&&completedMetrics.length?<>
+      {businessProfile&&day&&(can.timeline||can.zones)&&<SiteOperations profile={profile} day={day} siteId={siteId}/>}
+
+      {!(businessProfile&&day&&(can.timeline||can.zones)&&!rules.length)&&<Section title={restaurantComposer&&completedMetrics.length?"Latest completed service day":businessProfile&&day&&(can.timeline||can.zones)?"Activity rules · last 24 hours":"Activity · last 24 hours"} action={<a href={withSite("/analytics/",siteId)}>Open insights</a>}>
+        {restaurantComposer&&completedMetrics.length?<>
           {completedHighlights.length>0&&<p style={{fontSize:14,color:"var(--ow-ink)",marginBottom:12}}>{typeof completedHighlights[0]==="string"?completedHighlights[0]:(completedHighlights[0].title||"")}</p>}
           <div className="ow-metrics">{completedMetrics.map(function(m,i){return <div className={"ow-metric"+(i===0?" primary":"")} key={(m.label||i)+"-"+i}><b className={m.value==null?"unknown":""}>{m.value==null?"Not available":String(m.value)}</b><span>{m.label||"Business metric"}</span></div>})}</div>
         </>:analyticsReady?<>
@@ -322,11 +345,11 @@ export default function CustomerHome(){
           {rules.length>0?<HBars question="Where activity came from" items={rules.slice(0,4).map(r=>({key:r.rule_id,label:r.name||"Activity rule",note:r.camera,value:r.count}))}/>
             :<div className="ow-metrics">{[["Visitor entries",summary.visitor_in],["Vehicle entries",summary.vehicles_in],["Area entries",summary.zone_entries],["After-hours activity",afterHours]].map(([l,v])=><div className="ow-metric" key={l}><b>{fmt(v)}</b><span>{l}</span></div>)}</div>}
           <p className="ow-muted" style={{fontSize:12,marginTop:10}}>Entries are rule crossings, not unique people.</p>
-        </>:<Empty title="Business activity insights are not ready yet." action={<a className="ow-btn quiet small" href={restaurantConfig?reportHref:withSite("/analytics/studio/",siteId)}>{restaurantConfig?"Open latest report":"Choose what to measure"}</a>}>Measured patterns appear here once this site has supported activity insights.</Empty>}
-      </Section>
+        </>:<Empty title="Business activity insights are not ready yet." action={<a className="ow-btn quiet small" href={restaurantComposer?reportHref:withSite("/analytics/studio/",siteId)}>{restaurantComposer?"Open latest report":"Choose what to measure"}</a>}>Measured patterns appear here once this site has supported activity insights.</Empty>}
+      </Section>}
 
       <Section title="Ask WatchLog" className="ow-narrow-only">
-        <AskLinks siteId={siteId} prompts={["What needs my attention right now?","Was the latest reporting period fully monitored?"]}/>
+        <AskLinks siteId={siteId} prompts={askList.slice(0,3)}/>
       </Section>
     </>}
   </OwnerPage>;

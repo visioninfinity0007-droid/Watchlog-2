@@ -3,10 +3,15 @@ import {useState} from "react";
 import {supabase,say} from "../../lib/supabase";
 import {Section,Status,Empty} from "../owner/ui";
 import s from "./customer.module.css";
-const PURPOSES=[["general","General area"],["entrance","Entrance / exit"],["reception","Reception / lobby"],["management","Office / management"],["restricted","Restricted area"],["parking","Parking / vehicle access"],["perimeter","Perimeter"],["loading","Loading / service"],["queue","Queue / service area"]];
+import {purposeOptions,resolveSiteType} from "../owner/site-profiles";
+// Camera purposes depend on the site type (an office has meeting rooms, a warehouse has loading docks).
+// A purpose saved earlier that is not in the current list stays selectable so it is never silently lost.
+const LEGACY={general:"General area",management:"Office / management",reception:"Reception / lobby",loading:"Loading / service",queue:"Queue / service area"};
+function purposesFor(siteType,current){const list=purposeOptions(siteType);const extra=[...new Set(current.filter(v=>v&&!list.some(([k])=>k===v)))].map(v=>[v,LEGACY[v]||v.replace(/_/g," ")]);return[...list,...extra]}
 
-export default function CameraSetup({siteId,cameras,patch,canManage,onSaved,onError}){
+export default function CameraSetup({siteId,siteType,cameras,patch,canManage,onSaved,onError}){
   const[busy,setBusy]=useState(false);
+  const PURPOSES=purposesFor(resolveSiteType(siteType),cameras.map(c=>String(c.purpose||"")));
   const incomplete=cameras.some(c=>Boolean(c.monitor)&&!String(c.purpose||"").trim());
   async function save(){if(incomplete){onError("Choose what each monitored camera watches before saving.");return}setBusy(true);for(const c of cameras){const{error}=await supabase().rpc("wl_ai_setup_camera",{p_site_id:siteId,p_camera_id:c.id,p_name:c.name||null,p_purpose:c.purpose||null,p_monitor:Boolean(c.monitor)});if(error){setBusy(false);onError(say(error));return}}const{error}=await supabase().rpc("wl_onboarding_advance",{p_site_id:siteId,p_step:"cameras_mapped",p_done:true});setBusy(false);if(error){onError(say(error));return}onSaved("Camera choices saved.")}
 

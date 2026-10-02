@@ -97,6 +97,44 @@ camera_roles:
     forbidden_outputs:
       - customer_volume
       - restaurant_service_performance
+  # Portal camera-purpose values. The roles above remain valid tenant role keys and keep their
+  # semantics; dining = dining_floor, cashier = cash_counter, service_area = service_handoff.
+  dining:
+    purpose: customer seating and table-service analytics (same semantics as dining_floor)
+    alias_of: dining_floor
+    forbidden_outputs: [unique_footfall_without_entry_line, sales, revenue, customer_identity, customer_demographics]
+  outdoor_seating:
+    purpose: outdoor seating activity
+    allowed_outputs: [visible_diners, busy_periods, after_hours_activity]
+    forbidden_outputs: [unique_footfall_without_entry_line, sales, revenue, estimated_covers_without_calibrated_tables]
+  cashier:
+    purpose: till/workstation activity (same semantics as cash_counter)
+    alias_of: cash_counter
+    forbidden_outputs: [transaction_count, sales, revenue, customer_queue_length_unless_geometry_supports_it]
+  service_area:
+    purpose: service handoff and pickup activity (same semantics as service_handoff)
+    alias_of: service_handoff
+    forbidden_outputs: [customer_footfall, exact_order_backlog, sales]
+  entrance:
+    purpose: customer and staff entrance activity
+    allowed_outputs: [person_activity, first_last_activity, after_hours_activity]
+    forbidden_outputs: [footfall_without_validated_counting_line, unique_customers, sales]
+  restricted:
+    purpose: sensitive/restricted-area access
+    allowed_outputs: [presence, access_activity, after_hours_presence]
+    forbidden_outputs: [wrongdoing, identity]
+  parking:
+    purpose: vehicle and parking-area activity
+    allowed_outputs: [vehicle_activity, vehicle_dwell, after_hours_parking]
+    forbidden_outputs: [customer_count, vehicle_identity_without_validated_plate_reading]
+  perimeter:
+    purpose: external boundary movement
+    allowed_outputs: [person_activity, vehicle_activity, after_hours_activity]
+    forbidden_outputs: [intrusion_without_incident_evidence]
+  general:
+    purpose: general site activity
+    allowed_outputs: [person_activity, busy_periods, quiet_periods]
+    forbidden_outputs: [unique_customers, footfall]
 
 metrics:
   visible_diners:
@@ -210,7 +248,7 @@ report_windows:
 
 truth_boundaries:
   - missing observation time is missing coverage, not zero activity
-  - a single frame is an observation, not a trend
+  - a single image is an observation, not a trend
   - site-wide dining totals require a complete composite across configured dining-floor cameras
   - recommendations about staffing, service or layout require repeated observations and adequate coverage
 
@@ -245,3 +283,102 @@ client_reporting:
     A completed human/manual visual review can be the authoritative daily owner brief
     when automated structured extraction is unavailable. A client must not see an
     internal processing state above a completed reviewed report.
+
+# Owner-intelligence profile (added alongside, never replacing, the semantics above).
+metric_status:
+  visible_diners: {evidence: restaurant camera review of dining-floor cameras, status: implemented}
+  occupied_tables: {evidence: calibrated table anchors (calibrated sites only), status: implemented}
+  table_utilization_pct: {evidence: calibrated table anchors over valid observations, status: implemented}
+  estimated_table_sessions: {evidence: calibrated table occupancy changes, status: implemented}
+  estimated_covers: {evidence: peak visible party size per estimated table session, status: implemented}
+  served_table_sessions: {evidence: food visibly present in an estimated table session, status: implemented}
+  observed_time_to_food_minutes: {evidence: seated-to-food visible evidence; bounded by the actual observation interval, status: implemented}
+  minimum_observed_dwell_minutes: {evidence: first-to-last occupied observation, status: implemented}
+  kitchen_load: {evidence: restaurant camera review of kitchen cameras, status: implemented}
+  handoff_load: {evidence: restaurant camera review of service-handoff cameras, status: implemented}
+  opening_closing_activity: {evidence: configured service-day opening/closing + first/last activity per camera, status: implemented}
+  after_hours_activity: {evidence: configured after-hours window + daily intelligence, status: implemented}
+  peak_activity_hour: {evidence: daily intelligence peak hour, status: implemented}
+  attention_items: {evidence: incidents/attention, status: implemented}
+  monitoring_coverage: {evidence: live/recovered/unverified seconds, status: implemented}
+  activity_rule_counts: {evidence: line crossing / zone presence counts per rule, status: implemented}
+  period_comparison: {evidence: daily intelligence + restaurant reports across completed service days, status: derivable}
+  customer_footfall: {evidence: needs a validated customer-entry counting line, status: field_gated}
+  counter_queue_length: {evidence: needs validated counter geometry, status: field_gated}
+  staff_vs_customer_split: {evidence: no validated staff/customer separation beyond role context, status: field_gated}
+  sales_revenue_or_pos_timing: {evidence: requires POS data, status: external_data_required}
+  attendance: {evidence: requires HR/rota records, status: external_data_required}
+
+owner_questions:
+  - Did anything need my attention yesterday?
+  - Were all cameras watching the whole service day?
+  - What time did we open and close, going by activity?
+  - How busy was the dining floor, and when was the peak?
+  - How well were the tables used?
+  - How long did tables wait for food?
+  - How busy were the kitchen and the service handoff?
+  - Was the cash counter ever left unattended?
+  - Was there any activity after closing?
+  - How does yesterday compare with the same day last week?
+  - What should I change, based on repeated evidence?
+
+home_modules:
+  - {id: attention, label: What needs attention}
+  - {id: coverage, label: Monitoring coverage}
+  - {id: demand_and_table_use, label: Demand and table use}
+  - {id: service_flow, label: Service flow}
+  - {id: kitchen_counter, label: Kitchen, handoff and counter}
+  - {id: closing_discipline, label: Opening, closing and after hours}
+
+insight_modules:
+  - {id: peak_hour, label: Busiest hour}
+  - {id: time_to_food, label: Time to food}
+  - {id: unattended_counter, label: Counter attention}
+  - {id: after_hours, label: After-hours activity}
+  - {id: period_trend, label: Compared with recent days}
+
+report_sections:
+  - what needs attention
+  - monitoring coverage and evidence gaps
+  - demand and table use
+  - service flow
+  - kitchen, handoff and counter operations
+  - security and access
+  - opening, closing and after-hours activity
+  - practical, evidence-based actions
+
+comparison_metrics:
+  estimated_covers_vs_same_weekday: {compares: estimated covers, basis: same weekday last week, status: derivable}
+  table_utilization_vs_recent_days: {compares: table utilization, basis: 7 completed service days, status: derivable}
+  time_to_food_vs_recent_days: {compares: observed time to food, basis: 7-day median, status: derivable}
+  after_hours_activity_vs_recent_days: {compares: after-hours activity, basis: 7/30 service days, status: derivable}
+  coverage_vs_recent_days: {compares: verified coverage, basis: 7/30 days, status: derivable}
+
+recommended_questions:
+  - How busy were we last night, and when was the peak?
+  - How well were the tables used yesterday?
+  - How long did tables wait for food this week?
+  - Was there any activity after closing?
+  - Were any cameras not covering the restaurant yesterday?
+
+prohibited_interpretations:
+  - visible diners or estimated covers as footfall or unique customers
+  - estimated covers as POS covers, orders or sales
+  - time to food as kitchen ticket time or POS order-to-serve
+  - kitchen or handoff load as orders per hour or staff productivity
+  - counter activity as transactions, sales or revenue
+  - food quality, order accuracy or health claims
+  - identity or demographics of customers or staff
+
+unknown_behaviour:
+  rule: >
+    Missing observation time is missing coverage, not zero activity. Say what cannot be confirmed.
+  missing_external_data: >
+    For sales, revenue or POS timings, say WatchLog does not hold that data and offer the observed
+    table and service evidence instead, labelled as estimated or observed.
+
+coverage_requirements:
+  quiet_or_inactive_claims: verified LIVE or RECOVERED coverage for the whole window on the named camera
+  site_wide_dining_totals: a complete composite across configured dining-floor cameras
+  timing_metrics: actual observation interval stated; coarse ranges above 120 s
+  comparisons: both periods need comparable verified coverage; otherwise flag the comparison as partial

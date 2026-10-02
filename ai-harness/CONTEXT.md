@@ -22,7 +22,7 @@ never by a model: `tenant → site → allowed cameras → allowed date/time →
 
 ## Live site/business context
 
-The harness now includes reusable `site-types/restaurant.yaml` and `site-types/office.yaml` policies. Tenant-specific stable context lives in tenant folders such as `tenants/chaiwala-chota-bukhari/context.yaml`, `tenants/al-khalid-main-site/context.yaml`, and `tenants/hasco-steel-head-office/context.yaml`. Each tenant folder can also hold a governed `reporting/` archive and visual-analysis method. The **runtime factual site/business context** remains live through `site_business_context` and `wl_ai_context`.
+The harness now includes reusable `site-types/office.yaml`, `restaurant.yaml`, `warehouse.yaml`, `factory.yaml` and `retail.yaml` policies. Tenant-specific stable context lives in tenant folders such as `tenants/chaiwala-chota-bukhari/context.yaml`, `tenants/al-khalid-main-site/context.yaml`, and `tenants/hasco-steel-head-office/context.yaml`. Each tenant folder can also hold a governed `reporting/` archive and visual-analysis method. The **runtime factual site/business context** remains live through `site_business_context` and `wl_ai_context`.
 
 The Watch AI Edge Function injects a customer-safe `SITE OPERATING CONTEXT`
 containing:
@@ -53,6 +53,7 @@ The cloud `watchlog-vision-worker` is only eligible to process a site when that 
 - `device-knowledge/` — 47-model recorder capability registry (see `DEVICE_KNOWLEDGE` doc).
 - `site-types/restaurant.yaml` — reusable restaurant metric, camera-role, movable-table, reporting and analytics-quality policy.
 - `site-types/office.yaml` — reusable office working-day, camera-role, reporting and coverage policy.
+- `site-types/warehouse.yaml`, `factory.yaml`, `retail.yaml` — same structure; dock activity is not shipments, camera activity is not production output, entrance activity is not sales. Every site type carries `owner_questions`, modules, `comparison_metrics`, `prohibited_interpretations` and `metric_status` (implemented / derivable / requires_journey_logic / field_gated / external_data_required).
 - `tenants/README.md` — registry of active tenant folders vs production sites, plus the test/empty/demo sites that must never be analysed as tenants.
 - `tenants/*/context.yaml` — stable tenant/site overlays; live IDs/evidence remain database-owned.
 - `tenants/*/reporting/` — governed daily report archive + reproducible analysis methods.
@@ -64,7 +65,7 @@ The cloud `watchlog-vision-worker` is only eligible to process a site when that 
 The following are the Phase-2 incident-intelligence content layer and **do not exist yet**. The router
 must not depend on them; they are the roadmap, not the runtime:
 
-- Additional `site-types/` beyond restaurant and `risk-profiles/` — vertical/risk definitions (PLANNED).
+- `risk-profiles/` — risk overlays composed onto the five site types (PLANNED).
 - `incidents/` — the micro-level incident catalogue (PLANNED).
 - Additional `skills/` beyond the implemented tenant-intelligence setup skill, e.g. journey-correlation (PLANNED).
 - `playbooks/` — per-intent playbooks e.g. site-health / investigate-incident / recorder-change (PLANNED).

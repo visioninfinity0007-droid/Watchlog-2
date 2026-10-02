@@ -27,7 +27,7 @@ CORE_SECTIONS = {
                       "Capability truth (evidence classes)"],
     "core/confidence.md": ["Forbidden"],
 }
-SITE_TYPES = ("office", "restaurant")
+SITE_TYPES = ("office", "restaurant", "warehouse", "factory", "retail")
 MAX_WORDS = 34
 
 
