@@ -4,7 +4,9 @@ import {useEffect,useMemo,useState} from "react";
 import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
-import {OwnerPage,SiteSelect,Lead,Section,Row,Metrics,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Delta,Empty,Loading,Notice} from "../owner/ui";
+import {selectSiteProfile,deriveSiteDay,eligible,askQuestions,acceptPeriod,periodMeasure,periodAreas} from "../owner/site-profiles";
+import {SiteOperations,SiteRailFacts,operationalLead} from "../owner/site-modules";
+import {coverageTruth,OwnerPage,SiteSelect,Lead,Section,Row,Metrics,Ledger,RailSection,Stat,Figure,Summary,Bars,HBars,Compare,Delta,Empty,Loading,Notice} from "../owner/ui";
 
 function n(v){return Number(v||0).toLocaleString()}
 function label(v){return String(v||"Activity").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
@@ -116,27 +118,33 @@ function RestaurantInsights({siteId,site,date,day,snapshot,windowData}){
   </>;
 }
 
-function officePeriodView(period){
-  if(!period||period.enabled!==true)return null;
+// The profile's own governed period (office-period-v1 or site-period-v1), read with the profile's measure.
+function officePeriodView(period,profile){
+  if(!acceptPeriod(profile,period))return null;
+  const m=periodMeasure(profile);
   const s=period.summary||{},p=period.previous_period||{},c=period.comparison||{};
   const days=Math.max(1,Number(s.days||7)),observed=Number(s.observed_days||0),prevObserved=Number(p.observed_days||0);
   const minimum=Math.min(4,days);
-  const daily=(period.daily||[]).map(d=>{const seen=Number(d.coverage_ratio||0)>0;return{date:d.date,seen,working:d.working_day!==false,value:seen?Number(d.activity_detections||0):null,after:Number(d.after_hours_count||0)}});
+  const daily=(period.daily||[]).map(d=>{const seen=Number(d.coverage_ratio||0)>0;return{date:d.date,seen,working:d.working_day!==false,value:seen?Number(d[m.key]||0):null,after:Number(d.after_hours_count||0)}});
   const rows=[
-    {label:"Activity detections",note:"not unique people",current:s.activity_detections,previous:p.activity_detections,delta:c.activity_detections_delta,deltaLabel:signed(c.activity_detections_delta)},
+    {label:m.label,note:m.note,current:s[m.key],previous:p[m.key],delta:c[m.delta],deltaLabel:signed(c[m.delta])},
     {label:"After-hours activity",current:s.after_hours_total,previous:p.after_hours_total,delta:c.after_hours_delta,deltaLabel:signed(c.after_hours_delta)},
     {label:"Attention items",current:s.incidents_total,previous:p.incidents_total,delta:c.incidents_delta,deltaLabel:signed(c.incidents_delta)},
   ];
   if(numeric(s.avg_coverage_ratio)!==null&&numeric(p.avg_coverage_ratio)!==null)rows.push({label:"Monitoring coverage",note:"period average",current:s.avg_coverage_ratio,previous:p.avg_coverage_ratio,delta:c.coverage_delta_points,deltaLabel:signed(c.coverage_delta_points," pts")});
-  return{s,p,c,days,observed,prevObserved,prevDays:Number(p.days||days),ready:observed>=minimum&&prevObserved>=minimum,daily,rows,coverage:pct(s.avg_coverage_ratio)};
+  const areas=periodAreas(profile,period).map(a=>({label:a.label,note:"episodes",current:a.current,previous:a.previous,delta:a.delta,deltaLabel:signed(a.delta)}));
+  return{m,s,p,c,days,observed,prevObserved,prevDays:Number(p.days||days),ready:observed>=minimum&&prevObserved>=minimum,daily,rows,areas,coverage:pct(s.avg_coverage_ratio)};
 }
 
-function GenericInsights({siteId,data,period,days}){
+function GenericInsights({siteId,data,period,days,profile,siteDay,dayDate}){
   const s=data?.summary||{},rules=data?.by_rule||[],after=Number(s.after_hours||0),visitors=Number(s.visitor_in||0),vehicles=Number(s.vehicles_in||0),areas=Number(s.zone_entries||0),total=visitors+vehicles+areas;
   const configured=rules.length>0;
   const measured=after>0||total>0;
-  const op=officePeriodView(period);
-  if(!configured&&!measured&&!op)return <>
+  const op=officePeriodView(period,profile);
+  const business=profile?.composer==="business";
+  const can=business&&siteDay?eligible(profile,siteDay,period):{};
+  const hasDay=Boolean(business&&siteDay&&(can.timeline||can.zones));
+  if(!configured&&!measured&&!op&&!hasDay)return <>
     <Lead tone="unknown" title="Activity insights are not configured yet" body="Choose what WatchLog should measure at this site."/>
     <Empty title="Choose what to measure" action={<a className="ow-btn" href={withSite("/analytics/studio/",siteId)}>Set up activity insights</a>}>Add Activity Rules for the patterns that matter. Until then, WatchLog will not turn missing measurements into zero activity.</Empty>
   </>;
@@ -144,15 +152,19 @@ function GenericInsights({siteId,data,period,days}){
   const peak=op?op.daily.filter(d=>d.seen).sort((a,b)=>b.value-a.value)[0]:null;
   let leadTitle=total?n(total)+" rule entries in the "+range:"No rule entries in the "+range;
   if(after)leadTitle+=" · "+after+" after hours";
+  const opLead=hasDay?operationalLead(profile,siteDay,can):null;
+  if(opLead)leadTitle=opLead+(after?" · "+after+" after hours (rule entries, "+range+")":"");
   let leadBody=op&&op.ready&&numeric(op.c.after_hours_delta)?"After-hours activity "+(op.c.after_hours_delta>0?"rose by ":"fell by ")+Math.abs(op.c.after_hours_delta)+" against the previous "+op.days+" working days.":"Entries are counted by your activity rules; they are not unique people.";
   return <>
-    <Lead tone={after?"warn":measured?"info":"unknown"} title={leadTitle} body={leadBody} action={after?<a className="ow-btn quiet" href={withSite("/notifications/",siteId)}>Review after-hours</a>:null}/>
+    <Lead tone={after?"warn":measured?"info":"unknown"} title={leadTitle} body={opLead&&!(op&&op.ready)?"From the latest completed "+profile.dayNoun+" within configured hours. WatchLog shows when areas were quiet; it does not know why.":leadBody} action={after?<a className="ow-btn quiet" href={withSite("/notifications/",siteId)}>Review after-hours</a>:null}/>
 
-    {op&&<Section first title="Activity trend" note={(op.days===7?"Activity detections by completed working day":"Activity detections by day")+" · not unique people"}>
+    {hasDay&&<><div className="ow-label" style={{marginBottom:10}}>{"Latest completed "+profile.dayNoun+(dayDate?" · "+dateLabel(dayDate):"")}</div><SiteOperations profile={profile} day={siteDay} siteId={siteId} first/></>}
+
+    {op&&<Section first={!hasDay} title={business?profile.comparisonLabel+" by "+profile.dayNoun:"Activity trend"} note={(op.days===7?"By completed "+profile.dayNoun:"By day")+" · "+op.m.note}>
       <Bars question="When was activity highest?" showValues={op.daily.length<=10}
-        series={op.daily.map(d=>({label:op.daily.length<=10?dayShort(d.date):dayMonth(d.date).replace(/ .*/,""),value:d.value||0,gap:!d.seen,prev:!d.working&&d.seen,peak:Boolean(peak&&d.date===peak.date),title:d.date+": "+(d.seen?n(d.value)+" detections":"not observed")}))}
+        series={op.daily.map(d=>({label:op.daily.length<=10?dayShort(d.date):dayMonth(d.date).replace(/ .*/,""),value:d.value||0,gap:!d.seen,prev:!d.working&&d.seen,peak:Boolean(peak&&d.date===peak.date),title:d.date+": "+(d.seen?n(d.value)+" · "+op.m.note:"not observed")}))}
         legend={<><span>Observed</span>{op.daily.some(d=>!d.working)&&<span className="prev">Non-working day</span>}{op.daily.some(d=>!d.seen)&&<span className="gap">Not observed</span>}</>}/>
-      {peak&&<p className="ow-muted" style={{fontSize:12.5,marginTop:8}}>Highest: <b style={{color:"var(--ow-ink)"}}>{dateLabel(peak.date)}</b>, {n(peak.value)} detections.</p>}
+      {peak&&<p className="ow-muted" style={{fontSize:12.5,marginTop:8}}>Highest: <b style={{color:"var(--ow-ink)"}}>{dateLabel(peak.date)}</b>, {n(peak.value)} ({op.m.note}).</p>}
     </Section>}
 
     {op&&<Section title="What changed" note={"Last "+op.days+" days vs the previous "+op.prevDays}>
@@ -161,7 +173,11 @@ function GenericInsights({siteId,data,period,days}){
       <p className="ow-muted" style={{fontSize:12,marginTop:10}}>Missing days are gaps; WatchLog never turns missing measurements into zero activity.</p>
     </Section>}
 
-    <Section first={!op} title="Where activity came from" note={"Activity rule entries, "+range} action={<a href={withSite("/analytics/studio/",siteId)}>Activity Rules</a>}>
+    {op&&op.ready&&op.areas.length>0&&<Section title={"Area activity vs the previous "+op.prevDays+" days"} note="Activity episodes at configured camera purposes · observations, not output or sales">
+      <Compare rows={op.areas}/>
+    </Section>}
+
+    <Section first={!op&&!hasDay} title="Where activity came from" note={"Activity rule entries, "+range} action={<a href={withSite("/analytics/studio/",siteId)}>Activity Rules</a>}>
       {rules.length?<HBars question="Which rules recorded the most activity?" items={rules.slice(0,8).map(r=>({key:r.rule_id,label:r.name||label(r.analytic_key||r.rule_type),note:(r.camera||"Camera")+" · "+label(r.rule_type||r.analytic_key),value:r.count}))}/>
         :<Empty title="No activity insights yet.">Add an Activity Rule when you want WatchLog to measure a specific pattern.</Empty>}
     </Section>
@@ -180,6 +196,9 @@ export default function Analytics(){
   const[days,setDays]=useState(7);
   const[data,setData]=useState(null);
   const[officePeriod,setOfficePeriod]=useState(null);
+  const[siteCtx,setSiteCtx]=useState(null);
+  const[siteDaily,setSiteDaily]=useState(null);
+  const[siteDayDate,setSiteDayDate]=useState("");
   const[restaurantConfig,setRestaurantConfig]=useState(null);
   const[restaurantDay,setRestaurantDay]=useState(null);
   const[snapshot,setSnapshot]=useState(null);
@@ -203,18 +222,22 @@ export default function Analytics(){
   })();return()=>{live=false}},[]);
 
   useEffect(()=>{if(!siteId)return;let live=true;(async()=>{
-    setBusy(true);setError("");setData(null);setOfficePeriod(null);setRestaurantConfig(null);setRestaurantDay(null);setSnapshot(null);setWindowData(null);setReportDate("");
+    setBusy(true);setError("");setData(null);setOfficePeriod(null);setSiteCtx(null);setSiteDaily(null);setSiteDayDate("");setRestaurantConfig(null);setRestaurantDay(null);setSnapshot(null);setWindowData(null);setReportDate("");
     const sb=supabase();
-    const [cfg,overview]=await Promise.all([
+    const [cfg,overview,ctx]=await Promise.all([
       sb.rpc("wl_restaurant_site_config",{p_site_id:siteId}),
-      sb.rpc("wl_analytics_overview",{p_days:days,p_site_id:siteId})
+      sb.rpc("wl_analytics_overview",{p_days:days,p_site_id:siteId}),
+      sb.rpc("wl_ai_context",{p_site_id:siteId})
     ]);
     if(!live)return;
     if(!overview.error)setData(overview.data||{summary:{},by_rule:[]});
     const isRestaurant=!cfg.error&&cfg.data?.enabled===true;
     setRestaurantConfig(isRestaurant?cfg.data:null);
+    if(!ctx.error)setSiteCtx(ctx.data||null);
+    // One registry decides the composer and the governed period source for every site type.
+    const selected=selectSiteProfile({restaurantConfig:isRestaurant?cfg.data:null,contextType:ctx.data?.business_context?.site_type,studioType:sites.find(x=>String(x.id)===String(siteId))?.site_type});
 
-    if(isRestaurant){
+    if(selected.composer==="restaurant"){
       const resolved=await sb.rpc("wl_my_last_completed_business_date",{p_site_id:siteId});
       if(!live)return;
       const date=!resolved.error&&resolved.data?String(resolved.data):"";
@@ -231,10 +254,21 @@ export default function Analytics(){
       if(day.error&&snap.error)setError("WatchLog could not prepare the latest restaurant insights.");
     }else{
       if(overview.error)setError(say(overview.error));
-      // Governed office working-day series (enabled:false for other site types).
-      const op=await sb.rpc("wl_office_period",{p_site_id:siteId,p_days:days===30?30:7,p_working_only:days!==30});
+      // Business profiles: the latest completed business day (one governed daily-intelligence dataset) and
+      // the profile's own governed period (office-period-v1 or site-period-v1; enabled:false until available).
+      const periodRpc=selected.composer==="business"&&selected.period?selected.period.rpc:null;
+      const [resolved,op]=await Promise.all([
+        sb.rpc("wl_my_last_completed_business_date",{p_site_id:siteId}),
+        periodRpc?sb.rpc(periodRpc,{p_site_id:siteId,p_days:days===30?30:7,p_working_only:days!==30}):Promise.resolve({data:null,error:null})
+      ]);
       if(!live)return;
       if(!op.error&&op.data?.enabled)setOfficePeriod(op.data);
+      const dayDate=!resolved.error&&resolved.data?String(resolved.data):"";
+      if(dayDate){
+        const di=await sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:dayDate});
+        if(!live)return;
+        if(!di.error){setSiteDaily(di.data||null);setSiteDayDate(dayDate)}
+      }
     }
     setBusy(false);
   })();return()=>{live=false}},[siteId,days]);
@@ -247,12 +281,17 @@ export default function Analytics(){
   }
 
   const site=useMemo(()=>sites.find(x=>String(x.id)===String(siteId))||null,[sites,siteId]);
-  const period=restaurantConfig?restaurantPeriodView(windowData):null;
-  const op=restaurantConfig?null:officePeriodView(officePeriod);
+  const profile=selectSiteProfile({restaurantConfig,contextType:siteCtx?.business_context?.site_type,studioType:site?.site_type});
+  const restaurantComposer=profile.composer==="restaurant";
+  const business=profile.composer==="business";
+  const period=restaurantComposer?restaurantPeriodView(windowData):null;
+  const siteDay=business&&siteDaily?deriveSiteDay({profile,daily:siteDaily,cameras:siteCtx?.cameras||[],hours:siteCtx?.business_context,coverage:coverageTruth(siteDaily.coverage)}):null;
+  const op=business?officePeriodView(officePeriod,profile):null;
   const s=data?.summary||{};
-  const coverage=restaurantConfig?(period?.coverage??null):(op?.coverage??null);
-  const askPrompts=restaurantConfig
+  const coverage=restaurantComposer?(period?.coverage??null):(op?.coverage??null);
+  const askPrompts=restaurantComposer
     ?[["What changed this week?","What changed across the last 7 completed service days, and is the comparison reliable?"],["When are we busiest?","When is the restaurant busiest, based on the observed service days?"],["What should management act on?","What should management act on from the latest completed service day, and what is still unverified?"]]
+    :business?askQuestions(profile,siteDay?eligible(profile,siteDay,officePeriod):{}).map(q=>[q,q])
     :[["What changed this period?","What changed in this activity period and what looks unusual?"],["Explain the after-hours activity","Explain the after-hours activity in this period and whether it needs follow-up."],["Which areas are busiest?","Which areas recorded the most activity, and when?"]];
 
   const rail=busy?null:<>
@@ -261,21 +300,22 @@ export default function Analytics(){
       <div style={{marginTop:10}}><Ledger ratio={coverage===null?null:coverage/100}/></div>
       {(period||op)&&<p className="ow-rail-note">{period?period.observed+" of "+period.expected+" service days observed.":op.observed+" of "+op.days+" days observed."}</p>}
     </RailSection>
-    {restaurantConfig&&period?<RailSection label="7-day figures">
+    {restaurantComposer&&period?<RailSection label="7-day figures">
       <Stat label="Avg estimated covers" note="per observed day" value={period.avgCovers===null?null:compactNumber(period.avgCovers)}/>
       <Stat label="Median time to food" note="camera-observed" value={period.medianFood===null?null:compactNumber(period.medianFood)+" min"}/>
       <Stat label="Busiest observed day" value={period.busiestDay?.service_date?dayMonth(period.busiestDay.service_date):null}/>
-    </RailSection>:!restaurantConfig&&<RailSection label={"Totals · "+(days===1?"24 hours":days+" days")}>
+    </RailSection>:!restaurantComposer&&<RailSection label={"Totals · "+(days===1?"24 hours":days+" days")}>
       <Stat label="Rule entries" value={n(Number(s.visitor_in||0)+Number(s.vehicles_in||0)+Number(s.zone_entries||0))}/>
       <Stat label="After-hours" value={n(s.after_hours)}/>
-      {op&&<Stat label="Activity detections" note="working days, not unique people" value={n(op.s.activity_detections)}/>}
+      {op&&<Stat label={op.m.label} note={op.m.note} value={n(op.s[op.m.key])}/>}
     </RailSection>}
+    {business&&siteDay&&<SiteRailFacts profile={profile} label={profile.label+" · latest "+profile.dayNoun} day={siteDay}/>}
     {op&&op.ready&&<RailSection label="Vs previous period">
-      <Stat label="Activity" value={<Delta value={op.c.activity_detections_delta} label={signed(op.c.activity_detections_delta)}/>}/>
+      <Stat label="Activity" value={<Delta value={op.c[op.m.delta]} label={signed(op.c[op.m.delta])}/>}/>
       <Stat label="After-hours" value={<Delta value={op.c.after_hours_delta} label={signed(op.c.after_hours_delta)}/>}/>
       <Stat label="Coverage" value={<Delta value={op.c.coverage_delta_points} label={signed(op.c.coverage_delta_points," pts")}/>}/>
     </RailSection>}
-    {restaurantConfig&&(windowData?.saved_reports||[]).length>0&&<RailSection label="Completed service days">
+    {restaurantComposer&&(windowData?.saved_reports||[]).length>0&&<RailSection label="Completed service days">
       {(windowData.saved_reports||[]).slice(0,4).map((r,i)=>{const d=String(r.service_date||"");return <a className="ow-rail-link" key={r.report_id||d||i} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}><span>{dateLabel(d)}</span><i>Open</i></a>})}
     </RailSection>}
     <RailSection label="Ask WatchLog">
@@ -284,15 +324,15 @@ export default function Analytics(){
   </>;
 
   return <OwnerPage active="Analytics" email={email} siteId={siteId}
-    kicker={["Insights",restaurantConfig?"Completed service days":days===1?"Last 24 hours":"Last "+days+" days"]}
+    kicker={["Insights",restaurantComposer?"Completed service days":days===1?"Last 24 hours":"Last "+days+" days"]}
     title={site?.name||"Insights"}
-    actions={<><SiteSelect sites={sites} value={siteId} onChange={choose}/>{!restaurantConfig&&<select aria-label="Choose insight period" value={days} onChange={e=>setDays(Number(e.target.value))}><option value={1}>24 hours</option><option value={7}>7 days</option><option value={30}>30 days</option></select>}<a className="ow-btn quiet" href={withSite("/analytics/studio/",siteId)}>What to measure</a></>}
+    actions={<><SiteSelect sites={sites} value={siteId} onChange={choose}/>{!restaurantComposer&&<select aria-label="Choose insight period" value={days} onChange={e=>setDays(Number(e.target.value))}><option value={1}>24 hours</option><option value={7}>7 days</option><option value={30}>30 days</option></select>}<a className="ow-btn quiet" href={withSite("/analytics/studio/",siteId)}>What to measure</a></>}
     rail={rail}
     summary={busy?null:<Summary items={[
       {value:coverage===null?"Not verified":coverage+"%",label:"Monitoring coverage",muted:coverage===null,ledger:coverage===null?null:coverage/100},
-      restaurantConfig?(period?{value:period.observed+"/"+period.expected,label:"Service days observed"}:null):{value:n(s.after_hours),label:"After-hours"},
+      restaurantComposer?(period?{value:period.observed+"/"+period.expected,label:"Service days observed"}:null):{value:n(s.after_hours),label:"After-hours"},
     ]}/>}>
     {error&&<Notice tone="bad">{error}</Notice>}
-    {busy?<Loading label="Preparing management insights"/>:restaurantConfig?<RestaurantInsights siteId={siteId} site={site} date={reportDate} day={restaurantDay} snapshot={snapshot} windowData={windowData}/>:<GenericInsights siteId={siteId} data={data} period={officePeriod} days={days}/>}
+    {busy?<Loading label="Preparing management insights"/>:restaurantComposer?<RestaurantInsights siteId={siteId} site={site} date={reportDate} day={restaurantDay} snapshot={snapshot} windowData={windowData}/>:<GenericInsights siteId={siteId} data={data} period={officePeriod} days={days} profile={profile} siteDay={siteDay} dayDate={siteDayDate}/>}
   </OwnerPage>;
 }

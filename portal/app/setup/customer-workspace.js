@@ -85,7 +85,7 @@ export default function CustomerSetup(){
         <Lead tone={leadTone} title={COPY[b.stage]?.[0]||"Setup"} body={leadBody}/>
         {b.stage===1&&<SiteDetails siteId={b.siteId} ctx={b.ctx} canManage={b.canManage} onSaved={done} onError={b.setError}/>}
         {b.stage===2&&<ConnectSite site={b.site} siteId={b.siteId} ctx={b.ctx} cameras={b.cameras} canManage={b.canManage} onRefresh={b.refresh} onMessage={setNote} onError={b.setError}/>}
-        {b.stage===3&&<CameraSetup siteId={b.siteId} cameras={b.cameras} patch={b.patch} canManage={b.canManage} onSaved={done} onError={b.setError}/>}
+        {b.stage===3&&<CameraSetup siteId={b.siteId} siteType={b.ctx?.business_context?.site_type||b.site?.site_type} cameras={b.cameras} patch={b.patch} canManage={b.canManage} onSaved={done} onError={b.setError}/>}
         {b.stage>=4&&<ReviewSetup siteId={b.siteId} ctx={b.ctx} cameras={b.cameras} stage={b.stage} canManage={b.canManage} onRefresh={b.refresh} onMessage={setNote} onError={b.setError}/>}
         {!b.canManage&&b.stage<6&&<div style={{marginTop:16}}><Notice>Only an account owner or admin can change this site's setup.</Notice></div>}
       </>}
