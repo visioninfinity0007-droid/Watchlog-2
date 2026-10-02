@@ -1,9 +1,7 @@
 export default function CustomerComposer({chat,styles}){
   return <footer className={styles.composerWrap}>
-    <small className="watchlogComposerDisclaimer">WatchLog can make mistakes. Check important information.</small>
-    <div className={`${styles.composer} watchlogComposer`}>
+    <div className={styles.composer}>
       <textarea
-        className="watchlogComposerInput"
         ref={chat.inputRef}
         rows={1}
         value={chat.draft}
@@ -14,5 +12,6 @@ export default function CustomerComposer({chat,styles}){
       />
       <button type="button" aria-label="Send" disabled={!chat.draft.trim()||chat.busy} onClick={()=>chat.send()}>↑</button>
     </div>
+    <small className={styles.disclaimer}>WatchLog can make mistakes. Check important information.</small>
   </footer>
 }

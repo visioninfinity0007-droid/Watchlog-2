@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 MIG=ROOT/"prototype"/"supabase"/"migrations"/"0117_site_lifecycle_notifications_camera_identity.sql"
 SETTINGS=ROOT/"portal"/"app"/"settings"/"site-list.js"
+SETTINGS_HOOK=ROOT/"portal"/"app"/"settings"/"use-customer-settings.js"
 NOTIFS=ROOT/"portal"/"app"/"notifications"/"customer-workspace.js"
 NAV=ROOT/"portal"/"app"/"nav-config.js"
 AI=ROOT/"prototype"/"supabase"/"functions"/"watchlog-ai"/"index.ts"
@@ -26,16 +27,22 @@ def main():
     ):
         if token not in sql: problems.append(f"migration missing {token}")
 
+    # Site removal is a typed-name confirmation in the UI and the server re-checks the name
+    # (p_confirm_name, sent by the settings hook). Customer copy never says "Agent".
     settings=SETTINGS.read_text(encoding="utf-8")
-    for token in ("Remove site and disconnect Agent","p_confirm_name","settings.removeSite"):
+    for token in ("Remove site","settings.removeSite","confirmName!==target.name"):
         if token not in settings: problems.append(f"site-removal UI missing {token}")
+    if "Agent" in settings: problems.append("site-removal UI must not use the internal word Agent")
+    if "p_confirm_name:site.name" not in SETTINGS_HOOK.read_text(encoding="utf-8"):
+        problems.append("site-removal UI missing p_confirm_name")
 
     notifs=NOTIFS.read_text(encoding="utf-8")
     for token in ("wl_notifications","wl_notification_mark_read","wl_notifications_mark_all_read","What needs your attention"):
         if token not in notifs: problems.append(f"notification UI missing {token}")
 
     nav=NAV.read_text(encoding="utf-8")
-    if '["Notifications","/notifications/","Notifications"]' not in nav:
+    # Notifications are the owner's Attention centre: primary navigation, same route.
+    if '["Attention","/notifications/","Notifications"]' not in nav:
         problems.append("Notifications missing from primary navigation")
 
     ai=AI.read_text(encoding="utf-8")

@@ -1,0 +1,8 @@
+/* Account and sites: selectable site ledger rows (owner Signal Ledger tokens only). */
+.site{cursor:pointer;padding-left:8px;padding-right:8px;border-radius:var(--ow-r-control)}
+.site:hover{background:color-mix(in srgb,var(--ow-line) 40%,transparent)}
+.site[aria-pressed="true"]{background:var(--ow-violet-soft)}
+.site[aria-pressed="true"] h3{color:var(--ow-violet-deep)}
+.confirm{display:grid;gap:10px;margin-top:12px}
+.confirm input{width:100%;max-width:360px}
+.confirmActions{display:flex;flex-wrap:wrap;gap:8px}

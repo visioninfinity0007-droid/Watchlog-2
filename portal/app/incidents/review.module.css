@@ -1,0 +1,63 @@
+/* Incident Review + Camera evidence: queue/history beside a detail column. Owner tokens only. */
+.layout{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:28px;align-items:start}
+.queue{min-width:0}
+.list{display:grid;border-top:1px solid var(--ow-line)}
+
+/* Selectable ledger row. Higher specificity than the shared button reset and legacy hover. */
+.list button.item{
+  display:grid;grid-template-columns:3px minmax(0,1fr) auto;align-items:start;gap:12px;width:100%;
+  padding:11px 8px 11px 0;border:0;border-bottom:1px solid var(--ow-line);border-radius:0;
+  background:transparent;color:var(--ow-text);text-align:left;box-shadow:none;
+}
+.list button.item.withThumb{grid-template-columns:3px 72px minmax(0,1fr) auto}
+.list button.item:hover:not(:disabled){background:color-mix(in srgb,var(--ow-line) 35%,transparent);box-shadow:none}
+.list button.item[aria-pressed="true"]{background:var(--ow-violet-soft)}
+.list button.item[aria-pressed="true"] .itemTitle{color:var(--ow-violet-deep)}
+.tick{align-self:stretch;width:3px;border-radius:2px;background:var(--ow-line-strong)}
+.tick.bad{background:var(--ow-bad)}
+.tick.warn{background:var(--ow-warn)}
+.tick.ok{background:var(--ow-ok)}
+.tick.verified{background:var(--ow-verified)}
+.tick.unknown{background:var(--ow-hatch)}
+.tick.info{background:var(--ow-violet)}
+.itemMain{min-width:0}
+.itemTitle{display:block;color:var(--ow-ink);font-size:14px;font-weight:600;line-height:1.35}
+.itemMeta{display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:3px;color:var(--ow-muted);font-size:12px}
+.itemMeta>*+*::before{content:"·";margin-right:10px;color:var(--ow-line-strong)}
+.itemSummary{display:-webkit-box;margin-top:4px;overflow:hidden;color:var(--ow-text);font-size:12.5px;line-height:1.45;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.itemSide{padding-top:1px}
+.thumb{display:grid;place-items:center;width:72px;aspect-ratio:4/3;overflow:hidden;border-radius:4px;background:var(--ow-line);color:var(--ow-muted);font-size:10.5px;text-align:center}
+.thumb.none{background:repeating-linear-gradient(135deg,var(--ow-line-strong) 0 2px,transparent 2px 6px),var(--ow-raised)}
+.thumb img{display:block;width:100%;height:100%;object-fit:cover}
+
+/* Detail column */
+.detail{min-width:0;padding:18px 20px 20px;border:1px solid var(--ow-line);border-radius:var(--ow-r-surface);background:var(--ow-raised)}
+.detailHead h2{font-size:18px;line-height:1.3;font-weight:620;letter-spacing:-.015em}
+.badges{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:6px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin:16px 0 0;border-top:1px solid var(--ow-line);border-bottom:1px solid var(--ow-line)}
+.facts>div{min-width:0;padding:10px 12px 10px 0}
+.facts>div+div{padding-left:12px;border-left:1px solid var(--ow-line)}
+.facts dt{color:var(--ow-muted);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.facts dd{margin:3px 0 0;color:var(--ow-ink);font-size:13px;font-weight:550;overflow-wrap:anywhere}
+.summary{margin-top:14px;color:var(--ow-ink);font-size:14px;line-height:1.55}
+.block{margin-top:20px;padding-top:14px;border-top:1px solid var(--ow-line)}
+.block>h3{margin-bottom:8px;color:var(--ow-muted);font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase}
+.block>p{color:var(--ow-text);font-size:13px}
+.buttons{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.frame{display:grid;place-items:center;margin-top:14px;aspect-ratio:16/9;overflow:hidden;border-radius:var(--ow-r-control);background:var(--ow-line);color:var(--ow-muted);font-size:12.5px;text-align:center;padding:0}
+.frame.none{background:repeating-linear-gradient(135deg,var(--ow-line-strong) 0 2px,transparent 2px 6px),var(--ow-paper)}
+.frame img{display:block;width:100%;height:100%;object-fit:contain;background:var(--ow-ink)}
+.evidenceImg{display:block;width:100%;margin-top:8px;border-radius:var(--ow-r-control)}
+.filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 16px;margin-bottom:18px}
+.filters select{min-width:160px}
+.foot{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:20px;padding-top:14px;border-top:1px solid var(--ow-line)}
+
+@media(max-width:1100px){
+  .layout{grid-template-columns:minmax(0,1fr);gap:20px}
+}
+@media(max-width:760px){
+  .detail{padding:14px}
+  .list button.item{min-height:44px}
+  .filters>label{flex:1 1 140px}
+  .filters select{width:100%;min-width:0}
+}

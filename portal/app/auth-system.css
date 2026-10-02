@@ -1,0 +1,157 @@
+/* Signed-out and first-run WatchLog surfaces - Signal Ledger.
+
+   Sign in, sign up, password recovery, email confirmation, invitations, first-site onboarding,
+   paused accounts and the route loading frame. They share the owner portal's language without its
+   navigation: a compact ink-midnight brand panel, a warm paper workspace, thin ledger lines, Geist,
+   one violet for interaction. No gradients, glow or floating cards.
+
+   Everything is scoped under .wl-auth / .wl-loading so the legacy element defaults in globals.css
+   (full-width buttons, dark inputs, uppercase headings) never leak in. Values are --ow-* tokens
+   from owner/owner.css (declared on :root). */
+
+html:has(.wl-auth),body:has(.wl-auth),html:has(.wl-loading),body:has(.wl-loading){background:var(--ow-paper)}
+
+/* Redirect splash screens (entry router, compatibility routes) still use the legacy .center frame. */
+html:has(body>.center),body:has(>.center){background:var(--ow-paper)}
+.center{background:var(--ow-paper);color:var(--ow-text);font-family:var(--font-family-sans)}
+.center .muted{color:var(--ow-muted)}
+
+.wl-auth{
+  min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:minmax(260px,30%) minmax(0,1fr);
+  background:var(--ow-paper);color:var(--ow-text);
+  font-family:var(--font-family-sans);font-size:14px;line-height:1.5;
+  font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;
+}
+.wl-auth *,.wl-auth *::before,.wl-auth *::after{box-sizing:border-box}
+.wl-auth h1,.wl-auth h2,.wl-auth h3,.wl-auth p,.wl-auth ul,.wl-auth ol{margin:0;text-transform:none;letter-spacing:normal}
+.wl-auth :where(h1,h2,h3,b,strong){color:var(--ow-ink)}
+.wl-auth a{color:var(--ow-violet);text-decoration:none}
+.wl-auth a:hover{color:var(--ow-violet-deep);text-decoration:none}
+.wl-auth :where(a,button,input,select,summary):focus-visible{outline:2px solid var(--ow-violet);outline-offset:2px;border-radius:4px}
+
+/* ---------- Brand panel (ink foundation) ---------- */
+.wl-auth-brand{
+  display:flex;flex-direction:column;justify-content:space-between;gap:32px;
+  padding:28px 32px 32px;background:var(--ow-nav);color:var(--ow-nav-text);
+}
+.wl-auth .wl-auth-logo{display:inline-flex;align-items:center;gap:10px;color:var(--ow-nav-text);font-size:16px;font-weight:700;letter-spacing:-.02em}
+.wl-auth .wl-auth-logo:hover{color:#fff}
+.wl-auth .wl-auth-brand :focus-visible{outline-color:var(--ow-violet-bright)}
+.wl-auth-pitch p{max-width:300px;color:var(--ow-nav-text);font-size:15px;line-height:1.5;font-weight:500;letter-spacing:-.01em}
+.wl-auth-pitch ul{display:grid;margin-top:18px;padding:0;list-style:none;border-top:1px solid var(--ow-nav-line)}
+.wl-auth-pitch li{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--ow-nav-line);color:var(--ow-nav-muted);font-size:12.5px}
+.wl-auth-pitch li::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ow-violet-bright)}
+
+/* ---------- Workspace ---------- */
+.wl-auth-main{display:grid;place-items:center;min-width:0;padding:48px 32px}
+.wl-auth-panel{width:100%;max-width:400px}
+.wl-auth-panel.wide{max-width:640px}
+.wl-auth-head{padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--ow-line)}
+.wl-auth-kicker{margin-bottom:5px;color:var(--ow-muted);font-size:12px;font-weight:500}
+.wl-auth h1{color:var(--ow-ink);font-size:24px;line-height:1.2;font-weight:650;letter-spacing:-.02em}
+.wl-auth-lede{margin-top:6px!important;color:var(--ow-muted);font-size:13.5px;line-height:1.5}
+.wl-auth-status{color:var(--ow-muted);font-size:13.5px}
+
+.wl-auth-fields{display:grid;gap:14px}
+.wl-auth label{display:grid;gap:5px;margin:0;color:var(--ow-text);font-size:12.5px;font-weight:550}
+.wl-auth input,.wl-auth select{
+  width:100%;min-height:40px;margin:0;padding:0 11px;
+  border:1px solid var(--ow-line-strong);border-radius:var(--ow-r-control);
+  background:var(--ow-raised);color:var(--ow-ink);font:inherit;font-size:14px;font-weight:400;box-shadow:none;
+}
+.wl-auth input:focus,.wl-auth select:focus{outline:none;border-color:var(--ow-violet);box-shadow:0 0 0 3px color-mix(in srgb,var(--ow-violet) 14%,transparent)}
+
+/* Buttons: one violet primary per view, a quiet secondary, a text action. */
+.wl-auth .wl-auth-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;width:100%;min-height:42px;padding:0 16px;
+  border:1px solid var(--ow-violet);border-radius:var(--ow-r-control);background:var(--ow-violet);color:#fff;
+  font:inherit;font-size:14px;font-weight:600;white-space:nowrap;box-shadow:none;cursor:pointer;
+  transition:background var(--motion-duration-control) var(--motion-ease),border-color var(--motion-duration-control) var(--motion-ease);
+}
+.wl-auth .wl-auth-btn:hover:not(:disabled){background:var(--ow-violet-deep);border-color:var(--ow-violet-deep);color:#fff;box-shadow:none}
+.wl-auth .wl-auth-btn.quiet{background:var(--ow-raised);border-color:var(--ow-line-strong);color:var(--ow-ink)}
+.wl-auth .wl-auth-btn.quiet:hover:not(:disabled){background:#fff;border-color:var(--ow-ink);color:var(--ow-ink)}
+.wl-auth .wl-auth-btn.small{width:auto;min-height:34px;padding:0 12px;font-size:13px}
+.wl-auth .wl-auth-btn:disabled{background:var(--ow-line);border:1px dashed var(--ow-line-strong);color:var(--ow-muted);cursor:not-allowed;opacity:1}
+.wl-auth .wl-auth-linkbtn{width:auto;min-height:0;padding:0;border:0;background:none;color:var(--ow-violet);font:inherit;font-size:13px;font-weight:500;box-shadow:none;cursor:pointer;text-align:left}
+.wl-auth .wl-auth-linkbtn:hover:not(:disabled){background:none;box-shadow:none;color:var(--ow-violet-deep)}
+.wl-auth .wl-auth-linkbtn:disabled{color:var(--ow-muted);cursor:not-allowed;opacity:1}
+.wl-auth-actions{display:grid;gap:10px;margin-top:20px}
+.wl-auth-foot{display:grid;gap:8px;margin-top:20px;padding-top:16px;border-top:1px solid var(--ow-line);color:var(--ow-muted);font-size:13px}
+.wl-auth-foot>*{justify-self:start}
+
+/* Notices pair colour with words; red only for a confirmed failure. */
+.wl-auth-note{margin:0 0 16px;padding:10px 12px;border-radius:var(--ow-r-control);background:color-mix(in srgb,var(--ow-line) 55%,transparent);color:var(--ow-text);font-size:13px;line-height:1.45}
+.wl-auth-note.bad{background:color-mix(in srgb,var(--ow-bad) 8%,var(--ow-paper));color:#8A1F1F}
+.wl-auth-note.ok{background:color-mix(in srgb,var(--ow-ok) 8%,var(--ow-paper));color:#0B5C2E}
+
+/* ---------- First-run (onboarding) ---------- */
+.wl-auth-sec{padding:16px 0 4px;border-top:1px solid var(--ow-line)}
+.wl-auth-sec+.wl-auth-sec{margin-top:14px}
+.wl-auth-sec>h2{font-size:15px;line-height:1.3;font-weight:620;letter-spacing:-.01em}
+.wl-auth-sec>p{margin-top:2px;color:var(--ow-muted);font-size:12.5px}
+.wl-auth-list{display:grid;margin-top:10px!important;padding:0;list-style:none}
+.wl-auth-list li{position:relative;padding:7px 0 7px 16px;border-bottom:1px dashed var(--ow-line);color:var(--ow-text);font-size:13px}
+.wl-auth-list li:last-child{border-bottom:0}
+.wl-auth-list li::before{content:"";position:absolute;left:0;top:15px;width:6px;height:6px;border-radius:50%;background:var(--ow-line-strong)}
+
+.wl-auth .setup-progress{display:grid;margin-top:10px;border-top:1px solid var(--ow-line)}
+.wl-auth .setup-progress-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--ow-line);opacity:1}
+.wl-auth .setup-progress-dot{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;border:1px solid var(--ow-line-strong);background:var(--ow-raised);color:var(--ow-muted);font-size:11.5px;font-weight:650;line-height:1}
+.wl-auth .setup-progress-row.done .setup-progress-dot{border-color:var(--ow-ok);background:color-mix(in srgb,var(--ow-ok) 10%,var(--ow-paper));color:var(--ow-ok)}
+.wl-auth .setup-progress-row.active .setup-progress-dot{border-color:var(--ow-violet);background:var(--ow-violet-soft);color:var(--ow-violet-deep)}
+.wl-auth .setup-progress-row b{font-size:13.5px;font-weight:600}
+.wl-auth .setup-progress-row.pending b{color:var(--ow-muted);font-weight:550}
+.wl-auth .setup-progress-state{display:inline-flex;align-items:center;gap:6px;color:var(--ow-muted);font-size:12.5px;font-weight:550;white-space:nowrap}
+.wl-auth .setup-progress-state::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ow-hatch);outline:1px solid var(--ow-unknown);outline-offset:-1px}
+.wl-auth .setup-progress-row.done .setup-progress-state{color:var(--ow-ok)}
+.wl-auth .setup-progress-row.done .setup-progress-state::before{background:var(--ow-ok);outline:0}
+.wl-auth .setup-progress-row.active .setup-progress-state{color:var(--ow-violet-deep)}
+.wl-auth .setup-progress-row.active .setup-progress-state::before{background:var(--ow-violet);outline:0}
+
+.wl-auth-tasks{display:grid;margin-top:10px!important;padding:0;list-style:none;border-top:1px solid var(--ow-line)}
+.wl-auth-tasks>li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--ow-line)}
+.wl-auth-task-no{display:inline-grid;place-items:center;align-self:start;width:22px;height:22px;border-radius:50%;background:var(--ow-violet-soft);color:var(--ow-violet);font-size:12px;font-weight:650}
+.wl-auth-tasks b{display:block;font-size:13.5px;font-weight:600}
+.wl-auth-tasks small{display:block;margin-top:2px;color:var(--ow-muted);font-size:12.5px}
+.wl-auth-code{display:inline-block;padding:7px 12px;border:1px solid var(--ow-line-strong);border-radius:var(--ow-r-control);background:var(--ow-raised);color:var(--ow-ink);font-family:var(--font-family-mono);font-size:18px;font-weight:600;letter-spacing:.08em;white-space:nowrap}
+
+/* ---------- Route loading frame (mirrors the owner shell; nothing pulses) ---------- */
+.wl-loading{min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:232px minmax(0,1fr);background:var(--ow-paper)}
+.wl-loading-nav{display:grid;align-content:start;gap:12px;padding:20px 20px;background:var(--ow-nav)}
+.wl-loading-nav i{display:block;height:10px;border-radius:3px;background:var(--ow-nav-raised)}
+.wl-loading-nav i:first-child{width:104px;height:18px;margin-bottom:14px}
+.wl-loading-nav i:nth-child(even){width:72%}
+.wl-loading-main{min-width:0;padding:22px 32px}
+.wl-loading-head{display:grid;gap:8px;padding-bottom:16px;margin-bottom:22px;border-bottom:1px solid var(--ow-line)}
+.wl-loading-head i{display:block;width:120px;height:10px;border-radius:3px;background:var(--ow-line)}
+.wl-loading-head b{display:block;width:min(340px,70%);height:20px;border-radius:3px;background:var(--ow-line)}
+.wl-loading-rows{display:grid}
+.wl-loading-rows>div{display:grid;grid-template-columns:3px minmax(0,1fr);gap:14px;align-items:center;height:46px;border-bottom:1px solid var(--ow-line)}
+.wl-loading-rows>div:first-child{border-top:1px solid var(--ow-line)}
+.wl-loading-rows>div::before{content:"";align-self:stretch;margin:8px 0;border-radius:2px;background:var(--ow-line-strong)}
+.wl-loading-rows span{display:block;width:46%;height:10px;border-radius:3px;background:var(--ow-line)}
+.wl-loading-rows>div:first-child span{width:60%;height:13px}
+.wl-loading-rows>div:nth-child(3) span{width:34%}
+
+/* ---------- Mobile ---------- */
+@media(max-width:760px){
+  .wl-auth{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}
+  .wl-auth-brand{flex-direction:row;align-items:center;gap:12px;padding:0 16px;min-height:54px}
+  .wl-auth-pitch{display:none}
+  .wl-auth-main{place-items:start center;padding:28px 16px calc(40px + env(safe-area-inset-bottom))}
+  .wl-auth h1{font-size:21px}
+  .wl-auth input,.wl-auth select,.wl-auth .wl-auth-btn{min-height:44px}
+  .wl-auth .wl-auth-linkbtn,.wl-auth-foot a{display:inline-flex;align-items:center;min-height:44px}
+  .wl-auth .setup-progress-row{grid-template-columns:24px minmax(0,1fr)}
+  .wl-auth .setup-progress-state{grid-column:2}
+  .wl-auth-tasks>li{grid-template-columns:22px minmax(0,1fr)}
+  .wl-auth-tasks>li>:last-child{grid-column:2}
+  .wl-loading{display:block}
+  .wl-loading-nav{display:block;height:54px;padding:18px 16px}
+  .wl-loading-nav i:not(:first-child){display:none}
+  .wl-loading-main{padding:22px 16px}
+}
+@media(prefers-reduced-motion:reduce){
+  .wl-auth *,.wl-auth *::before,.wl-auth *::after{transition-duration:.01ms!important}
+}

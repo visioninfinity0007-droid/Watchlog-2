@@ -60,8 +60,22 @@ def run() -> int:
         try:
             cur.execute(MIG_PIPE)
             cur.execute(MIG_DATA)
-            cur.execute("insert into tenants (name) values ('di-e2e') returning id")
+            cur.execute("insert into tenants (name, account_status) values ('di-e2e','active') returning id")
             tid = cur.fetchone()[0]
+
+            # The current intelligence stack composes customer-scoped helpers such
+            # as wl_office_brief(), so exercise it with a real authenticated tenant
+            # membership instead of relying on superuser bypass in the disposable DB.
+            cur.execute("insert into auth.users (email) values ('di-e2e@example.invalid') returning id")
+            uid = cur.fetchone()[0]
+            cur.execute("insert into memberships (user_id, tenant_id, role) values (%s,%s,'owner')", (uid, tid))
+            cur.execute("select set_config('request.jwt.claim.sub', %s, true)", (str(uid),))
+            cur.execute("select set_config('request.jwt.claim.role', 'authenticated', true)")
+            cur.execute(
+                "select set_config('request.jwt.claims', %s, true)",
+                ('{"sub":"' + str(uid) + '","role":"authenticated"}',),
+            )
+
             cur.execute("insert into sites (tenant_id, name, timezone) values (%s,'di-e2e HQ','Asia/Karachi') returning id", (tid,))
             sid = cur.fetchone()[0]
             cams = {}
@@ -109,6 +123,8 @@ def run() -> int:
 
             # Portal wrapper tenant guard: an unauthenticated caller (no JWT tenant) is rejected.
             cur.execute("savepoint sp_guard")
+            cur.execute("select set_config('request.jwt.claim.sub', '', true)")
+            cur.execute("select set_config('request.jwt.claim.role', '', true)")
             cur.execute("select set_config('request.jwt.claims', '{}', true)")
             guarded = False
             try:

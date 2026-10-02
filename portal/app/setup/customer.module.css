@@ -1,1 +1,70 @@
-.main{max-width:1040px!important}.hero{max-width:760px;margin:0 auto 22px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#1748d3;font-weight:800}.hero h1{font-size:clamp(30px,4vw,42px);letter-spacing:-.04em;line-height:1.08;margin:7px 0 10px}.hero p{font-size:14px;line-height:1.65;color:#747d8b;margin:0}.progress{margin-top:16px;height:6px;background:#edf0f4;border-radius:99px;overflow:hidden}.progress span{display:block;height:100%;background:linear-gradient(90deg,#1748d3,#5b21ff)}.progressText{display:flex;justify-content:space-between;margin-top:7px;color:#818a96;font-size:12px}.siteBar{max-width:760px;margin:0 auto 14px;padding:11px 12px;border:1px solid #e4e7ec;border-radius:13px;background:#fff;display:flex;gap:10px;align-items:center}.siteBar b{font-size:13px}.siteBar span{font-size:12px;color:#818a96}.conversation{max-width:760px;margin:0 auto;display:grid;gap:12px}.prompt{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;padding:12px 4px}.prompt h2{font-size:20px;margin:2px 0 5px;letter-spacing:-.025em}.prompt p{font-size:14px;line-height:1.6;color:#747d8b;margin:0}.card{background:#fff;border:1px solid #e4e7ec;border-radius:16px;padding:20px;box-shadow:0 1px 2px rgba(16,24,40,.02)}.card h3{font-size:16px;margin:0 0 5px}.card p{font-size:13px;line-height:1.6;color:#747d8b;margin:0 0 14px}.choices{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.choice{background:#fafbfc!important;color:#374151!important;border:1px solid #e4e7ec!important;border-radius:11px!important;text-align:left!important;min-height:56px}.choiceActive{background:#eef4ff!important;border-color:#b9c9ef!important;color:#1748d3!important}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.days{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0 14px}.days button{width:auto!important;min-width:42px!important;padding:8px!important;background:#f5f6f8!important;color:#657080!important;border:1px solid #e3e6ea!important}.days button.active{background:#1748d3!important;color:#fff!important;border-color:#1748d3!important}.connect{display:grid;grid-template-columns:1fr 1fr;gap:10px}.box{border:1px solid #e5e8ed;border-radius:12px;background:#fafbfc;padding:14px}.box small{display:block;color:#8a929e;font-size:11px;margin-bottom:5px}.box b{display:block;font-size:14px}.box p{margin:5px 0 12px}.box a{display:inline-flex;padding:9px 12px;border-radius:9px;background:#1748d3;color:#fff!important;text-decoration:none!important;font-size:12px;font-weight:700}.status{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.status div{padding:10px;border:1px solid #e6e9ed;border-radius:10px;background:#fff}.status span{display:block;font-size:11px;color:#8b939f;margin-bottom:3px}.status b{font-size:12px}.cameraGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.camera{border:1px solid #e4e7ec;border-radius:13px;padding:12px}.cameraTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.cameraTop b{font-size:13px}.camera label{font-size:11px;color:#707987}.camera input,.camera select{margin:5px 0 9px!important}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}.actions button,.actions a{width:auto!important}.summary{display:grid;gap:8px}.summary div{display:flex;justify-content:space-between;gap:10px;padding:10px;border:1px solid #e7eaee;border-radius:10px;background:#fafbfc;font-size:12px}.summary span{color:#7d8591}.note,.error{max-width:760px;margin:0 auto 12px;padding:10px 12px;border-radius:10px;font-size:12px}.note{background:#eef9f4;color:#176c50;border:1px solid #d4ebdf}.error{background:#fff3f3;color:#a63b3b;border:1px solid #f1d0d0}@media(max-width:720px){.main{padding-left:14px!important;padding-right:14px!important}.choices,.row,.connect,.status,.cameraGrid{grid-template-columns:1fr}.card{padding:16px}.siteBar{align-items:flex-start;flex-direction:column}}
+/* Guided setup - Signal Ledger. Page frame, sections, buttons and fields come from owner.css;
+   this module only adds the step ledger, the numbered install tasks and the readiness ledger.
+   Uses --ow-* tokens only. */
+
+/* Horizontal step ledger: done (green tick), current (violet), pending (muted). */
+.steps{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:0 0 22px;padding:0;list-style:none;border-top:1px solid var(--ow-line);border-bottom:1px solid var(--ow-line)}
+.steps li{position:relative;display:grid;grid-template-columns:22px minmax(0,1fr);gap:9px;align-items:start;min-width:0;padding:12px 12px 12px 0}
+.steps li+li{padding-left:12px;border-left:1px solid var(--ow-line)}
+.steps li::before{content:"";position:absolute;left:0;right:0;top:-1px;height:2px;background:transparent}
+.steps li.done::before{background:var(--ow-ok)}
+.steps li.current::before{background:var(--ow-violet)}
+.stepNo{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;border:1px solid var(--ow-line-strong);background:var(--ow-raised);color:var(--ow-muted);font-size:11.5px;font-weight:650;line-height:1}
+.done .stepNo{border-color:var(--ow-ok);background:color-mix(in srgb,var(--ow-ok) 10%,var(--ow-paper));color:var(--ow-ok)}
+.current .stepNo{border-color:var(--ow-violet);background:var(--ow-violet-soft);color:var(--ow-violet-deep)}
+.stepText{min-width:0}
+.stepText b{display:block;color:var(--ow-ink);font-size:13px;font-weight:600;line-height:1.3}
+.pending .stepText b{color:var(--ow-muted);font-weight:550}
+.stepText small{display:block;margin-top:2px;color:var(--ow-muted);font-size:11.5px}
+.current .stepText small{color:var(--ow-violet-deep);font-weight:550}
+
+/* Step body */
+.card{padding-bottom:0}
+.group{display:grid;gap:8px;margin-top:18px}
+.hours{display:grid;grid-template-columns:repeat(2,minmax(0,180px));gap:12px}
+.hours input{width:100%}
+.hint{margin:0;color:var(--ow-muted);font-size:12.5px}
+.actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin-top:18px;padding-top:14px;border-top:1px solid var(--ow-line)}
+.reason{color:var(--ow-muted);font-size:12.5px}
+.actionsInline{display:flex;gap:8px;align-items:center}
+
+/* Disabled actions must never look clickable: flat, dashed, muted, with the reason beside them. */
+.card>button:disabled,.actions>button:disabled{background:var(--ow-line)!important;border:1px dashed var(--ow-line-strong)!important;color:var(--ow-muted)!important;box-shadow:none!important;cursor:not-allowed!important;opacity:1!important}
+
+/* Numbered install tasks (connect step) */
+.tasks{display:grid;margin:0;padding:0;list-style:none}
+.tasks>li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:14px;align-items:center;padding:12px 0;border-bottom:1px solid var(--ow-line)}
+.tasks>li:first-child{border-top:1px solid var(--ow-line)}
+.taskNo{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--ow-violet-soft);color:var(--ow-violet);font-size:12px;font-weight:650;align-self:start}
+.taskMain{min-width:0}
+.taskMain h3{font-size:14px;font-weight:600;line-height:1.35}
+.taskMain p{margin-top:2px;color:var(--ow-muted);font-size:13px}
+.taskAct{flex:none}
+.code{display:inline-block;margin-top:2px;font-family:var(--font-family-mono);font-size:18px;font-weight:600;letter-spacing:.08em;color:var(--ow-ink)}
+
+/* Readiness ledger */
+.checks{display:grid;margin:10px 0 0;border-top:1px solid var(--ow-line)}
+.checks>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--ow-line)}
+.checks dt{color:var(--ow-text);font-size:13px}
+.checks dd{margin:0;text-align:right;font-size:13px}
+.checks dd b{font-weight:600}
+
+/* Camera choices */
+.cameras input,.cameras select{width:100%;min-width:0}
+.cameras td:first-child{white-space:nowrap}
+.off td b{color:var(--ow-muted)}
+.cellNote{margin-top:5px}
+.answer{margin-top:4px;display:grid;gap:8px}
+
+@media(max-width:760px){
+  .steps li{grid-template-columns:minmax(0,1fr);gap:5px;padding:10px 6px 10px 0}
+  .steps li+li{padding-left:6px}
+  .stepText b{font-size:11.5px;font-weight:550;overflow-wrap:anywhere}
+  .stepText small{display:none}
+  .current .stepText small{display:block}
+  .hours{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tasks>li{grid-template-columns:22px minmax(0,1fr);gap:10px 12px}
+  .taskAct{grid-column:2}
+  .actions>a,.actions>button{flex:1 1 auto}
+  .card :global(.ow-choices) button[type]{min-height:44px;min-width:52px}
+}

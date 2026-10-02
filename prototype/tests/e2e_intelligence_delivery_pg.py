@@ -26,11 +26,10 @@ for k in ("SUPABASE_DB_HOST","SUPABASE_DB_PORT","SUPABASE_DB_USER","SUPABASE_DB_
 import psycopg  # noqa: E402
 import intelligence_delivery as deliv  # noqa: E402
 
-MIGS = [ROOT/"supabase"/"migrations"/m for m in
-        ("0065_intelligence_pipeline.sql","0070_journeys.sql","0072_site_business_context.sql",
-         "0073_entity_inference.sql","0076_report_calibration.sql","0080_journeys_v2_topology.sql",
-         "0081_opening_closing_state_machine.sql","0082_entity_inference_v2.sql","0083_report_snapshots.sql",
-         "0084_delivery_outbox.sql")]
+# This integration test intentionally uses the already-applied canonical schema.
+# Replaying historical migrations here can downgrade hardened functions inside
+# the test transaction and make the test exercise a schema that never exists
+# after a real production migration sequence.
 STEPS = []
 def step(ok, name, detail=""):
     STEPS.append(bool(ok)); print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail else ""))
@@ -43,14 +42,19 @@ def run() -> int:
     D="2026-06-01"
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            for p in MIGS: cur.execute(p.read_text(encoding="utf-8"))
-            tid = cur.execute("insert into tenants (name,subscription_status,trial_started_at,trial_days) values ('dl','active',now(),30) returning id").fetchone()[0]
+            tid = cur.execute("insert into tenants (name,account_status,subscription_status,trial_started_at,trial_days) values ('dl','active','active',now(),30) returning id").fetchone()[0]
             sid = cur.execute("insert into sites (tenant_id,name,timezone) values (%s,'dl','Asia/Karachi') returning id",(tid,)).fetchone()[0]
             o = cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,'2','Office','office') returning id",(tid,sid)).fetchone()[0]
             cur.execute("insert into site_business_context (site_id,tenant_id,open_time,close_time) values (%s,%s,'08:00','18:00')",(sid,tid))
             for i,m0 in enumerate(range(0,60,15)):
                 cur.execute("""insert into events (tenant_id,site_id,camera_id,event_type,device_ts,agent_ts,received_at,dedupe_key)
                                values (%s,%s,%s,'person',%s::timestamptz,%s::timestamptz,now(),%s)""",(tid,sid,o,f"{D} 09:{m0:02d}:00+05",f"{D} 09:{m0:02d}:00+05",f"dl-{i}"))
+            # The delivery runner is a server-side governed path. In production it
+            # runs with service-role authority, so the disposable CI fixture must
+            # supply the same auth context before calling report RPCs.
+            cur.execute("select set_config('request.jwt.claim.role', 'service_role', true)")
+            cur.execute("select set_config('request.jwt.claims', '{\"role\":\"service_role\"}', true)")
+
             d1="923001112222"
             cur.execute("insert into report_recipients (tenant_id,site_id,channel,destination,whatsapp_destination) values (%s,%s,'whatsapp',%s,%s)",(tid,sid,d1,d1))
 

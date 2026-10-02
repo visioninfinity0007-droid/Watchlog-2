@@ -2,16 +2,15 @@
 
 import { useEffect } from "react";
 
-// WatchLog is AI-first. Keep this legacy route only as a compatibility redirect so
-// old bookmarks and older onboarding links always land on the primary experience.
+// Keep this legacy route as a compatibility redirect to the owner-first Home experience.
 export default function DashboardRedirect() {
   useEffect(() => {
-    location.replace("/ai/");
+    location.replace("/home/");
   }, []);
 
   return (
     <div className="center">
-      <p className="muted">Opening WatchLog AI...</p>
+      <p className="muted">Opening WatchLog...</p>
     </div>
   );
 }

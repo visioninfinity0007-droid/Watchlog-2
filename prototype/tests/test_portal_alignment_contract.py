@@ -29,8 +29,9 @@ REPORTS=_surface("reports")
 SETTINGS=(ROOT/"portal/app/settings/legacy.js").read_text()
 SETTINGS_LEAN=_surface("settings")
 NAV=(ROOT/"portal/app/nav-config.js").read_text()
-# AI-first home: the standalone Overview dashboard was intentionally retired. /dashboard/ is a
-# compatibility redirect to the primary AI-first home (/ai/), whose context rail is the overview.
+# Owner-first portal: /dashboard/ is a compatibility redirect to Home.
+HOME=_surface("home")
+ATTENTION=_surface("notifications")
 AI_HOME=_surface("ai")
 TEAM=(ROOT/"portal/app/team/page.js").read_text()
 ONBOARD=(ROOT/"portal/app/onboarding/page.js").read_text()
@@ -38,8 +39,9 @@ DASH=(ROOT/"portal/app/dashboard/page.js").read_text()
 INCIDENTS=_surface("incidents")
 SITE_HEALTH=_surface("site-health")
 LAYOUT=(ROOT/"portal/app/layout.js").read_text()
-VISUAL=(ROOT/"portal/app/visual-target.css").read_text()
-MODULE_VISUAL=(ROOT/"portal/app/module-target.css").read_text()
+PORTAL_SYSTEM=(ROOT/"portal/app/portal-system.css").read_text()
+OWNER_CSS=(ROOT/"portal/app/owner/owner.css").read_text(encoding="utf-8")
+ICONS=(ROOT/"portal/app/icons.js").read_text()
 DOCKERFILE=(ROOT/"portal/Dockerfile").read_text()
 RECIP=(ROOT/"prototype/supabase/migrations/0031_report_recipient_destinations.sql").read_text()
 AUTHZ=(ROOT/"prototype/supabase/migrations/0032_portal_operational_authz.sql").read_text()
@@ -122,33 +124,31 @@ def check():
     assert "grant execute on function public.wl_is_owner" not in BILLING_POLICY_FIX
     assert "v_tenant uuid := wl_require_role(array['owner'])" in BILLING_AUTH
 
-    # Visual target remains wired into the actual portal.
-    assert 'import "./visual-target.css"' in LAYOUT
-    assert 'import "./module-target.css"' in LAYOUT
-    assert ".navlink.active{background:var(--wl-blue)" in VISUAL
-    assert "backdrop-filter:blur(18px)" in VISUAL
-    assert ".overview-grid" in VISUAL and ".incident-workspace" in VISUAL
-    assert ".report-layout" in VISUAL and ".health-ring" in VISUAL
-    assert "analytics_chartVisitor" in MODULE_VISUAL and "var(--wl-ice)" in MODULE_VISUAL
-    assert "portal_tabActive" in MODULE_VISUAL and "var(--wl-blue)" in MODULE_VISUAL
+    # The canonical owner portal design layer is loaded after legacy compatibility CSS.
+    assert 'import "./portal-system.css"' in LAYOUT
+    assert 'import "./auth-system.css"' in LAYOUT
+    assert 'import "./owner/owner.css"' in LAYOUT
+    assert "--ow-violet" in OWNER_CSS and "--ow-paper" in OWNER_CSS
+    assert ".ow-bottom" in OWNER_CSS
+    assert "PortalIcon" in ICONS and 'key==="home"' in ICONS and 'key==="attention"' in ICONS
 
-    # Core customer surfaces retain their real APIs and review hierarchy.
-    # AI-first: the standalone Overview dashboard was retired; /dashboard/ redirects to the AI-first
-    # home (/ai/), whose context rail IS the overview — live monitoring, attention/faults and the
-    # management reports, over tenant-scoped wl_ai_context. wl_portal_overview/wl_portal_snapshot remain
-    # the real snapshot APIs, consumed where evidence stills and control-room reporting need them.
-    assert 'location.replace("/ai/")' in DASH
-    assert "Monitoring" in AI_HOME and "Attention" in AI_HOME and "Management reports" in AI_HOME
-    assert 'rpc("wl_ai_context"' in AI_HOME
-    assert '"Incidents"' in NAV and '"Site Health"' in NAV   # review hierarchy stays navigable
-    assert 'rpc("wl_portal_overview"' in _surface("control-room")   # control-room reporting still uses it
-    assert 'rpc("wl_incidents"' in INCIDENTS and 'rpc("wl_portal_snapshot"' in INCIDENTS
-    assert "incident-workspace" in INCIDENTS and "incident-detail" in INCIDENTS
-    # Incident review is a real focusable single-select control with a visible selected state (was
-    # aria-pressed on the old toggle); the inline detail panel replaced the modal.
-    assert "incident-item" in INCIDENTS and 'active?" selected"' in INCIDENTS
-    assert "modalBackdrop" not in INCIDENTS
-
+    # Owner-first customer hierarchy: Home tells first, Attention prioritizes, Incident Review handles
+    # grouped incident episodes and lifecycle actions, while Ask WatchLog remains a primary question layer.
+    assert 'location.replace("/home/")' in DASH
+    for token in ('["Home","/home/","Home"]','["Attention","/notifications/","Notifications"]','["Insights","/analytics/","Analytics"]','["Reports","/reports/?view=yesterday","Reports"]','["Ask WatchLog","/ai/","WatchLog AI"]'):
+        assert token.replace(" ","") in NAV.replace(" ","").replace("\n","")
+    assert '["Incidents","/incidents/","Incidents"]' not in NAV
+    assert 'rpc("wl_ai_context"' in HOME and 'rpc("wl_notifications"' in HOME
+    assert 'title="Needs attention"' in HOME and "What changed" in HOME
+    assert 'rpc("wl_notifications"' in ATTENTION and "What needs your attention" in ATTENTION
+    assert 'rpc("wl_operations_incidents_v2"' in INCIDENTS
+    assert 'rpc("wl_operations_incident_detail"' in INCIDENTS
+    for rpc in ("wl_acknowledge_operations_incident","wl_resolve_operations_incident","wl_dismiss_operations_incident","wl_operations_incident_still_image","wl_incident_clip_chunk"):
+        assert rpc in INCIDENTS
+    assert "Management action" in INCIDENTS and "Supporting evidence" in INCIDENTS
+    assert "Confidence" not in INCIDENTS
+    assert 'functions.invoke("watchlog-ai"' in AI_HOME and 'rpc("wl_ai_context"' in AI_HOME
+    assert 'rpc("wl_portal_overview"' in _surface("control-room")
     # Site Health uses tenant-scoped detail data and exposes the four useful signals.
     assert "create or replace function public.wl_site_health_details" in HEALTH
     assert "where c.tenant_id = v_tenant" in HEALTH

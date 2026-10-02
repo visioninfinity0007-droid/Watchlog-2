@@ -28,7 +28,6 @@ def main():
     require(PAGE, "people presence, not sales", "analytics-not-sales truth missing")
     require(PAGE, "Tiles are not live video.", "layout still/video distinction missing")
     require(PAGE, "Still image is shown only after an explicit request.", "explicit still-request semantics missing")
-    require(PAGE, "requested still images, not live video", "camera-tile still-only disclaimer missing")
     # Engineering / pilot / vertical framing must not return to customer copy.
     for banned in ("Control Room Pilot", "Pilot boundary", "pilot scope", "QSR", "surveillance wall"):
         if banned in PAGE:
@@ -43,6 +42,10 @@ def main():
         if unsafe.lower() in CAMERA_VIEW.lower():
             raise AssertionError(f"Camera View implies unvalidated live video: {unsafe}")
     require(CAMERA_VIEW, "requireTenant", "Camera View must use the shared tenant/account guard")
+    require(CAMERA_VIEW, "Recent view", "Camera View must describe evidence as a recent view")
+    require(CAMERA_VIEW, "Refresh view", "Camera View must keep evidence refresh as an explicit customer action")
+    if "setInterval(" in CAMERA_VIEW:
+        raise AssertionError("Camera View must not automatically refresh evidence on an interval")
 
     # Shared account-status/tenant guard and existing tenant-safe data surfaces.
     require(PAGE, "requireTenant", "Control Room must use shared tenant/account guard")

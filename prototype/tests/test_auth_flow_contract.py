@@ -26,6 +26,9 @@ assert "/auth/reset/" in forgot
 
 assert "otp_expired" in confirm
 assert "getSession" in confirm
+assert "hasConfirmationPayload" in confirm
+assert "Open the confirmation link from your email to complete confirmation." in confirm
+assert '"Email confirmed"' not in confirm
 assert "otp_expired" in reset
 assert "PASSWORD_RECOVERY" in reset
 assert "updateUser({ password })" in reset

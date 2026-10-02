@@ -4,10 +4,14 @@ import "./module-target.css";
 import "./ai-first-shell.css";
 import "./product-polish.css";
 import "./visual-hotfix.css";
+import "./owner-shell.css";
+import "./portal-system.css";
+import "./auth-system.css";
+import "./owner/owner.css";
 
 export const metadata = {
   title: "WatchLog",
-  description: "Your cameras already see everything. WatchLog tells you what they saw.",
+  description: "Know what happened at your business without watching hours of CCTV.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },

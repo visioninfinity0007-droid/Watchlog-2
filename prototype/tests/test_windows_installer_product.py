@@ -107,8 +107,10 @@ def main():
             "Disable-ScheduledTask" in upgrade
             and "Resume-Task" in upgrade
             and "task_enabled" in upgrade,
-        "upgrade proves every core payload file is unlocked before replacement":
-            "$PayloadFiles = @(" in upgrade
+        "upgrade proves every selected core payload file is unlocked before replacement":
+            "$FullPayloadFiles = @(" in upgrade
+            and "$RepairPayloadFiles = @(" in upgrade
+            and '$PayloadFiles = if ($PayloadProfile -eq "repair")' in upgrade
             and "Get-LockedPayloadFiles" in upgrade
             and "all payload files unlocked and backed up" in upgrade,
         "upgrade backs up and restores the complete payload, not just the agent exe":
@@ -145,8 +147,9 @@ def main():
             and 'Get-Process -Name "watchlog-agent"' not in register,
         "helper verifies BOTH file ProductVersion and runtime --version":
             "VersionInfo.ProductVersion" in upgrade and "--version" in upgrade,
-        "helper verifies a single instance (no duplicate runtime)":
-            "duplicate runtime" in upgrade,
+        "background task prevents duplicate runtime instances":
+            "-MultipleInstances IgnoreNew" in register
+            and "fresh runtime health already proven" in upgrade,
         "upgrade helper reads/logs NO secret":
             "agent_key" not in upgrade and "nvr_credential" not in upgrade and "Unprotect" not in upgrade and "ProtectedData" not in upgrade,
         "agent exposes --version for installed/running version verification":

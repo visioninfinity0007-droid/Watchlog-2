@@ -57,8 +57,8 @@ try {
   # corrupt the (half-)installed binary then roll back to the backed-up old one
   Set-Content -LiteralPath $agent -Value "HALF-BROKEN" -Encoding ascii
   $rb = Run-Stage $box 'rollback' @()
-  Check "rollback succeeds (exit 0)" ($rb -eq 0)
-  Check "rollback restores the previous working binary" (((Get-Content -LiteralPath $agent -Raw).Trim()) -eq "OLD-0.3.4")
+  Check "rollback refuses false success when background restart cannot be proven (exit 14)" ($rb -eq 14)
+  Check "rollback still restores the previous working binary before reporting restart failure" (((Get-Content -LiteralPath $agent -Raw).Trim()) -eq "OLD-0.3.4")
   Remove-Item -LiteralPath $agent -Force
   $missing = Run-Stage $box 'verify-version' @("-ExpectedVersion","0.3.6")
   Check "verify-version with missing binary => fails (exit 11)" ($missing -eq 11)

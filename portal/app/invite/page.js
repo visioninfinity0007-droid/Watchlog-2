@@ -29,35 +29,51 @@ export default function Invite() {
   }, []);
 
   return (
-    <div className="center">
-      <div className="auth-card">
-        <div className="brand"><span className="brand-mark"><Mark size={30} /></span>
-          <span className="brand-name">WatchLog</span></div>
-        {state === "working" && <p className="muted">Checking your invitation…</p>}
-        {state === "signin" && (
-          <>
-            <h1>Accept your invitation</h1>
-            <p className="sub">Sign in (or create your account) with the email address the invitation
-              was sent to, then reopen the invitation link.</p>
-            <a href="/login/"><button>Sign in</button></a>
-            <p className="alt">New here? <a href="/signup/">Create an account</a> with the invited email.</p>
-          </>
-        )}
-        {state === "ok" && (
-          <>
-            <h1>You are in</h1>
-            <div className="ok-note">{msg}</div>
-            <a href="/dashboard/"><button>Go to the dashboard</button></a>
-          </>
-        )}
-        {state === "error" && (
-          <>
-            <h1>That did not work</h1>
-            <div className="err">{msg}</div>
-            <a href="/dashboard/"><button className="ghost" style={{ width: "100%" }}>Go to the dashboard</button></a>
-          </>
-        )}
-      </div>
+    <div className="wl-auth">
+      <header className="wl-auth-brand">
+        <a className="wl-auth-logo" href="/"><Mark size={20} /><span>WatchLog</span></a>
+        <div className="wl-auth-pitch">
+          <p>Know what happened at your business without watching hours of CCTV.</p>
+          <ul><li>What happened</li><li>What needs attention</li><li>What WatchLog can verify</li></ul>
+        </div>
+      </header>
+      <main className="wl-auth-main">
+        <div className="wl-auth-panel" aria-busy={state === "working"}>
+          {state === "working" && <p className="wl-auth-status" role="status">Checking your invitation…</p>}
+          {state === "signin" && (
+            <>
+              <div className="wl-auth-head">
+                <div className="wl-auth-kicker">Team invitation</div>
+                <h1>Accept your invitation</h1>
+                <p className="wl-auth-lede">Sign in (or create your account) with the email address the invitation
+                  was sent to, then reopen the invitation link.</p>
+              </div>
+              <div className="wl-auth-actions"><a className="wl-auth-btn" href="/login/">Sign in</a></div>
+              <div className="wl-auth-foot"><p>New here? <a href="/signup/">Create an account</a> with the invited email.</p></div>
+            </>
+          )}
+          {state === "ok" && (
+            <>
+              <div className="wl-auth-head">
+                <div className="wl-auth-kicker">Team invitation</div>
+                <h1>You are in</h1>
+              </div>
+              <div className="wl-auth-note ok" role="status">{msg}</div>
+              <div className="wl-auth-actions"><a className="wl-auth-btn" href="/home/">Open WatchLog</a></div>
+            </>
+          )}
+          {state === "error" && (
+            <>
+              <div className="wl-auth-head">
+                <div className="wl-auth-kicker">Team invitation</div>
+                <h1>That did not work</h1>
+              </div>
+              <div className="wl-auth-note bad" role="alert">{msg}</div>
+              <div className="wl-auth-actions"><a className="wl-auth-btn quiet" href="/home/">Go to WatchLog Home</a></div>
+            </>
+          )}
+        </div>
+      </main>
     </div>
   );
 }

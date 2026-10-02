@@ -2,139 +2,142 @@
 
 import {useMemo,useState} from "react";
 import {withSite} from "../site-context";
-import styles from "./reports.module.css";
+import {Lead,Section,Row,Metrics,Status,Ledger,RailSection,Stat,Summary,Bars,HBars,Findings,Empty} from "../owner/ui";
 
 function num(v){return v==null||Number.isNaN(Number(v))?null:Number(v)}
 function val(v,suffix=""){return v==null?"—":String(v)+suffix}
 function pct(v){const n=num(v);return n==null?"—":Math.round(n*100)+"%"}
-function shortDate(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {month:"short",day:"numeric"})}
-function dateLabel(v){if(!v)return"—";const d=new Date(v+"T12:00:00");return d.toLocaleDateString([], {weekday:"long",month:"long",day:"numeric",year:"numeric"})}
+function shortDate(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",day:"numeric",month:"short"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
+function dateLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"long",day:"numeric",month:"long",year:"numeric"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
+function weekdayLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"short"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
 function clampLevel(v,max){const n=num(v),m=num(max);if(n==null||!m)return 0;return Math.max(0,Math.min(4,Math.round((n/m)*4)))}
 function periodName(view){return view==="daily"?"Today":view==="yesterday"?"Yesterday":view==="week"?"Last 7 days":"Last 30 days"}
 
+// Restaurant reports share one decision-first shell for Today / Yesterday / 7 days / 30 days:
+// status + period, one conclusion, the figures and the governed chart, then security, actions and detail.
+// Dashboard primitives (kept stable for the report contract): reportControlBarV4, reportHeroV4,
+// reportMainGridV4, ReportHealth, PeriodBuildState, SavedReports, ReportStatus.
+
 function ReportTabs({mode,setMode}){
-  return <div className={styles.reportModeTabs} role="tablist" aria-label="Report sections">
-    {[["overview","Overview"],["business","Business"],["security","Security"]].map(function(row){const k=row[0],l=row[1];return <button key={k} type="button" role="tab" aria-selected={mode===k} className={mode===k?styles.reportModeActive:""} onClick={function(){setMode(k)}}>{l}</button>})}
+  return <div className="ow-tabs" role="tablist" aria-label="Report sections">
+    {[["overview","Overview"],["business","Business"],["security","Security"]].map(function(row){const k=row[0],l=row[1];return <button key={k} type="button" role="tab" aria-selected={mode===k} className="ow-tab" onClick={function(){setMode(k)}}>{l}</button>})}
   </div>;
 }
 
 function ReportStatus({view,model}){
   const limited=model&&model.sufficiency&&model.sufficiency.level==="limited";
   const label=view==="daily"?"In progress":limited?"Limited coverage":"Completed";
-  const cls=view==="daily"?styles.reportStatusLive:limited?styles.reportStatusBuilding:styles.reportStatusReady;
-  return <span className={styles.reportStatus+" "+cls}><i/>{label}</span>;
+  return <Status tone={view==="daily"?"info":limited?"warn":"verified"}>{label}</Status>;
 }
 
 function ReportHealth({view,model}){
   const period=model&&model.kind==="period";
   const current=period?Number(model.observed||0):null;
   const total=period?Number(model.days||0):null;
-  const ratio=period&&total?Math.max(0,Math.min(100,Math.round(current/total*100))):null;
-  return <section className={styles.reportHealthCard}>
-    <div className={styles.reportHealthHead}><span className={styles.panelEyebrow}>Report confidence</span><b>{period?(current+" of "+total+" days represented"):(model.coverage&&model.coverage.status||"Coverage available")}</b></div>
-    {period&&<div className={styles.reportHealthProgress}><span style={{width:String(ratio)+"%"}}/></div>}
-    <p>{model.sufficiency&&model.sufficiency.message||model.coverage&&model.coverage.summary||"Figures are limited to the periods that can be supported reliably."}</p>
-    {model.coverage&&model.coverage.note&&<small>{model.coverage.note}</small>}
-  </section>;
+  return <RailSection label="Report confidence">
+    <p style={{fontSize:14,fontWeight:600,color:"var(--ow-ink)"}}>{period?(current+" of "+total+" days represented"):(model.coverage&&model.coverage.status||"Coverage available")}</p>
+    {period&&total?<div style={{marginTop:8}}><Ledger ratio={current/total} label={false}/></div>:null}
+    <p className="ow-rail-note">{model.sufficiency&&model.sufficiency.message||model.coverage&&model.coverage.summary||"Figures are limited to the periods that can be supported reliably."}</p>
+    {model.coverage&&model.coverage.note&&<p className="ow-rail-note">{model.coverage.note}</p>}
+  </RailSection>;
 }
 
 function PeriodBuildState({model,windowData,siteId}){
   const rows=windowData&&windowData.saved_reports||[];
   const minimum=model.days===7?4:10;
-  const pctReady=Math.max(0,Math.min(100,Math.round((Number(model.observed||0)/minimum)*100)));
-  return <section className={styles.periodBuildCard}>
-    <div className={styles.periodBuildTop}><div><span className={styles.panelEyebrow}>Period is still building</span><h3>{model.observed} represented day{Number(model.observed)===1?"":"s"} so far</h3><p>WatchLog will unlock the period trend when enough completed service days are represented. Daily reports are still available below.</p></div><strong>{pctReady}%</strong></div>
-    <div className={styles.periodBuildTrack}><span style={{width:String(pctReady)+"%"}}/></div>
-    <div className={styles.periodBuildDates}>{rows.slice(0,6).map(function(r,i){const d=String(r.service_date||"");return <a key={(r.report_id||d||i)+"-"+i} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}><b>{shortDate(d)}</b><span>Completed</span></a>})}</div>
-  </section>;
+  return <Section first title="Period is still building" note={model.observed+" of "+minimum+" represented days needed before a "+model.days+"-day trend is shown"} className="period-build">
+    <Ledger ratio={Math.min(1,Number(model.observed||0)/minimum)} label={false}/>
+    <p className="ow-muted" style={{fontSize:12.5,marginTop:8}}>Daily reports stay available below; missing days are unknown, not zero demand.</p>
+    {rows.length>0&&<div className="ow-rows" style={{marginTop:10}}>{rows.slice(0,6).map(function(r,i){const d=String(r.service_date||"");return <Row compact key={(r.report_id||d||i)+"-"+i} tone="verified" title={dateLabel(d)} action={<a href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}>Open</a>}/>})}</div>}
+  </Section>;
 }
 
-function ReportIcon({kind}){
-  if(kind==="users")return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3"/><path d="M3.8 18c.7-3 2.4-4.5 5.2-4.5S13.5 15 14.2 18M15 7.4a2.7 2.7 0 0 1 0 5.2M16.2 13.9c2.1.5 3.4 1.9 4 4.1"/></svg>;
-  if(kind==="table")return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8.5h14M7 8.5v8M17 8.5v8M4 16.5h16"/></svg>;
-  if(kind==="clock")return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.7v4.7l3.1 1.8"/></svg>;
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.5 9 12l3.2 3.2L20 7.5M15.5 7.5H20V12"/></svg>;
-}
-
-function KpiStrip({metrics=[]}){
-  const icons=["users","table","trend","clock"];
-  if(!metrics.length)return null;
-  return <div className={styles.kpiStrip}>{metrics.slice(0,4).map(function(m,i){const delta=m.delta;return <div className={styles.kpiCell} key={(m.label||"metric")+"-"+i}><span className={styles.kpiIcon}><ReportIcon kind={icons[i]}/></span><div><div className={styles.kpiValueRow}><strong>{m.value}</strong>{delta&&<em className={String(delta).startsWith("-")?styles.kpiDeltaDown:styles.kpiDeltaUp}>{delta}</em>}</div><b>{m.label}</b>{m.note&&<small>{m.note}</small>}</div></div>})}</div>;
-}
-
-function DemandChart({points=[],title="Demand pattern",subtitle="How visible demand changed during the period."}){
-  const rows=(points||[]).filter(function(x){return x&&x.time});
-  const[active,setActive]=useState(0);
-  if(!rows.length)return <section className={styles.restaurantPanel}><div className={styles.sectionHead}><div><h3>{title}</h3><p>{subtitle}</p></div></div><div className={styles.restaurantEmpty}>There is not enough comparable activity to show this trend yet.</div></section>;
-  const W=760,H=244,left=34,right=18,top=22,bottom=42,plotW=W-left-right,plotH=H-top-bottom;
-  const x=function(i){return left+(rows.length===1?plotW/2:(plotW*i/(rows.length-1)))};
-  const y=function(level){return top+plotH-(Math.max(0,Math.min(4,Number(level||0)))/4)*plotH};
-  const pts=rows.map(function(p,i){return[x(i),y(p.level)]});
-  const line=pts.map(function(p,i){return(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)}).join(" ");
-  const area=line+" L "+x(rows.length-1).toFixed(1)+" "+(top+plotH)+" L "+x(0).toFixed(1)+" "+(top+plotH)+" Z";
-  const selected=rows[Math.min(active,rows.length-1)]||rows[0];
-  return <div className={styles.demandViz}>
-    <div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Business</span><h3>{title}</h3><p>{subtitle}</p></div><span className={styles.dataBoundary}>Relative demand</span></div>
-    <div className={styles.chartFrame}>
-      <svg className={styles.areaChart} viewBox={"0 0 "+W+" "+H} role="img" aria-label={title}>
-        <defs><linearGradient id="chaiDemandFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="currentColor" stopOpacity=".22"/><stop offset="100%" stopColor="currentColor" stopOpacity=".02"/></linearGradient></defs>
-        {[0,1,2,3,4].map(function(i){const gy=top+plotH-(i/4)*plotH;return <line key={i} x1={left} x2={W-right} y1={gy} y2={gy} className={styles.chartGrid}/>})}
-        <path d={area} className={styles.chartArea}/>
-        <path d={line} className={styles.chartLine}/>
-        {pts.map(function(p,i){return <g key={(rows[i].time||i)+"-"+i} role="button" tabIndex="0" aria-label={rows[i].time+": "+(rows[i].label||"demand point")} onClick={function(){setActive(i)}} onKeyDown={function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();setActive(i)}}} className={i===active?styles.chartPointActive:styles.chartPoint}><circle cx={p[0]} cy={p[1]} r={i===active?8:6} className={styles.chartPointHalo}/><circle cx={p[0]} cy={p[1]} r={i===active?4.5:3.5} className={styles.chartPointDot}/></g>})}
-        {rows.map(function(p,i){return <text key={"label-"+(p.time||i)} x={x(i)} y={H-15} textAnchor={i===0?"start":i===rows.length-1?"end":"middle"} className={styles.chartAxisLabel}>{p.time}</text>})}
-      </svg>
-    </div>
-    <div className={styles.chartInspector}><div><span>{selected.time}</span><b>{selected.label||"Demand pattern"}</b><p>{selected.detail||""}</p></div>{selected.status&&<em>{selected.status}</em>}</div>
-  </div>;
+function DemandBars({model,title}){
+  const series=model.bars||[];
+  if(!series.length||!series.some(function(x){return !x.gap}))return <Empty title="There is not enough comparable activity to show this trend yet.">Missing periods are unknown, not zero activity.</Empty>;
+  const hasGap=series.some(function(x){return x.gap});
+  return <Bars question={title} series={series} showValues={!model.barsRelative&&series.length<=14}
+    legend={<><span>{model.barsRelative?"Relative demand":model.kind==="period"?"Estimated covers":"Peak visible diners"}</span>{hasGap&&<span className="gap">Not observed</span>}</>}/>;
 }
 
 function SecurityPanel({items=[],coveredDays=null}){
   const critical=items.filter(function(x){return x&&x.severity==="critical"}).length;
   const attention=items.filter(function(x){return x&&x.severity==="attention"}).length;
   const title=critical?"Critical attention":attention?"Attention required":items.length?"No critical exception in completed reports":"No security exception recorded in the available coverage";
-  const note=!items.length&&coveredDays!=null?"This applies only to the "+coveredDays+" completed day"+(coveredDays===1?"":"s")+" represented here.":"";
-  return <section className={styles.securitySnapshot}>
-    <div className={styles.securitySnapshotHead}><div><span className={styles.panelEyebrow}>Security</span><h3>{title}</h3></div></div>
-    {note&&<p className={styles.securityScopeNote}>{note}</p>}
-    <div className={styles.securitySummaryList}>{items.slice(0,5).map(function(x,i){return <div className={styles.securitySummaryRow} key={(x.title||i)+"-"+i}><span className={styles.securityDot+" "+(x.severity==="critical"?styles.dotCritical:x.severity==="attention"?styles.dotAttention:styles.dotGood)}/><div><b>{x.title||"Security note"}</b><p>{x.body||x.summary||""}</p></div>{x.value&&<strong>{x.value}</strong>}</div>})}</div>
-  </section>;
+  const note=!items.length&&coveredDays!=null?"Applies only to the "+coveredDays+" completed day"+(coveredDays===1?"":"s")+" represented here.":"";
+  return <Section title="Security" count={critical+attention||null}>
+    {items.length?<div className="ow-rows">{items.slice(0,5).map(function(x,i){return <Row key={(x.title||i)+"-"+i} tone={x.severity==="critical"?"bad":x.severity==="attention"?"warn":"ok"} title={x.title||"Security note"} body={x.body||x.summary||""} meta={[x.service_date?shortDate(x.service_date):null,x.value||null]}/>})}</div>
+      :<Empty title={title}>{note||null}</Empty>}
+  </Section>;
 }
 
 function ActionList({items=[]}){
   if(!items.length)return null;
-  return <section className={styles.actionPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Next actions</span><h3>What management should follow up</h3><p>Only actions supported by this report are shown.</p></div></div><div className={styles.actionRowsV3}>{items.slice(0,3).map(function(a,i){return <div className={styles.actionRowV3} key={(a.id||a.title||i)+"-"+i}><span>{i+1}</span><div><div className={styles.actionTitleV3}><b>{a.title||"Action"}</b>{a.priority&&<em>{a.priority}</em>}</div><p>{a.body||a.detail||String(a)}</p></div></div>})}</div></section>;
+  return <Section title="Recommended action" count={items.length>1?items.length:null}><div className="ow-actions">{items.slice(0,3).map(function(a,i){return <div className="ow-action" key={(a.id||a.title||i)+"-"+i}><span className="ow-action-n">{i+1}</span><div><h3>{a.title||"Action"}</h3><p>{a.body||a.detail||String(a)}</p></div></div>})}</div></Section>;
 }
 
 function DetailRows({items=[]}){
-  if(!items.length)return <div className={styles.restaurantEmpty}>No additional business detail is available for this period.</div>;
-  return <div className={styles.operationRows}>{items.map(function(x,i){return <div className={styles.operationRow} key={(x.title||i)+"-"+i}><div className={styles.operationIndex}>{String(i+1).padStart(2,"0")}</div><div className={styles.operationMain}><div className={styles.operationRowHead}><b>{x.title||"Business area"}</b>{x.status&&<span>{x.status}</span>}</div><p>{x.body||""}</p>{x.takeaway&&<small>{x.takeaway}</small>}</div></div>})}</div>;
+  if(!items.length)return <Empty title="No additional business detail is available for this period."/>;
+  return <div className="ow-rows">{items.map(function(x,i){return <Row key={(x.title||i)+"-"+i} tone="violet" title={x.title||"Business area"} body={x.body||""} meta={[x.status||null,x.takeaway||null]}/>})}</div>;
 }
 
-function SavedReports({windowData,siteId,limit=8}){
+// Governed business detail for the Business view: floors, tables, hours, weekdays and observed service time.
+// Every figure is read from wl_restaurant_day / wl_restaurant_period; missing rows stay absent, never zero.
+function BusinessDetail({view,day,period,model}){
+  const isPeriod=model.kind==="period";
+  const data=isPeriod?(period||{}):(day||{});
+  const floors=isPeriod?(data.floor_profile||[]):(data.floors||[]).filter(function(f){return Number(f.samples||0)>0});
+  const tables=isPeriod?(data.table_profile||[]):(data.tables||[]).filter(function(t){return Number(t.samples||0)>0});
+  const ranked=tables.filter(function(t){return num(t.occupancy_pct)!=null}).slice().sort(function(a,b){return Number(b.occupancy_pct)-Number(a.occupancy_pct)});
+  const hours=isPeriod?(data.hour_profile||[]).filter(function(h){return num(h.avg_peak_visible_diners)!=null}):[];
+  const weekdays=view==="monthly"?(data.weekday_profile||[]):[];
+  const dist=isPeriod?(data.service_time_distribution||{}):{};
+  const distRows=[["Under 15 min",dist.under_15_minutes],["15–30 min",dist["15_to_30_minutes"]],["30–45 min",dist["30_to_45_minutes"]],["45+ min",dist["45_plus_minutes"]]].filter(function(r){return num(r[1])!=null});
+  if(isPeriod&&!model.trendReady)return null;
+  return <>
+    {isPeriod&&<Section title={model.days===7?"7-day operations review":"30-day management review"} note={model.observed+" of "+model.days+" service days represented; business figures come from those days only"}/>}
+    {floors.length>0&&<Section title="Floor comparison" note="Peak visible diners by dining floor; keep floors separate before reading site totals">
+      <HBars items={floors.map(function(f,i){return {key:(f.camera_id||f.floor||i)+"",label:f.floor||"Dining floor",note:"Peak occupied tables "+val(f.peak_occupied_tables)+" · avg visible "+val(isPeriod?f.avg_visible_diners:f.avg_visible_customers),value:isPeriod?f.peak_visible_diners:f.peak_visible_customers}})}/>
+    </Section>}
+    {ranked.length>0&&<Section title="Table utilization" note="Share of valid observations in which each calibrated table was occupied">
+      <div className="ow-grid2">
+        <div><div className="ow-label" style={{marginBottom:8}}>Most-used calibrated tables</div><HBars items={ranked.slice(0,8).map(function(t){return {key:t.table_key,label:t.label||t.table_key,note:"Peak visible party "+val(t.peak_party),value:Number(t.occupancy_pct)}})}/></div>
+        {ranked.length>3&&<div><div className="ow-label" style={{marginBottom:8}}>Lower-utilization tables</div><HBars items={ranked.slice(-5).reverse().map(function(t){return {key:t.table_key+"-low",label:t.label||t.table_key,note:isPeriod?val(t.observed_days)+" observed days":"",value:Number(t.occupancy_pct)}})}/></div>}
+      </div>
+      <p className="ow-muted" style={{fontSize:12,marginTop:8}}>Percent of valid observations; useful for layout review only when coverage was adequate and table anchors stayed visible.</p>
+    </Section>}
+    {hours.length>0&&<Section title="Demand by hour" note="Average peak visible diners across represented service days">
+      <Bars height={110} series={hours.map(function(h){return {label:String(h.local_hour).replace(/:00$/,""),value:Number(h.avg_peak_visible_diners),display:val(h.avg_peak_visible_diners)}})}/>
+    </Section>}
+    {model.weekdayReady&&weekdays.length>0&&<Section title="Weekday pattern" note="Average estimated covers by day of week, represented days only">
+      <Bars height={110} series={weekdays.map(function(w){return {label:w.weekday,value:Number(w.avg_estimated_covers||0),gap:!Number(w.observed_days||0),display:val(w.avg_estimated_covers)}})} legend={<><span>Avg estimated covers</span><span className="gap">No represented day</span></>}/>
+    </Section>}
+    {distRows.length>0&&<Section title="Observed service-time distribution" note="Seated/occupied to first food visible; not POS ticket time">
+      <Bars height={100} series={distRows.map(function(r){return {label:r[0],value:Number(r[1]||0)}})}/>
+      <p className="ow-muted" style={{fontSize:12,marginTop:8}}>{val(dist.sample_sessions)} table sessions had a defensible observed time-to-food measurement.</p>
+    </Section>}
+  </>;
+}
+
+function SavedReports({windowData,siteId,limit=8,rail}){
   const all=windowData&&windowData.saved_reports||[];
   const rows=all.slice(0,limit),extra=all.slice(limit);
   if(!rows.length)return null;
-  const renderRow=function(x,i,prefix){const d=String(x.service_date||"");const highlights=x.highlights||[];return <a key={(prefix||"row")+"-"+(x.report_id||d||i)+"-"+i} className={styles.savedReportRow} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}>
-    <span className={styles.savedReportDate}><b>{shortDate(d)}</b><small>{new Date(d+"T12:00:00").toLocaleDateString([], {weekday:"short"})}</small></span>
-    <span className={styles.savedReportCopy}><b>{x.title||"Daily management report"}</b><small>{x.summary||highlights[0]||"Completed daily report"}</small></span>
-    <span className={styles.savedReportState}><i/>Completed</span>
-    <em aria-hidden="true">→</em>
-  </a>};
-  return <section className={styles.savedReportsCard}>
-    <div className={styles.savedReportsHead}><div><span className={styles.panelEyebrow}>Daily reports</span><h3>Completed service days</h3><p>Open a day to see the full management story, actions and security detail.</p></div><span>{all.length} available</span></div>
-    <div className={styles.savedReportTable}>{rows.map(function(x,i){return renderRow(x,i,"primary")})}</div>
-    {extra.length>0&&<details className={styles.savedReportsMore}><summary>Show {extra.length} more completed report{extra.length===1?"":"s"}</summary><div className={styles.savedReportTable}>{extra.map(function(x,i){return renderRow(x,i,"extra")})}</div></details>}
-  </section>;
+  if(rail)return <RailSection label="Completed service days">{rows.slice(0,5).map(function(x,i){const d=String(x.service_date||"");return <a className="ow-rail-link" key={(x.report_id||d||i)+"-"+i} href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}><span>{shortDate(d)} <small>{weekdayLabel(d)}</small></span><i>Open</i></a>})}</RailSection>;
+  const renderRow=function(x,i,prefix){const d=String(x.service_date||"");const highlights=x.highlights||[];return <Row compact key={(prefix||"row")+"-"+(x.report_id||d||i)+"-"+i} tone="verified" title={shortDate(d)+" · "+weekdayLabel(d)} body={x.summary||highlights[0]||"Completed daily report"} action={<a href={withSite("/reports/?view=yesterday&date="+encodeURIComponent(d),siteId)}>Open</a>}/>};
+  return <Section title="Completed service days" count={all.length}>
+    <div className="ow-rows">{rows.map(function(x,i){return renderRow(x,i,"primary")})}</div>
+    {extra.length>0&&<details className="ow-details savedReportsMore"><summary>Show {extra.length} more completed report{extra.length===1?"":"s"}</summary><div className="ow-rows">{extra.map(function(x,i){return renderRow(x,i,"extra")})}</div></details>}
+  </Section>;
 }
 
 function ConfidenceDetails({coverage,visibility=[],sufficiency}){
   const hasCoverage=coverage&&(coverage.summary||coverage.note||coverage.period||coverage.status);
   if(!hasCoverage&&!visibility.length&&!sufficiency)return null;
-  return <div className={styles.footerDetails}>
-    {sufficiency&&<details open={sufficiency.level==="limited"}><summary>Report confidence</summary><p>{sufficiency.message}</p></details>}
-    {hasCoverage&&<details><summary>Coverage and figure limits</summary><p>{coverage.status&&<b>{coverage.status+". "}</b>}{coverage.summary||""} {coverage.note||""}</p></details>}
-    {visibility.length>0&&<details><summary>Visibility improvements</summary>{visibility.map(function(x,i){return <p key={i}><b>{x.title||"Improvement"}:</b> {x.body||x.recommendation||""}</p>})}</details>}
+  return <div style={{marginTop:18}}>
+    {sufficiency&&<details className="ow-details" open={sufficiency.level==="limited"}><summary>Report confidence</summary><div style={{fontSize:13}}>{sufficiency.message}</div></details>}
+    {hasCoverage&&<details className="ow-details"><summary>Coverage and figure limits</summary><div style={{fontSize:13}}>{coverage.status&&<b>{coverage.status+". "}</b>}{coverage.summary||""} {coverage.note||""}<p style={{marginTop:6}}>Visible diners are concurrent visible people, not unique footfall; estimated covers and sessions are estimates; observed time to food is not POS order-to-serve time and these figures are not POS data. Missing observation periods are missing coverage, not zero activity. Period-to-period changes should only be acted on when coverage is sufficiently comparable.</p></div></details>}
+    {visibility.length>0&&<details className="ow-details"><summary>Visibility improvements</summary><div style={{fontSize:13}}>{visibility.map(function(x,i){return <p key={i} style={{marginBottom:6}}><b>{x.title||"Improvement"}:</b> {x.body||x.recommendation||""}</p>})}</div></details>}
   </div>;
 }
 
@@ -150,6 +153,8 @@ function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
       highlights:p.highlights||[],
       metrics:(p.metrics||[]).slice(0,4),
       timeline:p.demand_timeline||[],
+      bars:(p.demand_timeline||[]).filter(function(x){return x&&x.time}).map(function(x){return {label:x.time,value:Number(x.level||0),title:x.time+": "+(x.label||"relative demand")}}),
+      barsRelative:true,
       security:p.incidents||[],
       operations:p.operations||[],
       actions:p.action_items||p.priority_actions||[],
@@ -168,11 +173,13 @@ function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
   const maxPeak=Math.max.apply(null,[1].concat(hourly.map(function(x){return Number(x.peak_visible_customers||0)})));
   const hasBusiness=Number(q.camera_observations||0)>0||Number(q.table_observations||0)>0;
   const timeline=hourly.map(function(x){return {time:x.local_hour||"",level:clampLevel(x.peak_visible_customers,maxPeak),label:x.peak_visible_customers==null?"Activity":"Peak visible diners "+x.peak_visible_customers,detail:x.peak_occupied_tables==null?"":"Peak occupied tables "+x.peak_occupied_tables}});
+  const bars=(data.hourly||[]).map(function(x){const seen=Number(x.samples||0)>0;return {label:String(x.local_hour||"").replace(/:00$/,""),value:seen?Number(x.peak_visible_customers||0):0,gap:!seen,title:(x.local_hour||"")+": "+(seen?"peak visible diners "+val(x.peak_visible_customers):"not observed")}});
   const metrics=hasBusiness?[
     {value:val(peakVisible),label:"Peak visible diners",note:"Concurrent visible diners, not unique footfall"},
     {value:val(peakTables),label:"Peak occupied tables",note:"Highest simultaneous table use"},
     {value:val(sessions.estimated_covers),label:"Estimated covers",note:"Estimate based on visible table activity"},
-    {value:sessions.median_observed_time_to_food_minutes==null?"—":sessions.median_observed_time_to_food_minutes+" min",label:"Observed time to food",note:"Visible seating to first food seen"}
+    {value:sessions.median_observed_time_to_food_minutes==null?"—":sessions.median_observed_time_to_food_minutes+" min",label:"Median observed time to food",note:"Visible seating to first food seen"},
+    {value:val(sessions.served_sessions),label:"Served table sessions",note:"Sessions where food became visibly present"}
   ]:[];
   const highlights=[];
   if(busiest&&busiest.local_hour)highlights.push("The strongest visible demand was around "+busiest.local_hour+".");
@@ -196,7 +203,7 @@ function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
     date:data.service_date||requestedReportDate||snapshot&&snapshot.report_date||null,
     eyebrow:view==="daily"?"Today · in progress":requestedReportDate?"Selected service day":"Yesterday",
     headline:view==="daily"?"Today in one view":"Service day in one view",
-    summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,
+    summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,bars:bars,
     security:(p.incidents&&p.incidents.length?p.incidents:(securityDay&&securityDay.incidents||[])),operations:operations,actions:p.action_items||p.priority_actions||[],
     coverage:{status:coverageRatio==null?"Coverage not yet rated":pct(coverageRatio)+" service-window coverage",summary:"Figures reflect only the periods with enough visibility to support them.",note:"Missing periods are unknown, not zero activity."},
     visibility:visibility,reportId:snapshot&&snapshot.report_id||null,
@@ -212,12 +219,13 @@ function normalizePeriod({view,period,windowData}){
   const series=days===30?weeks:daily.filter(function(x){return Number(x.camera_observations||0)>0});
   const maxTrend=Math.max.apply(null,[1].concat(series.map(function(x){return Number(x.estimated_covers||0)})));
   const timeline=trendReady?series.map(function(x){const d=x.service_date||x.week_start;return {time:shortDate(d),level:clampLevel(x.estimated_covers,maxTrend),label:x.estimated_covers==null?"Demand":"Estimated covers "+x.estimated_covers,detail:days===30?(x.observed_days+" represented service day"+(Number(x.observed_days)===1?"":"s")+" in this week"):(x.peak_visible_diners==null?"":"Peak visible diners "+x.peak_visible_diners)}}):[];
+  const bars=(days===30?weeks.map(function(x){return {label:shortDate(x.week_start),value:Number(x.estimated_covers||0),title:"Week of "+shortDate(x.week_start)+": "+val(x.estimated_covers)+" estimated covers over "+val(x.observed_days)+" represented days"}}):daily.map(function(x){const seen=Number(x.camera_observations||0)>0||Number(x.table_observations||0)>0;return {label:weekdayLabel(x.service_date),value:seen?Number(x.estimated_covers||0):0,gap:!seen,title:shortDate(x.service_date)+": "+(seen?val(x.estimated_covers)+" estimated covers":"not observed")}}));
   const coverDelta=comparisonReady&&num(data.comparison&&data.comparison.estimated_covers_pct)!=null?((Number(data.comparison.estimated_covers_pct)>0?"+":"")+Number(data.comparison.estimated_covers_pct)+"%"):null;
   const metrics=trendReady?[
     {value:val(s.avg_estimated_covers_per_observed_day),label:"Avg estimated covers",note:"Per represented service day",delta:coverDelta},
     {value:busiestDay&&busiestDay.service_date?shortDate(busiestDay.service_date):"—",label:"Busiest represented day",note:busiestDay&&busiestDay.estimated_covers!=null?"Estimated covers "+busiestDay.estimated_covers:""},
     {value:busiestHour&&busiestHour.local_hour||"—",label:"Busiest time",note:"Strongest recurring visible demand"},
-    {value:s.median_observed_time_to_food_minutes==null?"—":s.median_observed_time_to_food_minutes+" min",label:"Observed time to food",note:"Across supported table sessions"}
+    {value:s.median_observed_time_to_food_minutes==null?"—":s.median_observed_time_to_food_minutes+" min",label:"Median observed time to food",note:"Across supported table sessions"}
   ]:[];
   const security=[];
   saved.forEach(function(r){(r.incidents||[]).forEach(function(x){security.push(Object.assign({},x,{service_date:r.service_date}))})});
@@ -242,71 +250,80 @@ function normalizePeriod({view,period,windowData}){
   ];
   const coverage={status:observed+" of "+days+" represented days",summary:trendReady?"Enough represented days exist for a period-level demand view.":"The period is still too sparse for a full trend.",note:"Missing or incomplete days remain unknown and are excluded from comparisons."};
   const sufficiency={level:trendReady?"good":"limited",message:trendReady?"This "+days+"-day view uses "+observed+" represented service days. "+(comparisonReady?"The prior period also meets the comparison threshold.":"Prior-period change is withheld where the comparison is not sufficiently represented."):"A "+days+"-day trend requires at least "+minimum+" represented service days. "+observed+" are currently available, so detailed period trends are withheld."};
-  return {kind:"period",date:null,period:data.period||windowData&&windowData.period||{},eyebrow:days===7?"Last 7 days":"Last 30 days",headline:days===7?"The week in one view":"The month in one view",summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,security:security,operations:operations,actions:actions,coverage:coverage,visibility:[],reportId:null,sufficiency:sufficiency,trendReady:trendReady,comparisonReady:comparisonReady,weekdayReady:weekdayReady,observed:observed,days:days,minimum:minimum};
+  return {kind:"period",date:null,period:data.period||windowData&&windowData.period||{},eyebrow:days===7?"Last 7 days":"Last 30 days",headline:days===7?"The week in one view":"The month in one view",summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,bars:bars,security:security,operations:operations,actions:actions,coverage:coverage,visibility:[],reportId:null,sufficiency:sufficiency,trendReady:trendReady,comparisonReady:comparisonReady,weekdayReady:weekdayReady,observed:observed,days:days,minimum:minimum};
 }
 
-export default function UnifiedRestaurantReport({view,day,securityDay,period,windowData,snapshot,siteId,requestedReportDate,renderActions}){
+function firstSentences(text,n){const t=String(text||"").replace(/\s+/g," ").trim();const parts=t.match(/[^.!?]+[.!?]+(\s|$)/g);return parts?parts.slice(0,n).join("").trim():t}
+
+export default function UnifiedRestaurantReport({view,day,securityDay,period,windowData,snapshot,siteId,requestedReportDate,renderActions,askPrompt}){
   const[mode,setMode]=useState("overview");
   const model=useMemo(function(){return view==="week"||view==="monthly"?normalizePeriod({view:view,period:period,windowData:windowData}):normalizeDaily({view:view,day:day,securityDay:securityDay,snapshot:snapshot,requestedReportDate:requestedReportDate})},[view,day,securityDay,period,windowData,snapshot,requestedReportDate]);
   const periodText=model.date?dateLabel(model.date):model.period&&model.period.start_service_date&&model.period.end_service_date?shortDate(model.period.start_service_date)+" – "+shortDate(model.period.end_service_date):periodName(view);
   const actionBlock=model.actions&&model.actions.length?(renderActions?renderActions(model.actions,model.reportId):<ActionList items={model.actions}/>):null;
-  const chartTitle=view==="daily"?"Demand so far today":view==="yesterday"?"Demand through the service day":view==="week"?"Demand across the week":"Demand across the month";
+  const chartTitle=view==="daily"?"When were diners most visible today?":view==="yesterday"?"When was demand strongest through the service day?":view==="week"?"Which service days were busiest?":"How did weekly demand move across the month?";
   const showBuild=model.kind==="period"&&!model.trendReady;
+  const security=model.security||[];
+  const critical=security.filter(function(x){return x&&x.severity==="critical"}).length;
+  const attention=security.filter(function(x){return x&&x.severity==="attention"}).length;
+  const limited=model.sufficiency&&model.sufficiency.level==="limited";
+  const leadTitle=(critical?critical+" critical security item"+(critical===1?"":"s"):attention?attention+" security item"+(attention===1?" needs":"s need")+" review":"No security exception recorded")+" · "+(limited?"limited coverage":model.kind==="period"?model.observed+" of "+model.days+" days represented":(model.coverage&&model.coverage.status)||"coverage available");
+  const leadTone=critical?"bad":attention?"warn":limited?"unknown":"ok";
+  const lead=firstSentences(model.summary,2);
+  const asks=[
+    ["Explain this report",askPrompt||"Explain this restaurant report and the priority action."],
+    ["What should management act on?","From this restaurant report, what should management act on first, and why?"],
+    ["What could not be verified?","For this restaurant reporting period, what time could WatchLog not verify, and does it change the conclusion?"],
+  ];
 
-  return <div className={styles.saasReport}>
-    <div className={styles.reportControlBarV4}>
-      <div className={styles.reportIdentity}>
-        <ReportStatus view={view} model={model}/>
-        <div><b>{periodText}</b><span>{view==="daily"?"Current service day":model.kind==="period"?"Management period":"Completed service day"}</span></div>
+  const rail=<>
+    <RailSection label="Report status">
+      <div className="ow-stat"><span>Status</span><b><ReportStatus view={view} model={model}/></b></div>
+      <div className="ow-stat"><span>Period</span><b>{periodText}</b></div>
+    </RailSection>
+    <ReportHealth view={view} model={model}/>
+    {model.kind!=="period"&&day&&day.data_quality&&<RailSection label="Business figures"><Stat label="Analytics coverage" note="share of the service window able to support diner and table figures" value={day.data_quality.business_analytics_coverage_ratio==null?null:pct(day.data_quality.business_analytics_coverage_ratio)}/></RailSection>}
+    {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} rail/>}
+    <RailSection label="Ask WatchLog about this report">
+      <div className="ow-ask">{asks.map(function(a){return <a key={a[0]} href={withSite("/ai/?prompt="+encodeURIComponent(a[1]),siteId)}>{a[0]}</a>})}</div>
+    </RailSection>
+  </>;
+
+  return <div className="ow-body has-rail" data-part="reportMainGridV4">
+    <div className="ow-work">
+      <div data-part="reportControlBarV4" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
+        <ReportTabs mode={mode} setMode={setMode}/>
       </div>
-      <ReportTabs mode={mode} setMode={setMode}/>
+      <Summary items={[{value:periodText,label:view==="daily"?"Current service day":model.kind==="period"?"Management period":"Completed service day"},{value:limited?"Limited":"Supported",label:"Report confidence",muted:limited}]}/>
+
+      <div data-part="reportHeroV4"><Lead tone={leadTone} title={leadTitle} body={lead}/></div>
+
+      {mode==="overview"&&<>
+        {model.metrics&&model.metrics.length>0&&<Metrics items={model.metrics.map(function(m,i){return {value:m.value==="—"?null:m.value,label:m.label,note:(m.delta?m.delta+" vs prior · ":"")+(m.note||""),primary:i===0,unknown:"Not available"}})}/>}
+        <div style={{marginTop:20}}>{showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<Section first title={view==="week"?"Service-day trend":view==="monthly"?"Weekly demand":"Demand pattern"}><DemandBars model={model} title={chartTitle}/></Section>}</div>
+        {model.highlights&&model.highlights.length>0&&<Section title="What management should know"><Findings items={model.highlights.slice(0,3).map(function(x){return {title:x}})}/></Section>}
+        <SecurityPanel items={security} coveredDays={model.kind==="period"?model.observed:null}/>
+        {actionBlock}
+        {view==="yesterday"&&!snapshot&&<SavedReports windowData={windowData} siteId={siteId} limit={1}/>}
+        {model.visibility&&model.visibility.length>0&&<ConfidenceDetails coverage={null} visibility={model.visibility} sufficiency={null}/>}
+      </>}
+
+      {mode==="business"&&<>
+        {model.metrics&&model.metrics.length>0&&<Metrics items={model.metrics.map(function(m,i){return {value:m.value==="—"?null:m.value,label:m.label,note:m.note,primary:i===0,unknown:"Not available"}})}/>}
+        <div style={{marginTop:20}}>{showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<Section first title={view==="week"?"Service-day trend":view==="monthly"?"Weekly demand pattern":"Demand pattern"}><DemandBars model={model} title={chartTitle}/></Section>}</div>
+        <Section title="Business signals"><DetailRows items={model.operations||[]}/></Section>
+        <BusinessDetail view={view} day={day} period={period||(windowData&&windowData.structured_restaurant_metrics)} model={model}/>
+        {actionBlock}
+        {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
+        <ConfidenceDetails coverage={model.coverage} visibility={model.visibility} sufficiency={model.sufficiency}/>
+      </>}
+
+      {mode==="security"&&<>
+        <SecurityPanel items={security} coveredDays={model.kind==="period"?model.observed:null}/>
+        <p className="ow-muted" style={{fontSize:12.5,marginTop:10}}>Routine movement stays routine. Missing coverage is never treated as proof that nothing happened.</p>
+        {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
+        {model.visibility&&model.visibility.length>0&&<ConfidenceDetails coverage={null} visibility={model.visibility} sufficiency={null}/>}
+      </>}
     </div>
-
-    {mode==="overview"&&<>
-      <section className={styles.reportHeroV4}>
-        <div className={styles.reportHeroCopy}><span className={styles.panelEyebrow}>Management overview</span><h2>{model.headline}</h2><p>{model.summary}</p></div>
-        {model.highlights&&model.highlights.length>0&&<div className={styles.reportHighlightsV4}>{model.highlights.slice(0,3).map(function(x,i){return <div key={i}><span>{String(i+1).padStart(2,"0")}</span><p>{x}</p></div>})}</div>}
-      </section>
-
-      <KpiStrip metrics={model.metrics}/>
-
-      <div className={styles.reportMainGridV4}>
-        <div className={styles.reportPrimaryV4}>
-          {showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<DemandChart points={model.timeline} title={chartTitle} subtitle="Use the shape of the period to see where demand strengthened, softened or repeated."/>}
-        </div>
-        <aside className={styles.reportRailV4}>
-          <SecurityPanel items={model.security||[]} coveredDays={model.kind==="period"?model.observed:null}/>
-          <ReportHealth view={view} model={model}/>
-        </aside>
-      </div>
-
-      {actionBlock}
-      {view==="yesterday"&&!snapshot&&<SavedReports windowData={windowData} siteId={siteId} limit={1}/>}
-      {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
-      {model.visibility&&model.visibility.length>0&&<ConfidenceDetails coverage={null} visibility={model.visibility} sufficiency={null}/>}
-    </>}
-
-    {mode==="business"&&<>
-      <section className={styles.sectionIntroV4}><span className={styles.panelEyebrow}>Business</span><h2>{view==="daily"?"Today’s demand and service flow":view==="yesterday"?"Customers, tables and service flow":view==="week"?"What changed across the week":"What patterns are becoming meaningful"}</h2><p>{view==="daily"?"Current trading activity, table use and service pressure without treating an in-progress day as complete.":view==="yesterday"?"Demand, table use, service channels and closing discipline for the completed service day.":view==="week"?"Repeated demand and service patterns across represented service days.":"Longer-term demand and service patterns only where enough represented days exist."}</p></section>
-      <KpiStrip metrics={model.metrics}/>
-      <div className={styles.businessGridV4}>
-        <div>{showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<DemandChart points={model.timeline} title={view==="week"?"Service-day trend":view==="monthly"?"Weekly demand pattern":chartTitle} subtitle="The main period trend stays primary; supporting detail is grouped below."/>}</div>
-        <section className={styles.operationsPanelV3}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Business signals</span><h3>What management should know</h3><p>Grouped by operating question rather than by camera.</p></div></div><DetailRows items={model.operations||[]}/></section>
-      </div>
-      {actionBlock}
-      {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
-      <ConfidenceDetails coverage={model.coverage} visibility={model.visibility} sufficiency={model.sufficiency}/>
-    </>}
-
-    {mode==="security"&&<>
-      <section className={styles.sectionIntroV4}><span className={styles.panelEyebrow}>Security</span><h2>{view==="daily"?"Current security attention":view==="yesterday"?"Security posture for the completed day":view==="week"?"Security exceptions across the week":"Recurring security exceptions"}</h2><p>Only management-relevant exceptions are shown. Routine movement stays routine, and missing coverage is never treated as proof that nothing happened.</p></section>
-      <div className={styles.securityGridV4}>
-        <SecurityPanel items={model.security||[]} coveredDays={model.kind==="period"?model.observed:null}/>
-        <ReportHealth view={view} model={model}/>
-      </div>
-      {model.security&&model.security.length>0&&<section className={styles.securityEventPanel}><div className={styles.panelHeader}><div><span className={styles.panelEyebrow}>Events & exceptions</span><h3>Security timeline</h3><p>Only items with management value are included.</p></div></div><div className={styles.securityEventList}>{model.security.map(function(x,i){return <div className={styles.securityEventRow} key={(x.title||i)+"-"+i}><span className={styles.securityDot+" "+(x.severity==="critical"?styles.dotCritical:x.severity==="attention"?styles.dotAttention:styles.dotGood)}/><div><b>{x.title||"Security note"}</b><p>{x.body||x.summary||""}</p></div>{x.service_date&&<strong>{shortDate(x.service_date)}</strong>}</div>})}</div></section>}
-      {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
-      {model.visibility&&model.visibility.length>0&&<ConfidenceDetails coverage={null} visibility={model.visibility} sufficiency={null}/>}
-    </>}
+    <aside className="ow-rail" aria-label="Report intelligence">{rail}</aside>
   </div>;
 }

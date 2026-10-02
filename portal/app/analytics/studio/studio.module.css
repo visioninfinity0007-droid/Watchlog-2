@@ -1,0 +1,16 @@
+/* Activity Rules: camera-image line/area editor and rule form layout (owner Signal Ledger tokens only).
+   The image and the drawing layer share one box so a point's 0-1 position maps to the same pixel. */
+.scene{position:relative;width:100%;aspect-ratio:16/9;min-height:200px;overflow:hidden;border:1px solid var(--ow-line-strong);border-radius:var(--ow-r-surface);background:var(--ow-nav)}
+.scene img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:fill}
+.scene svg{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;touch-action:none}
+.sceneEmpty{position:absolute;inset:0;display:grid;place-items:center;padding:24px;text-align:center;color:var(--ow-nav-muted);font-size:13px}
+.sceneEmpty b{color:var(--ow-nav-text)}
+.sceneHelp{position:absolute;left:10px;bottom:10px;max-width:calc(100% - 20px);padding:6px 9px;border-radius:var(--ow-r-control);background:color-mix(in srgb,var(--ow-nav) 88%,transparent);color:var(--ow-nav-text);font-size:12px;pointer-events:none}
+.form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
+.full{grid-column:1/-1}
+.form input:not([type="checkbox"]),.form select:not([multiple]){width:100%}
+.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px 16px}
+.inline{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.inline input[type="number"],.inline input[type="time"]{width:120px}
+.bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+@media(max-width:760px){.form{grid-template-columns:minmax(0,1fr)}}

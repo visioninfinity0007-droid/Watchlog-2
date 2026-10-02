@@ -45,6 +45,9 @@ def connect():
 
 
 def main() -> int:
+    if os.environ.get("WATCHLOG_CI_PLAIN_POSTGRES") != "1":
+        sys.exit("FATAL: e2e_ai_evidence_pg is disposable-CI-only; refusing non-CI database target")
+
     conn = connect()
     q = lambda sql, *p: conn.execute(sql, p or None).fetchone()  # returning/select only  # noqa: E731
 
@@ -77,6 +80,13 @@ def main() -> int:
     for fn in FUNCS:
         if not q("select exists(select 1 from pg_proc where proname=%s)", fn)[0]:
             raise AssertionError(f"function {fn} missing — 0107 did not apply")
+
+    # 0107 intentionally fails closed when Vault is available but the evidence
+    # encryption key is absent. Seed a random key only in the disposable CI
+    # Vault shim; production secrets are never read, written, or echoed here.
+    if q("select wl_ai_vault_available()")[0]:
+        q("select vault.create_secret(%s,'ai_evidence_key','disposable CI evidence encryption key')",
+          "ci-evidence-" + uuid.uuid4().hex)
 
     owner_a, tenant_a, site_a = bootstrap(f"ev-a-{sfx}@watchlog.test", "Ev A", "Armory Site")
     cam_a = q("insert into cameras (tenant_id, site_id, channel, name) values (%s,%s,'5','Armory') returning id", tenant_a, site_a)[0]

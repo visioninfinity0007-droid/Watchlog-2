@@ -27,8 +27,8 @@ for k in ("SUPABASE_DB_HOST","SUPABASE_DB_PORT","SUPABASE_DB_USER","SUPABASE_DB_
     if os.environ.get(k): ENV[k] = os.environ[k]
 import psycopg  # noqa: E402
 
-MIGS = [ROOT/"supabase"/"migrations"/m for m in
-        ("0065_intelligence_pipeline.sql","0072_site_business_context.sql","0081_opening_closing_state_machine.sql")]
+# Use the already-applied canonical schema. Replaying 0072/0081 here would
+# temporarily downgrade later coverage/auth hardening inside the test transaction.
 STEPS = []
 def step(ok, name, detail=""):
     STEPS.append(bool(ok)); print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail else ""))
@@ -40,10 +40,16 @@ def run() -> int:
                dbname=ENV.get("SUPABASE_DB_NAME","postgres"), connect_timeout=30, autocommit=False)
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            for p in MIGS: cur.execute(p.read_text(encoding="utf-8"))
             tid = cur.execute("insert into tenants (name) values ('ds') returning id").fetchone()[0]
             n=[0]
-            def site(nm): return cur.execute("insert into sites (tenant_id,name,timezone) values (%s,%s,'Asia/Karachi') returning id",(tid,nm)).fetchone()[0]
+            def site(nm):
+                sid = cur.execute("insert into sites (tenant_id,name,timezone) values (%s,%s,'Asia/Karachi') returning id",(tid,nm)).fetchone()[0]
+                # Coverage truth requires a real authoritative agent. Without one,
+                # the entire window is UNVERIFIED by design and confidence is 0.
+                cur.execute("""insert into agents (tenant_id,site_id,agent_key_hash,device_driver,enrolled_at,last_seen_at)
+                               values (%s,%s,%s,'onvif','2026-05-01 00:00:00+00','2026-06-30 00:00:00+00')""",
+                            (tid,sid,'ci-day-state-'+str(sid)))
+                return sid
             def cam(sid,ch,nm): return cur.execute("insert into cameras (tenant_id,site_id,channel,name,purpose) values (%s,%s,%s,%s,'area') returning id",(tid,sid,ch,nm)).fetchone()[0]
             def ev(sid,c,ts):
                 n[0]+=1

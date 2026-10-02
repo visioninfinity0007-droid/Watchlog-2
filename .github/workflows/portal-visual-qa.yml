@@ -1,0 +1,68 @@
+name: Portal Visual QA
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - '.github/workflows/portal-visual-qa.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - '.github/workflows/portal-visual-qa.yml'
+
+concurrency:
+  group: portal-visual-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install portal dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install pinned Playwright runner
+        run: npm install --no-save --package-lock=false @playwright/test@1.55.1
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build static portal
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://visual-qa.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: visual-qa-publishable
+      - name: Serve static export
+        run: |
+          python3 -m http.server 3100 --directory out > /tmp/watchlog-visual-qa-server.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3100/login/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/watchlog-visual-qa-server.log
+          exit 1
+      - name: Capture authenticated owner screens
+        run: node tests/visual-qa.mjs
+        env:
+          VISUAL_QA_BASE: http://127.0.0.1:3100
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchlog-portal-visual-qa-${{ github.sha }}
+          path: portal/visual-qa-output
+          if-no-files-found: error
+          retention-days: 7

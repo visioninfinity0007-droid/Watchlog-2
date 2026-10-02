@@ -11,28 +11,36 @@ only place they may be changed.
 
 ## 1. What WatchLog is
 
-WatchLog watches the cameras a business already owns and tells them what
-happened.
+WatchLog turns the CCTV a business already owns into useful business and
+security information.
 
-It is **not** a camera brand, **not** a guarding company, and **not** a
-replacement for either. It is the layer that turns a recorder nobody
-looks at into a daily report somebody reads.
+It is **not** a camera brand, **not** a guarding company, **not** a VMS
+replacement, and **not** an AI chatbot attached to CCTV. It is the
+intelligence layer that helps an owner understand what happened, what
+needs attention, what changed, and whether the monitoring picture is
+complete enough to trust.
 
-**One line:** *Your cameras already see everything. WatchLog tells you
-what they saw.*
+**One line:** *Know what happened at your business — without watching
+hours of CCTV.*
 
 ### Who it is for
-Businesses that bought CCTV, had it installed, and have not opened the
-footage since. Warehouses, retail chains, schools, factories, offices —
-anywhere with a recorder in a cupboard and nobody watching it.
+Business owners and owner-managers who already have CCTV and want useful
+management information from it. The same product can support restaurants,
+retail, offices, warehouses, factories and other sites, while the
+available business metrics remain specific to what each camera setup can
+actually support.
 
 ### The problem, stated honestly
-Cameras record. Nobody reviews. Footage is only ever looked at *after*
-something goes wrong, and by then it is evidence rather than security.
+CCTV records a large amount of evidence, but an owner rarely has time to
+review hours of footage just to understand the business day. Traditional
+camera apps show video; they do not automatically turn it into a concise
+management picture.
 
 ### What WatchLog changes
-Every incident is logged with a still image the moment it happens, and a
-summary lands every morning. Nothing needs to be watched live.
+WatchLog surfaces important activity, monitoring confidence, business
+patterns where supported, management reports and supporting evidence. It
+also lets the customer ask WatchLog specific questions about the verified
+information. The product tells first; the customer asks second.
 
 ---
 
@@ -42,8 +50,8 @@ summary lands every morning. Nothing needs to be watched live.
 |---|---|
 | A DVR that records 30 days | Recording is not monitoring. Nobody watches it. |
 | A phone app from the camera vendor | Shows live video on demand. Does not tell you anything happened. |
-| Guards on site | Guards cover what they can see, on shift. Cameras cover everything, always. |
-| A monitoring contract | Costs many times more and usually needs the cameras replaced. |
+| Guards on site | Guards provide human presence. WatchLog adds a separate evidence and management-information layer from compatible cameras, with coverage gaps shown explicitly. |
+| A monitoring contract | Provides a different service model. WatchLog adds management intelligence to compatible CCTV the business already owns. |
 
 **We do not sell fear.** Competitors in this category lean on break-in
 imagery, red alarm styling, and "protect what matters". WatchLog sells
@@ -83,11 +91,10 @@ engineers. It is also read at 8am over tea, on a phone.
 
 Product surfaces:
 - **WatchLog** — the product as a whole
-- **the agent** — the small program installed at a site (lowercase; it is
-  not a brand)
+- **the site connection** — customer-facing term for the local WatchLog connection. The implementation term “agent” stays internal
 - **the portal** — where customers sign in
 - **a site** — one physical location with one recorder
-- **an incident** — one thing the cameras reported
+- **an incident** — an evidence-backed activity that meets a configured incident definition and is grouped for review
 
 Never call an incident an "alert" in customer-facing copy. An alert
 demands action; most incidents do not.
@@ -100,10 +107,11 @@ demands action; most incidents do not.
    palette of brand colours — one, and everything else is ink, white and
    greys. That is the discipline of the chosen direction.
 
-2. **Light for selling, dark for working.** The marketing site is
-   white-dominant. The product is near-black, because operators read it
-   for long stretches and camera stills sit better on a dark canvas.
-   A deliberate split, not an inconsistency.
+2. **Light for management, dark where evidence benefits from it.** The customer
+   portal is light-dominant so an owner can scan it quickly on desktop or phone.
+   Near-black surfaces are reserved for evidence, monitoring-confidence detail,
+   and other focused operational contexts where contrast genuinely helps.
+   Dark is a functional tool, not the default product personality.
 
 3. **The brand colour is never a status colour.** Violet is not green,
    amber or red — those three mean *healthy*, *attention* and *fault* and
@@ -133,13 +141,54 @@ demands action; most incidents do not.
 
 ---
 
+
+### Signal Ledger — the owner portal's visual territory (selected 2026-10)
+
+The owner selected **Signal Ledger** (Image 1) as the product visual system. Sources: Drive
+"06 — WatchLog Brand Territory A — Signal Ledger", "05 — Brand Foundation v1", "03 — Inspiration
+Library" and the selected concept image. Locked there: midnight-ink foundation, indigo-violet accent,
+product UI as the brand, warm neutral content surfaces, coverage strip, no card walls. Not yet locked
+there: exact logo geometry, final hex values, final semantic status colours. It refines, not replaces,
+the principles above:
+
+- **Ink-midnight navigation, warm-neutral workspace.** The navigation sits on `ledger-nav`; the
+  management workspace is the warm `ledger-paper`, not a cold white or a black console.
+- **Violet stays the only brand/interaction colour.** Links, primary actions, the primary chart
+  series and the active navigation mark.
+- **Muted cyan means verified.** `verified` marks verified monitoring coverage and available
+  evidence (coverage strips, evidence markers). It is never a health status and never decoration;
+  green remains the only "healthy" colour.
+- **Unknown is hatched neutral grey with a word.** Unverified time, not-observed days and unknown
+  states are drawn as a hatched gap — never as zero, never as green.
+- **Ledger lines instead of boxes.** Thin hairlines, time/coverage strips, event markers on a time
+  axis and typographic hierarchy do the work that card containers used to do. A raised surface is
+  reserved for a genuinely discrete item.
+
+Values live in `design-tokens/tokens/color.json` (`ledger-*`, `verified*`, `unknown`) with their
+measured contrast ratios.
+
+### Customer portal experience
+
+The portal is an **owner intelligence product**, not a CCTV control room and not a chatbot homepage.
+
+- **Home tells first.** The signed-in first screen answers what matters now, what needs attention,
+  what changed when supported, and whether the monitoring picture is complete enough to trust.
+- **Ask WatchLog answers second.** AI is prominent and impressive, but the customer does not need
+  to know what question to ask before the product provides value.
+- **Business meaning before system detail.** Customer-facing screens lead with management meaning;
+  camera/system configuration is progressively disclosed only when the user needs it.
+- **Unknown remains visible.** Missing coverage, unsupported business figures, and unverified health
+  are shown as unavailable or not verified, never silently converted to zero or "nothing happened".
+- **Evidence is one step away.** Important conclusions should lead to supporting camera evidence
+  where evidence is available and the customer is authorized to view it.
+
 ## 6. Imagery
 
 **Allowed**
 - Real product screenshots, including the dark dashboard
 - Real camera stills — with faces and plates blurred, always
 - Plain photography of ordinary business premises in daylight
-- Simple diagrams: site → agent → cloud → report
+- Simple diagrams: site → WatchLog → portal / report
 
 **Banned**
 - Hooded intruders, crowbars, smashed glass

@@ -64,61 +64,82 @@ export default function SignUp() {
 
   if (confirm) {
     return (
-      <div className="center">
-        <div className="auth-card">
-          <div className="brand"><Mark /><span className="brand-name">WatchLog</span></div>
-          <h1>Check your email</h1>
-          <p className="sub">
-            We sent a confirmation link to <b>{email}</b>. Open the newest link,
-            then WatchLog will bring you back to the portal.
-          </p>
-          {error && <div className="err">{error}</div>}
-          {notice && <div className="ok-note">{notice}</div>}
-          <button type="button" onClick={resendConfirmation} disabled={resending}>
-            {resending ? "Sending..." : "Resend confirmation"}
-          </button>
-          <p className="alt"><a href="/login/">Go to sign in</a></p>
+      <div className="wl-auth">
+      <header className="wl-auth-brand">
+        <a className="wl-auth-logo" href="/"><Mark size={20} /><span>WatchLog</span></a>
+        <div className="wl-auth-pitch">
+          <p>Know what happened at your business without watching hours of CCTV.</p>
+          <ul><li>What happened</li><li>What needs attention</li><li>What WatchLog can verify</li></ul>
         </div>
+      </header>
+        <main className="wl-auth-main">
+          <div className="wl-auth-panel">
+            <div className="wl-auth-head">
+              <h1>Check your email</h1>
+              <p className="wl-auth-lede">
+                We sent a confirmation link to <b>{email}</b>. Open the newest link,
+                then WatchLog will bring you back to the portal.
+              </p>
+            </div>
+            {error && <div className="wl-auth-note bad" role="alert">{error}</div>}
+            {notice && <div className="wl-auth-note ok" role="status">{notice}</div>}
+            <button className="wl-auth-btn quiet" type="button" onClick={resendConfirmation} disabled={resending}>
+              {resending ? "Sending..." : "Resend confirmation"}
+            </button>
+            <div className="wl-auth-foot"><a href="/login/">Go to sign in</a></div>
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="center">
-      <form className="auth-card" onSubmit={onSubmit}>
-        <div className="brand">
-          <Mark />
-          <span className="brand-name">WatchLog</span>
+    <div className="wl-auth">
+      <header className="wl-auth-brand">
+        <a className="wl-auth-logo" href="/"><Mark size={20} /><span>WatchLog</span></a>
+        <div className="wl-auth-pitch">
+          <p>Know what happened at your business without watching hours of CCTV.</p>
+          <ul><li>What happened</li><li>What needs attention</li><li>What WatchLog can verify</li></ul>
         </div>
+      </header>
+      <main className="wl-auth-main">
+        <form className="wl-auth-panel" onSubmit={onSubmit} aria-busy={busy}>
+          <div className="wl-auth-head">
+            <h1>Create your account</h1>
+            <p className="wl-auth-lede">
+              Use compatible CCTV already installed at your site to get useful business and security information.
+            </p>
+          </div>
 
-        <h1>Create your account</h1>
-        <p className="sub">
-          Works with compatible CCTV recorders already installed at your site.
-        </p>
+          {error && <div className="wl-auth-note bad" role="alert">{error}</div>}
 
-        {error && <div className="err">{error}</div>}
+          <div className="wl-auth-fields">
+            <label htmlFor="company">Company name
+              <input id="company" required value={company}
+                     onChange={(e) => setCompany(e.target.value)} />
+            </label>
+            <label htmlFor="email">Work email
+              <input id="email" type="email" autoComplete="email" required
+                     value={email} onChange={(e) => setEmail(e.target.value)} />
+            </label>
+            <label htmlFor="password">Password
+              <input id="password" type="password" autoComplete="new-password"
+                     required minLength={6} value={password}
+                     onChange={(e) => setPassword(e.target.value)} />
+            </label>
+          </div>
 
-        <label htmlFor="company">Company name</label>
-        <input id="company" required value={company}
-               onChange={(e) => setCompany(e.target.value)} />
+          <div className="wl-auth-actions">
+            <button className="wl-auth-btn" type="submit" disabled={busy}>
+              {busy ? "Creating account..." : "Create account"}
+            </button>
+          </div>
 
-        <label htmlFor="email">Work email</label>
-        <input id="email" type="email" autoComplete="email" required
-               value={email} onChange={(e) => setEmail(e.target.value)} />
-
-        <label htmlFor="password">Password</label>
-        <input id="password" type="password" autoComplete="new-password"
-               required minLength={6} value={password}
-               onChange={(e) => setPassword(e.target.value)} />
-
-        <button type="submit" disabled={busy}>
-          {busy ? "Creating account..." : "Create account"}
-        </button>
-
-        <p className="alt">
-          Already have an account? <a href="/login/">Sign in</a>
-        </p>
-      </form>
+          <div className="wl-auth-foot">
+            <p>Already have an account? <a href="/login/">Sign in</a></p>
+          </div>
+        </form>
+      </main>
     </div>
   );
 }

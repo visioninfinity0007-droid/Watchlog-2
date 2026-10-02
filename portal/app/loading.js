@@ -1,18 +1,9 @@
 export default function Loading(){
-  return <div className="routeLoadingShell" aria-label="Loading WatchLog" aria-busy="true">
-    <aside className="routeLoadingRail" aria-hidden="true">
-      <div className="routeLoadingBrand"/>
-      <div className="routeLoadingButton"/>
-      <div className="routeLoadingLine short"/>
-      <div className="routeLoadingLine"/>
-      <div className="routeLoadingLine short"/>
-      <div className="routeLoadingLine"/>
-      <div className="routeLoadingLine short"/>
-    </aside>
-    <main className="routeLoadingMain" aria-hidden="true">
-      <div className="routeLoadingTop"><span/></div>
-      <div className="routeLoadingCenter"><i/><b/><span/></div>
-      <div className="routeLoadingComposer"/>
+  return <div className="wl-loading" role="status" aria-label="Loading WatchLog" aria-busy="true">
+    <aside className="wl-loading-nav" aria-hidden="true"><i/><i/><i/><i/><i/><i/></aside>
+    <main className="wl-loading-main" aria-hidden="true">
+      <div className="wl-loading-head"><i/><b/></div>
+      <div className="wl-loading-rows"><div><span/></div><div><span/></div><div><span/></div><div><span/></div></div>
     </main>
   </div>;
 }

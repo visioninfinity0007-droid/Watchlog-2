@@ -1,0 +1,47 @@
+/* Control Room (multi-site) - small page-local patterns on top of owner.css. Tokens only. */
+
+/* Recent activity: a ledger row with an optional evidence thumbnail. */
+.activity{display:grid;grid-template-columns:3px 88px minmax(0,1fr) auto;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--ow-line);color:inherit!important;text-decoration:none!important}
+.activity:first-child{border-top:1px solid var(--ow-line)}
+.activity:hover h3{color:var(--ow-violet)}
+.activity h3{font-size:14px;font-weight:600;color:var(--ow-ink);line-height:1.4}
+.activity p{margin-top:2px;color:var(--ow-muted);font-size:12px}
+.tick{align-self:stretch;width:3px;border-radius:2px;background:var(--ow-line-strong)}
+.tick.verified{background:var(--ow-verified)}
+.thumb{width:88px;height:56px;border-radius:var(--ow-r-control);border:1px solid var(--ow-line);background:var(--ow-line);object-fit:cover;display:grid;place-items:center;color:var(--ow-muted);font-size:11px;text-align:center;overflow:hidden}
+.go{color:var(--ow-violet);font-size:12.5px;font-weight:500;white-space:nowrap}
+
+/* Saved layout controls */
+.controls{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:4px 0 14px}
+.controls>label{min-width:0}
+.grow{flex:1 1 220px}
+.controls select,.controls input{width:100%}
+.buttons{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+/* Requested-view tiles: one discrete panel per camera slot, never wider than the page. */
+.wall{padding:0;background:var(--ow-paper)}
+.wall:fullscreen{padding:18px;overflow:auto}
+.tiles{display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));gap:12px}
+.tile{display:flex;flex-direction:column;min-width:0;border:1px solid var(--ow-line);border-radius:var(--ow-r-surface);background:var(--ow-raised);overflow:hidden}
+.view{aspect-ratio:16/9;display:grid;place-items:center;background:var(--ow-nav);color:var(--ow-nav-muted);font-size:12px;text-align:center;overflow:hidden}
+.view img{width:100%;height:100%;object-fit:cover;display:block}
+.tileBody{display:grid;gap:6px;padding:12px}
+.tileHead{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.tileHead h3{font-size:13.5px;font-weight:600;color:var(--ow-ink);line-height:1.35}
+.tileHead p,.tileMeta{color:var(--ow-muted);font-size:11.5px}
+.tileAct{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px}
+.tileAct select{flex:1 1 140px;min-width:0;width:100%}
+.empty{display:grid;gap:10px;align-content:center;min-height:180px;padding:16px;color:var(--ow-muted);font-size:12.5px;text-align:center}
+.empty select{width:100%}
+
+.purposes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+
+@media(max-width:900px){
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:560px){
+  .tiles{grid-template-columns:minmax(0,1fr)}
+  .activity{grid-template-columns:3px 72px minmax(0,1fr)}
+  .thumb{width:72px;height:46px}
+  .go{display:none}
+}

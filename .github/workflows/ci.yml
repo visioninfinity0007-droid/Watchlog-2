@@ -67,6 +67,8 @@ jobs:
         run: python prototype/tests/test_customer_lifecycle_contract.py
       - name: Customer portal language contract
         run: python prototype/tests/test_customer_portal_language.py
+      - name: Owner portal design-system contract
+        run: python prototype/tests/test_portal_design_system_contract.py
       - name: Control Room security/product contract
         run: python prototype/tests/test_control_room_contract.py
       - name: Control Room reporting contract
@@ -186,6 +188,25 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder
 
+  portal-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Customer portal language contract
+        run: python prototype/tests/test_customer_portal_language.py
+      - name: Owner portal design-system contract
+        run: python prototype/tests/test_portal_design_system_contract.py
+      - name: Auth redirect + confirmation truth contract
+        run: python prototype/tests/test_auth_flow_contract.py
+      - name: Portal alignment contract
+        run: python prototype/tests/test_portal_alignment_contract.py
+      - name: Ask WatchLog production contract
+        run: python prototype/tests/test_ai_first_production_contract.py
+
   setup-ui-build:
     runs-on: windows-latest
     steps:
@@ -248,6 +269,7 @@ jobs:
           Copy-Item prototype\installer\nsis\watchlog.nsi (Join-Path $stage "watchlog.nsi")
           Copy-Item prototype\installer\run-agent.ps1 (Join-Path $stage "run-agent.ps1")
           Copy-Item prototype\installer\register-service.ps1 (Join-Path $stage "register-service.ps1")
+          Copy-Item prototype\installer\apply-remote-update.ps1 (Join-Path $stage "apply-remote-update.ps1")
           Copy-Item prototype\installer\nsis\wl-upgrade.ps1 (Join-Path $stage "wl-upgrade.ps1")
           Copy-Item "prototype\installer\READ ME FIRST.txt" (Join-Path $stage "READ ME FIRST.txt")
           Copy-Item prototype\installer\setup.ico (Join-Path $stage "setup.ico")
@@ -277,8 +299,8 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype\tests\test_wl_upgrade.ps1
           if ($LASTEXITCODE -ne 0) { throw "wl-upgrade transactional tests failed ($LASTEXITCODE)" }
 
-  # Real Postgres execution of the health migrations (0042-0048): the static contract tests regex the
-  # SQL, but this applies every migration to a DISPOSABLE Postgres and drives the RPCs with real rows —
+  # Real Postgres execution of the migration chain: static contract tests regex selected SQL,
+  # while this job applies every migration to a DISPOSABLE Postgres and drives RPCs with real rows —
   # the first time the health SQL actually executes. Never touches production (a throwaway service DB).
   integration:
     runs-on: ubuntu-latest
@@ -299,6 +321,7 @@ jobs:
       SUPABASE_DB_USER: postgres
       SUPABASE_DB_PASSWORD: postgres
       SUPABASE_DB_NAME: postgres
+      WATCHLOG_CI_PLAIN_POSTGRES: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

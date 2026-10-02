@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
-import { Nav, requireTenant } from "../shell";
-import ui from "../portal.module.css";
+import { requireTenant } from "../shell";
+import { OwnerPage, Lead, Section, Row, Metrics, Status, RailSection, Stat, Summary, Empty, Loading, Notice, AskLinks, num } from "../owner/ui";
+import styles from "./legacy.module.css";
 
 const REFRESH_MS = 10000;
 const GOAL_LABEL = {
@@ -152,7 +153,7 @@ export default function ControlRoom() {
     setAnalytics(analyticsResult);
     setError("");
     setAnalyticsError(analyticsRpcError ? say(analyticsRpcError) : "");
-    setStamp(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    setStamp(new Date().toISOString());
   }, [selectedSite]);
 
   useEffect(() => {
@@ -436,110 +437,243 @@ export default function ControlRoom() {
     return () => { live = false; };
   }, [model.recent, shots]);
 
-  if (!data && !error) return <div className="center"><p className="muted">Loading Control Room...</p></div>;
+  const selectedSiteRow = selectedSite === "all" ? null : (studio?.sites || []).find((site) => site.name === selectedSite) || null;
+  const askSiteId = selectedSiteRow?.id || "";
+  const scopeLabel = selectedSite === "all" ? "All sites" : selectedSite;
+  const updatedText = stamp ? `updated ${ago(stamp)}` : "";
+  const headActions = <>
+    <select value={selectedSite} onChange={(event) => setSelectedSite(event.target.value)} aria-label="Filter Control Room by site">
+      <option value="all">All sites</option>
+      {model.sites.map((site) => <option key={site} value={site}>{site}</option>)}
+    </select>
+    <button type="button" className="ow-btn quiet" onClick={load}>Refresh</button>
+  </>;
 
-  const totalCameras = data?.totals?.cameras || 0;
-  const eventCount = selectedSite === "all" ? (data?.totals?.events || 0) : model.recent.length;
+  if (!data && !error) return <OwnerPage active="Control Room" email={email} kicker={["Control Room", scopeLabel]} title="See what needs attention across every site." actions={headActions}>
+    <Loading label="Loading Control Room" />
+  </OwnerPage>;
+
+  const totalCameras = num(data?.totals?.cameras);
+  const eventCount = selectedSite === "all" ? num(data?.totals?.events) : model.recent.length;
   const currentSites = selectedSite === "all" ? (data?.totals?.sites || model.sites.length) : 1;
   const activity = analyticsModel.summary;
+  const metricValue = (value) => (analyticsError ? null : num(value) === null ? null : number(value));
+  const connectionValue = model.agents.length ? `${model.onlineConnections} of ${model.agents.length}` : data ? "None reporting" : null;
+  const cameraValue = selectedSite === "all" ? (totalCameras === null ? null : number(totalCameras)) : data ? String(model.silentCount) : null;
+  const eventValue = eventCount === null || !data ? null : number(eventCount);
 
-  return <div className="shell">
-    <Nav active="Control Room" email={email} right={
-      <span className="muted hide-sm" style={{ fontSize: "var(--font-size-xs)" }}>{stamp ? `updated ${stamp}` : ""}</span>
-    } />
-    <main className="main">
-      <header className={ui.pageHead}>
-        <div>
-          <div className={ui.eyebrow}>Control Room</div>
-          <h1>See what needs attention across every site.</h1>
-          <p>Bring site connectivity, camera health, recent activity and analytics into one working view. Recorded video stays on your recorder, while WatchLog surfaces the signals and evidence your team needs to act.</p>
+  const critical = model.queue.filter((item) => item.severity === "critical");
+  const checks = model.queue.filter((item) => item.severity !== "critical");
+  let lead;
+  if (!data) {
+    lead = { tone: "unknown", title: "Site status could not be checked.", body: "Nothing here is shown as healthy until WatchLog can confirm it." };
+  } else if (critical.length) {
+    lead = { tone: "bad", title: `${critical.length} site connection${critical.length === 1 ? " is" : "s are"} offline`, body: `Start with ${critical[0].title}.` };
+  } else if (checks.length) {
+    lead = { tone: "warn", title: `${checks.length} camera item${checks.length === 1 ? " needs" : "s need"} a check`, body: `Start with ${checks[0].title}.` };
+  } else if (!model.agents.length) {
+    lead = { tone: "unknown", title: "No site connection is reporting in this view.", body: "Camera health cannot be verified until a site connection reports." };
+  } else if (model.onlineConnections < model.agents.length) {
+    lead = { tone: "warn", title: `${model.onlineConnections} of ${model.agents.length} site connections are reporting`, body: "The others have not reported in the last few minutes." };
+  } else {
+    lead = { tone: "ok", title: "Every site connection is reporting.", body: "No quiet camera or camera-system fault in the last 24 hours." };
+  }
+
+  function siteState(row) {
+    const offline = (data?.agents || []).filter((agent) => agent.site === row.site && liveness(agent.last_seen_at)[0] === "s-bad").length;
+    if (!row.connections) return { tone: "unknown", word: "No connection" };
+    if (row.online === row.connections && row.silent === 0 && row.faults === 0) return { tone: "ok", word: "Healthy" };
+    if (row.online === row.connections) return { tone: "warn", word: "Check cameras" };
+    if (offline === row.connections) return { tone: "bad", word: "Offline" };
+    return { tone: "warn", word: "Partly reporting" };
+  }
+
+  const cameraOptions = camerasBySite.map(([site, cameras]) => <optgroup key={site} label={site}>{cameras.map((item) => <option key={item.id} value={item.id}>{item.name || `Camera ${item.channel}`}</option>)}</optgroup>);
+  const recentShown = model.recent.slice(0, 12);
+
+  const rail = <>
+    <RailSection label={selectedSite === "all" ? "Across every site" : selectedSite}>
+      <Stat label={selectedSite === "all" ? "Sites in view" : "Selected site"} value={String(currentSites)} />
+      <Stat label="Connections online" value={connectionValue} />
+      <Stat label={selectedSite === "all" ? "Cameras" : "Quiet cameras"} value={cameraValue} />
+      <Stat label={selectedSite === "all" ? "Events in 24 hours" : "Recent site events"} value={eventValue} />
+    </RailSection>
+    <RailSection label="Ask WatchLog">
+      <AskLinks siteId={askSiteId} prompts={["Which site needs my attention first?", "What changed across my sites in the last 24 hours?"]} />
+    </RailSection>
+  </>;
+
+  const summary = <Summary items={[
+    { value: String(currentSites), label: selectedSite === "all" ? "Sites in view" : "Selected site" },
+    { value: connectionValue ?? "Not available", muted: !model.agents.length, label: "Connections online" },
+    { value: data ? String(model.queue.length) : "Not available", muted: !data, label: "Need attention" },
+    { value: eventValue ?? "Not available", muted: eventValue === null, label: selectedSite === "all" ? "Events in 24 hours" : "Recent site events" },
+  ]} />;
+
+  return <OwnerPage active="Control Room" email={email}
+    kicker={["Control Room", scopeLabel, updatedText]}
+    title="See what needs attention across every site."
+    actions={headActions}
+    rail={rail}
+    summary={summary}>
+    {error && <Notice tone="bad">{error}</Notice>}
+    {analyticsError && <Notice tone="warn"><div><b>Analytics could not refresh.</b> {analyticsError}</div></Notice>}
+
+    <Lead tone={lead.tone} title={lead.title} body={lead.body} />
+
+    <Section first title="Needs attention first" count={model.queue.length || null} action={<a href="/site-health/">Open Site Health</a>}>
+      {!data ? <Empty title="Not available">Site connection and camera status could not be checked.</Empty>
+        : model.queue.length === 0 ? <Empty title="No connection or camera item needs attention in this view.">Anything WatchLog cannot verify stays marked as not verified.</Empty>
+        : <div className="ow-rows">{model.queue.map((item) => <Row key={item.key}
+          tone={item.severity === "critical" ? "bad" : "warn"}
+          title={item.title}
+          body={item.detail}
+          meta={[<Status key="state" tone={item.severity === "critical" ? "bad" : "warn"}>{item.severity === "critical" ? "Act now" : "Check"}</Status>, item.when ? ago(item.when) : null]}
+          action={<a className="ow-btn small quiet" href={item.href}>Open</a>} />)}</div>}
+    </Section>
+
+    <Section title="Site status" count={model.siteRows.length || null} note="Last 24 hours. Choose a site to focus the whole view.">
+      {model.siteRows.length === 0 ? <Empty title="No connected sites yet." />
+        : <div className="ow-rows">{model.siteRows.map((row) => {
+          const state = siteState(row);
+          return <Row key={row.site} tone={state.tone}
+            title={row.site}
+            meta={[
+              <Status key="state" tone={state.tone}>{state.word}</Status>,
+              `${row.online} of ${row.connections} connection${row.connections === 1 ? "" : "s"} online`,
+              `${row.silent} quiet camera${row.silent === 1 ? "" : "s"}`,
+              `${row.faults} fault${row.faults === 1 ? "" : "s"} in 24h`,
+              `${row.recentCount} recent event${row.recentCount === 1 ? "" : "s"}`,
+            ]}
+            action={selectedSite === row.site
+              ? <button type="button" className="ow-btn small quiet" onClick={() => setSelectedSite("all")}>All sites</button>
+              : <button type="button" className="ow-btn small quiet" onClick={() => setSelectedSite(row.site)}>Focus</button>} />;
+        })}</div>}
+    </Section>
+
+    <Section title="Recent activity" count={recentShown.length || null} note="Latest events in this view, with incident evidence where available." action={<a href="/incidents/">View all incidents</a>}>
+      {recentShown.length === 0 ? <Empty title="No recent events in this view yet." />
+        : <div>{recentShown.map((event, index) => {
+          const shot = event.event_id ? shots[event.event_id] : undefined;
+          return <a className={styles.activity} href="/incidents/" key={event.event_id || `${event.device_ts}-${index}`}>
+            <i className={`${styles.tick} ${event.has_snapshot && shot ? styles.verified : ""}`} aria-hidden="true" />
+            {event.has_snapshot && shot
+              ? <img className={styles.thumb} src={shot} alt={`Evidence from ${event.camera || "camera"}`} />
+              : <span className={styles.thumb}>{event.has_snapshot ? (shot === false ? "No image" : "Loading") : "No image"}</span>}
+            <div>
+              <h3>{humanType(event.event_type)}</h3>
+              <p>{[eventSite(event), event.camera].filter(Boolean).join(" · ") || "Camera event"}{event.device_ts ? ` · ${ago(event.device_ts)}` : ""}</p>
+            </div>
+            <span className={styles.go}>Review</span>
+          </a>;
+        })}</div>}
+    </Section>
+
+    <Section title="Activity analytics" note="Last 24 hours from your activity rules. Occupancy describes people presence, not sales." action={<a href="/analytics/">Open Analytics</a>}>
+      {analyticsModel.configuredRules === 0
+        ? <Empty title="No activity rules are set up in this view yet.">Add entrance, queue, occupancy or after-hours rules before relying on these numbers.</Empty>
+        : <>
+          <Metrics items={[
+            { value: metricValue(activity.visitor_in), label: "Visitor entries" },
+            { value: metricValue(activity.checkout_peak), label: "Area occupancy peak" },
+            { value: metricValue(activity.zone_entries), label: "Zone entries" },
+            { value: metricValue(activity.after_hours), label: "After-hours signals" },
+          ]} />
+          <div className="ow-label" style={{ margin: "18px 0 6px" }}>Most active rules</div>
+          {analyticsModel.active.length === 0
+            ? <Empty title="No rule activity in the last 24 hours.">Your activity rules are set up; nothing has been recorded yet in this view.</Empty>
+            : <div className="ow-rows">{analyticsModel.active.slice(0, 6).map((item) => <Row compact key={item.rule_id}
+              tone="verified"
+              title={item.name || GOAL_LABEL[item.analytic_key] || humanType(item.rule_type)}
+              meta={[`${number(item.count)} recorded`, ...[item.site, item.camera, GOAL_LABEL[item.analytic_key]].filter(Boolean)]} />)}</div>}
+        </>}
+    </Section>
+
+    <details className="ow-details" style={{ marginTop: 28 }}>
+      <summary>Saved camera layouts{layouts?.items?.length ? ` · ${layouts.items.length} saved` : ""}</summary>
+      <div>
+        <p className="ow-muted" style={{ fontSize: 12.5, marginBottom: 10 }}>Tiles are not live video. They show requested camera views, not a live video wall or continuous cloud video, and each tile says how recent its view is.</p>
+        <div className={styles.buttons} style={{ marginBottom: 12 }}>
+          <button type="button" className="ow-btn quiet small" onClick={newLayout}>New layout</button>
+          <button type="button" className="ow-btn quiet small" onClick={toggleFullscreen}>{isFullscreen ? "Exit fullscreen" : "Fullscreen operations"}</button>
         </div>
-        <div className={ui.headActions}>
-          <select value={selectedSite} onChange={(event) => setSelectedSite(event.target.value)} aria-label="Filter Control Room by site">
-            <option value="all">All sites</option>
-            {model.sites.map((site) => <option key={site} value={site}>{site}</option>)}
-          </select>
-          <button className="secondary" onClick={load}>Refresh</button>
-        </div>
-      </header>
-
-      {error && <div className="err">{error}</div>}
-      {analyticsError && <div className="banner"><b>Analytics could not refresh.</b><div className="muted" style={{ fontSize: "var(--font-size-sm)", marginTop: 4 }}>{analyticsError}</div></div>}
-
-      <div className={ui.callout}><span className={ui.statusDot} /><div><div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 4 }}>One operational view</div><strong>Health, activity and follow-up in one place.</strong><p>Control Room brings together site health, camera events and analytics. Recorded video stays on your recorder. Requested camera views and available incident evidence appear alongside the operational status of each site.</p></div></div>
-
-      <section className={ui.metricGrid} aria-label="Control Room summary">
-        <div className={ui.metric}><div className={ui.metricValue}>{currentSites}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Sites in view" : "Selected site"}</div></div>
-        <div className={ui.metric}><div className={ui.metricValue}>{model.onlineConnections} / {model.agents.length}</div><div className={ui.metricLabel}>Connections online</div></div>
-        <div className={ui.metric}><div className={ui.metricValue}>{selectedSite === "all" ? totalCameras : model.silentCount ? `${model.silentCount} quiet` : "Clear"}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Cameras" : "Camera attention"}</div></div>
-        <div className={ui.metric}><div className={ui.metricValue}>{eventCount}</div><div className={ui.metricLabel}>{selectedSite === "all" ? "Events in 24 hours" : "Recent site events"}</div></div>
-      </section>
-
-      <div className={ui.sectionHead}><div><h2>Saved camera layouts</h2><p>Arrange requested camera stills into 2×2, 3×3 or 4×4 operating views. Tiles are not live video.</p></div><div className={ui.inlineActions}><button className="secondary" onClick={newLayout}>New layout</button><button className="secondary" onClick={toggleFullscreen}>{isFullscreen ? "Exit fullscreen" : "Fullscreen operations"}</button></div></div>
-      {!layoutsAvailable ? <div className={ui.callout}><span className={ui.statusDot}/><div><strong>Saved layouts are temporarily unavailable.</strong><p>You can continue using the rest of Control Room.</p></div></div> : <>
-        {layoutError && <div className="err">{layoutError}</div>}
-        {layoutNote && <div className="ok-note">{layoutNote}</div>}
-        <section className={ui.card} style={{ marginBottom: 18 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(180px,.8fr) minmax(220px,1.3fr) minmax(150px,.55fr) auto", gap: 12, alignItems: "end" }}>
-            <label><span className="muted" style={{ display: "block", fontSize: 11, marginBottom: 6 }}>SAVED VIEW</span><select value={selectedLayoutId} onChange={(event) => { const layout = (layouts.items || []).find((item) => item.id === event.target.value); if (layout) openLayout(layout); else newLayout(); }}><option value="">Unsaved layout</option>{(layouts.items || []).map((layout) => <option key={layout.id} value={layout.id}>{layout.name}</option>)}</select></label>
-            <label><span className="muted" style={{ display: "block", fontSize: 11, marginBottom: 6 }}>LAYOUT NAME</span><input value={layoutName} maxLength={80} disabled={!layouts.can_manage} onChange={(event) => setLayoutName(event.target.value)} /></label>
-            <label><span className="muted" style={{ display: "block", fontSize: 11, marginBottom: 6 }}>GRID</span><select value={gridSize} disabled={!layouts.can_manage} onChange={(event) => changeGridSize(event.target.value)}><option value={2}>2 × 2</option><option value={3}>3 × 3</option><option value={4}>4 × 4</option></select></label>
-            <div className={ui.inlineActions}>{layouts.can_manage ? <><button className="primary" disabled={layoutBusy || !layoutName.trim()} onClick={saveLayout}>{layoutBusy ? "Saving..." : "Save layout"}</button>{selectedLayoutId && <button className="secondary" disabled={layoutBusy} onClick={deleteLayout}>Delete</button>}</> : <span className="muted">Read-only</span>}</div>
+        {!layoutsAvailable ? <Notice>Saved layouts are temporarily unavailable. You can continue using the rest of Control Room.</Notice> : <>
+          {layoutError && <Notice tone="bad">{layoutError}</Notice>}
+          {layoutNote && <Notice tone="ok">{layoutNote}</Notice>}
+          <div className={styles.controls}>
+            <label className={`ow-field ${styles.grow}`}>Saved view
+              <select value={selectedLayoutId} onChange={(event) => { const layout = (layouts.items || []).find((item) => item.id === event.target.value); if (layout) openLayout(layout); else newLayout(); }}>
+                <option value="">Unsaved layout</option>
+                {(layouts.items || []).map((layout) => <option key={layout.id} value={layout.id}>{layout.name}</option>)}
+              </select>
+            </label>
+            <label className={`ow-field ${styles.grow}`}>Layout name
+              <input value={layoutName} maxLength={80} disabled={!layouts.can_manage} onChange={(event) => setLayoutName(event.target.value)} />
+            </label>
+            <label className="ow-field">Grid
+              <select value={gridSize} disabled={!layouts.can_manage} onChange={(event) => changeGridSize(event.target.value)}>
+                <option value={2}>2 × 2</option>
+                <option value={3}>3 × 3</option>
+                <option value={4}>4 × 4</option>
+              </select>
+            </label>
+            <div className={styles.buttons}>
+              {layouts.can_manage ? <>
+                <button type="button" className="ow-btn" disabled={layoutBusy || !layoutName.trim()} onClick={saveLayout}>{layoutBusy ? "Saving..." : "Save layout"}</button>
+                {selectedLayoutId && <button type="button" className="ow-btn danger" disabled={layoutBusy} onClick={deleteLayout}>Delete</button>}
+              </> : <span className="ow-muted">Read-only</span>}
+            </div>
           </div>
-        </section>
 
-        <section ref={operationsRef} className={ui.card} style={{ background: "var(--color-canvas)", overflow: "auto", padding: isFullscreen ? 18 : 14 }}>
-          <div style={{ minWidth: gridSize * 235, display: "grid", gridTemplateColumns: `repeat(${gridSize}, minmax(220px,1fr))`, gap: 12 }}>
-            {normalizedSlots(layoutCameraIds, gridSize).map((cameraId, index) => {
-              const camera = cameraInventory.find((item) => item.id === cameraId) || null;
-              const shot = camera ? cameraShots[camera.id] : null;
-              const state = camera?.health?.activity_state || "unknown";
-              const statusClass = state === "active" ? "s-ok" : state === "silent" ? "s-warn" : state === "never" ? "s-unk" : "s-unk";
-              return <article key={index} style={{ minHeight: 245, border: "1px solid var(--color-line-dark)", borderRadius: 12, overflow: "hidden", background: "var(--color-panel)" }}>
-                {camera ? <>
-                  <div style={{ aspectRatio: "16 / 9", background: "#050a12", display: "grid", placeItems: "center", overflow: "hidden" }}>
-                    {shot?.image ? <img src={shot.image} alt={`requested still from ${camera.name || "camera"}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <div className="muted" style={{ textAlign: "center", padding: 18 }}>{shot?.loading ? "Waiting for requested still..." : "No requested still available"}</div>}
-                  </div>
-                  <div style={{ padding: 13 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}><div><strong>{camera.name || `Camera ${camera.channel}`}</strong><div className="muted" style={{ fontSize: 11, marginTop: 3 }}>{camera.siteName} · {humanType(camera.purpose || "custom")}</div></div><span className={`pill ${statusClass}`}>{state === "active" ? "recent" : state === "silent" ? "quiet" : state === "never" ? "not seen" : "health unknown"}</span></div>
-                    <div className="muted" style={{ fontSize: 11, marginTop: 9 }}>{camera.health?.last_activity_at ? `Last activity ${ago(camera.health.last_activity_at)}` : "No camera activity timestamp yet"}{camera.recentCount ? ` · ${camera.recentCount} recent event${camera.recentCount === 1 ? "" : "s"}` : ""}</div>
-                    <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{shot?.capturedAt ? `Requested still captured ${ago(shot.capturedAt)}` : "Still image is shown only after an explicit request."}</div>
-                    <div className={ui.inlineActions} style={{ marginTop: 10, justifyContent: "space-between" }}><select value={cameraId} disabled={!layouts.can_manage} onChange={(event) => setLayoutSlot(index, event.target.value)} style={{ flex: 1, minWidth: 0 }}><option value="">Empty slot</option>{camerasBySite.map(([site, cameras]) => <optgroup key={site} label={site}>{cameras.map((item) => <option key={item.id} value={item.id}>{item.name || `Camera ${item.channel}`}</option>)}</optgroup>)}</select>{studio?.can_manage !== false && <button className="secondary" disabled={shot?.loading} onClick={() => requestFreshStill(camera)}>{shot?.loading ? "Requesting..." : "Request fresh still"}</button>}</div>
-                  </div>
-                </> : <div style={{ height: "100%", minHeight: 245, display: "grid", placeItems: "center", padding: 16 }}><div style={{ width: "100%" }}><div className="muted" style={{ textAlign: "center", marginBottom: 10 }}>Empty camera slot</div><select value="" disabled={!layouts.can_manage} onChange={(event) => setLayoutSlot(index, event.target.value)}><option value="">Choose camera...</option>{camerasBySite.map(([site, cameras]) => <optgroup key={site} label={site}>{cameras.map((item) => <option key={item.id} value={item.id}>{item.name || `Camera ${item.channel}`}</option>)}</optgroup>)}</select></div></div>}
-              </article>;
-            })}
-          </div>
-        </section>
-        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>Camera tiles show requested camera views, not live video. The time on each tile shows how recent the view is.</div>
-      </>}
+          <section ref={operationsRef} className={styles.wall} aria-label="Camera layout">
+            <div className={styles.tiles} style={{ "--cols": gridSize }}>
+              {normalizedSlots(layoutCameraIds, gridSize).map((cameraId, index) => {
+                const camera = cameraInventory.find((item) => item.id === cameraId) || null;
+                const shot = camera ? cameraShots[camera.id] : null;
+                const state = camera?.health?.activity_state || "unknown";
+                const stateTone = state === "active" ? "ok" : state === "silent" ? "warn" : "unknown";
+                const stateWord = state === "active" ? "Recent activity" : state === "silent" ? "Quiet" : state === "never" ? "Not seen" : "Health unknown";
+                return <article key={index} className={styles.tile}>
+                  {camera ? <>
+                    <div className={styles.view}>
+                      {shot?.image ? <img src={shot.image} alt={`Requested view from ${camera.name || "camera"}`} /> : <span>{shot?.loading ? "Waiting for the requested view..." : "No requested view available"}</span>}
+                    </div>
+                    <div className={styles.tileBody}>
+                      <div className={styles.tileHead}>
+                        <div><h3>{camera.name || `Camera ${camera.channel}`}</h3><p>{camera.siteName} · {camera.purpose ? humanType(camera.purpose) : "Purpose not set"}</p></div>
+                        <Status tone={stateTone}>{stateWord}</Status>
+                      </div>
+                      <div className={styles.tileMeta}>{camera.health?.last_activity_at ? `Last activity ${ago(camera.health.last_activity_at)}` : "No camera activity time yet"}{camera.recentCount ? ` · ${camera.recentCount} recent event${camera.recentCount === 1 ? "" : "s"}` : ""}</div>
+                      <div className={styles.tileMeta}>{shot?.capturedAt ? `Requested view captured ${ago(shot.capturedAt)}` : "Still image is shown only after an explicit request."}</div>
+                      <div className={styles.tileAct}>
+                        <select aria-label={`Camera for slot ${index + 1}`} value={cameraId} disabled={!layouts.can_manage} onChange={(event) => setLayoutSlot(index, event.target.value)}>
+                          <option value="">Empty slot</option>
+                          {cameraOptions}
+                        </select>
+                        {studio?.can_manage !== false && <button type="button" className="ow-btn small quiet" disabled={shot?.loading} onClick={() => requestFreshStill(camera)}>{shot?.loading ? "Requesting..." : "Request fresh still"}</button>}
+                      </div>
+                    </div>
+                  </> : <div className={styles.empty}>
+                    <span>Empty camera slot</span>
+                    <select aria-label={`Camera for slot ${index + 1}`} value="" disabled={!layouts.can_manage} onChange={(event) => setLayoutSlot(index, event.target.value)}>
+                      <option value="">Choose camera...</option>
+                      {cameraOptions}
+                    </select>
+                  </div>}
+                </article>;
+              })}
+            </div>
+          </section>
+        </>}
+      </div>
+    </details>
 
-      <div className={ui.sectionHead}><div><h2>Common camera purposes</h2><p>Use these as a guide when planning a site layout, then set each camera&apos;s purpose in Analytics Setup.</p></div><a className={ui.secondaryLink} href="/analytics/studio/">Open Analytics Setup</a></div>
-      <section className={ui.card}><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{COMMON_CAMERA_ROLES.map((role) => <span key={role} className="pill s-unk">{role}</span>)}</div></section>
-
-      <div className={ui.sectionHead}><div><h2>Activity analytics</h2><p>From your configured analytics, measured over the last 24 hours. Occupancy values describe people presence, not sales.</p></div><a className={ui.secondaryLink} href="/analytics/">Open Analytics</a></div>
-      {analyticsModel.configuredRules === 0 ? <div className={ui.emptyCard}>No analytics are set up in this view yet. Add entrance, queue, occupancy or after-hours rules in Analytics Setup before using these numbers operationally.</div> : <>
-        <section className={ui.metricGrid} aria-label="Activity analytics summary">
-          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.visitor_in)}</div><div className={ui.metricLabel}>Visitor entries</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.checkout_peak)}</div><div className={ui.metricLabel}>Area occupancy peak</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.zone_entries)}</div><div className={ui.metricLabel}>Zone entries</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{number(activity.after_hours)}</div><div className={ui.metricLabel}>After-hours signals</div></div>
-        </section>
-        <div className={ui.sectionHead}><div><h2>Most active analytics</h2><p>Which configured measurements produced the most activity in this view.</p></div></div>
-        <section className={ui.card}>{analyticsModel.active.length === 0 ? <div className={ui.emptyCard}>Analytics is configured, but no measurement activity has been received in the last 24 hours.</div> : <div className={ui.splitList}>{analyticsModel.active.slice(0, 6).map((item) => <div className={ui.listRow} key={item.rule_id}><span className="pill s-ok">{number(item.count)}</span><div><strong>{item.name || GOAL_LABEL[item.analytic_key] || humanType(item.rule_type)}</strong><small>{[item.site, item.camera, GOAL_LABEL[item.analytic_key]].filter(Boolean).join(" · ")}</small></div></div>)}</div>}</section>
-      </>}
-
-      <div className={ui.sectionHead}><div><h2>Operational queue</h2><p>Connection and camera-system issues that should be checked first.</p></div><a className={ui.secondaryLink} href="/site-health/">Open Site Health</a></div>
-      <section className={ui.twoCol}>
-        <div className={ui.card}>{model.queue.length === 0 ? <div className={ui.emptyCard}>No current connection, quiet-camera or camera-system items need attention in this view.</div> : <div className={ui.splitList}>{model.queue.map((item) => <a key={item.key} className={ui.listRow} href={item.href} style={{ color: "inherit", textDecoration: "none" }}><span className={`pill ${item.severity === "critical" ? "s-bad" : "s-warn"}`}>{item.severity === "critical" ? "Act now" : "Check"}</span><div><strong>{item.title}</strong><small>{item.detail}{item.when ? ` · ${ago(item.when)}` : ""}</small></div></a>)}</div>}</div>
-        <div className={ui.featureCard}><div className={ui.eyebrow}>What Control Room shows</div><h3>Operational awareness across every site.</h3><p>Control Room brings together the site health, event and analytics information WatchLog already tracks. Recorded video stays on your recorder — Control Room shows requested camera views and available incident evidence, not a live video wall or continuous cloud video.</p><div className={ui.inlineActions}><a className={ui.secondaryLink} href="/analytics/">Analytics</a><a className={ui.primaryLink} href="/incidents/">Review incidents</a></div></div>
-      </section>
-
-      <div className={ui.sectionHead}><div><h2>Site status</h2><p>Compare site connectivity and recent attention signals without leaving the Control Room.</p></div></div>
-      <section className={ui.card}><div className={ui.tableWrap}>{model.siteRows.length === 0 ? <div className={ui.emptyCard}>No connected sites yet.</div> : <table><thead><tr><th>Site</th><th>Connections</th><th>Online</th><th>Quiet cameras</th><th>Faults 24h</th><th>Recent events</th></tr></thead><tbody>{model.siteRows.map((row) => { const healthy = row.connections > 0 && row.online === row.connections && row.silent === 0 && row.faults === 0; return <tr key={row.site}><td><button className="ghost small" style={{ width: "auto", margin: 0, padding: 0, color: "inherit" }} onClick={() => setSelectedSite(row.site)}><b>{row.site}</b></button></td><td className="mono">{row.connections}</td><td><span className={`pill ${healthy ? "s-ok" : row.online ? "s-warn" : "s-bad"}`}>{row.online} / {row.connections}</span></td><td className="mono">{row.silent}</td><td className="mono">{row.faults}</td><td className="mono">{row.recentCount}</td></tr>; })}</tbody></table>}</div></section>
-
-      <div className={ui.sectionHead}><div><h2>Recent activity</h2><p>Latest events in the current site view, with incident stills where available.</p></div><a className={ui.secondaryLink} href="/incidents/">View all incidents</a></div>
-      <section className={ui.card}>{model.recent.length === 0 ? <div className={ui.emptyCard}>No recent events are available for this site filter yet.</div> : <div className={ui.splitList}>{model.recent.slice(0, 12).map((event, index) => { const shot = event.event_id ? shots[event.event_id] : undefined; return <a className={ui.listRow} href="/incidents/" key={event.event_id || `${event.device_ts}-${index}`} style={{ color: "inherit", textDecoration: "none" }}>{event.has_snapshot ? shot ? <img src={shot} alt={`still from ${event.camera || "camera"}`} style={{ width: 82, height: 52, objectFit: "cover", borderRadius: 8, border: "1px solid var(--color-line-dark)", flex: "none" }} /> : <span style={{ width: 82, height: 52, borderRadius: 8, border: "1px solid var(--color-line-dark)", display: "grid", placeItems: "center", flex: "none" }} className="muted">{shot === false ? "no image" : "loading"}</span> : <span className="pill s-ok">Event</span>}<div><strong>{humanType(event.event_type)}</strong><small>{[eventSite(event), event.camera].filter(Boolean).join(" · ") || "Camera event"}{event.device_ts ? ` · ${ago(event.device_ts)}` : ""}</small></div></a>; })}</div>}</section>
-    </main>
-  </div>;
+    <details className="ow-details">
+      <summary>Common camera purposes</summary>
+      <div>
+        <div className={styles.purposes}>{COMMON_CAMERA_ROLES.map((role) => <span key={role} className="ow-pill">{role}</span>)}</div>
+        <a href="/analytics/studio/">Set each camera&apos;s purpose in Activity Rules</a>
+      </div>
+    </details>
+  </OwnerPage>;
 }

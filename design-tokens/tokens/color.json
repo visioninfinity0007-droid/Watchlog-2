@@ -79,6 +79,62 @@
     "cool-gray": {
       "value": "#E9E9EE",
       "comment": "Supporting neutral from the identity sheet - borders, dividers, light UI. 1.21:1 on white, so it is a SURFACE colour and never text."
+    },
+    "ledger-nav": {
+      "value": "#0B1220",
+      "comment": "Signal Ledger: midnight-ink navigation foundation, taken from the owner-selected concept (Image 1, 'Midnight'). ledger-nav-text is 15.67:1 on it; violet-bright 5.03:1."
+    },
+    "ledger-nav-raised": {
+      "value": "#172036",
+      "comment": "Signal Ledger: hover/active row on the navigation foundation. DERIVED from ledger-nav; ledger-nav-text is 13.56:1 on it."
+    },
+    "ledger-nav-text": {
+      "value": "#E7EBF3",
+      "comment": "Signal Ledger: primary text on ledger-nav. 15.67:1."
+    },
+    "ledger-nav-muted": {
+      "value": "#9AA6BA",
+      "comment": "Signal Ledger: secondary text on ledger-nav. 7.61:1. Never on a light surface."
+    },
+    "ledger-paper": {
+      "value": "#F5F3EE",
+      "comment": "Signal Ledger: the warm neutral management workspace. Body text ledger-text is 12.24:1 on it; ledger-muted 5.35:1; violet 6.10:1."
+    },
+    "ledger-raised": {
+      "value": "#FBFAF7",
+      "comment": "Signal Ledger: a raised surface on paper, used sparingly for genuinely discrete items. ledger-muted is 5.69:1 on it."
+    },
+    "ledger-line": {
+      "value": "#E2DED5",
+      "comment": "Signal Ledger: the thin ledger hairline and section divider. A SURFACE colour, never text."
+    },
+    "ledger-line-strong": {
+      "value": "#CFCAC0",
+      "comment": "Signal Ledger: emphasised divider, control borders and chart axes. Never text."
+    },
+    "ledger-text": {
+      "value": "#2F2D35",
+      "comment": "Signal Ledger: body text on paper. 12.24:1."
+    },
+    "ledger-muted": {
+      "value": "#66626E",
+      "comment": "Signal Ledger: secondary text on paper. 5.35:1 on paper, 5.69:1 on raised."
+    },
+    "verified": {
+      "value": "#3F909F",
+      "comment": "Signal Ledger: muted cyan for VERIFIED monitoring coverage and available evidence. A graphic fill (coverage strips, evidence markers) at 3.32:1 on paper - never body text, never a health status (green stays the only healthy colour)."
+    },
+    "verified-text": {
+      "value": "#1D6774",
+      "comment": "Signal Ledger: verified-coverage wording on paper. 5.84:1."
+    },
+    "verified-soft": {
+      "value": "#DCEDEF",
+      "comment": "Signal Ledger: quiet background behind verified-coverage figures. A SURFACE colour."
+    },
+    "unknown": {
+      "value": "#7F8899",
+      "comment": "Signal Ledger: 'could not be verified' / unknown graphic fill (cool slate, per the Signal Ledger palette), always hatched and always labelled. 3.22:1 on paper. Unknown is neutral grey - never green, never red, never zero."
     }
   }
 }
