@@ -142,6 +142,31 @@ demands action; most incidents do not.
 ---
 
 
+### Signal Ledger — the owner portal's visual territory (selected 2026-10)
+
+The owner selected **Signal Ledger** (Image 1) as the product visual system. Sources: Drive
+"06 — WatchLog Brand Territory A — Signal Ledger", "05 — Brand Foundation v1", "03 — Inspiration
+Library" and the selected concept image. Locked there: midnight-ink foundation, indigo-violet accent,
+product UI as the brand, warm neutral content surfaces, coverage strip, no card walls. Not yet locked
+there: exact logo geometry, final hex values, final semantic status colours. It refines, not replaces,
+the principles above:
+
+- **Ink-midnight navigation, warm-neutral workspace.** The navigation sits on `ledger-nav`; the
+  management workspace is the warm `ledger-paper`, not a cold white or a black console.
+- **Violet stays the only brand/interaction colour.** Links, primary actions, the primary chart
+  series and the active navigation mark.
+- **Muted cyan means verified.** `verified` marks verified monitoring coverage and available
+  evidence (coverage strips, evidence markers). It is never a health status and never decoration;
+  green remains the only "healthy" colour.
+- **Unknown is hatched neutral grey with a word.** Unverified time, not-observed days and unknown
+  states are drawn as a hatched gap — never as zero, never as green.
+- **Ledger lines instead of boxes.** Thin hairlines, time/coverage strips, event markers on a time
+  axis and typographic hierarchy do the work that card containers used to do. A raised surface is
+  reserved for a genuinely discrete item.
+
+Values live in `design-tokens/tokens/color.json` (`ledger-*`, `verified*`, `unknown`) with their
+measured contrast ratios.
+
 ### Customer portal experience
 
 The portal is an **owner intelligence product**, not a CCTV control room and not a chatbot homepage.

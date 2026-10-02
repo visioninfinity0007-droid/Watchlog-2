@@ -49,6 +49,32 @@ say that a reliable comparison is not ready yet or omit the change block.
 Do not fill a dashboard grid with unsupported or decorative KPIs. If a figure is not ready, omit it or say
 why it is unavailable. AI is a primary capability, not the prerequisite for receiving value.
 
+## Owner portal shell (Signal Ledger)
+
+The owner portal is built from one shared system: `portal/app/owner/owner.css` (classes `ow-*`) and
+`portal/app/owner/ui.js` (components). Pages compose it; they do not restyle it.
+
+- **Three zones on desktop:** left navigation | main management workspace | right intelligence
+  rail. The rail is sticky, holds compact decision context (coverage ledger, healthy cameras,
+  attention counts, the strongest supported change, latest report, contextual Ask WatchLog) as
+  rows — never a second column of large cards. Below 1240px the rail becomes a compact owner
+  summary strip at the top of the page (2–4 facts), not a long stacked list.
+- **Page order:** compact header (site + one-line title) → one decisive conclusion (`Lead`) →
+  the important exception or change → supporting analytics → action → evidence/detail behind
+  `Details`. No hero blocks, no explanatory introductions.
+- **Copy budget:** titles one line; section headings 3–7 words; at most one short sentence of
+  section note; findings are a title plus one sentence.
+- **Coverage ledger:** the Signal Ledger coverage component — "23h 02m verified · 58 min could not be
+  verified" — built from the governed coverage classes (live / recovered / unverified seconds), or the
+  verified percentage when only a ratio exists, and "Not verified yet" when there is nothing. The strip
+  is a proportion (verified, then could-not-be-verified); it never implies *when* coverage was missing
+  unless the data provides the time positions.
+- **Charts:** bars with direct labels; one question per chart, written above it; not-observed days
+  or hours are hatched gaps; comparisons are current (violet) against previous (grey) with a
+  qualifier stating how many days were observed in each period.
+- **Status words:** every coloured mark carries a word (`Status`). Business changes use the neutral
+  violet marker, not green/red — green/amber/red stay reserved for health, attention and fault.
+
 ## Layout
 
 - Marketing max width `layout.max-width` (1280px). Dashboard
