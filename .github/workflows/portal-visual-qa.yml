@@ -2,9 +2,13 @@ name: Portal Visual QA
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - '.github/workflows/portal-visual-qa.yml'
   push:
-    branches:
-      - feat/portal-owner-home-phase1
+    branches: [main]
     paths:
       - 'portal/**'
       - '.github/workflows/portal-visual-qa.yml'
