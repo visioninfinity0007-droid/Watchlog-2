@@ -2,11 +2,11 @@
 
 import {useCallback,useEffect,useMemo,useState} from "react";
 import {supabase,say} from "../../lib/supabase";
-import {Nav,requireTenant} from "../shell";
-import {rememberSite,selectedSiteId} from "../site-context";
-import ui from "../portal.module.css";
+import {requireTenant} from "../shell";
+import {rememberSite,selectedSiteId,withSite} from "../site-context";
+import {OwnerPage,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Empty,Loading,Notice,AskLinks,ratioPct} from "../owner/ui";
 
-function human(v){return String(v||"Not verified").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
+function human(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
 function ago(ts){
   if(!ts)return"Never";
   const s=Math.max(0,Math.round((Date.now()-Date.parse(ts))/1000));
@@ -15,38 +15,58 @@ function ago(ts){
   if(s<86400)return Math.round(s/3600)+"h ago";
   return Math.round(s/86400)+"d ago";
 }
-function Pill({kind="unknown",children}){return <span className={"pill "+(kind==="ok"?"s-ok":kind==="bad"?"s-bad":kind==="warn"?"s-warn":"s-unk")}>{children}</span>}
+function siteTime(ts,timeZone,withDay){
+  if(!ts)return"";
+  try{return new Intl.DateTimeFormat("en-PK",{timeZone:timeZone||"Asia/Karachi",...(withDay?{day:"numeric",month:"short"}:{}),hour:"numeric",minute:"2-digit",hour12:true}).format(new Date(ts))}
+  catch{return String(ts)}
+}
+function duration(seconds){
+  const s=Math.max(0,Math.round(Number(seconds)||0));
+  if(s<60)return"under a minute";
+  const m=Math.round(s/60);
+  if(m<60)return m+" min";
+  const h=Math.floor(m/60),r=m%60;
+  return h+" h"+(r?" "+r+" min":"");
+}
 function healthView(state){
   switch(String(state||"unknown").toLowerCase()){
-    case"operational":return{label:"Healthy",kind:"ok"};
-    case"degraded":return{label:"Needs attention",kind:"warn"};
-    case"offline":return{label:"Offline",kind:"bad"};
-    default:return{label:"Not verified",kind:"unknown"};
+    case"operational":return{label:"Healthy",tone:"ok"};
+    case"degraded":return{label:"Needs attention",tone:"warn"};
+    case"offline":return{label:"Offline",tone:"bad"};
+    default:return{label:"Not verified",tone:"unknown"};
   }
 }
 function recordingView(state){
   switch(String(state||"unknown").toLowerCase()){
-    case"recording":return{label:"Confirmed",kind:"ok"};
-    case"not_recording":return{label:"Not recording",kind:"bad"};
-    case"storage_fault":return{label:"Needs attention",kind:"warn"};
-    default:return{label:"Not verified",kind:"unknown"};
+    case"recording":return{label:"Confirmed",tone:"ok"};
+    case"not_recording":return{label:"Not recording",tone:"bad"};
+    case"storage_fault":return{label:"Needs attention",tone:"warn"};
+    default:return{label:"Not verified",tone:"unknown"};
   }
 }
-function faultLabel(f){
+// Customer wording for a reported fault, and whether the owner (rather than WatchLog) needs to act.
+function faultView(f){
   const key=String(f?.reason||f?.reason_code||f?.type||f?.fault_type||"").toLowerCase();
-  const labels={
-    agent_unreachable:"WatchLog connection lost",
-    nvr_unreachable:"Camera system unreachable",
-    nvr_auth_failed:"Camera system sign-in failed",
-    storage_fault:"Camera system storage issue",
-    storage_degraded:"Camera system storage needs attention",
-    disk_full:"Camera system storage is full",
-    video_loss:"Camera offline",
-    camera_offline:"Camera offline",
-    not_recording:"Recording is not confirmed",
-    recording_storage_fault:"Recording storage issue"
+  const views={
+    agent_unreachable:["WatchLog connection lost","Check that the WatchLog computer at the site is switched on and online.",true],
+    nvr_unreachable:["Camera system unreachable","Check that the recorder is powered and connected to the site network.",true],
+    nvr_auth_failed:["Camera system sign-in failed","The recorder sign-in may have changed. Update it in Setup & Support.",true],
+    storage_fault:["Camera system storage issue","Check the recorder's storage drive.",true],
+    storage_degraded:["Camera system storage needs attention","Check the recorder's storage drive soon.",true],
+    disk_full:["Camera system storage is full","Free up or replace the recorder's storage.",true],
+    video_loss:["Camera offline","Check the camera's power and cable.",true],
+    camera_offline:["Camera offline","Check the camera's power and cable.",true],
+    not_recording:["Recording is not confirmed","Check the recording schedule on the recorder.",true],
+    recording_storage_fault:["Recording storage issue","Check the recorder's storage drive.",true]
   };
-  return labels[key]||"Monitoring issue";
+  const v=views[key]||["Monitoring issue","WatchLog is checking this issue.",false];
+  return{label:v[0],action:v[1],owner:v[2]};
+}
+function gapCause(cause){
+  const key=String(cause||"").toLowerCase();
+  if(key==="agent_unreachable")return"Site connection lost";
+  if(key==="no_authoritative_agent")return"Site was not connected";
+  return"Monitoring not verified";
 }
 
 export default function HealthWorkspace(){
@@ -68,6 +88,7 @@ export default function HealthWorkspace(){
     const id=list.some(x=>String(x.id)===String(requested))?requested:(list[0]?.id||"");
     setSiteId(id);
     if(id)rememberSite(id,list.find(x=>String(x.id)===String(id))?.name||"");
+    else setLoading(false);
   },[]);
 
   const refresh=useCallback(async id=>{
@@ -92,11 +113,20 @@ export default function HealthWorkspace(){
   }
 
   const site=sites.find(s=>String(s.id)===String(siteId));
+  const tz=site?.timezone||ctx?.site?.timezone;
   const cams=(ctx?.cameras||[]).filter(c=>c.monitor);
   const faults=ctx?.faults||[];
   const online=Boolean(ctx?.connectivity?.agent_online);
   const ever=Boolean(ctx?.connectivity?.last_seen);
+  const lastSeen=ctx?.connectivity?.last_seen;
   const system=ctx?.recorder||{};
+  const coverage=ctx?.coverage||null;
+  const coveragePct=ratioPct(coverage?.coverage_ratio);
+  const generatedAt=ctx?.generated_at?Date.parse(ctx.generated_at):Date.now();
+  const gaps=(coverage?.gaps||[]).filter(g=>g&&g.start).map(g=>{
+    const start=Date.parse(g.start),end=g.end?Date.parse(g.end):generatedAt;
+    return{start:g.start,end:g.end,cause:g.cause,seconds:Math.max(0,(end-start)/1000),ongoing:!g.end||Math.abs(generatedAt-end)<120000};
+  });
 
   const stats=useMemo(()=>{
     const operational=cams.filter(c=>String(c.health_state||"").toLowerCase()==="operational").length;
@@ -109,66 +139,122 @@ export default function HealthWorkspace(){
     return{operational,degraded,offline,healthUnknown,recording,recordingIssue,recordingUnknown};
   },[cams]);
 
-  let tone="ok",title="Monitoring is currently verified",copy="WatchLog is connected, monitored cameras are healthy, and recording is confirmed for the cameras shown below.";
+  // The conclusion: is WatchLog currently able to observe this site?
+  const issueCount=faults.length||stats.offline+stats.degraded+stats.recordingIssue;
+  let tone="ok",title="WatchLog is observing this site",copy="Connected · "+cams.length+" monitored camera"+(cams.length===1?"":"s")+" healthy with recording confirmed.";
+  let cta=null;
   if(!ever&&!online){
-    tone="unknown";title="Monitoring is not set up yet";copy="Connect WatchLog to this site before camera health and recording can be checked.";
+    tone="unknown";title="WatchLog is not observing this site yet";copy="Connect WatchLog to this site before camera health and recording can be checked.";
+    cta=<a className="ow-btn" href={withSite("/setup/",siteId)}>Continue setup</a>;
   }else if(!online){
-    tone="bad";title="Site connection is unavailable";copy="The last WatchLog contact was "+ago(ctx?.connectivity?.last_seen)+". The current monitoring picture may be incomplete until the site reconnects.";
+    tone="bad";title="WatchLog cannot observe this site right now";copy="Site connection lost · last contact "+ago(lastSeen)+". The current monitoring picture may be incomplete until the site reconnects.";
   }else if(!cams.length){
     tone="unknown";title="No cameras are selected for monitoring";copy="Choose the cameras WatchLog should monitor before this page can verify camera health or recording.";
+    cta=<a className="ow-btn" href={withSite("/setup/",siteId)}>Choose cameras</a>;
   }else if(faults.length||stats.offline||stats.degraded||stats.recordingIssue){
-    tone="warn";title="Monitoring needs attention";copy=(faults.length||stats.offline+stats.degraded+stats.recordingIssue)+" item"+((faults.length||stats.offline+stats.degraded+stats.recordingIssue)===1?"":"s")+" need checking. Review the details below.";
+    tone="warn";title="Monitoring needs attention";copy=issueCount+" item"+(issueCount===1?"":"s")+" need checking. WatchLog is connected; the affected cameras are listed below.";
   }else if(stats.healthUnknown||stats.recordingUnknown){
     tone="unknown";title="Monitoring is not fully verified";copy="WatchLog is connected, but some camera health or recording states are still unverified. Unknown states are not treated as healthy.";
   }
 
-  const connectionKind=online?"ok":ever?"bad":"unknown";
-  const cameraKind=!cams.length?"unknown":stats.offline||stats.degraded?"warn":stats.healthUnknown?"unknown":"ok";
-  const recordingKind=!cams.length?"unknown":stats.recordingIssue?"warn":stats.recordingUnknown?"unknown":"ok";
+  const connectionTone=online?"ok":ever?"bad":"unknown";
+  const connectionWord=online?"Connected":ever?"Disconnected":"Not connected yet";
 
-  return <div className="shell">
-    <Nav active="Site Health" email={email} currentSiteId={siteId}/>
-    <main className="main">
-      <header className="target-page-head">
-        <div><div className="target-eyebrow">System Health</div><h1>Can I trust monitoring at {site?.name||"this site"}?</h1><p>Connection, camera health and recording verification in one place.</p></div>
-        <div className="target-actions">
-          {sites.length>1&&<select value={siteId} onChange={e=>choose(e.target.value)}>{sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>}
-          <button className="ghost small" onClick={()=>refresh(siteId)} disabled={loading}>{loading?"Refreshing…":"Refresh"}</button>
+  // Per-camera ledger. While the site connection is lost, earlier camera states are stale, so they are
+  // shown as not verified with the last known state - never as current green.
+  const ledger=cams.map(c=>{
+    const h=healthView(c.health_state),r=recordingView(c.recording_state);
+    const fault=faults.find(f=>f.camera&&f.camera===c.name);
+    const stale=!online;
+    return{
+      key:c.id||c.channel,
+      name:c.name||"Camera "+c.channel,
+      area:c.purpose?human(c.purpose):"Purpose not set",
+      health:stale?{label:"Not verified",tone:"unknown",note:h.tone!=="unknown"?"Last known: "+h.label.toLowerCase():null}:h,
+      recording:stale?{label:"Not verified",tone:"unknown",note:r.tone!=="unknown"?"Last known: "+r.label.toLowerCase():null}:r,
+      action:fault?faultView(fault).action:stale?"Waiting for the site to reconnect":h.tone==="bad"||h.tone==="warn"?"Check the camera's power and cable.":r.tone==="bad"||r.tone==="warn"?"Check the recording schedule on the recorder.":h.tone==="unknown"||r.tone==="unknown"?"WatchLog is still confirming":"None",
+      attention:Boolean(fault)||["bad","warn"].includes(h.tone)||["bad","warn"].includes(r.tone)
+    };
+  }).sort((a,b)=>Number(b.attention)-Number(a.attention));
+  // Cameras whose own state needs checking but which have no reported fault row.
+  const unreported=online?ledger.filter(c=>c.attention&&!faults.some(f=>f.camera&&f.camera===c.name)):[];
+  const ownerActions=faults.map(faultView).filter(v=>v.owner).length+unreported.length+(!online&&ever?1:0);
+
+  const recorderName=[system.vendor,system.model].filter(Boolean).join(" ");
+
+  const rail=ctx?<>
+    <RailSection label="Coverage today">
+      {coveragePct===null?<Figure value="—" unit="not verified yet"/>:<Figure value={coveragePct+"%"} unit="verified since midnight"/>}
+      <div style={{marginTop:10}}><Ledger ratio={coveragePct===null?null:coveragePct/100} classes={coverage?.classes}/></div>
+      {coverage?.unverified_seconds>0&&<p className="ow-rail-note">{duration(coverage.unverified_seconds)} not verified today. Unverified time is not treated as quiet time.</p>}
+    </RailSection>
+    <RailSection label="Site">
+      <Stat label="Connection" note={ever?"Last contact "+ago(lastSeen):null} value={<Status tone={connectionTone}>{connectionWord}</Status>}/>
+      <Stat label="Cameras confirmed healthy" value={cams.length&&online?stats.operational+" of "+cams.length:null}/>
+      <Stat label="Recording confirmed" value={cams.length&&online?stats.recording+" of "+cams.length:null}/>
+      <Stat label="Recorder" note={recorderName||null} value={<Status tone={system.identified?"verified":"unknown"}>{system.identified?"Identified":"Not confirmed"}</Status>}/>
+    </RailSection>
+    <RailSection label="Ask WatchLog">
+      <AskLinks siteId={siteId} prompts={["Is monitoring fully working at this site right now?","Which cameras need attention and why?","Was today fully monitored?"]}/>
+    </RailSection>
+  </>:null;
+
+  const summary=ctx?<Summary items={[
+    {value:connectionWord,label:"Connection",muted:!online},
+    {value:cams.length&&online?stats.operational+"/"+cams.length:"—",label:"Cameras healthy",muted:!cams.length||!online},
+    {value:coveragePct===null?"Not verified":coveragePct+"%",label:"Coverage today",muted:coveragePct===null,ledger:coveragePct===null?null:coveragePct/100,classes:coverage?.classes},
+    {value:String(ownerActions),label:"Owner actions"}
+  ]}/>:null;
+
+  return <OwnerPage active="Site Health" email={email} siteId={siteId}
+    kicker={["System Health",site?.name]}
+    title="Can WatchLog observe this site?"
+    actions={<><SiteSelect sites={sites} value={siteId} onChange={choose}/><button type="button" className="ow-btn quiet" onClick={()=>refresh(siteId)} disabled={loading||!siteId} aria-busy={loading}>{loading?"Refreshing…":"Refresh"}</button></>}
+    rail={rail} summary={summary}>
+    {error&&<Notice tone="bad">{error}</Notice>}
+    {!ctx?(loading?<Loading label="Checking monitoring health"/>:<Empty title="No site to check yet.">Add a site in Account, then connect it in Setup & Support.</Empty>):<>
+      <Lead tone={tone} title={title} body={copy} action={cta}/>
+
+      <Section first title="Needs attention" count={faults.length+unreported.length+(!online&&ever?1:0)||null}>
+        {!ever&&!online?<Empty title="Health information appears after WatchLog connects to the site."/>
+        :<div className="ow-rows">
+          {!online&&<Row tone="bad" title="WatchLog connection lost" body="Check that the WatchLog computer at the site is switched on and online." meta={["Since "+(siteTime(lastSeen,tz,true)||"unknown")+" · site time","Owner action required"]}/>}
+          {faults.slice(0,8).map((f,i)=>{const v=faultView(f);return <Row key={f.id||i} tone="warn" title={f.camera?f.camera+" · "+v.label:v.label} body={v.action} meta={[f.camera?"Camera":"Camera system",v.owner?"Owner action required":"WatchLog is checking"]}/>})}
+          {unreported.map(c=><Row key={"cam-"+c.key} tone="warn" title={c.name+" · "+(c.health.tone==="ok"?"Recording needs attention":c.health.label)} body={c.action} meta={["Camera","Owner action required"]}/>)}
+          {online&&!faults.length&&!unreported.length&&(stats.healthUnknown||stats.recordingUnknown)?<Row tone="unknown" title="Some camera states are Not verified" body="No current fault is reported, but some health or recording states are still unverified. Check the cameras below before treating the picture as complete." meta={["No owner action yet"]}/>:null}
+          {online&&!faults.length&&!unreported.length&&!stats.healthUnknown&&!stats.recordingUnknown&&<Row tone="ok" title="No current monitoring fault is reported" meta={["No owner action required"]}/>}
+        </div>}
+      </Section>
+
+      <Section title="What could not be verified today" note={"Since midnight · site time"+(coveragePct!==null?" · "+coveragePct+"% verified":"")}>
+        {coveragePct===null?<Empty title="Today's coverage is not verified yet.">Unverified time is not treated as quiet time.</Empty>
+        :gaps.length?<div className="ow-rows">{gaps.slice(0,6).map((g,i)=><Row key={i} compact tone={g.ongoing?"bad":"unknown"} title={siteTime(g.start,tz)+" – "+(g.ongoing?"now":siteTime(g.end,tz))} body={gapCause(g.cause)} meta={[duration(g.seconds),g.ongoing?"Ongoing":"Not verified"]}/>)}</div>
+        :<Row compact tone="verified" title="No unverified period today" meta={[coveragePct+"% verified since midnight"]}/>}
+      </Section>
+
+      <Section title="Cameras" count={cams.length||null} note="Health and recording are shown separately so one confirmed state never hides an unknown one.">
+        {cams.length?<table className="ow-table">
+          <thead><tr><th>Camera</th><th>Area</th><th>Health</th><th>Recording</th><th>Action</th></tr></thead>
+          <tbody>{ledger.map(c=><tr key={c.key}>
+            <td><b>{c.name}</b></td>
+            <td className={c.area==="Purpose not set"?"ow-muted":""}>{c.area}</td>
+            <td><Status tone={c.health.tone}>{c.health.label}</Status>{c.health.note&&<small>{c.health.note}</small>}</td>
+            <td><Status tone={c.recording.tone}>{c.recording.label}</Status>{c.recording.note&&<small>{c.recording.note}</small>}</td>
+            <td className={c.attention?"":"ow-muted"}>{c.action}</td>
+          </tr>)}</tbody>
+        </table>:<Empty title="No monitored cameras yet." action={<a className="ow-btn quiet small" href={withSite("/setup/",siteId)}>Choose cameras</a>}/>}
+      </Section>
+
+      <Section title="Camera system">
+        <div className="ow-rows">
+          <Row compact tone={system.identified?"verified":"unknown"} title="Recorder" body={recorderName||"Not identified yet"} action={<Status tone={system.identified?"verified":"unknown"}>{system.identified?"Identified":"Not confirmed"}</Status>}/>
+          <Row compact tone={connectionTone} title="WatchLog connection" body={ever?"Last contact "+ago(lastSeen):"Not connected yet"} action={<Status tone={connectionTone}>{connectionWord}</Status>}/>
         </div>
-      </header>
+      </Section>
 
-      {error&&<div className="err">{error}</div>}
-      {!ctx?<div className={ui.emptyCard}>Checking monitoring health…</div>:<>
-        <section className={ui.featureCard}>
-          <Pill kind={tone}>{tone==="ok"?"Verified":tone==="bad"?"Connection issue":tone==="warn"?"Needs attention":"Not fully verified"}</Pill>
-          <h2 style={{fontSize:28,margin:"12px 0 8px",letterSpacing:"-.035em",textTransform:"none"}}>{title}</h2>
-          <p style={{fontSize:14,margin:0,maxWidth:760}}>{copy}</p>
-        </section>
-
-        <section className={ui.metricGrid} style={{marginTop:14}}>
-          <div className={ui.metric}><div className={ui.metricLabel}>Connection</div><div style={{marginTop:8}}><Pill kind={connectionKind}>{online?"Connected":ever?"Unavailable":"Not connected"}</Pill></div><div className={ui.metricLabel}>Last contact {ago(ctx?.connectivity?.last_seen)}</div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{cams.length?stats.operational+"/"+cams.length:"—"}</div><div className={ui.metricLabel}>Cameras confirmed healthy</div><div style={{marginTop:8}}><Pill kind={cameraKind}>{cameraKind==="ok"?"Verified":cameraKind==="warn"?"Needs attention":"Not verified"}</Pill></div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{cams.length?stats.recording+"/"+cams.length:"—"}</div><div className={ui.metricLabel}>Recording confirmed</div><div style={{marginTop:8}}><Pill kind={recordingKind}>{recordingKind==="ok"?"Verified":recordingKind==="warn"?"Needs attention":"Not verified"}</Pill></div></div>
-          <div className={ui.metric}><div className={ui.metricValue}>{faults.length}</div><div className={ui.metricLabel}>Current monitoring issues</div><div style={{marginTop:8}}><Pill kind={faults.length?"warn":"ok"}>{faults.length?"Review":"None reported"}</Pill></div></div>
-        </section>
-
-        <section className={ui.twoCol} style={{marginTop:16}}>
-          <div className={ui.card}>
-            <h3>Needs attention</h3>
-            {!ever&&!online?<div className={ui.emptyCard}>Health information will appear after WatchLog connects to the site.</div>:faults.length?<div className={ui.splitList}>{faults.slice(0,8).map((f,i)=><div className={ui.listRow} key={f.id||i}><Pill kind="warn">Check</Pill><div><b>{f.camera||"Site monitoring"}</b><small>{faultLabel(f)}</small></div></div>)}</div>:stats.healthUnknown||stats.recordingUnknown?<div className={ui.emptyCard}>No current fault is reported, but some states are still not verified. Review the camera table below before treating the picture as complete.</div>:<div className={ui.emptyCard}>No current monitoring fault is reported.</div>}
-          </div>
-          <div className={ui.card}>
-            <h3>Camera system</h3>
-            <div className={ui.splitList}>
-              <div className={ui.listRow}><div><b>Recorder</b><small>{[system.vendor,system.model].filter(Boolean).join(" ")||"Not identified yet"}</small></div><Pill kind={system.identified?"ok":"unknown"}>{system.identified?"Identified":"Not confirmed"}</Pill></div>
-              <div className={ui.listRow}><div><b>WatchLog connection</b><small>Current site connection</small></div><Pill kind={connectionKind}>{online?"Connected":ever?"Unavailable":"Not connected"}</Pill></div>
-            </div>
-          </div>
-        </section>
-
-        <div className={ui.sectionHead}><div><h2>Cameras</h2><p>Health and recording are shown separately so one green state never hides an unknown one.</p></div></div>
-        <div className="panel"><div className={ui.tableWrap}>{cams.length?<table><thead><tr><th>Camera</th><th>Area</th><th>Health</th><th>Recording</th></tr></thead><tbody>{cams.map(c=>{const health=healthView(c.health_state),recording=recordingView(c.recording_state);return <tr key={c.id||c.channel}><td><b>{c.name||"Camera "+c.channel}</b></td><td>{human(c.purpose||"general")}</td><td><Pill kind={health.kind}>{health.label}</Pill></td><td><Pill kind={recording.kind}>{recording.label}</Pill></td></tr>})}</tbody></table>:<div className="empty">No monitored cameras yet.</div>}</div></div>
-      </>}
-    </main>
-  </div>;
+      <Section title="Ask WatchLog" className="ow-narrow-only">
+        <AskLinks siteId={siteId} prompts={["Is monitoring fully working at this site right now?","Which cameras need attention and why?"]}/>
+      </Section>
+    </>}
+  </OwnerPage>;
 }

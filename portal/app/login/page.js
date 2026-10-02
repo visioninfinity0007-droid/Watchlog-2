@@ -54,41 +54,51 @@ export default function Login() {
   }
 
   return (
-    <div className="center">
-      <form className="auth-card" onSubmit={onSubmit}>
-        <div className="brand">
-          <Mark />
-          <span className="brand-name">WatchLog</span>
+    <div className="wl-auth">
+      <header className="wl-auth-brand">
+        <a className="wl-auth-logo" href="/"><Mark size={20} /><span>WatchLog</span></a>
+        <div className="wl-auth-pitch">
+          <p>Know what happened at your business without watching hours of CCTV.</p>
+          <ul><li>What happened</li><li>What needs attention</li><li>What WatchLog can verify</li></ul>
         </div>
+      </header>
+      <main className="wl-auth-main">
+        <form className="wl-auth-panel" onSubmit={onSubmit} aria-busy={busy}>
+          <div className="wl-auth-head">
+            <h1>Sign in</h1>
+            <p className="wl-auth-lede">See what happened, what needs attention, and what WatchLog can verify.</p>
+          </div>
 
-        <h1>Sign in</h1>
-        <p className="sub">See what happened, what needs attention, and what WatchLog can verify.</p>
+          {error && <div className="wl-auth-note bad" role="alert">{error}</div>}
+          {notice && <div className="wl-auth-note ok" role="status">{notice}</div>}
 
-        {error && <div className="err">{error}</div>}
-        {notice && <div className="ok-note">{notice}</div>}
+          <div className="wl-auth-fields">
+            <label htmlFor="email">Email
+              <input id="email" type="email" autoComplete="email" required
+                     value={email} onChange={(e) => setEmail(e.target.value)} />
+            </label>
+            <label htmlFor="password">Password
+              <input id="password" type="password" autoComplete="current-password"
+                     required value={password}
+                     onChange={(e) => setPassword(e.target.value)} />
+            </label>
+          </div>
 
-        <label htmlFor="email">Email</label>
-        <input id="email" type="email" autoComplete="email" required
-               value={email} onChange={(e) => setEmail(e.target.value)} />
+          <div className="wl-auth-actions">
+            <button className="wl-auth-btn" type="submit" disabled={busy}>
+              {busy ? "Signing in..." : "Sign in"}
+            </button>
+          </div>
 
-        <label htmlFor="password">Password</label>
-        <input id="password" type="password" autoComplete="current-password"
-               required value={password}
-               onChange={(e) => setPassword(e.target.value)} />
-
-        <button type="submit" disabled={busy}>
-          {busy ? "Signing in..." : "Sign in"}
-        </button>
-
-        <p className="alt"><a href="/forgot-password/">Forgot password?</a></p>
-        <button className="ghost" type="button" onClick={resendConfirmation} disabled={resending}>
-          {resending ? "Sending..." : "Resend confirmation email"}
-        </button>
-
-        <p className="alt">
-          No account yet? <a href="/signup/">Create one</a>
-        </p>
-      </form>
+          <div className="wl-auth-foot">
+            <a href="/forgot-password/">Forgot password?</a>
+            <button className="wl-auth-linkbtn" type="button" onClick={resendConfirmation} disabled={resending}>
+              {resending ? "Sending..." : "Resend confirmation email"}
+            </button>
+            <p>No account yet? <a href="/signup/">Create one</a></p>
+          </div>
+        </form>
+      </main>
     </div>
   );
 }

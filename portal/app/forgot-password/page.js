@@ -34,29 +34,40 @@ export default function ForgotPassword() {
   }
 
   return (
-    <div className="center">
-      <form className="auth-card" onSubmit={onSubmit}>
-        <div className="brand">
-          <Mark />
-          <span className="brand-name">WatchLog</span>
+    <div className="wl-auth">
+      <header className="wl-auth-brand">
+        <a className="wl-auth-logo" href="/"><Mark size={20} /><span>WatchLog</span></a>
+        <div className="wl-auth-pitch">
+          <p>Know what happened at your business without watching hours of CCTV.</p>
+          <ul><li>What happened</li><li>What needs attention</li><li>What WatchLog can verify</li></ul>
         </div>
+      </header>
+      <main className="wl-auth-main">
+        <form className="wl-auth-panel" onSubmit={onSubmit} aria-busy={busy}>
+          <div className="wl-auth-head">
+            <h1>Reset password</h1>
+            <p className="wl-auth-lede">We will email you a secure link to choose a new password.</p>
+          </div>
 
-        <h1>Reset password</h1>
-        <p className="sub">We will email you a secure link to choose a new password.</p>
+          {error && <div className="wl-auth-note bad" role="alert">{error}</div>}
+          {sent && <div className="wl-auth-note ok" role="status">If an account exists for that email, a recovery link has been sent. Use the newest email only.</div>}
 
-        {error && <div className="err">{error}</div>}
-        {sent && <div className="ok-note">If an account exists for that email, a recovery link has been sent. Use the newest email only.</div>}
+          <div className="wl-auth-fields">
+            <label htmlFor="email">Email
+              <input id="email" type="email" autoComplete="email" required
+                     value={email} onChange={(e) => setEmail(e.target.value)} />
+            </label>
+          </div>
 
-        <label htmlFor="email">Email</label>
-        <input id="email" type="email" autoComplete="email" required
-               value={email} onChange={(e) => setEmail(e.target.value)} />
+          <div className="wl-auth-actions">
+            <button className="wl-auth-btn" type="submit" disabled={busy}>
+              {busy ? "Sending..." : "Send recovery link"}
+            </button>
+          </div>
 
-        <button type="submit" disabled={busy}>
-          {busy ? "Sending..." : "Send recovery link"}
-        </button>
-
-        <p className="alt"><a href="/login/">Back to sign in</a></p>
-      </form>
+          <div className="wl-auth-foot"><a href="/login/">Back to sign in</a></div>
+        </form>
+      </main>
     </div>
   );
 }

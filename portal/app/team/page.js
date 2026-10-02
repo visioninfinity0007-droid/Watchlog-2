@@ -2,17 +2,20 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
-import { Nav, requireTenant } from "../shell";
-import ui from "../portal.module.css";
+import { requireTenant } from "../shell";
+import { selectedSiteId } from "../site-context";
+import { OwnerPage, Section, Metrics, Status, Empty, Loading, Notice } from "../owner/ui";
 
 const ROLES=["owner","admin","viewer"];
 const ROLE_COPY={owner:["Owner","Full account control","Account, billing, team roles and all WatchLog settings"],admin:["Admin","Day-to-day management","Sites, insights, reports and team access"],viewer:["Viewer","Read-only access","Home, Attention, Insights, Reports and supporting evidence"]};
-function fmt(ts){return ts?new Date(ts).toLocaleDateString():"-";}
+function roleName(r){return ROLE_COPY[r]?.[0]||String(r||"Member").replace(/^./,c=>c.toUpperCase());}
+function fmt(ts){if(!ts)return"—";try{return new Intl.DateTimeFormat("en-PK",{day:"numeric",month:"short",year:"numeric"}).format(new Date(ts));}catch{return String(ts);}}
 
 export default function Team(){
-  const[email,setEmail]=useState(""),[members,setMembers]=useState(null),[invites,setInvites]=useState([]),[myRole,setMyRole]=useState("viewer"),[err,setErr]=useState(""),[note,setNote]=useState(""),[inviteEmail,setInviteEmail]=useState(""),[inviteRole,setInviteRole]=useState("viewer"),[busy,setBusy]=useState(false),[latestLink,setLatestLink]=useState("");
+  const[email,setEmail]=useState(""),[members,setMembers]=useState(null),[invites,setInvites]=useState([]),[myRole,setMyRole]=useState("viewer"),[err,setErr]=useState(""),[note,setNote]=useState(""),[inviteEmail,setInviteEmail]=useState(""),[inviteRole,setInviteRole]=useState("viewer"),[busy,setBusy]=useState(false),[latestLink,setLatestLink]=useState(""),[siteId,setSiteId]=useState("");
   const load=useCallback(async()=>{const g=await requireTenant();if(!g)return;setEmail(g.session.user.email||"");const sb=supabase();const[m,i]=await Promise.all([sb.rpc("wl_members"),sb.rpc("wl_invitations")]);if(m.error||i.error){setErr(say(m.error||i.error));return;}setErr("");const list=m.data||[];setMembers(list);setInvites(i.data||[]);const me=list.find((x)=>x.is_you);if(me)setMyRole(me.role);},[]);
   useEffect(()=>{load();},[load]);
+  useEffect(()=>{setSiteId(selectedSiteId());},[]);
   const canManage=myRole==="owner"||myRole==="admin";
   async function invite(e){e.preventDefault();setBusy(true);setErr("");setNote("");setLatestLink("");const{data,error}=await supabase().rpc("wl_invite_member",{p_email:inviteEmail.trim(),p_role:inviteRole});setBusy(false);if(error){setErr(say(error));return;}if(data?.ok===false)setNote(data.note||"This person already has access.");else{const link=`${location.origin}/invite/?token=${data.token}`;setLatestLink(link);setNote(`Invitation created for ${inviteEmail.trim()}. Copy the invitation link below and send it to them.`);setInviteEmail("");}load();}
   async function copyLink(){if(!latestLink)return;try{await navigator.clipboard.writeText(latestLink);setNote("Invitation link copied.");}catch{setErr("Could not copy automatically. Select the link and copy it manually.");}}
@@ -20,18 +23,67 @@ export default function Team(){
   async function remove(uid){if(!confirm("Remove this person from your WatchLog account?"))return;setErr("");const{error}=await supabase().rpc("wl_remove_member",{p_user_id:uid});if(error)setErr(say(error));else setNote("Team member removed.");load();}
   async function revoke(id){if(!confirm("Revoke this pending invitation?"))return;const{error}=await supabase().rpc("wl_revoke_invite",{p_id:id});if(error)setErr(say(error));else setNote("Invitation revoked.");load();}
 
-  return <div className="shell"><Nav active="Team" email={email}/><main className="main">
-    <header className="target-page-head"><div><div className="target-eyebrow">Team</div><h1>Give each person the access they need</h1><p>Owners control the account, Admins manage day-to-day WatchLog settings, and Viewers can review information without changing the account.</p></div></header>
-    {err&&<div className="err">{err}</div>}{note&&<div className="ok-note">{note}</div>}
-    <section className={ui.callout}><span className={ui.statusDot}/><div><strong>{members?.length??0} team member{(members?.length??0)===1?"":"s"} · {invites.filter((i)=>!i.expired).length} open invitation{invites.filter((i)=>!i.expired).length===1?"":"s"}</strong><p>Your role is <b style={{textTransform:"capitalize"}}>{myRole}</b>. Keep access limited to the people who need WatchLog.</p></div></section>
+  const open=invites.filter((i)=>!i.expired);
+  const expired=invites.filter((i)=>i.expired);
 
-        <div className={ui.sectionHead}><div><h2>Invite someone</h2><p>Choose the access level they need. Invitations expire after seven days.</p></div></div>
-    {canManage?<div className={ui.card}><form className="row" onSubmit={invite}><div className="field"><label>Work email</label><input type="email" required placeholder="name@company.com" value={inviteEmail} onChange={(e)=>setInviteEmail(e.target.value)}/></div><div className="field" style={{maxWidth:230}}><label>Role</label><select value={inviteRole} onChange={(e)=>setInviteRole(e.target.value)}><option value="viewer">Viewer (read only)</option><option value="admin">Admin (operations)</option>{myRole==="owner"&&<option value="owner">Owner (full access)</option>}</select></div><button className="small" disabled={busy} style={{width:"auto"}}>{busy?"Creating invite...":"Create invite"}</button></form>{latestLink&&<div style={{marginTop:16}}><label>Invitation link</label><div className={ui.copyBox}><span>{latestLink}</span><button className="ghost small" type="button" onClick={copyLink}>Copy</button></div></div>}</div>:<div className={ui.callout}><span className={ui.statusDot}/><div><strong>Read-only team access</strong><p>Only an Owner or Admin can invite people. You can still see who has access to this account.</p></div></div>}
+  return <OwnerPage active="Team" email={email} siteId={siteId}
+    kicker={["Team"]}
+    title="Who has access"
+    actions={canManage?<a className="ow-btn quiet" href="#invite">Invite someone</a>:null}>
+    {err&&<Notice tone="bad">{err}</Notice>}
+    {note&&<Notice tone="ok">{note}</Notice>}
 
-    <div className={ui.sectionHead}><div><h2>Team members</h2><p>Review everyone with access and keep roles up to date.</p></div></div>
-    <div className="panel"><div className={ui.tableWrap}>{members===null?<div className="empty">Loading...</div>:members.length===0?<div className="empty">No members yet.</div>:<table><thead><tr><th>Person</th><th>Role</th><th>Joined</th><th></th></tr></thead><tbody>{members.map((m)=><tr key={m.user_id}><td><b>{m.email}</b>{m.is_you&&<div className="muted" style={{fontSize:"var(--font-size-xs)"}}>Signed in as you</div>}</td><td>{myRole==="owner"&&!m.is_you?<select value={m.role} onChange={(e)=>changeRole(m.user_id,e.target.value)}>{ROLES.map((r)=><option key={r} value={r}>{ROLE_COPY[r][0]}</option>)}</select>:<span className="pill s-unk">{m.role}</span>}</td><td className="mono">{fmt(m.joined)}</td><td>{canManage&&!m.is_you&&<div className={ui.inlineActions}><button className="btn-danger" onClick={()=>remove(m.user_id)}>Remove</button></div>}</td></tr>)}</tbody></table>}</div></div>
+    {members===null?(err?null:<Loading label="Loading team"/>):<>
+      <Metrics items={[
+        {value:String(members.length),label:"Team members"},
+        {value:String(open.length),label:"Open invitations",note:expired.length?expired.length+" expired":null},
+        {value:roleName(myRole),label:"Your role",note:ROLE_COPY[myRole]?.[1]||null},
+      ]}/>
 
-    <div className={ui.sectionHead}><div><h2>Pending invitations</h2><p>Revoke invitations you no longer need.</p></div></div>
-    <div className="panel"><div className={ui.tableWrap}>{invites.length===0?<div className="empty">No pending invitations.</div>:<table><thead><tr><th>Email</th><th>Role</th><th>Created</th><th>Expires</th><th></th></tr></thead><tbody>{invites.map((i)=><tr key={i.id}><td>{i.email}</td><td><span className="pill s-unk">{i.role}</span></td><td className="mono">{fmt(i.created_at)}</td><td className="mono">{i.expired?<span className="pill s-bad">expired</span>:fmt(i.expires_at)}</td><td>{canManage&&<div className={ui.inlineActions}><button className="btn-danger" onClick={()=>revoke(i.id)}>Revoke</button></div>}</td></tr>)}</tbody></table>}</div></div>
-  </main></div>;
+      <Section title="People" count={members.length+invites.length||null} note="Access covers every site on this account.">
+        {members.length===0&&invites.length===0?<Empty title="No members yet."/>:<table className="ow-table">
+          <thead><tr><th>Person</th><th>Role</th><th>Site access</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody>
+            {members.map((m)=><tr key={m.user_id}>
+              <td><b>{m.email}</b>{m.is_you&&<small>Signed in as you</small>}</td>
+              <td>{myRole==="owner"&&!m.is_you?<select aria-label={"Role for "+m.email} value={m.role} onChange={(e)=>changeRole(m.user_id,e.target.value)}>{ROLES.map((r)=><option key={r} value={r}>{ROLE_COPY[r][0]}</option>)}</select>:<span className="ow-pill">{roleName(m.role)}</span>}</td>
+              <td>All sites</td>
+              <td>Active<small>Joined {fmt(m.joined)}</small></td>
+              <td>{canManage&&!m.is_you?<button type="button" className="ow-btn danger small" onClick={()=>remove(m.user_id)}>Remove</button>:<span className="ow-muted">—</span>}</td>
+            </tr>)}
+            {invites.map((i)=><tr key={i.id}>
+              <td><b>{i.email}</b><small>Invited {fmt(i.created_at)}</small></td>
+              <td><span className="ow-pill">{roleName(i.role)}</span></td>
+              <td>All sites</td>
+              <td>{i.expired?<Status tone="unknown">Invitation expired</Status>:<Status tone="warn">Invitation pending</Status>}{!i.expired&&<small>Expires {fmt(i.expires_at)}</small>}</td>
+              <td>{canManage?<button type="button" className="ow-btn danger small" onClick={()=>revoke(i.id)}>Revoke</button>:<span className="ow-muted">—</span>}</td>
+            </tr>)}
+          </tbody>
+        </table>}
+      </Section>
+
+      <Section id="invite" title="Invite someone" note="Invitations expire after seven days.">
+        {canManage?<>
+          <form onSubmit={invite} style={{display:"flex",flexWrap:"wrap",alignItems:"flex-end",gap:12}}>
+            <label className="ow-field" style={{flex:"1 1 260px"}}>Work email<input type="email" required placeholder="name@company.com" value={inviteEmail} onChange={(e)=>setInviteEmail(e.target.value)}/></label>
+            <label className="ow-field" style={{flex:"0 1 230px"}}>Role<select value={inviteRole} onChange={(e)=>setInviteRole(e.target.value)}><option value="viewer">Viewer (read only)</option><option value="admin">Admin (operations)</option>{myRole==="owner"&&<option value="owner">Owner (full access)</option>}</select></label>
+            <button type="submit" className="ow-btn" disabled={busy} aria-busy={busy}>{busy?"Creating invite...":"Create invite"}</button>
+          </form>
+          {latestLink&&<div className="ow-panel" style={{marginTop:14,display:"flex",flexWrap:"wrap",alignItems:"center",gap:10}}>
+            <span className="ow-label" style={{flex:"1 0 100%"}}>Invitation link</span>
+            <span className="ow-mono" style={{flex:"1 1 240px",minWidth:0,overflowWrap:"anywhere"}}>{latestLink}</span>
+            <button type="button" className="ow-btn quiet small" onClick={copyLink}>Copy</button>
+          </div>}
+        </>:<Empty title="Read-only team access">Only an Owner or Admin can invite people. You can still see who has access to this account.</Empty>}
+      </Section>
+
+      <Section title="What each role can do">
+        <div className="ow-rows">{ROLES.map((r)=><article className="ow-row compact" key={r}>
+          <i className="ow-row-tick" aria-hidden="true"/>
+          <div className="ow-row-main"><h3>{ROLE_COPY[r][0]} · {ROLE_COPY[r][1]}</h3><p>{ROLE_COPY[r][2]}</p></div>
+          {r===myRole&&<div className="ow-row-act"><span className="ow-pill">Your role</span></div>}
+        </article>)}</div>
+      </Section>
+    </>}
+  </OwnerPage>;
 }

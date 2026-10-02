@@ -76,18 +76,28 @@ export default function ConfirmEmail() {
   }, []);
 
   return (
-    <div className="center">
-      <div className="auth-card">
-        <div className="brand"><Mark /><span className="brand-name">WatchLog</span></div>
-        <h1>{waiting ? "Confirming email" : error ? "Confirmation link problem" : "Confirmation not completed"}</h1>
-        <p className="sub">
-          {waiting
-            ? "Verifying your confirmation and returning you to WatchLog..."
-            : error || "Use the confirmation link from your email to continue."}
-        </p>
-        {error && <div className="err">{error}</div>}
-        {!waiting && <a href="/login/"><button type="button">Go to sign in</button></a>}
-      </div>
+    <div className="wl-auth">
+      <header className="wl-auth-brand">
+        <a className="wl-auth-logo" href="/"><Mark size={20} /><span>WatchLog</span></a>
+        <div className="wl-auth-pitch">
+          <p>Know what happened at your business without watching hours of CCTV.</p>
+          <ul><li>What happened</li><li>What needs attention</li><li>What WatchLog can verify</li></ul>
+        </div>
+      </header>
+      <main className="wl-auth-main">
+        <div className="wl-auth-panel" aria-busy={waiting}>
+          <div className="wl-auth-head">
+            <h1>{waiting ? "Confirming email" : error ? "Confirmation link problem" : "Confirmation not completed"}</h1>
+            <p className="wl-auth-lede" role="status">
+              {waiting
+                ? "Verifying your confirmation and returning you to WatchLog..."
+                : error ? "The link from your email could not be used." : "Use the confirmation link from your email to continue."}
+            </p>
+          </div>
+          {error && <div className="wl-auth-note bad" role="alert">{error}</div>}
+          {!waiting && <div className="wl-auth-actions"><a className="wl-auth-btn" href="/login/">Go to sign in</a></div>}
+        </div>
+      </main>
     </div>
   );
 }
