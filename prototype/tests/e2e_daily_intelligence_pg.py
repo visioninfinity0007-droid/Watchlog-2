@@ -60,7 +60,7 @@ def run() -> int:
         try:
             cur.execute(MIG_PIPE)
             cur.execute(MIG_DATA)
-            cur.execute("insert into tenants (name) values ('di-e2e') returning id")
+            cur.execute("insert into tenants (name, account_status) values ('di-e2e','active') returning id")
             tid = cur.fetchone()[0]
 
             # The current intelligence stack composes customer-scoped helpers such

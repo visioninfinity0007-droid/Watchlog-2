@@ -44,7 +44,7 @@ def run() -> int:
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
             for p in MIGS: cur.execute(p.read_text(encoding="utf-8"))
-            tid = cur.execute("insert into tenants (name) values ('v2-e2e') returning id").fetchone()[0]
+            tid = cur.execute("insert into tenants (name, account_status) values ('v2-e2e','active') returning id").fetchone()[0]
             sid = cur.execute("insert into sites (tenant_id,name,timezone) values (%s,'v2','Asia/Karachi') returning id",(tid,)).fetchone()[0]
             uid = cur.execute("insert into auth.users (id,email) values (gen_random_uuid(),%s) returning id", ("v2-e2e@watchlog.test",)).fetchone()[0]
             cur.execute("insert into memberships (user_id,tenant_id,role) values (%s,%s,'owner')", (uid,tid))

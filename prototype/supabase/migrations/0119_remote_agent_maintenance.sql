@@ -34,7 +34,7 @@ revoke all on table public.agent_update_requests from anon, authenticated;
 create or replace function public.wl_known_capabilities()
 returns text[] language sql immutable
 set search_path = public
-as $$
+as $
   select array[
     'operations_runtime',
     'operations_extended_primitives',
@@ -53,7 +53,7 @@ returns int[]
 language plpgsql
 immutable
 set search_path = public
-as $$
+as $
 declare
   m text[];
 begin
@@ -61,7 +61,7 @@ begin
   if m is null then return array[0,0,0]; end if;
   return array[m[1]::int,m[2]::int,m[3]::int];
 end
-$$;
+$;
 
 create or replace function public.wl_agent_report_capabilities(
   p_agent_id uuid,
@@ -71,7 +71,7 @@ create or replace function public.wl_agent_report_capabilities(
 language plpgsql
 security definer
 set search_path = public
-as $$
+as $
 declare
   v_agent public.agents;
   v_clean jsonb;
@@ -101,7 +101,7 @@ begin
 
   return jsonb_build_object('ok',true,'capabilities',v_clean);
 end
-$$;
+$;
 
 create or replace function public.wl_platform_request_agent_update(
   p_site_id uuid,

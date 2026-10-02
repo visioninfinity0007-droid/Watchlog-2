@@ -91,10 +91,6 @@ BURST_WINDOW_SECONDS = 30
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 
-# Archive search/download helpers share the driver's requests.Session. Serialize
-# those bounded HTTP operations so one session is never mutated concurrently.
-HIKVISION_HTTP_LOCK = threading.RLock()
-
 
 
 class HikvisionDriver(NvrDriver):
