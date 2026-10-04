@@ -691,7 +691,7 @@ def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
                                      "retry_at": time.monotonic() + wait}
 
 
-def open_archive_driver(cfg: Config):
+def open_archive_driver(cfg: Config, *, _open_driver=None):
     """Open the best read-only recorder transport for archive/evidence work.
 
     Live monitoring may legitimately use ONVIF when that was the proven enrollment
@@ -703,7 +703,7 @@ def open_archive_driver(cfg: Config):
     verified camera, falls back to the already-open ONVIF driver and therefore
     remains honestly unsupported.
     """
-    driver, info = open_driver(cfg)
+    driver, info = (_open_driver or open_driver)(cfg)
     try:
         import dahua_archive
         import hikvision_archive
@@ -760,6 +760,16 @@ def open_archive_driver(cfg: Config):
     log(f"archive: using vendor-native {native_name} transport for recorded media "
         f"({len(channel_map)} camera channel(s) verified)")
     return _MappedArchiveDriver(candidate, channel_map), native_info
+
+
+def _archive_transport(driver) -> dict | None:
+    """Which transport recorded media is read through, as reported by accept/status/recheck.
+    channel_map is the verified ONVIF-to-native map, or None when channels are the driver's own."""
+    if driver is None:
+        return None
+    mapped = isinstance(driver, _MappedArchiveDriver)
+    return {"driver": getattr(driver, "name", None) or None,
+            "channel_map": dict(driver.channel_map) if mapped else None}
 
 
 def prove_recorder_archive(driver, channel) -> dict:
@@ -1653,6 +1663,9 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     from types import SimpleNamespace
 
     open_driver_fn = _open_driver or open_driver
+    # Recorded media is read through open_archive_driver at runtime (incident footage, recovery),
+    # which on an ONVIF site can be the vendor-native reader. Prove THAT transport (MNVR-063).
+    open_archive_fn = lambda c: open_archive_driver(c, _open_driver=open_driver_fn)  # noqa: E731
     heartbeat_fn = _heartbeat or heartbeat
     cloud_factory = _cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key))
     if _spool_factory is None:
@@ -1700,11 +1713,16 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         return ("pass", f"{len(chans)} camera(s)") if chans else ("blocked", "no camera channels found")
 
     def _archive_check():
-        driver = holder.get("driver")
         chans = holder.get("channels") or []
-        if driver is None or not chans:
+        if holder.get("driver") is None or not chans:
             return "warn", "recorder/cameras unavailable to check the archive"
         channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        try:
+            driver, _info = open_archive_fn(cfg)
+        except Exception:  # noqa: BLE001 — soft check: an unopened archive only warns
+            return "warn", "the recorder archive could not be opened for this check"
+        holder["archive_driver"] = driver
+        holder["archive_transport"] = _archive_transport(driver)
         proof = archive_fn(driver, channel)
         status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
         return status, (proof or {}).get("detail")
@@ -1816,6 +1834,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     ]
 
     report = acceptance.run_checks(checks, log=print)
+    report["archive_transport"] = holder.get("archive_transport")
     stats = report["summary"]
     print()
     if report["ready"]:
@@ -1825,12 +1844,13 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     # Single machine-readable line for the installer status panel — contains no secrets.
     print("ACCEPTANCE_JSON " + json.dumps(report, separators=(",", ":")))
 
-    driver = holder.get("driver")
-    if driver is not None:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+    for key in ("driver", "archive_driver"):
+        driver = holder.get(key)
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
     return 0 if report["ready"] else 2
 
 
@@ -2087,18 +2107,30 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
                           state=state, running=None, last_heartbeat=None, cloud_ok=cloud_ok,
                           spool_backlog=spool_backlog, recovery_backlog=0)
 
-    # --- recorder + cameras + archive (one driver open, all guarded) ---
+    # --- recorder + cameras + archive (all guarded) ---
     driver = info = None
     try:
         driver, info = (_open_driver or open_driver)(cfg)
     except Exception:  # noqa: BLE001 — recorder unreachable is an honest state, not a crash
         driver = info = None
 
+    # Recorded media is read through open_archive_driver at runtime (incident footage, recovery),
+    # which on an ONVIF site can be the vendor-native reader: report and prove THAT transport,
+    # while recorder/cameras stay on the live driver (MNVR-063).
+    archive_driver = None
+    if driver is not None:
+        try:
+            archive_driver, _archive_info = open_archive_driver(
+                cfg, _open_driver=_open_driver or open_driver)
+        except Exception:  # noqa: BLE001
+            archive_driver = None
+
     capability = None
     channels = []
     if driver is not None:
         try:
-            capability = driver.historical_capability() if hasattr(driver, "historical_capability") else None
+            capability = archive_driver.historical_capability() \
+                if hasattr(archive_driver, "historical_capability") else None
         except Exception:  # noqa: BLE001
             capability = None
         try:
@@ -2126,30 +2158,27 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     camera = ss.camera_view(merged, configured=configured or None, health=None)
 
     archive_status = None
-    if driver is not None and merged:
+    if archive_driver is not None and merged:
         try:
-            import dahua_archive
-            try:
-                dahua_archive.install()
-            except Exception:  # noqa: BLE001
-                pass
-            proof = (_archive or dahua_archive.prove_recorder_archive)(driver, merged[0]["channel"])
+            # The same proof acceptance and Recheck Archive run, on the runtime archive transport.
+            proof = (_archive or prove_recorder_archive)(archive_driver, merged[0]["channel"])
             archive_status = (proof or {}).get("status")
         except Exception:  # noqa: BLE001
             archive_status = None
     archive = ss.archive_view(proof_status=archive_status, last_proof_at=iso(now),
                               recovery_backlog=0)
+    archive["transport"] = _archive_transport(archive_driver)
 
     recording = ss.recording_view(camera["cameras"], recording=None)
 
     # Retention depth (P7): bounded, best-effort. Off by default so the panel refresh stays fast;
     # WATCHLOG_STATUS_RETENTION=1 (or a dedicated deep recheck) enables the archive-boundary probe.
     ret = _retention
-    if ret is None and driver is not None and merged and \
+    if ret is None and archive_driver is not None and merged and \
             os.environ.get("WATCHLOG_STATUS_RETENTION", "").strip().lower() in ("1", "true", "yes", "on"):
         try:
             import retention as _retmod
-            ret = _retmod.estimate_retention(driver, merged[0]["channel"], now=now)
+            ret = _retmod.estimate_retention(archive_driver, merged[0]["channel"], now=now)
         except Exception:  # noqa: BLE001
             ret = None
     if ret and ret.get("status") in ("measured", "at_least"):
@@ -2158,11 +2187,12 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     else:
         storage = ss.storage_view(None)              # honest 'Not available on this recorder'
 
-    if driver is not None:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+    for opened in (driver, archive_driver):
+        if opened is not None:
+            try:
+                opened.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     snap = ss.build_snapshot(agent=agent, recorder=recorder, camera=camera, recording=recording,
                              archive=archive, storage=storage, generated_at=iso(now))
@@ -2182,7 +2212,8 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
 
     now = _now or now_utc()
     out = {"schema": "watchlog.archive_recheck.v1", "state": "ARCHIVE FAILED",
-           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": ""}
+           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": "",
+           "transport": None}
     driver = None
     try:
         driver, _info = (_open_driver or open_archive_driver)(cfg)
@@ -2192,6 +2223,7 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
         out["detail"] = "recorder not reachable"
         print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
         return 0
+    out["transport"] = _archive_transport(driver)
     channel = "1"
     for prof in (getattr(cfg, "camera_profiles", None) or []):
         if prof.get("monitored", True) and prof.get("channel"):

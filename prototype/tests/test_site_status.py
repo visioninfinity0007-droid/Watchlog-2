@@ -16,11 +16,15 @@ sys.path.insert(0, str(AGENT))
 
 import io  # noqa: E402
 import json  # noqa: E402
+import xml.etree.ElementTree as ET  # noqa: E402
 from contextlib import redirect_stdout  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
+from unittest import mock  # noqa: E402
 
 import site_status as ss  # noqa: E402
 import watchlog_agent as wa  # noqa: E402
+from drivers.base import Channel, DeviceInfo  # noqa: E402
+from drivers.onvif_driver import OnvifDriver  # noqa: E402
 
 
 class CameraView(unittest.TestCase):
@@ -225,6 +229,78 @@ class CmdStatusJson(unittest.TestCase):
         self.assertEqual(snap["storage"]["oldest_recording"], "2026-09-04T11:12:00+00:00")
 
 
+# --- MNVR-063: status proves the archive through the transport the runtime uses ---------------
+
+_ONVIF_PROFILES = ("<Envelope>"
+                   "<Profiles token='p1'><Name>MediaProfile_Channel1_MainStream</Name>"
+                   "<VideoSourceConfiguration><SourceToken>000</SourceToken></VideoSourceConfiguration></Profiles>"
+                   "<Profiles token='p2'><Name>MediaProfile_Channel2_MainStream</Name>"
+                   "<VideoSourceConfiguration><SourceToken>001</SourceToken></VideoSourceConfiguration></Profiles>"
+                   "</Envelope>")
+
+
+class _LiveOnvif(OnvifDriver):
+    """The live path of a Dahua XVR enrolled over ONVIF: no archive API of its own."""
+
+    def __init__(self):
+        super().__init__("http://192.0.2.10", "admin", "x", timeout=1)
+        self.media_service = "http://192.0.2.10/onvif/media_service"
+
+    def _call(self, *_a, **_k):
+        return ET.fromstring(_ONVIF_PROFILES)
+
+
+class _NativeArchive:
+    """The vendor-native reader incident footage and recovery switch to at runtime."""
+    name = "dahua-cgi"
+
+    def __init__(self, fail_probe=False):
+        self.fail_probe = fail_probe
+
+    def probe(self):
+        if self.fail_probe:
+            raise RuntimeError("native CGI unavailable")
+        return DeviceInfo(vendor="Dahua", model="DH-XVR1B08-I", driver=self.name)
+
+    def list_channels(self):
+        return [Channel(channel="1", name=None), Channel(channel="2", name=None)]
+
+    def historical_capability(self):
+        return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        return {"status": "supported", "next_cursor": None, "events": [
+            {"ts": start.isoformat(), "type": "recorded_segment", "channel": str(channel),
+             "segment": {"start": start.isoformat(), "end": end.isoformat()}}]}
+
+    def close(self):
+        pass
+
+
+class CmdStatusArchiveTransport(unittest.TestCase):
+    def _run(self, native):
+        cfg = _status_cfg(nvr_url="http://192.0.2.10", nvr_username="admin", nvr_password="x")
+        info = SimpleNamespace(vendor="Dahua", model="DH-XVR1B08-I")
+        with mock.patch.object(wa, "build", lambda name, *_a, **_k: native), \
+                mock.patch.object(wa, "log", lambda *_a, **_k: None):
+            # No _archive injection: the real opener and proof run, as on a site.
+            return _run_status(cfg, _open_driver=lambda c: (_LiveOnvif(), info), _archive=None)
+
+    def test_onvif_site_proves_archive_through_the_native_runtime_transport(self):
+        _code, snap = self._run(_NativeArchive())
+        self.assertEqual(snap["recorder"]["driver"], "onvif")              # live path unchanged
+        self.assertEqual(snap["recorder"]["archive_capability"], "supported")
+        self.assertEqual(snap["archive"]["archive_access"], "verified")
+        self.assertEqual(snap["archive"]["transport"],
+                         {"driver": "dahua-cgi", "channel_map": {"1": "1", "2": "2"}})
+        self.assertEqual([c["channel"] for c in snap["cameras"]["cameras"]], ["1", "2"])
+
+    def test_native_transport_unavailable_reports_onvif(self):
+        _code, snap = self._run(_NativeArchive(fail_probe=True))
+        self.assertEqual(snap["archive"]["archive_access"], "unsupported")
+        self.assertEqual(snap["archive"]["transport"], {"driver": "onvif", "channel_map": None})
+
+
 class CmdRecheckArchive(unittest.TestCase):
     def _run(self, **over):
         kwargs = dict(
@@ -245,6 +321,7 @@ class CmdRecheckArchive(unittest.TestCase):
         self.assertEqual(rep["state"], "ARCHIVE VERIFIED")
         self.assertTrue(rep["frame_decoded"])
         self.assertEqual(rep["diagnostics"]["kind"], "dav")
+        self.assertEqual(rep["transport"], {"driver": "dahua", "channel_map": None})
 
     def test_available_frame_unverified(self):
         _c, rep = self._run(_inspect=lambda d, c, t: (None, {"kind": "dav", "decoded": False}))

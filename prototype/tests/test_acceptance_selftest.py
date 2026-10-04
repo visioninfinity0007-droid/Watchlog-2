@@ -14,15 +14,19 @@ import io
 import json
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))
 
 import acceptance                 # noqa: E402
 import watchlog_agent as wa       # noqa: E402
+from drivers.base import Channel, DeviceInfo  # noqa: E402
+from drivers.onvif_driver import OnvifDriver  # noqa: E402
 
 SECRET_PW = "Sup3rSecretRecorderPw!"
 
@@ -138,7 +142,8 @@ class UnavailableDetector:
 def _cfg():
     return SimpleNamespace(
         nvr_url="http://10.0.0.9", supabase_url="https://x.supabase.co",
-        publishable_key="pk_test", nvr_driver="dahua", nvr_password=SECRET_PW,
+        publishable_key="pk_test", nvr_driver="dahua", nvr_username="admin",
+        nvr_password=SECRET_PW,
         state_path=Path("/nonexistent/state.json"),
         spool_path=Path("/nonexistent/spool.db"), spool_max_rows=0)
 
@@ -220,6 +225,85 @@ class CmdAccept(unittest.TestCase):
         _code, out, report = _run_accept()
         self.assertNotIn(SECRET_PW, out)
         self.assertNotIn(SECRET_PW, json.dumps(report))
+
+
+# --- MNVR-063: the archive is proven through the transport the runtime uses -------------------
+
+ONVIF_PROFILES = ("<Envelope>"
+                  "<Profiles token='p1'><Name>MediaProfile_Channel1_MainStream</Name>"
+                  "<VideoSourceConfiguration><SourceToken>000</SourceToken></VideoSourceConfiguration></Profiles>"
+                  "<Profiles token='p2'><Name>MediaProfile_Channel2_MainStream</Name>"
+                  "<VideoSourceConfiguration><SourceToken>001</SourceToken></VideoSourceConfiguration></Profiles>"
+                  "</Envelope>")
+
+
+class LiveOnvif(OnvifDriver):
+    """The live path of a Dahua XVR enrolled over ONVIF: no archive API of its own."""
+
+    def __init__(self):
+        super().__init__("http://10.0.0.9", "admin", "x", timeout=1)
+        self.media_service = "http://10.0.0.9/onvif/media_service"
+
+    def _call(self, *_a, **_k):
+        return ET.fromstring(ONVIF_PROFILES)
+
+    def stream_events(self, stop):
+        yield SimpleNamespace(device_ts=None, channel="1", event_type="motion")
+
+
+class NativeArchive:
+    """The vendor-native reader incident footage and recovery switch to at runtime."""
+    name = "dahua-cgi"
+
+    def __init__(self, fail_probe=False):
+        self.fail_probe = fail_probe
+        self.searched = []
+
+    def probe(self):
+        if self.fail_probe:
+            raise RuntimeError("native CGI unavailable")
+        return DeviceInfo(vendor="Dahua", model="DH-XVR1B08-I", driver=self.name)
+
+    def list_channels(self):
+        return [Channel(channel="1", name=None), Channel(channel="2", name=None)]
+
+    def historical_capability(self):
+        return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        self.searched.append(str(channel))
+        return {"status": "supported", "next_cursor": None, "events": [
+            {"ts": start.isoformat(), "type": "recorded_segment", "channel": str(channel),
+             "segment": {"start": start.isoformat(), "end": end.isoformat()}}]}
+
+    def close(self):
+        pass
+
+
+class AcceptArchiveTransport(unittest.TestCase):
+    def _run(self, native):
+        info = SimpleNamespace(vendor="Dahua", model="DH-XVR1B08-I")
+        with mock.patch.object(wa, "build", lambda name, *_a, **_k: native), \
+                mock.patch.object(wa, "log", lambda *_a, **_k: None):
+            # No _archive injection: the real opener and proof run, as on a site.
+            return _run_accept(_open_driver=lambda cfg: (LiveOnvif(), info), _archive=None)
+
+    def test_onvif_site_proves_archive_through_the_native_runtime_transport(self):
+        native = NativeArchive()
+        code, _out, report = self._run(native)
+        self.assertEqual(code, 0)
+        by = {c["key"]: c for c in report["checks"]}
+        self.assertEqual(by["archive"]["status"], "pass")
+        self.assertEqual(native.searched, ["1"])
+        self.assertEqual(report["archive_transport"],
+                         {"driver": "dahua-cgi", "channel_map": {"1": "1", "2": "2"}})
+
+    def test_native_transport_unavailable_reports_onvif(self):
+        code, _out, report = self._run(NativeArchive(fail_probe=True))
+        self.assertEqual(code, 0)
+        by = {c["key"]: c for c in report["checks"]}
+        self.assertEqual(by["archive"]["status"], "warn")     # honestly not validated
+        self.assertEqual(report["archive_transport"], {"driver": "onvif", "channel_map": None})
 
 
 if __name__ == "__main__":
