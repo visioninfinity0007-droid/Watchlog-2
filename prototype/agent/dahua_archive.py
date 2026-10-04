@@ -36,7 +36,7 @@ from drivers.dahua import DahuaDriver
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
-CLIP_TOTAL_SECONDS = 90              # whole get_clip: clock read, search and download
+CLIP_TOTAL_SECONDS = 90              # per get_clip, counted from the start of the call
 FINDER_COUNT = 100                   # files per findNextFile page
 MAX_FINDER_PAGES = 20                # hard cap on the pages one archive search may read
 ZONE_STEP_SECONDS = 15 * 60          # every civil UTC offset is a whole number of quarter hours
@@ -341,8 +341,9 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     ``clock`` names the clock that stamped ``start``/``end``: "agent" (the default) for times the
     Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time;
     "recorder" for times the recorder's own clock stamped, i.e. archive segment times from
-    :func:`enumerate_historical_events` or ONVIF UtcTime. The whole call, clock read and search
-    included, runs within CLIP_TOTAL_SECONDS.
+    :func:`enumerate_historical_events` or ONVIF UtcTime. CLIP_TOTAL_SECONDS is counted from the
+    start of the call: the clock read and search spend it too, the download starts only while some
+    is left, and the download stops once it is spent.
     """
     deadline = time.monotonic() + CLIP_TOTAL_SECONDS
     native_channel = _native_channel(channel)
