@@ -281,12 +281,18 @@ class NativeArchive:
 
 
 class AcceptArchiveTransport(unittest.TestCase):
-    def _run(self, native):
+    def _run(self, native, opened=None):
         info = SimpleNamespace(vendor="Dahua", model="DH-XVR1B08-I")
+        opened = [] if opened is None else opened
+
+        def opener(_cfg):
+            opened.append(LiveOnvif())
+            return opened[-1], info
+
         with mock.patch.object(wa, "build", lambda name, *_a, **_k: native), \
                 mock.patch.object(wa, "log", lambda *_a, **_k: None):
             # No _archive injection: the real opener and proof run, as on a site.
-            return _run_accept(_open_driver=lambda cfg: (LiveOnvif(), info), _archive=None)
+            return _run_accept(_open_driver=opener, _archive=None)
 
     def test_onvif_site_proves_archive_through_the_native_runtime_transport(self):
         native = NativeArchive()
@@ -304,6 +310,41 @@ class AcceptArchiveTransport(unittest.TestCase):
         by = {c["key"]: c for c in report["checks"]}
         self.assertEqual(by["archive"]["status"], "warn")     # honestly not validated
         self.assertEqual(report["archive_transport"], {"driver": "onvif", "channel_map": None})
+
+    def test_onvif_site_logs_in_to_the_recorder_once(self):
+        opened = []
+        code, _out, report = self._run(NativeArchive(), opened)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(opened), 1)            # the live driver is reused, not reopened
+        by = {c["key"]: c for c in report["checks"]}
+        self.assertEqual(by["archive"]["status"], "pass")
+        self.assertEqual(by["live"]["status"], "pass")        # live driver still open afterwards
+        self.assertEqual(report["archive_transport"]["driver"], "dahua-cgi")
+
+    def test_native_live_driver_is_reused_for_the_archive_proof(self):
+        # A directly enrolled dahua-cgi / hikvision-isapi site: open_archive_driver would return
+        # that same transport, so acceptance must not log in a second time.
+        opened, proved = [], []
+
+        class Counting(FakeDriver):
+            name = "dahua-cgi"
+            closes = 0
+
+            def close(self):
+                self.closes += 1
+
+        def opener(_cfg):
+            opened.append(Counting())
+            return opened[-1], SimpleNamespace(vendor="Dahua", model="XVR")
+
+        code, _out, report = _run_accept(
+            _open_driver=opener,
+            _archive=lambda d, c: proved.append(d) or {"status": "verified", "detail": "ok"})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(proved, opened)
+        self.assertEqual(opened[0].closes, 1)
+        self.assertEqual(report["archive_transport"], {"driver": "dahua-cgi", "channel_map": None})
 
 
 if __name__ == "__main__":

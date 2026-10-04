@@ -694,7 +694,7 @@ def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
                                      "retry_at": time.monotonic() + wait}
 
 
-def open_archive_driver(cfg: Config, *, _open_driver=None):
+def open_archive_driver(cfg: Config, *, live=None):
     """Open the best read-only recorder transport for archive/evidence work.
 
     Live monitoring may legitimately use ONVIF when that was the proven enrollment
@@ -705,8 +705,12 @@ def open_archive_driver(cfg: Config, *, _open_driver=None):
     for cameras with a verified ONVIF-to-native channel map. Failure, or no
     verified camera, falls back to the already-open ONVIF driver and therefore
     remains honestly unsupported.
+
+    ``live`` is an already-open live ``(driver, info)`` (acceptance, status) used instead of a
+    second recorder login. It is returned as is when it is the archive transport and is never
+    closed here: the caller still owns it.
     """
-    driver, info = (_open_driver or open_driver)(cfg)
+    driver, info = live if live is not None else open_driver(cfg)
     try:
         import dahua_archive
         import hikvision_archive
@@ -759,7 +763,8 @@ def open_archive_driver(cfg: Config, *, _open_driver=None):
         log(f"archive: no camera has a verified ONVIF-to-{native_name} channel map; "
             f"keeping {driver.name} (recorded media is not guessed)")
         return driver, info
-    driver.close()
+    if live is None:
+        driver.close()
     log(f"archive: using vendor-native {native_name} transport for recorded media "
         f"({len(channel_map)} camera channel(s) verified)")
     return _MappedArchiveDriver(candidate, channel_map), native_info
@@ -1666,9 +1671,6 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     from types import SimpleNamespace
 
     open_driver_fn = _open_driver or open_driver
-    # Recorded media is read through open_archive_driver at runtime (incident footage, recovery),
-    # which on an ONVIF site can be the vendor-native reader. Prove THAT transport (MNVR-063).
-    open_archive_fn = lambda c: open_archive_driver(c, _open_driver=open_driver_fn)  # noqa: E731
     heartbeat_fn = _heartbeat or heartbeat
     cloud_factory = _cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key))
     if _spool_factory is None:
@@ -1716,15 +1718,20 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         return ("pass", f"{len(chans)} camera(s)") if chans else ("blocked", "no camera channels found")
 
     def _archive_check():
+        live = holder.get("driver")
         chans = holder.get("channels") or []
-        if holder.get("driver") is None or not chans:
+        if live is None or not chans:
             return "warn", "recorder/cameras unavailable to check the archive"
         channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        # Recorded media is read through open_archive_driver at runtime (incident footage,
+        # recovery), which on an ONVIF site can be the vendor-native reader. Prove THAT transport
+        # (MNVR-063), reusing the open live driver instead of logging in again.
         try:
-            driver, _info = open_archive_fn(cfg)
+            driver, _info = open_archive_driver(cfg, live=(live, holder.get("info")))
         except Exception:  # noqa: BLE001 — soft check: an unopened archive only warns
             return "warn", "the recorder archive could not be opened for this check"
-        holder["archive_driver"] = driver
+        if driver is not live:
+            holder["archive_driver"] = driver
         holder["archive_transport"] = _archive_transport(driver)
         proof = archive_fn(driver, channel)
         status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
@@ -2119,12 +2126,12 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
 
     # Recorded media is read through open_archive_driver at runtime (incident footage, recovery),
     # which on an ONVIF site can be the vendor-native reader: report and prove THAT transport,
-    # while recorder/cameras stay on the live driver (MNVR-063).
+    # while recorder/cameras stay on the live driver (MNVR-063). The open live driver is reused,
+    # so a site whose live driver is already the archive transport is not logged in to twice.
     archive_driver = None
     if driver is not None:
         try:
-            archive_driver, _archive_info = open_archive_driver(
-                cfg, _open_driver=_open_driver or open_driver)
+            archive_driver, _archive_info = open_archive_driver(cfg, live=(driver, info))
         except Exception:  # noqa: BLE001
             archive_driver = None
 
@@ -2190,7 +2197,7 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     else:
         storage = ss.storage_view(None)              # honest 'Not available on this recorder'
 
-    for opened in (driver, archive_driver):
+    for opened in (driver, archive_driver if archive_driver is not driver else None):
         if opened is not None:
             try:
                 opened.close()

@@ -173,6 +173,38 @@ class ArchiveTransportRouting(unittest.TestCase):
         self.assertFalse(live.closed)
         self.assertTrue(native.closed)
 
+    def test_caller_owned_live_driver_is_reused_and_left_open(self):
+        # MNVR-063: acceptance and status pass their already-open live driver. No second
+        # recorder login, and the caller's driver stays open even when recorded media moves to
+        # the native reader (the caller still lists cameras and closes it).
+        live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        native_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        live = _LabelledOnvif()
+        native = _ArchiveDriverStub("dahua-cgi", native_info)
+        direct = _ArchiveDriverStub("dahua-cgi", live_info)
+        cfg = type("Cfg", (), {
+            "nvr_url": "http://192.0.2.10",
+            "nvr_username": "local-user",
+            "nvr_password": "local-password",
+        })()
+        opened = []
+        old_open, old_build = core.open_driver, core.build
+        try:
+            core.open_driver = lambda _cfg: opened.append(_cfg) or (live, live_info)
+            core.build = lambda name, *_a, **_kw: native
+            driver, info = core.open_archive_driver(cfg, live=(live, live_info))
+            same, same_info = core.open_archive_driver(cfg, live=(direct, live_info))
+        finally:
+            core.open_driver, core.build = old_open, old_build
+        self.assertEqual(opened, [])
+        self.assertEqual(driver.name, "dahua-cgi")
+        self.assertEqual(driver.channel_map, {"1": "1", "2": "2"})
+        self.assertIs(info, native_info)
+        self.assertFalse(live.closed)
+        self.assertIs(same, direct)                  # directly enrolled native site: same driver
+        self.assertIs(same_info, live_info)
+        self.assertFalse(direct.closed)
+
 
 class OutageDetection(unittest.TestCase):
     def test_no_last_live(self):

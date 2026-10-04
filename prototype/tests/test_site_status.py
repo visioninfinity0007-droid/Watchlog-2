@@ -300,6 +300,45 @@ class CmdStatusArchiveTransport(unittest.TestCase):
         self.assertEqual(snap["archive"]["archive_access"], "unsupported")
         self.assertEqual(snap["archive"]["transport"], {"driver": "onvif", "channel_map": None})
 
+    def test_onvif_site_logs_in_to_the_recorder_once(self):
+        opened = []
+
+        def opener(_cfg):
+            opened.append(_LiveOnvif())
+            return opened[-1], SimpleNamespace(vendor="Dahua", model="DH-XVR1B08-I")
+
+        cfg = _status_cfg(nvr_url="http://192.0.2.10", nvr_username="admin", nvr_password="x")
+        with mock.patch.object(wa, "build", lambda name, *_a, **_k: _NativeArchive()), \
+                mock.patch.object(wa, "log", lambda *_a, **_k: None):
+            _code, snap = _run_status(cfg, _open_driver=opener, _archive=None)
+        self.assertEqual(len(opened), 1)            # the live driver is reused, not reopened
+        self.assertEqual(snap["archive"]["transport"],
+                         {"driver": "dahua-cgi", "channel_map": {"1": "1", "2": "2"}})
+        self.assertEqual([c["channel"] for c in snap["cameras"]["cameras"]], ["1", "2"])
+
+    def test_native_live_driver_is_reused_for_the_archive_proof(self):
+        # A directly enrolled dahua-cgi / hikvision-isapi site: open_archive_driver would return
+        # that same transport, so status must not log in a second time.
+        opened, proved = [], []
+
+        class Counting(_FakeDriver):
+            closes = 0
+
+            def close(self):
+                self.closes += 1
+
+        def opener(_cfg):
+            opened.append(Counting())
+            return opened[-1], SimpleNamespace(vendor="Dahua", model="XVR-Test")
+
+        _code, snap = _run_status(_status_cfg(), _open_driver=opener,
+                                  _archive=lambda d, c: proved.append(d) or {"status": "verified"})
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(proved, opened)
+        self.assertEqual(opened[0].closes, 1)
+        self.assertEqual(snap["archive"]["archive_access"], "verified")
+        self.assertEqual(snap["archive"]["transport"], {"driver": "dahua", "channel_map": None})
+
 
 class CmdRecheckArchive(unittest.TestCase):
     def _run(self, **over):
