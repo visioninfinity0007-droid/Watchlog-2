@@ -123,6 +123,34 @@ def test_unmapped_drop_is_reported_through_the_log_hook(recorder):
         assert fx.FakeCfg.nvr_password not in line
 
 
+def test_single_camera_event_without_a_source_item_is_that_camera(monkeypatch):
+    # One physical camera: an event that names no video source at all can
+    # only be that camera's. That is not an unknown token.
+    rec = fx.FakeRecorder(cameras=1)
+    rec.install(monkeypatch)
+    driver, _info = _open(rec)
+    rec.queue(fx.notification(MOTION_ALARM, "2026-10-04T10:00:00Z", {}, {"State": "true"}))
+    events = fx.stream(driver, rec)
+    driver.close()
+
+    assert [(e.channel, e.event_type) for e in events] == [("1", "motion")]
+    assert driver.dropped_unmapped == 0
+
+
+def test_single_camera_unknown_token_is_still_dropped(monkeypatch):
+    # A token that is present but matches nothing is unknown, even with one camera.
+    rec = fx.FakeRecorder(cameras=1)
+    rec.install(monkeypatch)
+    driver, _info = _open(rec)
+    rec.queue(fx.notification(MOTION_ALARM, "2026-10-04T10:00:00Z",
+                              {"Source": "VideoSourceToken_099"}, {"State": "true"}))
+    events = fx.stream(driver, rec)
+    driver.close()
+
+    assert events == []
+    assert driver.dropped_unmapped == 1
+
+
 def test_unknown_token_does_not_burst_suppress_a_real_camera(recorder):
     driver, _info = _open(recorder)
     recorder.queue(fx.notification(MOTION_ALARM, "2026-10-04T10:00:00Z",

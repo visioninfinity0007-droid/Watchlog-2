@@ -194,6 +194,7 @@ class OnvifDriver(NvrDriver):
         self._config_to_channel: dict[str, str | None] = {}
         self._profile_to_channel: dict[str, str | None] = {}
         self._profile_tokens: dict[str, str] = {}     # channel -> snapshot profile
+        self._channels: tuple[str, ...] = ()          # physical channels loaded
         # Burst filter state, in receive-time monotonic seconds: neither the
         # PC clock nor the recorder clock can step it backwards.
         self._last_emitted: dict[tuple[str | None, str], float] = {}
@@ -401,6 +402,7 @@ class OnvifDriver(NvrDriver):
         self._config_to_channel = configs
         self._profile_to_channel = profiles
         self._profile_tokens = snapshot_profiles
+        self._channels = tuple(c.channel for c in out)
         return out
 
     # -- events ---------------------------------------------------------
@@ -623,11 +625,15 @@ class OnvifDriver(NvrDriver):
         Each token is looked up in the map for its kind first, then in the
         others, using the same physical-camera grouping as list_channels().
         Items that disagree, or a token claimed by two cameras, give None.
+        An event that names no video source at all is not an unknown token:
+        on a device with exactly one camera it can only be that camera's.
         """
         tables = {"config": self._config_to_channel,
                   "source": self._source_to_channel,
                   "profile": self._profile_to_channel}
         items = {str(k).lower(): str(v or "").strip() for k, v in source.items()}
+        if not any(items.get(name) for name, _kind in SOURCE_ITEMS):
+            return self._channels[0] if len(self._channels) == 1 else None
         found: set[str | None] = set()
         for name, kind in SOURCE_ITEMS:
             token = items.get(name)
