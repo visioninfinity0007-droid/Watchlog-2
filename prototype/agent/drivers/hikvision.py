@@ -33,8 +33,8 @@ from typing import Iterator
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
-                   explain)
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
+                   NvrDriver, NvrUnreachable, explain)
 
 # ISAPI namespaces vary by firmware; strip them rather than guess.
 _TAG = re.compile(r"\{.*?\}")
@@ -425,14 +425,27 @@ class HikvisionDriver(NvrDriver):
             ch = int(str(channel))
         except (TypeError, ValueError):
             return None
+        # None means the recorder affirmatively has no still at these paths (404 and the
+        # like, or a body that is not a JPEG). A timeout, reset, 5xx or rejected login is
+        # transient and raises, so callers retry instead of recording "unsupported".
+        transient: DriverError | None = None
         for path in (f"/ISAPI/Streaming/channels/{ch}01/picture",
                      f"/ISAPI/Streaming/channels/{ch}/picture"):
+            url = self.base_url + path
             try:
-                r = self._get(path, timeout=SNAPSHOT_TIMEOUT)
-            except DriverError:
+                r = self._send("GET", url, timeout=SNAPSHOT_TIMEOUT)
+            except requests.RequestException as e:
+                transient = NvrUnreachable(f"{url}: {explain(e)}")
                 continue
-            if r.content[:2] == JPEG_MAGIC:     # JPEG magic
+            if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:     # JPEG magic
                 return r.content
+            if r.status_code in (401, 403):
+                transient = NvrAuthFailed(
+                    f"{url}: HTTP {r.status_code} — recorder rejected the username or password")
+            elif r.status_code in (408, 429) or r.status_code >= 500:
+                transient = DriverError(f"{url}: HTTP {r.status_code}")
+        if transient is not None:
+            raise transient
         return None
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
