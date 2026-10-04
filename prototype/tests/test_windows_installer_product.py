@@ -67,6 +67,13 @@ def main():
         "interruptible auth breaker (5/15/30, wake on cred change)": "_reconnect_wait" in agent and "credential_generation" in agent and "_AUTH_BACKOFF_SECONDS" in agent,
         "NSIS packages setup UI": 'File "watchlog-setup-ui.exe"' in nsis,
         "NSIS launches branded setup": 'watchlog-setup-ui.exe' in nsis,
+        "installed product exposes Site Status directly":
+            'WatchLog Site Status.lnk' in nsis and '--status --config' in nsis,
+        "installed product exposes Manage Recorders directly":
+            'WatchLog Manage Recorders.lnk' in nsis and '--manage-recorders --config' in nsis,
+        "uninstall removes multi-recorder shortcuts":
+            'Delete "${STARTMENU}\\WatchLog Site Status.lnk"' in nsis
+            and 'Delete "${STARTMENU}\\WatchLog Manage Recorders.lnk"' in nsis,
         "NSIS no longer launches agent --setup": 'watchlog-agent.exe\" --setup' not in nsis,
         "release packages setup UI": "watchlog-setup-ui.exe" in release,
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,

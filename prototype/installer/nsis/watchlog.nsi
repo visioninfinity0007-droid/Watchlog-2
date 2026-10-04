@@ -300,6 +300,8 @@ Section "Install"
 
   CreateDirectory "${STARTMENU}"
   CreateShortcut "${STARTMENU}\WatchLog Setup.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+  CreateShortcut "${STARTMENU}\WatchLog Site Status.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--status --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+  CreateShortcut "${STARTMENU}\WatchLog Manage Recorders.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--manage-recorders --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
@@ -327,6 +329,8 @@ Section "Uninstall"
   ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
   ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
   Delete "${STARTMENU}\WatchLog Setup.lnk"
+  Delete "${STARTMENU}\WatchLog Site Status.lnk"
+  Delete "${STARTMENU}\WatchLog Manage Recorders.lnk"
   Delete "${STARTMENU}\Uninstall WatchLog.lnk"
   RMDir "${STARTMENU}"
   Delete "$INSTDIR\watchlog-agent.exe"
