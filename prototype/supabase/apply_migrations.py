@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[2]        # projects/watchlog
 # directory against a disposable Postgres; unset in production (uses the real dir).
 _MIG_ENV = os.environ.get("WATCHLOG_MIGRATIONS_DIR")
 MIGRATIONS = Path(_MIG_ENV) if _MIG_ENV else (Path(__file__).resolve().parent / "migrations")
+CI_PLAIN_POSTGRES = os.environ.get("WATCHLOG_CI_PLAIN_POSTGRES") == "1"
 
 # migration states
 PENDING = "PENDING"
@@ -114,6 +116,30 @@ def load_env() -> dict:
     if not env:
         sys.exit(f"FATAL: no .env at {env_path} and no SUPABASE_DB_* environment variables")
     return env
+
+
+def sql_for_execution(path: Path) -> str:
+    """Return migration SQL with a narrow disposable-CI compatibility shim.
+
+    Production never sets WATCHLOG_CI_PLAIN_POSTGRES, so tracked migration SQL is
+    executed unchanged. The CI service is vanilla postgres:16 and cannot install
+    Supabase's pg_net extension; ci_prelude.sql supplies the compatible net shim.
+    """
+    sql = path.read_text(encoding="utf-8")
+    if CI_PLAIN_POSTGRES:
+        sql = re.sub(
+            r"(?im)^\s*create\s+extension\s+if\s+not\s+exists\s+pg_net\s+with\s+schema\s+extensions\s*;\s*$",
+            "-- CI plain-Postgres shim: pg_net is supplied by ci_prelude.sql",
+            sql,
+        )
+        # Several already-applied historical migrations contain delimiter typos
+        # that vanilla PostgreSQL rejects when replaying the full chain. Keep
+        # tracked migration bytes immutable to preserve production checksums;
+        # normalize only the disposable-CI execution copy.
+        sql = re.sub(r"(?m)^(\s*as) \$$", r"\1 $$", sql)
+        sql = re.sub(r"(?m)^(\s*)\$;$", r"\1$$;", sql)
+        sql = re.sub(r"(?m)^(\s*end \$function\$)\s*$", r"\1;", sql)
+    return sql
 
 
 def connect(env: dict):
@@ -214,7 +240,7 @@ def main() -> None:
                 continue
             print(f"  apply    {f.name} ...", end="", flush=True)
             try:
-                conn.execute(f.read_text(encoding="utf-8"))
+                conn.execute(sql_for_execution(f))
             except Exception as e:
                 print(" FAILED")
                 sys.exit(f"\n{f.name}:\n{e}")
