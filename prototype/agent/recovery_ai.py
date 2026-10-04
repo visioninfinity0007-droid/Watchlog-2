@@ -353,22 +353,29 @@ def _segment_ref(raw: dict, channel, fallback_ts) -> str:
     return ref
 
 
-def _segment_sample_times(segment: dict, fallback_ts, interval_seconds: int):
-    """Yield bounded historical sample timestamps across one recorded segment."""
+def _segment_sample_times(segment: dict, fallback_ts, interval_seconds: int,
+                          window_start=None, window_end=None):
+    """Yield bounded historical sample timestamps across the part of one recorded segment that
+    lies inside [window_start, window_end). Archive searches return whole overlapping segments;
+    footage outside the window was monitored live (or belongs to another chunk), so it is never
+    sampled, and it cannot use up the frame budget before the gap is reached."""
     start = _as_dt(segment.get("start") or fallback_ts)
+    lo = _as_dt(window_start) if window_start is not None else None
+    hi = _as_dt(window_end) if window_end is not None else None
     end_raw = segment.get("end")
-    if not end_raw:
-        return [start]
-    end = _as_dt(end_raw)
-    if end <= start:
-        return [start]
+    end = _as_dt(end_raw) if end_raw else None
+    if end is None or end <= start:
+        # No usable end: only the segment start is known to hold footage.
+        inside = (lo is None or start >= lo) and (hi is None or start < hi)
+        return [start] if inside else []
     step = max(30, int(interval_seconds))
     out = []
-    cur = start
-    while cur < end:
+    cur = max(start, lo) if lo is not None else start
+    stop = min(end, hi) if hi is not None else end
+    while cur < stop:
         out.append(cur)
         cur += timedelta(seconds=step)
-    return out or [start]
+    return out
 
 
 def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, on_event=None,
@@ -413,7 +420,7 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                 # Only the footage window travels with the event, never the recorder URI/path.
                 seg_window = {"start": seg.get("start"), "end": seg.get("end")}
                 for sample_ts in _segment_sample_times(
-                        seg, fallback_ts, snapshot_interval_seconds):
+                        seg, fallback_ts, snapshot_interval_seconds, w_start, w_end):
                     sample_iso = _iso(sample_ts)
                     key = f"ai:{base_id}:{sample_iso}"
                     if key in seen:

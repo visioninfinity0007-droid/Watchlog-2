@@ -220,6 +220,54 @@ class BackfillIntelligence(unittest.TestCase):
         self.assertTrue(summary.get("stopped_at_limit"))
 
 
+class OverlapDriver(SegDriver):
+    """Like the Hikvision/Dahua archive search: returns every segment OVERLAPPING the window,
+    with its own start/end, not clipped to the window."""
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        s = datetime.fromisoformat(start) if isinstance(start, str) else start
+        e = datetime.fromisoformat(end) if isinstance(end, str) else end
+        events = [{"ts": seg["start"], "type": "recorded_segment",
+                   "device_event_id": seg.get("id"), "segment": seg}
+                  for seg in self._segs
+                  if datetime.fromisoformat(seg["start"]) < e
+                  and (not seg.get("end") or datetime.fromisoformat(seg["end"]) > s)]
+        return {"status": "supported", "events": events, "next_cursor": None}
+
+
+class GapClippedSampling(unittest.TestCase):
+    """Only footage inside the recovery window is sampled: the rest was live-monitored."""
+    GAP = ("2026-09-14T10:20:00+00:00", "2026-09-14T10:40:00+00:00")
+
+    def _run(self, segments, **kw):
+        got, asked = [], []
+        summary = recovery_ai.backfill_intelligence(
+            OverlapDriver(segments), FakeDetector(keep=False), "1", *self.GAP,
+            on_event=got.append, frame_provider=lambda d, c, t: asked.append(t) or b"JPEG",
+            snapshot_interval_seconds=300, **kw)
+        return summary, got, asked
+
+    def test_an_overlapping_segment_is_sampled_only_inside_the_gap(self):
+        summary, got, asked = self._run([{"start": "2026-09-14T10:00:00+00:00",
+                                          "end": "2026-09-14T11:00:00+00:00", "id": "seg-hour"}])
+        self.assertEqual([e["device_ts"] for e in got], [
+            "2026-09-14T10:20:00+00:00", "2026-09-14T10:25:00+00:00",
+            "2026-09-14T10:30:00+00:00", "2026-09-14T10:35:00+00:00"])
+        lo, hi = (datetime.fromisoformat(v) for v in self.GAP)
+        self.assertTrue(all(lo <= t < hi for t in asked), "a frame outside the gap was fetched")
+
+    def test_a_long_segment_does_not_starve_the_frame_cap(self):
+        summary, got, asked = self._run([{"start": "2026-09-14T00:00:00+00:00",
+                                          "end": "2026-09-14T23:59:00+00:00", "id": "seg-day"}],
+                                        max_frames=40)
+        self.assertEqual(summary["frames"], 4)
+        self.assertFalse(summary.get("stopped_at_limit"))
+        self.assertEqual(got[0]["device_ts"], "2026-09-14T10:20:00+00:00")
+
+    def test_a_segment_without_an_end_before_the_gap_is_not_sampled(self):
+        summary, got, asked = self._run([{"start": "2026-09-14T10:00:00+00:00", "id": "seg-open"}])
+        self.assertEqual((got, asked), ([], []))
+
+
 class MediaInspect(unittest.TestCase):
     def test_media_kind_by_magic(self):
         self.assertEqual(recovery_ai.media_kind(b"\xff\xd8\xff\xe0blah"), "jpeg")
