@@ -57,6 +57,7 @@ from pathlib import Path
 import requests
 
 import discover
+import nvr_health   # module scope: every worker except-handler redacts through it
 import recorder_probe
 import setup_wizard
 import vision
@@ -1286,6 +1287,48 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
             stop.wait(cfg.health_seconds + jitter)
 
 
+def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site_control) -> None:
+    """Execute one claimed Site Control command and ALWAYS complete it.
+
+    The command is already 'claimed' in the cloud. A recorder-routing, driver or
+    executor failure therefore completes it as failed (same sanitised error shape as
+    site_control: a redacted DriverError line, otherwise only the exception type)
+    instead of escaping and leaving it claimed forever."""
+    action = cmd.get("action")
+    is_write = action in site_control.WRITE_ACTIONS
+    try:
+        job_cfg = recorder_runtime.config_for_cloud_recorder(
+            cfg, cmd.get("recorder_id")
+        )
+        driver = build(
+            job_cfg.nvr_driver,
+            job_cfg.nvr_url,
+            job_cfg.nvr_username,
+            job_cfg.nvr_password,
+        )
+        try:
+            res = (site_control.execute_write(driver, action, cmd.get("params"))
+                   if is_write else
+                   site_control.execute_read(driver, action, cmd.get("params")))
+        finally:
+            try:
+                driver.close()
+            except Exception:                    # noqa: BLE001
+                pass
+        status = "succeeded" if res.get("ok") else "failed"
+        # Writes carry before/after/verified (transactional audit); reads carry 'data'.
+        result, error = (res if is_write else res.get("data")), res.get("error")
+    except Exception as e:                       # noqa: BLE001 — complete it, never strand it
+        log(f"site control: command {str(cmd.get('id'))[:8]} failed: "
+            f"{type(e).__name__}: {nvr_health.redact(str(e))}")
+        status, result = "failed", None
+        error = (nvr_health.redact(str(e)) if isinstance(e, DriverError)
+                 else type(e).__name__)
+    cloud.call("wl_agent_complete_command",
+               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+               p_command_id=cmd["id"], p_status=status, p_result=result, p_error=error)
+
+
 def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
     """Site Control (H6): poll for a queued READ command, run it against the recorder via the
     LOCAL driver, and return the structured result. OFF unless cfg.site_control_enabled — a new
@@ -1308,33 +1351,7 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
             cmd = (claimed or {}).get("command")
             if cmd:
                 busy = True
-                action = cmd.get("action")
-                is_write = action in site_control.WRITE_ACTIONS
-                job_cfg = recorder_runtime.config_for_cloud_recorder(
-                    cfg, cmd.get("recorder_id")
-                )
-                driver = build(
-                    job_cfg.nvr_driver,
-                    job_cfg.nvr_url,
-                    job_cfg.nvr_username,
-                    job_cfg.nvr_password,
-                )
-                try:
-                    res = (site_control.execute_write(driver, action, cmd.get("params"))
-                           if is_write else
-                           site_control.execute_read(driver, action, cmd.get("params")))
-                finally:
-                    try:
-                        driver.close()
-                    except Exception:                    # noqa: BLE001
-                        pass
-                # Writes carry before/after/verified (transactional audit); reads carry 'data'.
-                cloud.call("wl_agent_complete_command",
-                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                           p_command_id=cmd["id"],
-                           p_status=("succeeded" if res.get("ok") else "failed"),
-                           p_result=(res if is_write else res.get("data")),
-                           p_error=res.get("error"))
+                _run_claimed_command(cfg, state, cloud, cmd, site_control)
         except Exception as e:                           # noqa: BLE001 — Site Control never disturbs the agent
             log(f"site control: {type(e).__name__}: {nvr_health.redact(str(e))}")
         if not busy:
