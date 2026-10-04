@@ -2,7 +2,7 @@
 """Manage Recorders > Disable against the real recorder registry contract (MNVR-003).
 
 Runs the actual Setup code (setup_backend.disable_managed_recorder) and the
-actual Agent registry sync (multi_recorder_orchestrator._sync_registry_state)
+actual Agent startup binding (multi_recorder_orchestrator.bind_cloud_identities)
 with their cloud calls executed as `anon` RPCs on Postgres, so the payload Setup
 builds meets the real wl_sync_recorders rules (0154: a non-empty payload names
 exactly one configured primary; the continuity recorder is never disabled).
@@ -25,6 +25,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
@@ -45,6 +46,7 @@ import psycopg  # noqa: E402
 import credential_store as cs  # noqa: E402
 import multi_recorder_orchestrator as mro  # noqa: E402
 import recorder_registry as rr  # noqa: E402
+import recorder_runtime  # noqa: E402
 import setup_backend as sb  # noqa: E402
 import watchlog_agent as core  # noqa: E402
 
@@ -87,6 +89,15 @@ class PgCloud:
         self.cur.execute("reset role")
         self.cur.execute("release savepoint rpc_sp")
         return row[0]
+
+
+def agent_bind(cloud, state, root: Path) -> dict:
+    """The Agent's startup binding: continuity recorder first, then the registry."""
+    cfg = SimpleNamespace(state_path=root / "agent_state.json", spool_path=root / "spool.sqlite",
+                          spool_max_rows=1000, health_store_path=root / "health.sqlite",
+                          last_live_path=root / "last_live.json")
+    contexts = recorder_runtime.load_contexts(cfg)
+    return mro.bind_cloud_identities(cloud, state, contexts, base_cfg=cfg)
 
 
 def _plain_secrets():
@@ -179,8 +190,8 @@ def _scenario(cur):
         ],
     })
 
-    # The Agent's own startup registry sync binds both rows.
-    mapping = mro._sync_registry_state(cloud, state)
+    # The Agent's own startup binding binds both rows.
+    mapping = agent_bind(cloud, state, root)
     rows = {r["local_id"]: r for r in rr.recorders()}
     step(set(mapping) == {a, b} and all(rows[x]["cloud_recorder_id"] for x in (a, b)),
          "Agent registry sync bound A and B", json.dumps(mapping))

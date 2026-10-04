@@ -5,8 +5,8 @@ Uninstall removes the Agent identity and the Secrets directory but keeps
 recorders.json. Setup quarantines that registry and stages the newly proven
 recorder; the fresh row keeps the old continuity recorder's local id. This runs
 the real Setup staging (setup_backend._stage_recorder_registry) and the real
-Agent registry sync (multi_recorder_orchestrator._sync_registry_state) with the
-cloud calls executed as `anon` RPCs on Postgres.
+Agent startup binding (multi_recorder_orchestrator.bind_cloud_identities) with
+the cloud calls executed as `anon` RPCs on Postgres.
 
 Proves:
 - the old Agent binds A (continuity) and B;
@@ -27,10 +27,9 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from e2e_setup_recorder_disable_pg import ENV, PgCloud, _plain_secrets, psycopg
+from e2e_setup_recorder_disable_pg import ENV, PgCloud, _plain_secrets, agent_bind, psycopg
 
 import credential_store as cs
-import multi_recorder_orchestrator as mro
 import recorder_registry as rr
 import setup_backend as sb
 
@@ -124,7 +123,7 @@ def _scenario(cur):
          "url": "http://192.0.2.20", "driver": "dahua-cgi", "is_primary": False,
          "continuity_owner": False, "is_configured": True},
     ]})
-    first = mro._sync_registry_state(cloud, state1)
+    first = agent_bind(cloud, state1, root)
     cloud_a = first.get(a)
     step(set(first) == {a, b} and len(_site_recorders(cur, site_id)) == 2,
          "the earlier installation bound A and B", json.dumps(first))
@@ -160,7 +159,7 @@ def _scenario(cur):
     cur.execute("rollback to savepoint control_sp")
     step(forked == 3, "control: a new local id adds a third recorder", f"{forked} recorders")
 
-    second = mro._sync_registry_state(cloud, state2)
+    second = agent_bind(cloud, state2, root)
     rows = _site_recorders(cur, site_id)
     step(second == {a: cloud_a}, "the new Agent re-attached to continuity recorder A",
          json.dumps(second))
