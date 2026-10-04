@@ -1768,6 +1768,8 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     try:
         _stage_recorder_registry(config_path, recorder, username.strip(), password,
                                  prior_identity, state)
+    except recorder_registry.DuplicateRecorder:
+        raise                                   # customer-safe: says which action to take
     except Exception as exc:
         raise ValueError(
             "Windows could not prepare this recorder for WatchLog multi-recorder storage."

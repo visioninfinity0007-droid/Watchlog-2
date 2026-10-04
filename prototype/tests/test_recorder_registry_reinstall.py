@@ -193,3 +193,34 @@ def test_same_site_rerun_keeps_identity_and_does_not_quarantine(monkeypatch):
         assert (row["local_id"], row["cloud_recorder_id"]) == (old["local_id"], OLD_CLOUD)
         assert row["url"] == "http://192.0.2.50"
         assert _quarantined(env.root, "recorders.json") == []
+
+
+def test_rerun_pointing_at_another_configured_recorder_is_refused_clearly(monkeypatch):
+    with _Env() as env:
+        env.ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\n", encoding="utf-8")
+        cs.save_nvr_credential("old", "old-pw")
+        old = rr.migrate_legacy_singleton(env.ini)
+        rr.apply_cloud_mapping({old["local_id"]: OLD_CLOUD})
+        rr.add_recorder(display_name="Second", url="http://192.0.2.50", driver="hikvision",
+                        username="b", password="b-pw")
+        before = rr.load_registry()
+        _patch_setup(monkeypatch, prior_state=SITE_ONE, new_state=SITE_ONE)
+
+        try:
+            _finalize(env)                       # proves 192.0.2.50, which is recorder B
+            assert False, "re-pointing the original recorder at B must be refused"
+        except rr.DuplicateRecorder as exc:
+            assert "already configured" in str(exc)
+        assert rr.load_registry() == before
+
+
+def test_two_quarantines_in_the_same_second_both_survive(monkeypatch):
+    with _Env() as env:
+        monkeypatch.setattr(rr.time, "strftime", lambda *_a: "20261005T000000Z")
+        rr.registry_path().write_text("first", encoding="utf-8")
+        rr.quarantine_registry()
+        rr.registry_path().write_text("second", encoding="utf-8")
+        rr.quarantine_registry()
+        copies = sorted(p.read_text(encoding="utf-8")
+                        for p in _quarantined(env.root, "recorders.json"))
+        assert copies == ["first", "second"]

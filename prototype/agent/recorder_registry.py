@@ -41,6 +41,10 @@ class RegistryUntrusted(ValueError):
     """recorders.json exists but a non-administrator could have written it."""
 
 
+class DuplicateRecorder(ValueError):
+    """The recorder being added or re-pointed is already in the registry."""
+
+
 def data_dir() -> Path:
     return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
 
@@ -581,10 +585,10 @@ def _reject_duplicate(rows, url, identity_fingerprint=None, *, ignore_local_id=N
     if existing is None:
         return
     if not existing.get("is_configured"):
-        raise ValueError(
+        raise DuplicateRecorder(
             "this recorder is already in WatchLog but disabled; re-enable it instead"
         )
-    raise ValueError("this recorder is already configured in WatchLog")
+    raise DuplicateRecorder("this recorder is already configured in WatchLog")
 
 
 def quarantine_registry() -> list[Path]:
@@ -598,7 +602,10 @@ def quarantine_registry() -> list[Path]:
     moved = []
     for src in (registry_path(), data_dir() / "recorders"):
         if src.exists():
-            dst = src.with_name(f"{src.name}.quarantine-{stamp}")
+            dst, n = src.with_name(f"{src.name}.quarantine-{stamp}"), 0
+            while dst.exists():                 # never overwrite an earlier quarantine
+                n += 1
+                dst = src.with_name(f"{src.name}.quarantine-{stamp}-{n}")
             os.replace(src, dst)
             moved.append(dst)
     return moved
