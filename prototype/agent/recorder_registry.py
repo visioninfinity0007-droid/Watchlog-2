@@ -15,15 +15,34 @@ That keeps Repair/Upgrade fail-safe while multi-recorder runtime is developed.
 from __future__ import annotations
 
 import configparser
+import ipaddress
 import json
 import os
+import tempfile
+import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import credential_store
 from windows_secret import SecretError
 
 REGISTRY_SCHEMA = "watchlog.recorders.v1"
+
+# Owners a privileged reader may trust: SYSTEM, BUILTIN\Administrators, TrustedInstaller.
+_TRUSTED_OWNER_SIDS = frozenset({
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+})
+
+
+class RegistryUntrusted(ValueError):
+    """recorders.json exists but a non-administrator could have written it."""
+
+
+class DuplicateRecorder(ValueError):
+    """The recorder being added or re-pointed is already in the registry."""
 
 
 def data_dir() -> Path:
@@ -85,14 +104,9 @@ def validate_registry(payload: dict) -> dict:
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate recorder local_id")
 
-    configured_primaries = [
-        row for row in normalized if row["is_primary"] and row["is_configured"]
-    ]
-    if len(configured_primaries) > 1:
-        raise ValueError("at most one configured recorder may be primary")
-    if normalized and not configured_primaries:
-        raise ValueError("a non-empty recorder registry needs one configured primary")
-
+    # Continuity is checked first: it is the immutable 5.1 invariant, so a
+    # registry that disabled its continuity owner reports that, not the
+    # primary rule it also breaks as a consequence.
     continuity = [row for row in normalized if row["continuity_owner"]]
     if normalized and len(continuity) != 1:
         raise ValueError(
@@ -103,13 +117,211 @@ def validate_registry(payload: dict) -> dict:
             "the continuity owner must remain configured in WatchLog 5.1"
         )
 
+    configured_primaries = [
+        row for row in normalized if row["is_primary"] and row["is_configured"]
+    ]
+    if len(configured_primaries) > 1:
+        raise ValueError("at most one configured recorder may be primary")
+    if normalized and not configured_primaries:
+        raise ValueError("a non-empty recorder registry needs one configured primary")
+
     return {"schema": REGISTRY_SCHEMA, "recorders": normalized}
+
+
+# --- registry file trust ----------------------------------------------------
+#
+# %ProgramData%\WatchLog is not ACL-hardened, so a standard local user could plant
+# recorders.json for the SYSTEM Agent to read. A file whose owner is neither a
+# trusted principal, nor an administrator, nor the reading account itself is
+# rejected. Each lookup returns None when it cannot be performed (non-Windows,
+# API failure, unreachable domain): unknown is not treated as proof either way.
+
+def _sid_string(advapi32, kernel32, psid) -> str | None:
+    import ctypes
+    out = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(psid, ctypes.byref(out)):
+        return None
+    try:
+        return out.value
+    finally:
+        kernel32.LocalFree(out)
+
+
+def _win_apis():
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.LookupAccountSidW.argtypes = [
+        wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(ctypes.c_int),
+    ]
+    advapi32.LookupAccountSidW.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return advapi32, kernel32
+
+
+def _file_owner_sid(path: Path) -> str | None:
+    """String SID of the file's owner, or None when it cannot be read."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        advapi32, kernel32 = _win_apis()
+        owner, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
+        # SE_FILE_OBJECT=1, OWNER_SECURITY_INFORMATION=1
+        if advapi32.GetNamedSecurityInfoW(str(path), 1, 1, ctypes.byref(owner),
+                                          None, None, None, ctypes.byref(descriptor)) != 0:
+            return None
+        try:
+            return _sid_string(advapi32, kernel32, owner)
+        finally:
+            kernel32.LocalFree(descriptor)
+    except Exception:  # noqa: BLE001 — unknown, not proof
+        return None
+
+
+def _current_user_sid() -> str | None:
+    """String SID of the account this process runs as, or None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi32, kernel32 = _win_apis()
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+            return None
+        try:
+            size = wintypes.DWORD(0)
+            advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))   # TokenUser
+            buf = ctypes.create_string_buffer(size.value or 256)
+            if not advapi32.GetTokenInformation(token, 1, buf, ctypes.sizeof(buf), ctypes.byref(size)):
+                return None
+            psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]   # TOKEN_USER.User.Sid
+            return _sid_string(advapi32, kernel32, psid)
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _account_name(advapi32, psid) -> tuple[str, str] | None:
+    import ctypes
+    from ctypes import wintypes
+    name, domain = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+    n_len, d_len, use = wintypes.DWORD(256), wintypes.DWORD(256), ctypes.c_int()
+    if not advapi32.LookupAccountSidW(None, psid, name, ctypes.byref(n_len),
+                                      domain, ctypes.byref(d_len), ctypes.byref(use)):
+        return None
+    return name.value, domain.value
+
+
+def _is_local_admin(sid: str) -> bool | None:
+    """True/False when the account is (not) a local Administrators member, directly or
+    through a group; None when that cannot be determined."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi32, kernel32 = _win_apis()
+        netapi32 = ctypes.WinDLL("netapi32", use_last_error=True)
+        netapi32.NetUserGetLocalGroups.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ]
+        netapi32.NetUserGetLocalGroups.restype = wintypes.DWORD
+        netapi32.NetApiBufferFree.argtypes = [ctypes.c_void_p]
+
+        def lookup(text):
+            psid = ctypes.c_void_p()
+            if not advapi32.ConvertStringSidToSidW(text, ctypes.byref(psid)):
+                return None
+            try:
+                return _account_name(advapi32, psid)
+            finally:
+                kernel32.LocalFree(psid)
+
+        admins = lookup("S-1-5-32-544")      # localized group name
+        account = lookup(sid)
+        if not admins or not account:
+            return None
+        buf = ctypes.c_void_p()
+        read, total = wintypes.DWORD(), wintypes.DWORD()
+        # level 0, LG_INCLUDE_INDIRECT=1, MAX_PREFERRED_LENGTH
+        status = netapi32.NetUserGetLocalGroups(
+            None, f"{account[1]}\\{account[0]}" if account[1] else account[0],
+            0, 1, ctypes.byref(buf), 0xFFFFFFFF, ctypes.byref(read), ctypes.byref(total))
+        if status != 0:
+            return None
+        try:
+            names = ctypes.cast(buf, ctypes.POINTER(ctypes.c_wchar_p))
+            groups = {str(names[i] or "").lower() for i in range(read.value)}
+        finally:
+            netapi32.NetApiBufferFree(buf)
+        return admins[0].lower() in groups
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_TRUST_CACHE: dict = {}
+
+
+def registry_owner_trusted(path: Path) -> bool | None:
+    """False only when the owner is provably not trusted; None when unknown."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size, getattr(st, "st_ino", 0))
+    except OSError:
+        return None
+    if key in _TRUST_CACHE:
+        return _TRUST_CACHE[key]
+    owner = _file_owner_sid(path)
+    if owner is None:
+        verdict = None
+    elif owner in _TRUSTED_OWNER_SIDS or owner == _current_user_sid():
+        verdict = True
+    else:
+        verdict = _is_local_admin(owner)
+    # Remember only non-negative verdicts for this exact file: an untrusted file
+    # is re-checked every time, so an ownership repair is noticed at once.
+    _TRUST_CACHE.clear()
+    if verdict is not False:
+        _TRUST_CACHE[key] = verdict
+    return verdict
 
 
 def load_registry() -> dict:
     path = registry_path()
     if not path.exists():
         return {"schema": REGISTRY_SCHEMA, "recorders": []}
+    if registry_owner_trusted(path) is False:
+        raise RegistryUntrusted(
+            "the recorder configuration on this PC is not owned by SYSTEM or an "
+            "administrator; re-run WatchLog Setup to repair it"
+        )
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -121,11 +333,19 @@ def save_registry(payload: dict) -> dict:
     normalized = validate_registry(payload)
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(normalized, separators=(",", ":")), encoding="utf-8")
-    # Prove the exact staged bytes parse and satisfy the schema before publish.
-    validate_registry(json.loads(tmp.read_text(encoding="utf-8")))
-    tmp.replace(path)
+    # Exclusively created, unpredictable temp file: a pre-created
+    # recorders.json.tmp (owned by whoever planted it) can never become the registry.
+    fd, tmp_name = tempfile.mkstemp(prefix=".recorders.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(normalized, separators=(",", ":")))
+        # Prove the exact staged bytes parse and satisfy the schema before publish.
+        validate_registry(json.loads(tmp.read_text(encoding="utf-8")))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return normalized
 
 
@@ -242,13 +462,16 @@ def _read_legacy_public(config_path: Path) -> dict:
     return section
 
 
-def migrate_legacy_singleton(config_path: Path) -> dict | None:
+def migrate_legacy_singleton(config_path: Path, *, local_id: str | None = None) -> dict | None:
     """Stage the current singleton recorder into the multi-recorder store.
 
     This is intentionally COPY-ONLY during the compatibility phase. The legacy
     singleton credential and watchlog.ini recorder keys are retained so 5.0.27
     continues to run unchanged. A later runtime-cutover migration may retire the
     legacy form only after the new runtime proves it can boot from this registry.
+
+    ``local_id`` reuses a known local recorder id for the staged row (see
+    reusable_continuity_id); otherwise a new one is minted.
 
     Returns the primary recorder row, or None when no legacy recorder exists.
     """
@@ -273,7 +496,7 @@ def migrate_legacy_singleton(config_path: Path) -> dict | None:
     if singleton is None:
         raise SecretError("legacy recorder exists without a protected credential")
 
-    local_id = str(uuid.uuid4())
+    local_id = str(uuid.UUID(str(local_id))) if local_id else str(uuid.uuid4())
     credential_store.save_recorder_credential(
         local_id,
         singleton.get("username") or "admin",
@@ -309,6 +532,157 @@ def migrate_legacy_singleton(config_path: Path) -> dict | None:
     return loaded
 
 
+def _endpoint(url) -> tuple[str, int] | None:
+    """Normalised (host, port) of a recorder address.
+
+    Scheme and host are case-insensitive, the port defaults by scheme, and any
+    path, credentials or trailing slash are ignored, so "192.0.2.64",
+    "HTTP://192.0.2.64:80/" and "http://192.0.2.64/ISAPI" are one endpoint."""
+    text = str(url or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "http://" + text
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").strip().lower().rstrip(".")
+        port = parts.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if port is None:
+        port = 443 if (parts.scheme or "").lower() == "https" else 80
+    return host, port
+
+
+def _serial(identity_fingerprint) -> str | None:
+    text = str(identity_fingerprint or "").strip()
+    if not text.lower().startswith("serial:"):
+        return None
+    return text[len("serial:"):].strip().upper() or None
+
+
+def _duplicate_of(rows, url, identity_fingerprint=None, *, ignore_local_id=None):
+    """The existing row that is the same physical recorder, if any.
+
+    Same normalised endpoint, or the same serial number where both are known
+    (a recorder that moved address after DHCP is still the same recorder)."""
+    endpoint, serial = _endpoint(url), _serial(identity_fingerprint)
+    for row in rows:
+        if row["local_id"] == ignore_local_id:
+            continue
+        if endpoint and _endpoint(row.get("url")) == endpoint:
+            return row
+        if serial and _serial(row.get("identity_fingerprint")) == serial:
+            return row
+    return None
+
+
+def _reject_duplicate(rows, url, identity_fingerprint=None, *, ignore_local_id=None) -> None:
+    existing = _duplicate_of(rows, url, identity_fingerprint, ignore_local_id=ignore_local_id)
+    if existing is None:
+        return
+    if not existing.get("is_configured"):
+        raise DuplicateRecorder(
+            "this recorder is already in WatchLog but disabled; re-enable it instead"
+        )
+    raise DuplicateRecorder("this recorder is already configured in WatchLog")
+
+
+def reusable_continuity_id(url, identity_fingerprint=None) -> str | None:
+    """The continuity recorder's local id in the registry about to be quarantined,
+    for the freshly staged row of a reinstall whose site is unknown.
+
+    WatchLog looks a recorder up by local id within one site, so on the same site
+    the reused id re-attaches to the existing continuity recorder (its cameras and
+    history) instead of creating a second one; on another site it is simply a new
+    id. Its cloud id and credential are never carried over. Returns None for an
+    unreadable or untrusted registry, or when the newly proven recorder is one of
+    the registry's other recorders (that would graft it onto the continuity
+    recorder's identity)."""
+    try:
+        rows = recorders()
+    except Exception:  # noqa: BLE001 — never reuse ids from a file we cannot trust
+        return None
+    continuity = next((row for row in rows if row.get("continuity_owner")), None)
+    if continuity is None:
+        return None
+    same = _duplicate_of(rows, url, identity_fingerprint)
+    if same is not None and same["local_id"] != continuity["local_id"]:
+        return None
+    return continuity["local_id"]
+
+
+def quarantine_registry() -> list[Path]:
+    """Move the registry and the per-recorder state it owns aside; never delete.
+
+    Used when the registry cannot belong to the installation being set up (left
+    by an earlier install, another site, or unreadable). The secondary
+    recorders' queued events move with it, so they can never drain into a
+    different site. Returns the quarantined paths."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    moved = []
+    for src in (registry_path(), data_dir() / "recorders"):
+        if src.exists():
+            dst, n = src.with_name(f"{src.name}.quarantine-{stamp}"), 0
+            while dst.exists():                 # never overwrite an earlier quarantine
+                n += 1
+                dst = src.with_name(f"{src.name}.quarantine-{stamp}-{n}")
+            os.replace(src, dst)
+            moved.append(dst)
+    return moved
+
+
+def update_recorder_connection(local_id: str, *, url: str, driver: str,
+                               username: str, password: str,
+                               vendor: str | None = None, model: str | None = None,
+                               firmware: str | None = None,
+                               identity_fingerprint: str | None = None,
+                               mirror_legacy: bool = False) -> dict:
+    """Re-point one recorder at a freshly proven address and login.
+
+    The registry is the authority for recorder address and credential. Local and
+    cloud identity are kept; observed facts are replaced by what was just proven
+    (unknown stays unknown). If the registry write fails, the credential (and,
+    with mirror_legacy, the legacy singleton credential) is restored."""
+    current = load_registry()
+    wanted = str(local_id or "").strip()
+    if not any(row["local_id"] == wanted for row in current["recorders"]):
+        raise ValueError("recorder not found")
+    address = str(url or "").strip()
+    _reject_duplicate(current["recorders"], address, identity_fingerprint,
+                      ignore_local_id=wanted)
+
+    paths = [credential_store.recorder_credential_path(wanted)]
+    if mirror_legacy:
+        paths.append(credential_store.nvr_credential_path())
+    snapshot = credential_store.snapshot_secret_files(paths)
+    credential_store.replace_recorder_credential(
+        wanted, username, password, mirror_legacy=mirror_legacy
+    )
+
+    def update(row):
+        row["url"] = address
+        row["driver"] = str(driver or "auto").strip().lower() or "auto"
+        row["vendor"] = str(vendor).strip() if vendor else None
+        row["model"] = str(model).strip() if model else None
+        row["firmware"] = str(firmware).strip() if firmware else None
+        row["identity_fingerprint"] = (
+            str(identity_fingerprint).strip() if identity_fingerprint else None
+        )
+
+    try:
+        return _replace_record(wanted, update)
+    except Exception:
+        credential_store.restore_secret_files(snapshot)
+        raise
+
+
 def add_recorder(*, display_name: str, url: str, driver: str,
                  username: str, password: str, is_primary: bool = False,
                  vendor: str | None = None, model: str | None = None,
@@ -319,8 +693,7 @@ def add_recorder(*, display_name: str, url: str, driver: str,
     Cloud recorder_id remains unset until the recorder-aware RPC sync assigns it.
     """
     current = load_registry()
-    if any(r["url"] and r["url"] == str(url).strip() for r in current["recorders"]):
-        raise ValueError("a recorder with this local address already exists")
+    _reject_duplicate(current["recorders"], url, identity_fingerprint)
 
     if is_primary:
         for row in current["recorders"]:
@@ -432,18 +805,7 @@ def make_primary(local_id: str) -> dict:
     return result
 
 
-def disable_recorder(local_id: str) -> dict:
-    """Disable an ordinary recorder while preserving cloud/local history.
-
-    5.1 never disables the immutable continuity owner. Retiring that recorder
-    requires a separately designed quiesce + drain workflow so legacy
-    spool/health evidence cannot be stranded.
-    """
-    row = recorder(local_id)
-    if row is None:
-        raise ValueError("recorder not found")
-    if not row.get("is_configured"):
-        return row
+def _check_can_disable(row: dict) -> None:
     if row.get("continuity_owner"):
         raise ValueError(
             "the original WatchLog recorder cannot be disabled in this release"
@@ -456,6 +818,40 @@ def disable_recorder(local_id: str) -> dict:
         raise ValueError(
             "an unbound recorder must be rolled back instead of disabled"
         )
+
+
+def planned_disable(local_id: str) -> dict:
+    """Return the validated registry with this recorder disabled; nothing is saved.
+
+    Setup sends this lifecycle change to WatchLog BEFORE committing it locally.
+    """
+    current = load_registry()
+    wanted = str(local_id or "").strip()
+    row = next((r for r in current["recorders"] if r["local_id"] == wanted), None)
+    if row is None:
+        raise ValueError("recorder not found")
+    if row.get("is_configured"):
+        _check_can_disable(row)
+    rows = [
+        dict(r, is_configured=False) if r["local_id"] == wanted else dict(r)
+        for r in current["recorders"]
+    ]
+    return validate_registry({"schema": REGISTRY_SCHEMA, "recorders": rows})
+
+
+def disable_recorder(local_id: str) -> dict:
+    """Disable an ordinary recorder while preserving cloud/local history.
+
+    5.1 never disables the immutable continuity owner. Retiring that recorder
+    requires a separately designed quiesce + drain workflow so legacy
+    spool/health evidence cannot be stranded.
+    """
+    row = recorder(local_id)
+    if row is None:
+        raise ValueError("recorder not found")
+    if not row.get("is_configured"):
+        return row
+    _check_can_disable(row)
     return _replace_record(
         local_id,
         lambda item: item.__setitem__("is_configured", False),
@@ -480,16 +876,18 @@ def enable_recorder(local_id: str) -> dict:
     )
 
 
-def registry_cloud_descriptors() -> list[dict]:
+def registry_cloud_descriptors(registry: dict | None = None) -> list[dict]:
     """Return the full non-secret registry state, including disabled recorders.
 
     This is the only descriptor surface suitable for lifecycle synchronization.
     Runtime RecorderContexts intentionally omit disabled recorders, so using
     context.cloud_descriptor() alone would leave a disabled cloud recorder
-    incorrectly configured forever.
+    incorrectly configured forever. ``registry`` describes a planned state
+    (for example planned_disable()) instead of the saved one.
     """
     out = []
-    for row in recorders():
+    rows = validate_registry(registry)["recorders"] if registry is not None else recorders()
+    for row in rows:
         out.append({
             "local_key": row["local_id"],
             "display_name": row["display_name"],

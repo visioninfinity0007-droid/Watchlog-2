@@ -15,11 +15,18 @@ No recorder secret is copied into recorders.json or cloud payloads.
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import credential_store
 import recorder_registry
+
+# The incident-evidence workers start beside the run loop, so they can claim a
+# job while startup is still binding an unbound registry row. Give that binding a
+# bounded moment to land in recorders.json before failing the job closed.
+UNBOUND_BINDING_WAIT_SECONDS = 30.0
+UNBOUND_BINDING_POLL_SECONDS = 0.5
 
 
 @dataclass
@@ -59,6 +66,11 @@ class RecorderContext:
         self.config.nvr_password = cred.get("password") or ""
 
 
+def recorder_state_dir(state_parent, local_id: str) -> Path:
+    """Durable state directory of a non-continuity recorder (spool, health, last-live)."""
+    return Path(state_parent) / "recorders" / str(local_id)
+
+
 def _bound_config(base_cfg, row: dict):
     """Copy the common Agent config, then override recorder-local fields only."""
     bound = copy.copy(base_cfg)
@@ -76,7 +88,7 @@ def _bound_config(base_cfg, row: dict):
     # or last-live marker would strand queued evidence / lose the outage boundary.
     # Secondary recorders get independent state files.
     state_parent = Path(getattr(base_cfg, "state_path")).parent
-    recorder_state = state_parent / "recorders" / row["local_id"]
+    recorder_state = recorder_state_dir(state_parent, row["local_id"])
     bound.recorder_state_dir = recorder_state
     if row.get("continuity_owner", row.get("is_primary")):
         bound.spool_path = Path(getattr(base_cfg, "spool_path"))
@@ -154,11 +166,22 @@ def stage_and_load_legacy(base_cfg, config_path) -> list[RecorderContext]:
     return load_contexts(base_cfg)
 
 
+def _configured_rows() -> list[dict]:
+    return [row for row in recorder_registry.recorders() if row.get("is_configured")]
+
+
 def config_for_cloud_recorder(base_cfg, recorder_id: str | None):
     """Resolve a cloud job to exactly one local recorder Config.
 
-    A missing recorder_id is accepted only while local identity is absent or
-    unambiguously singleton. Multi-recorder jobs never fall back to "primary".
+    The row is selected by cloud recorder id from the non-secret registry FIRST;
+    only that recorder's credential is decrypted, so one corrupt sibling
+    credential cannot fail jobs for healthy recorders.
+
+    With no registry the Agent is the 5.0.x singleton runtime: it serves exactly
+    one recorder, and every job the cloud gives it targets the site's single
+    recorder, so the job runs on the singleton config. With a registry, a missing
+    recorder_id is accepted only for a single configured recorder, and a
+    multi-recorder job never falls back to "primary".
     """
     wanted = str(recorder_id or "").strip() or None
     base_cloud = str(getattr(base_cfg, "recorder_cloud_id", "") or "").strip() or None
@@ -166,21 +189,32 @@ def config_for_cloud_recorder(base_cfg, recorder_id: str | None):
     if wanted and base_cloud == wanted:
         return base_cfg
 
-    contexts = load_contexts(base_cfg)
+    rows = _configured_rows()
+    if not rows:
+        return base_cfg
 
     if wanted:
-        matches = [
-            ctx for ctx in contexts
-            if str(ctx.cloud_recorder_id or "") == wanted
-        ]
+        # Startup found a database without recorders: no binding will land in
+        # this process (the Agent restarts once WatchLog offers recorders).
+        wait = (0.0 if getattr(base_cfg, "recorder_backend_absent", False)
+                else UNBOUND_BINDING_WAIT_SECONDS)
+        deadline = time.monotonic() + wait
+        while True:
+            matches = [
+                row for row in rows
+                if str(row.get("cloud_recorder_id") or "") == wanted
+            ]
+            binding_pending = any(not row.get("cloud_recorder_id") for row in rows)
+            if matches or not binding_pending or time.monotonic() >= deadline:
+                break
+            time.sleep(UNBOUND_BINDING_POLL_SECONDS)
+            rows = _configured_rows()
         if len(matches) != 1:
             raise ValueError(
                 "cloud recorder target is not mapped to exactly one local recorder"
             )
-        return matches[0].config
+        return _bound_config(base_cfg, matches[0])
 
-    if len(contexts) > 1:
+    if len(rows) > 1:
         raise ValueError("recorder_id required for multi-recorder job")
-    if len(contexts) == 1:
-        return contexts[0].config
-    return base_cfg
+    return _bound_config(base_cfg, rows[0])

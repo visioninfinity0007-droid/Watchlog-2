@@ -329,3 +329,158 @@ def test_registry_rejects_disabled_continuity_owner():
             assert False, "disabled continuity owner must be rejected"
         except ValueError as exc:
             assert "continuity owner must remain configured" in str(exc).lower()
+
+
+# --- Setup re-run keeps the registry authoritative (MNVR-012) ----------------
+
+SETUP_CLOUD_ID = "c0ffee00-0000-4000-8000-000000000001"
+SETUP_STATE = {"agent_id": "agent", "agent_key": "key", "site_id": "site-1",
+               "tenant_id": "tenant-1"}
+
+
+def _patch_setup_cloud_steps(monkeypatch, sb, *, prior_state, new_state):
+    class Cloud:
+        def call(self, _name, **_kw):
+            return {}
+
+    monkeypatch.setattr(sb, "_load_existing_identity",
+                        lambda _p: dict(prior_state) if prior_state else None)
+    monkeypatch.setattr(sb, "establish_identity", lambda *a, **k: dict(new_state))
+    monkeypatch.setattr(sb, "sync_cameras", lambda *a, **k: {"1": "cam-1"})
+    monkeypatch.setattr(sb.core, "heartbeat", lambda *a, **k: None)
+    monkeypatch.setattr(sb.core, "Cloud", lambda *a, **k: Cloud())
+    monkeypatch.setattr(sb, "ensure_background_agent",
+                        lambda *a, **k: {"started": True, "detail": "test"})
+    monkeypatch.setattr(sb, "_seed_recorder_identity", lambda *a, **k: None)
+    monkeypatch.setattr(sb, "_clear_consumed_code", lambda *a, **k: True)
+
+
+def _new_recorder():
+    return {
+        "url": "http://192.0.2.77", "vendor": "Dahua", "model": "NVR-NEW",
+        "firmware": "2.0", "driver": "dahua-cgi", "serial": "SER-NEW",
+        "channels": [{"channel": "1", "name": "Camera 1"}],
+        "verified_against_hardware": True,
+    }
+
+
+def _run_finalize(sb, ini):
+    return sb.finalize_install(
+        ini, {"supabase_url": "https://example.invalid", "supabase_publishable_key": "k"},
+        "SITE-CODE", "http://192.0.2.77", "new-user", "new-pw", "custom", [],
+        verified_recorder=_new_recorder(),
+    )
+
+
+def _staged_singleton(wl):
+    wl.mkdir(parents=True, exist_ok=True)
+    ini = wl / "watchlog.ini"
+    ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\nnvr_driver = hikvision\n",
+                   encoding="utf-8")
+    cs.save_nvr_credential("old-user", "old-pw")
+    primary = rr.migrate_legacy_singleton(ini)
+    rr.apply_cloud_mapping({primary["local_id"]: SETUP_CLOUD_ID})
+    return ini, primary
+
+
+def test_setup_rerun_points_the_registry_primary_at_the_new_recorder(monkeypatch):
+    import recorder_runtime
+    import setup_backend as sb
+    from types import SimpleNamespace
+
+    with _Env() as wl:
+        ini, primary = _staged_singleton(wl)
+        _patch_setup_cloud_steps(monkeypatch, sb, prior_state=SETUP_STATE,
+                                 new_state=SETUP_STATE)
+
+        _run_finalize(sb, ini)
+
+        row = rr.continuity_recorder()
+        # Same site, same local identity and cloud binding: the row is updated in place.
+        assert row["local_id"] == primary["local_id"]
+        assert row["cloud_recorder_id"] == SETUP_CLOUD_ID
+        assert row["is_primary"] is True
+        assert (row["url"], row["driver"]) == ("http://192.0.2.77", "dahua-cgi")
+        assert (row["vendor"], row["model"]) == ("Dahua", "NVR-NEW")
+        assert row["identity_fingerprint"] == "serial:SER-NEW"
+        # Both stores agree: the legacy ini/credential and the registry row.
+        assert "nvr_url = http://192.0.2.77" in ini.read_text(encoding="utf-8")
+        assert cs.load_nvr_credential_readonly()["password"] == "new-pw"
+        assert cs.load_recorder_credential(row["local_id"])["password"] == "new-pw"
+
+        base = SimpleNamespace(
+            state_path=wl / "agent_state.json", spool_path=wl / "spool.sqlite",
+            health_store_path=wl / "health.sqlite", last_live_path=wl / "last_live.json",
+        )
+        (ctx,) = recorder_runtime.load_contexts(base)
+        assert ctx.config.nvr_url == "http://192.0.2.77"
+        assert (ctx.config.nvr_username, ctx.config.nvr_password) == ("new-user", "new-pw")
+
+
+# --- the same physical recorder cannot be added twice (MNVR-042) -------------
+
+import pytest  # noqa: E402
+
+
+def _staged_with_serial(wl, url="http://192.0.2.64", serial="DS-7608NI-SER1"):
+    wl.mkdir(parents=True, exist_ok=True)
+    ini = wl / "watchlog.ini"
+    ini.write_text(f"[watchlog]\nnvr_url = {url}\nnvr_driver = hikvision\n", encoding="utf-8")
+    cs.save_nvr_credential("admin", "pw")
+    primary = rr.migrate_legacy_singleton(ini)
+    rr.update_observed_identity(primary["local_id"], identity_fingerprint=f"serial:{serial}")
+    return primary
+
+
+@pytest.mark.parametrize("address", [
+    "http://192.0.2.64/",
+    "HTTP://192.0.2.64:80",
+    "192.0.2.64",
+    "http://192.0.2.64:80/ISAPI/System/deviceInfo",
+    "http://admin@192.0.2.64",
+])
+def test_same_endpoint_written_differently_is_a_duplicate(address):
+    with _Env() as wl:
+        _staged_with_serial(wl)
+        before = sorted(p.name for p in cs.recorder_secrets_dir().glob("*.dpapi"))
+        with pytest.raises(ValueError, match="already"):
+            rr.add_recorder(display_name="Again", url=address, driver="hikvision",
+                            username="x", password="y")
+        assert sorted(p.name for p in cs.recorder_secrets_dir().glob("*.dpapi")) == before
+        assert len(rr.recorders()) == 1
+
+
+@pytest.mark.parametrize("serial", ["DS-7608NI-SER1", "ds-7608ni-ser1", " DS-7608NI-SER1 "])
+def test_same_serial_at_a_new_address_is_a_duplicate(serial):
+    with _Env() as wl:
+        _staged_with_serial(wl)
+        with pytest.raises(ValueError, match="already"):
+            rr.add_recorder(display_name="Moved", url="http://192.0.2.99", driver="hikvision",
+                            username="x", password="y", identity_fingerprint=f"serial:{serial}")
+        assert len(rr.recorders()) == 1
+
+
+@pytest.mark.parametrize("address,fingerprint", [
+    ("http://192.0.2.65", None),                     # another host
+    ("http://192.0.2.64:8080", None),                # another web port on the same host
+    ("http://192.0.2.66", "serial:OTHER-SERIAL"),    # another serial
+])
+def test_a_genuinely_different_recorder_is_still_accepted(address, fingerprint):
+    with _Env() as wl:
+        _staged_with_serial(wl)
+        rr.add_recorder(display_name="Second", url=address, driver="hikvision",
+                        username="x", password="y", identity_fingerprint=fingerprint)
+        assert len(rr.recorders()) == 2
+
+
+def test_readding_a_disabled_recorder_says_to_re_enable_it():
+    with _Env() as wl:
+        primary = _staged_with_serial(wl)
+        second = rr.add_recorder(display_name="Second", url="http://192.0.2.70",
+                                 driver="dahua-cgi", username="x", password="y")
+        rr.apply_cloud_mapping({primary["local_id"]: "11111111-1111-4111-8111-111111111111",
+                                second["local_id"]: "22222222-2222-4222-8222-222222222222"})
+        rr.disable_recorder(second["local_id"])
+        with pytest.raises(ValueError, match="re-enable"):
+            rr.add_recorder(display_name="Again", url="http://192.0.2.70/", driver="dahua-cgi",
+                            username="x", password="y")

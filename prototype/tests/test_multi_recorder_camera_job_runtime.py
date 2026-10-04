@@ -14,10 +14,13 @@ AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))
 
 import analytics_agent  # noqa: E402
+import credential_store as cs  # noqa: E402
 import incident_evidence  # noqa: E402
+import recorder_registry as rr  # noqa: E402
 import recorder_runtime  # noqa: E402
 import site_control  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+import windows_secret as ws  # noqa: E402
 
 
 def _cfg(name, cloud_id, url):
@@ -39,18 +42,52 @@ def _cfg(name, cloud_id, url):
     )
 
 
-def test_cloud_recorder_resolver_is_exact_and_legacy_fails_closed(monkeypatch):
-    base = _cfg("base", None, "http://base")
-    cfg_a = _cfg("a", "11111111-1111-1111-1111-111111111111", "http://a")
-    cfg_b = _cfg("b", "22222222-2222-2222-2222-222222222222", "http://b")
-    contexts = [
-        SimpleNamespace(cloud_recorder_id=cfg_a.recorder_cloud_id, config=cfg_a),
-        SimpleNamespace(cloud_recorder_id=cfg_b.recorder_cloud_id, config=cfg_b),
-    ]
-    monkeypatch.setattr(recorder_runtime, "load_contexts", lambda _cfg: contexts)
+def _isolated_registry(monkeypatch, tmp_path, rows):
+    """A real recorders.json + per-recorder credentials under a temp ProgramData."""
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path))
 
-    assert recorder_runtime.config_for_cloud_recorder(base, cfg_a.recorder_cloud_id) is cfg_a
-    assert recorder_runtime.config_for_cloud_recorder(base, cfg_b.recorder_cloud_id) is cfg_b
+    def wjs(path, obj):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text("JSON:" + json.dumps(obj), encoding="utf-8")
+
+    def rjs(path):
+        text = Path(path).read_text(encoding="utf-8")
+        if not text.startswith("JSON:"):
+            raise ws.SecretError("corrupt")
+        return json.loads(text[5:])
+
+    monkeypatch.setattr(cs, "write_json_secret", wjs)
+    monkeypatch.setattr(cs, "read_json_secret", rjs)
+    for row in rows:
+        cs.save_recorder_credential(row["local_id"], f"user-{row['display_name']}",
+                                    f"pw-{row['display_name']}")
+    rr.save_registry({"schema": rr.REGISTRY_SCHEMA, "recorders": rows})
+
+
+def test_cloud_recorder_resolver_is_exact_and_legacy_fails_closed(monkeypatch, tmp_path):
+    cloud_a = "11111111-1111-1111-1111-111111111111"
+    cloud_b = "22222222-2222-2222-2222-222222222222"
+    local_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    local_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    _isolated_registry(monkeypatch, tmp_path, [
+        {"local_id": local_a, "cloud_recorder_id": cloud_a, "display_name": "a",
+         "url": "http://a", "driver": "onvif", "is_primary": True, "is_configured": True},
+        {"local_id": local_b, "cloud_recorder_id": cloud_b, "display_name": "b",
+         "url": "http://b", "driver": "onvif", "is_primary": False, "is_configured": True},
+    ])
+    # The base config is the unbound process config: no hand-set recorder id.
+    base = _cfg("base", None, "http://base")
+    base.state_path = tmp_path / "WatchLog" / "agent_state.json"
+    base.spool_path = tmp_path / "WatchLog" / "spool.sqlite"
+    base.health_store_path = tmp_path / "WatchLog" / "health.sqlite"
+    base.last_live_path = tmp_path / "WatchLog" / "last_live.json"
+
+    cfg_a = recorder_runtime.config_for_cloud_recorder(base, cloud_a)
+    cfg_b = recorder_runtime.config_for_cloud_recorder(base, cloud_b)
+    assert (cfg_a.nvr_url, cfg_a.nvr_username, cfg_a.recorder_cloud_id) == (
+        "http://a", "user-a", cloud_a)
+    assert (cfg_b.nvr_url, cfg_b.nvr_username, cfg_b.recorder_cloud_id) == (
+        "http://b", "user-b", cloud_b)
 
     with pytest.raises(ValueError, match="not mapped"):
         recorder_runtime.config_for_cloud_recorder(
@@ -59,16 +96,13 @@ def test_cloud_recorder_resolver_is_exact_and_legacy_fails_closed(monkeypatch):
     with pytest.raises(ValueError, match="recorder_id required"):
         recorder_runtime.config_for_cloud_recorder(base, None)
 
-    # A cut-over singleton config can resolve its own recorder without touching
-    # registry/decryption again.
-    explicit = _cfg("explicit", cfg_a.recorder_cloud_id, "http://explicit")
+    # A config already bound to its recorder resolves its own jobs without
+    # touching the registry or decrypting again.
     monkeypatch.setattr(
-        recorder_runtime, "load_contexts",
-        lambda _cfg: (_ for _ in ()).throw(AssertionError("should not load registry")),
+        rr, "recorders",
+        lambda: (_ for _ in ()).throw(AssertionError("should not load registry")),
     )
-    assert recorder_runtime.config_for_cloud_recorder(
-        explicit, cfg_a.recorder_cloud_id
-    ) is explicit
+    assert recorder_runtime.config_for_cloud_recorder(cfg_a, cloud_a) is cfg_a
 
 
 class _Driver:
@@ -91,7 +125,7 @@ class _Driver:
 
 
 def test_config_snapshot_uses_requested_secondary_without_opening_primary(monkeypatch):
-    base = _cfg("base", "11111111-1111-1111-1111-111111111111", "http://a")
+    base = _cfg("base", None, "http://a")
     cfg_b = _cfg("b", "22222222-2222-2222-2222-222222222222", "http://b")
     opened = []
 
@@ -354,3 +388,55 @@ def test_archive_retrieval_resolves_camera_recorder_and_filters_engine(monkeypat
 
     assert opened == [cfg_b]
     assert rows and rows[0][0] == b"jpeg"
+
+
+def test_corrupt_sibling_credential_does_not_fail_a_healthy_recorder_clip(monkeypatch, tmp_path):
+    cloud_a = "11111111-1111-1111-1111-111111111111"
+    cloud_b = "22222222-2222-2222-2222-222222222222"
+    local_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    local_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    _isolated_registry(monkeypatch, tmp_path, [
+        {"local_id": local_a, "cloud_recorder_id": cloud_a, "display_name": "a",
+         "url": "http://a", "driver": "onvif", "is_primary": True, "is_configured": True},
+        {"local_id": local_b, "cloud_recorder_id": cloud_b, "display_name": "b",
+         "url": "http://b", "driver": "onvif", "is_primary": False, "is_configured": True},
+    ])
+    cs.recorder_credential_path(local_b).write_text("CORRUPT", encoding="utf-8")
+    base = _cfg("base", None, "http://base")
+    base.state_path = tmp_path / "WatchLog" / "agent_state.json"
+    base.spool_path = tmp_path / "WatchLog" / "spool.sqlite"
+    base.health_store_path = tmp_path / "WatchLog" / "health.sqlite"
+    base.last_live_path = tmp_path / "WatchLog" / "last_live.json"
+    stop = threading.Event()
+    opened, outcomes = [], []
+
+    def open_archive(cfg):
+        opened.append(cfg.nvr_url)
+        return _Driver("archive-a"), SimpleNamespace(vendor="Test", model="A")
+
+    monkeypatch.setattr(core, "open_archive_driver", open_archive)
+
+    class Cloud:
+        def __init__(self, *_a, **_k):
+            self.queue = [
+                {"request_id": "req-a", "recorder_id": cloud_a, "channel": "1",
+                 "start_at": "2026-10-02T12:00:00Z", "end_at": "2026-10-02T12:00:30Z"},
+                {"request_id": "req-b", "recorder_id": cloud_b, "channel": "1",
+                 "start_at": "2026-10-02T12:00:00Z", "end_at": "2026-10-02T12:00:30Z"},
+            ]
+
+        def call(self, name, **kwargs):
+            if name == "wl_agent_claim_clip_requests":
+                if self.queue:
+                    return [self.queue.pop(0)]
+                stop.set()
+                return []
+            if name in ("wl_agent_complete_clip", "wl_agent_fail_clip"):
+                outcomes.append((kwargs["p_request_id"], name))
+            return {"ok": True}
+
+    monkeypatch.setattr(core, "Cloud", Cloud)
+    incident_evidence.footage_worker(base, {"agent_id": "agent", "agent_key": "key"}, stop)
+
+    assert opened == ["http://a"]
+    assert outcomes == [("req-a", "wl_agent_complete_clip"), ("req-b", "wl_agent_fail_clip")]

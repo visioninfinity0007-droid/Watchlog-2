@@ -71,15 +71,26 @@ def require_cloud_contract(cloud, state: dict) -> dict:
     return contract
 
 
-def _apply_mapping(contexts, mapping: dict) -> None:
-    recorder_registry.apply_cloud_mapping(mapping)
+def _bind_contexts(contexts, mapping: dict) -> None:
+    """Copy a persisted mapping onto runtime contexts.
+
+    Disabled registry rows are part of the lifecycle mapping but have no
+    runtime context, so they are skipped here.
+    """
     by_local = {ctx.local_id: ctx for ctx in contexts}
     for local_id, cloud_id in mapping.items():
-        ctx = by_local[str(local_id)]
+        ctx = by_local.get(str(local_id))
+        if ctx is None:
+            continue
         cloud_id = str(cloud_id)
         ctx.cloud_recorder_id = cloud_id
         ctx.config.recorder_cloud_id = cloud_id
         ctx.holder["recorder_cloud_id"] = cloud_id
+
+
+def _apply_mapping(contexts, mapping: dict) -> None:
+    recorder_registry.apply_cloud_mapping(mapping)
+    _bind_contexts(contexts, mapping)
 
 
 def _sync_identity_payload(cloud, state: dict, contexts) -> dict:
@@ -173,10 +184,6 @@ def bind_cloud_identities(cloud, state: dict,
     if not contexts:
         return {}
 
-    primaries = [ctx for ctx in contexts if ctx.is_primary]
-    if len(primaries) != 1:
-        raise RuntimeError("multi-recorder cutover requires exactly one primary")
-
     registry_rows = recorder_registry.recorders()
     continuity_rows = [
         row for row in registry_rows if row.get("continuity_owner")
@@ -198,6 +205,10 @@ def bind_cloud_identities(cloud, state: dict,
             "configured continuity recorder is missing from runtime contexts"
         )
 
+    primaries = [ctx for ctx in contexts if ctx.is_primary]
+    if len(primaries) != 1:
+        raise RuntimeError("multi-recorder cutover requires exactly one primary")
+
     if not continuity.cloud_recorder_id:
         # Before first cloud binding the continuity owner must still be the
         # preferred primary. Primary reassignment is blocked locally until
@@ -213,12 +224,11 @@ def bind_cloud_identities(cloud, state: dict,
     _stamp_legacy_spool(continuity.config, continuity_id)
     _stamp_legacy_health(continuity.config, continuity_id, state)
 
-    mapping = _sync_identity_payload(cloud, state, contexts)
-    _apply_mapping(contexts, mapping)
-
-    # Propagate the complete lifecycle state, including disabled historical rows
-    # and the current preferred-primary designation.
-    _sync_registry_state(cloud, state)
+    # One complete lifecycle sync binds every configured recorder and also
+    # propagates disabled historical rows and the current preferred-primary
+    # designation. A separate configured-only sync would be redundant.
+    mapping = _sync_registry_state(cloud, state)
+    _bind_contexts(contexts, mapping)
     return mapping
 
 
