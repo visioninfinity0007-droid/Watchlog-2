@@ -25,6 +25,7 @@ before trusting it.
 
 from __future__ import annotations
 
+import queue
 import re
 import threading
 import time
@@ -522,6 +523,11 @@ class DahuaDriver(NvrDriver):
 
         heartbeat=5 makes the device send a keep-alive every 5s, which is
         also how we detect a silently dead link.
+
+        The body is read on its own thread so every block keeps the time it
+        ARRIVED. The collector fetches a still and runs AI for one event before
+        asking for the next; a block read only after that work would carry a
+        late device_ts (MNVR-024).
         """
         path = (f"/cgi-bin/eventManager.cgi?action=attach"
                 f"&codes=[{SUBSCRIBE_CODES}]&heartbeat=5")
@@ -533,20 +539,42 @@ class DahuaDriver(NvrDriver):
         if r.status_code >= 400:
             raise DriverError(f"eventManager attach: HTTP {r.status_code}")
 
+        blocks: queue.Queue = queue.Queue()
+        closed = threading.Event()
+
+        def _read() -> None:
+            try:
+                for raw_line in r.iter_lines(chunk_size=512):
+                    if closed.is_set():
+                        return
+                    if not raw_line:
+                        continue
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if line.startswith("Code="):  # not boundary / Content-Length / heartbeat
+                        blocks.put((time.monotonic(), datetime.now(timezone.utc), line))
+                blocks.put(None)                    # the recorder ended the stream
+            except Exception as e:                  # noqa: BLE001 - raised by the consumer
+                blocks.put(e)
+
+        threading.Thread(target=_read, name="dahua-attach", daemon=True).start()
         try:
-            for raw_line in r.iter_lines(chunk_size=512):
-                if stop.is_set():
-                    break
-                if not raw_line:
+            while not stop.is_set():
+                try:
+                    item = blocks.get(timeout=1.0)
+                except queue.Empty:
                     continue
-                line = raw_line.decode("utf-8", "replace").strip()
-                if not line.startswith("Code="):
-                    continue          # boundary / Content-Length / heartbeat
-                self._received = (time.monotonic(), datetime.now(timezone.utc))
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                received_mono, received_at, line = item
+                self._received = (received_mono, received_at)
                 ev = self._parse_line(line)
                 if ev:
                     yield ev
         finally:
+            closed.set()
+            self._received = None
             r.close()
 
     # -- parsing --------------------------------------------------------
@@ -593,7 +621,8 @@ class DahuaDriver(NvrDriver):
             device_ts=ts,
             device_event_id=None,
             payload={"vendor": "dahua", "code": code, "action": action,
-                     "data": (data[:500] if sep else None)},
+                     "data": (data[:500] if sep else None),
+                     "clock_source": "agent_receive"},
         )
 
     def close(self) -> None:

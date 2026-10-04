@@ -28,7 +28,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import requests
@@ -54,15 +54,39 @@ def _text(node: ET.Element | None, path: str) -> str | None:
     return found.text.strip() if found is not None and found.text else None
 
 
-def _parse_ts(raw: str | None) -> datetime:
-    """ISAPI emits ISO 8601, sometimes with a local offset, sometimes naive."""
+def _parse_ts(raw: str | None) -> datetime | None:
+    """ISAPI emits ISO 8601, sometimes with a local offset, sometimes naive.
+
+    Returned as sent: aware with an offset, naive without one, None when absent or
+    unparseable. A naive value is recorder-local time and is never assumed to be UTC.
+    """
     if not raw:
-        return datetime.now(timezone.utc)
+        return None
     try:
-        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        return datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
     except ValueError:
-        return datetime.now(timezone.utc)
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return None
+
+
+# POSIX TZ as ISAPI reports it, e.g. "CST-5:00:00" (the sign is inverted: UTC+5).
+# Anything after the offset is a DST rule, which this deliberately does not resolve.
+_POSIX_TZ = re.compile(r"[A-Za-z]{3,}([+-]?)(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?")
+
+
+def _stated_utc_offset(local_time: str | None, zone: str | None) -> timedelta | None:
+    """The recorder's own UTC offset from /ISAPI/System/time, or None when it does not
+    state one unambiguously (no offset on localTime and no DST-free POSIX zone)."""
+    stamped = _parse_ts(local_time)
+    if stamped is not None and stamped.tzinfo is not None:
+        return stamped.utcoffset()
+    m = _POSIX_TZ.fullmatch((zone or "").strip())
+    if not m:
+        return None
+    offset = timedelta(hours=int(m.group(2)), minutes=int(m.group(3) or 0),
+                       seconds=int(m.group(4) or 0))
+    if offset > timedelta(hours=14):
+        return None
+    return offset if m.group(1) == "-" else -offset
 
 
 # Hikvision eventType values worth keeping, mapped to our vocabulary.
@@ -89,6 +113,12 @@ EVENT_TYPE_MAP = {
 # agent's monotonic receive clock, never on the recorder's dateTime.
 BURST_WINDOW_SECONDS = 30
 
+# A recorder stamp further than this from the time the alert arrived is kept but
+# flagged on the event (clock_skew_seconds) rather than trusted silently.
+CLOCK_SKEW_FLAG_SECONDS = 300
+# How long a recorder that did not state its UTC offset waits before being asked again.
+CLOCK_OFFSET_RETRY_SECONDS = 600
+
 # A camera that will not produce a still must not stall the event loop.
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
@@ -111,11 +141,36 @@ class HikvisionDriver(NvrDriver):
         # (monotonic, wall) clock of the alert being parsed, stamped by stream_events
         # when its bytes arrived; None outside the stream (parse time is used then).
         self._received: tuple[float, datetime] | None = None
+        # The recorder's stated UTC offset, for naive alert times (MNVR-024).
+        self._utc_offset: timedelta | None = None
+        self._utc_offset_asked: float | None = None
 
     # -- helpers --------------------------------------------------------
 
     def _receive_clock(self) -> tuple[float, datetime]:
         return self._received or (time.monotonic(), datetime.now(timezone.utc))
+
+    def _recorder_utc_offset(self) -> timedelta | None:
+        """UTC offset the recorder states for its local clock, read once and cached.
+
+        Only consulted for a naive alert dateTime. When the recorder does not state an
+        offset unambiguously it is asked again after CLOCK_OFFSET_RETRY_SECONDS, never on
+        every alert."""
+        if self._utc_offset is not None:
+            return self._utc_offset
+        now = time.monotonic()
+        if (self._utc_offset_asked is not None
+                and now - self._utc_offset_asked < CLOCK_OFFSET_RETRY_SECONDS):
+            return None
+        self._utc_offset_asked = now
+        try:
+            root = self._xml("/ISAPI/System/time")
+        except DriverError:
+            return None
+        self._utc_offset = _stated_utc_offset(
+            _text(root, "localTime") or _text(root, "time") or _text(root, "currentTime"),
+            _text(root, "timeZone") or _text(root, "timezone"))
+        return self._utc_offset
 
     def _send(self, method: str, url: str, **kw) -> requests.Response:
         """One ISAPI request on the Digest session.
@@ -529,17 +584,39 @@ class HikvisionDriver(NvrDriver):
         channel = (_text(root, "channelID")
                    or _text(root, "dynChannelID")
                    or _text(root, "channelName") or "1")
-        ts = _parse_ts(_text(root, "dateTime"))
 
         # Collapse the once-per-second repeat of a continuing alarm on the agent's
         # monotonic receive clock. Comparing recorder dateTimes dropped every later event
         # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
-        received_mono, _received_at = self._receive_clock()
+        received_mono, received_at = self._receive_clock()
         key = (str(channel), etype)
         last = self._last_emitted.get(key)
         if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
         self._last_emitted[key] = received_mono
+
+        # Which clock stamped this event is explicit (MNVR-024). A naive dateTime is the
+        # recorder's local time: localise it with the offset the recorder states, or, when
+        # it states none, use the time the alert arrived and keep the recorder's text.
+        clock = {}
+        raw_time = _text(root, "dateTime")
+        ts = _parse_ts(raw_time)
+        clock_source = "recorder"
+        if ts is not None and ts.tzinfo is None:
+            offset = self._recorder_utc_offset()
+            if offset is not None:
+                ts, clock_source = ts.replace(tzinfo=timezone(offset)), "recorder_local"
+            else:
+                ts = None
+        if ts is None:
+            ts, clock_source = received_at, "agent_receive"
+            if raw_time:
+                clock["device_time_raw"] = raw_time
+        else:
+            skew = (ts - received_at).total_seconds()
+            if abs(skew) > CLOCK_SKEW_FLAG_SECONDS:
+                clock["clock_skew_seconds"] = int(round(skew))
+        clock["clock_source"] = clock_source
 
         targets = []
         for node in root.iter():
@@ -568,7 +645,8 @@ class HikvisionDriver(NvrDriver):
                      "native_ai": smart_native,
                      "targets": targets,
                      "eventDescription": _text(root, "eventDescription"),
-                     "activePostCount": _text(root, "activePostCount")},
+                     "activePostCount": _text(root, "activePostCount"),
+                     **clock},
         )
 
     def close(self) -> None:
