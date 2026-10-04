@@ -698,13 +698,55 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
         stop.wait(ARCHIVE_POLL_SECONDS)
 
 
+# Recorder-local fields a bound Config carries (see recorder_runtime._bound_config).
+_BOUND_RECORDER_FIELDS = (
+    "nvr_url", "nvr_driver", "nvr_username", "nvr_password",
+    "recorder_local_id", "recorder_cloud_id", "recorder_display_name",
+    "recorder_state_dir", "spool_path", "health_store_path", "last_live_path",
+)
+
+
+def _adopt_single_recorder(cfg, prepared) -> tuple[list[dict], dict]:
+    """Make the shared process Config the one configured recorder's bound Config.
+
+    The same cfg object is already held by the incident-evidence workers and is
+    handed to every thread below, so afterwards every recorder-routed job for the
+    site's recorder resolves to it, events are stamped with its recorder_id and
+    health/recovery use the recorder RPCs. The registry row supplies the address
+    and credential. The single configured recorder is always the continuity
+    owner, so its spool, health store and last-live marker stay at the
+    historical singleton paths.
+    """
+    bound = prepared.context.config
+    for name in _BOUND_RECORDER_FIELDS:
+        setattr(cfg, name, getattr(bound, name))
+    channels = multi_recorder_fanout._channel_rows(prepared)
+    mapping = (
+        {str(k): str(v) for k, v in prepared.camera_mapping.items()}
+        if isinstance(prepared.camera_mapping, dict) else {}
+    )
+    holder_seed = {
+        "recorder_cloud_id": cfg.recorder_cloud_id,
+        "camera_mapping": mapping,
+        "synced_channels": list(channels) if mapping else [],
+        "camera_sync_signature": (
+            tuple(sorted(str(c["channel"]) for c in channels)) if mapping else None
+        ),
+    }
+    return channels, holder_seed
+
+
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None, channels=None) -> None:
     """Core event loop plus analytics worker.
 
-    A validated local registry with >1 configured recorder activates true worker
-    fan-out only after cloud contract v4 preflight binds every recorder identity.
-    Failure never falls back to the primary recorder.
+    Whenever a validated local registry configures 1..N recorders, startup is
+    recorder-aware: cloud contract v4 preflight binds every registry row
+    (including disabled ones) through wl_sync_recorders before any worker starts.
+    More than one configured recorder activates true worker fan-out; exactly one
+    runs the singleton loop below, bound to that recorder's cloud identity. With
+    no registry the historical 5.0.x singleton runtime continues unchanged.
+    Failure never falls back to the primary recorder or to an unbound singleton.
     """
     try:
         configured_recorders = [
@@ -719,22 +761,23 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             ) from error
         configured_recorders = []
 
-    if len(configured_recorders) > 1:
-        detector = core.vision.build(cfg, core.log)
+    holder_seed = {}
+    recorder_bound = False
+    if configured_recorders:
         try:
             prepared = multi_recorder_orchestrator.prepare_recorders(
                 cfg, state, cloud, core.open_driver
             )
         except Exception as error:
             raise SystemExit(
-                "FATAL: multi-recorder preflight did not complete; monitoring "
-                "stopped rather than running a partial recorder set. "
+                "FATAL: recorder preflight did not complete; monitoring "
+                "stopped rather than running an unbound or partial recorder set. "
                 f"({type(error).__name__}: {str(error)[:160]})"
             ) from error
 
         if len(prepared) != len(configured_recorders):
             raise SystemExit(
-                "FATAL: multi-recorder preflight returned an incomplete recorder set."
+                "FATAL: recorder preflight returned an incomplete recorder set."
             )
         if any(not getattr(item.context, "cloud_recorder_id", None) for item in prepared):
             raise SystemExit(
@@ -749,15 +792,23 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                     "independently"
                 )
 
-        return multi_recorder_fanout.run(
-            cfg, state, cloud, once=once,
-            prepared_recorders=prepared,
-            detector=detector,
-            analytics_worker=analytics_worker,
-            archive_worker=archive_worker,
-        )
+        if len(prepared) > 1:
+            detector = core.vision.build(cfg, core.log)
+            return multi_recorder_fanout.run(
+                cfg, state, cloud, once=once,
+                prepared_recorders=prepared,
+                detector=detector,
+                analytics_worker=analytics_worker,
+                archive_worker=archive_worker,
+            )
 
-    # Historical singleton path remains unchanged below.
+        channels, holder_seed = _adopt_single_recorder(cfg, prepared[0])
+        device = prepared[0].device or device
+        recorder_bound = True
+        core.log(f"recorder: {cfg.recorder_display_name} bound as "
+                 f"{str(cfg.recorder_cloud_id)[:8]}; single-recorder runtime")
+
+    # Singleton runtime: the historical 5.0.x path, or bound to the one configured recorder.
     import camera_health
     original_build = core.vision.build
     detector = original_build(cfg, core.log)
@@ -779,6 +830,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     holder = {"monitor": camera_health.CameraHealthMonitor(
         mon_channels, batch_size=cfg.health_batch, concurrency=cfg.health_concurrency)
         if mon_channels else None}
+    holder.update(holder_seed)
+    # A bound recorder never guesses recovery channels: it follows the explicitly
+    # synced inventory, which the health cycle refreshes after a reconnect.
+    recovery_channels = ((lambda h=holder: h.get("synced_channels") or [])
+                         if recorder_bound else channels)
 
     stop = threading.Event()
     collector = threading.Thread(target=core.collector,
@@ -791,7 +847,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                                args=(cfg, state, stop, authority, detector),
                                daemon=True, name="archive")
     recovery = threading.Thread(target=core.recovery_worker,
-                                args=(cfg, state, cloud, stop, spool, channels, holder),
+                                args=(cfg, state, cloud, stop, spool, recovery_channels, holder),
                                 daemon=True, name="recovery")
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
     import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
