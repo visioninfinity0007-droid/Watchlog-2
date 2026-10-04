@@ -45,6 +45,7 @@ SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
 ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, retry rarely
 REGISTRY_RECHECK_SECONDS = 60                     # held on an unusable recorders.json
+RECORDER_RECHECK_SECONDS = (30, 60, 120, 300)     # background recorder check; last repeats
 # What THIS runtime can execute. Advertised to the server (0059) so it never treats a feature as
 # usable before a compatible agent reports it. This is runtime capability, NOT field-proven hardware.
 RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
@@ -757,6 +758,64 @@ def _adopt_registry_recorder_unbound(cfg) -> None:
     cfg.recorder_cloud_id = None
 
 
+def _preflight_transient(error: Exception) -> bool:
+    """True when a preflight failure says nothing about the recorder identities: the
+    cloud could not be reached or answered 5xx/429, or this PC is not the site's
+    current Agent (a standby). A refusal or contract mismatch is definitive."""
+    if isinstance(error, requests.RequestException):
+        return True
+    if not isinstance(error, core.CloudError):
+        return False
+    status = int(getattr(error, "status", 0) or 0)
+    return (status >= 500 or status == 429
+            or (getattr(error, "code", None) == "42501"
+                and "authority" in str(getattr(error, "message", ""))))
+
+
+def _prepared_from_saved_identity(cfg):
+    """The one configured recorder as already bound in recorders.json, or None when it
+    has no saved cloud identity (or cannot be loaded). No cloud call is made."""
+    try:
+        contexts = recorder_runtime.load_contexts(cfg)
+    except Exception:  # noqa: BLE001 — startup then fails closed
+        return None
+    if len(contexts) != 1 or not contexts[0].cloud_recorder_id:
+        return None
+    return multi_recorder_orchestrator.PreparedRecorder(
+        context=contexts[0], device=None, channels=[], capabilities=None,
+        camera_mapping=None,
+    )
+
+
+def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
+                              restart: dict, mode: str) -> None:
+    """Finish in the background the recorder check startup could not complete.
+
+    "bind": startup ran on the one recorder's saved identity because WatchLog did
+    not answer. A confirmed identity ends the retry; a definitive refusal asks the
+    run loop for a clean restart, so startup fails closed rather than running on an
+    identity WatchLog rejects. Cameras are bound by the health cycle as usual.
+    """
+    attempt = 0
+    while not stop.wait(RECORDER_RECHECK_SECONDS[min(attempt, len(RECORDER_RECHECK_SECONDS) - 1)]):
+        attempt += 1
+        try:
+            multi_recorder_orchestrator.require_cloud_contract(cloud, state)
+            if mode == "bind":
+                multi_recorder_orchestrator.bind_cloud_identities(
+                    cloud, state, recorder_runtime.load_contexts(cfg))
+        except Exception as error:  # noqa: BLE001
+            if _preflight_transient(error):
+                continue
+            restart["reason"] = (
+                "recorder check refused the saved recorder identity "
+                f"({type(error).__name__}: {str(error).splitlines()[0][:160]}); "
+                "restarting WatchLog")
+            return
+        core.log("recorder: saved recorder identity confirmed with WatchLog")
+        return
+
+
 def _report_retained_queues(cfg) -> None:
     """Say on every start what a disabled recorder still has queued on this PC.
 
@@ -818,7 +877,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     no registry the historical 5.0.x singleton runtime continues unchanged.
     Failure never falls back to the primary recorder or to an unbound singleton;
     the one exception is a single configured recorder on a database that has no
-    recorders at all, which runs on the legacy recorder-less RPCs.
+    recorders at all, which runs on the legacy recorder-less RPCs. A single recorder
+    whose cloud identity is already saved keeps monitoring under it when the cloud
+    cannot be reached (or this PC is a standby) and finishes the check in the
+    background; an unbound row or a definitive refusal still fails closed.
     """
     try:
         configured_recorders = [
@@ -838,6 +900,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     holder_seed = {}
     recorder_bound = False
     prepared = None
+    recheck = None        # background recorder check still owed: "bind"
     if configured_recorders:
         try:
             prepared = multi_recorder_orchestrator.prepare_recorders(
@@ -851,11 +914,22 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 core.log("recorder: this WatchLog site has no recorder-aware backend yet; "
                          "single-recorder runtime without recorder identity")
             else:
-                raise SystemExit(
-                    "FATAL: recorder preflight did not complete; monitoring "
-                    "stopped rather than running an unbound or partial recorder set. "
-                    f"({type(error).__name__}: {str(error)[:160]})"
-                ) from error
+                # Network not ready at boot, an outage or a standby PC says nothing
+                # about the recorder: a single recorder already bound in
+                # recorders.json keeps monitoring under that saved identity.
+                if len(configured_recorders) == 1 and _preflight_transient(error):
+                    saved = _prepared_from_saved_identity(cfg)
+                    prepared = [saved] if saved is not None else None
+                if prepared is None:
+                    raise SystemExit(
+                        "FATAL: recorder preflight did not complete; monitoring "
+                        "stopped rather than running an unbound or partial recorder set. "
+                        f"({type(error).__name__}: {str(error)[:160]})"
+                    ) from error
+                recheck = "bind"
+                core.log("recorder: WatchLog did not answer the recorder check "
+                         f"({type(error).__name__}); monitoring under the saved recorder "
+                         "identity and retrying in the background")
 
     if prepared is not None:
         if len(prepared) != len(configured_recorders):
@@ -921,6 +995,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                          if recorder_bound else channels)
 
     stop = threading.Event()
+    restart = {}          # set by the background recorder check: exit for a clean start
     collector = threading.Thread(target=core.collector,
                                  args=(cfg, spool, stop, holder),
                                  daemon=True, name="collector")
@@ -967,6 +1042,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
                                daemon=True, name="sitecontrol")
     sitectl.start()   # Site Control read plane (H6); thread exits at once unless enabled
+    recorder_check = threading.Thread(target=_retry_recorder_preflight,
+                                      args=(cfg, state, cloud, stop, restart, recheck),
+                                      daemon=True, name="recorder-check")
+    if recheck:
+        recorder_check.start()   # finish the recorder check startup could not
     core.log(f"running: events every {cfg.upload_seconds}s, analytics enabled, "
              f"heartbeat every {cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, "
              f"outbound only. Ctrl-C to stop.")
@@ -974,6 +1054,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     last_wall = time.time()
     try:
         while True:
+            if restart.get("reason"):
+                core.log(f"recorder: {restart['reason']}")
+                raise SystemExit(restart["reason"])
             clock = time.monotonic()
             now_wall = time.time()
             # Suspend/resume detection (site PC sleep) — same rule as watchlog_agent.cmd_run:
@@ -1021,6 +1104,8 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         recovery.join(timeout=5)
         health.join(timeout=5)
         sitectl.join(timeout=5)
+        if recorder_check.is_alive():
+            recorder_check.join(timeout=5)
         spool.close()
         core.vision.build = original_build
         core.log("stopped")

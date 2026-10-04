@@ -9,6 +9,9 @@ monkeypatched) for the two single-recorder shapes a 5.1 Agent meets:
   (a) no recorders.json: the 5.0.x singleton runtime must keep working;
   (b) one configured registry row that has never been bound: the recorder-aware
       startup binds it through wl_sync_recorders before any worker needs it.
+
+A row that is already bound keeps monitoring on its saved identity when WatchLog
+cannot be reached at start, and finishes the recorder check in the background.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +36,11 @@ import multi_recorder_orchestrator as mro  # noqa: E402
 import recorder_registry as rr  # noqa: E402
 import watchlog_agent as core  # noqa: E402
 import windows_secret as ws  # noqa: E402
-from drivers.base import Channel, DeviceInfo  # noqa: E402
+import pytest  # noqa: E402
+import recorder_runtime  # noqa: E402
+import requests  # noqa: E402
+from drivers.base import Channel, DeviceInfo, Event  # noqa: E402
+from spool import Spool  # noqa: E402
 
 SITE_RECORDER = "5e1f0000-0000-4000-8000-000000000001"   # the site's only cloud recorder
 OTHER_RECORDER = "5e1f0000-0000-4000-8000-000000000002"
@@ -419,3 +427,201 @@ def test_multi_registry_on_a_database_without_recorders_stops(monkeypatch):
             assert False, "several recorders cannot run on a database without recorders"
         except SystemExit as exc:
             assert "preflight did not complete" in str(exc)
+
+
+# --- an already-bound recorder when WatchLog cannot be reached at start -------
+
+TRANSIENT = [
+    pytest.param(lambda name: requests.ConnectionError("network not ready"), id="offline"),
+    pytest.param(lambda name: core.CloudError(name, 503, None, "temporarily unavailable"),
+                 id="5xx"),
+    pytest.param(lambda name: core.CloudError(name, 403, "42501",
+                                              "agent is not current site authority"),
+                 id="standby"),
+]
+
+
+class _Unreachable:
+    """Every call fails the way a network that is not ready, a WatchLog outage or
+    a standby PC (not the site's current Agent) does."""
+
+    def __init__(self, error):
+        self.error = error
+        self.calls = []
+
+    def names(self):
+        return [name for name, _ in self.calls]
+
+    def call(self, name, **kw):
+        self.calls.append((name, kw))
+        raise self.error(name)
+
+
+class _LiveDriver(_Driver):
+    def stream_events(self, stop):
+        yield Event("3", "motion", datetime(2026, 10, 2, 12, 5, tzinfo=timezone.utc),
+                    payload={"source": "test"})
+        stop.wait(5)
+
+
+def _stage_one_bound_row():
+    local_id = _stage_one_unbound_row()
+    rr.apply_cloud_mapping({local_id: SITE_RECORDER})
+    return local_id
+
+
+@pytest.mark.parametrize("error", TRANSIENT)
+def test_bound_row_keeps_monitoring_when_watchlog_cannot_be_reached(monkeypatch, error):
+    """Boot with the network not ready (or a WatchLog outage, or a standby PC): the
+    recorder's identity is already saved, so events are collected and queued
+    under it instead of the Agent exiting before it monitors anything."""
+    with _Env() as env:
+        local_id = _stage_one_bound_row()
+        cfg = _base_cfg(env.root)
+        cfg.nvr_url = "http://192.0.2.99"          # stale legacy ini address
+        cfg.site_control_enabled = False
+        opened = []
+        _patch_recorder_io(monkeypatch, opened)
+        monkeypatch.setattr(core, "open_driver", lambda run_cfg: (
+            opened.append(run_cfg) or _LiveDriver(run_cfg),
+            DeviceInfo(vendor="Hikvision", model="DS-TEST", driver="hikvision")))
+        monkeypatch.setattr(core, "health_cycle", lambda *a, **k: None)
+        monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.3)
+        monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
+        spools = []
+
+        class _Tracked(Spool):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                spools.append(self)
+
+        monkeypatch.setattr(analytics_agent, "Spool", _Tracked)
+        cloud = _Unreachable(error)
+
+        try:
+            analytics_agent.enhanced_cmd_run(cfg, STATE, cloud, once=True)
+        except (requests.RequestException, RuntimeError):
+            pass      # a one-shot run still reports its failed upload or heartbeat
+        try:
+            _ids, queued = spools[0].take(10) if spools else ([], [])
+        finally:
+            for queue in spools:
+                queue.close()
+
+        assert cloud.names()[0] == "wl_multi_recorder_agent_contract"
+        assert cfg.recorder_cloud_id == SITE_RECORDER
+        assert cfg.recorder_local_id == local_id
+        assert cfg.nvr_url == "http://192.0.2.10"
+        assert (cfg.nvr_username, cfg.nvr_password) == ("registry-user", "registry-pw")
+        assert opened and opened[0].nvr_url == "http://192.0.2.10"
+        assert [e.get("recorder_id") for e in queued] == [SITE_RECORDER]
+        assert rr.recorder(local_id)["cloud_recorder_id"] == SITE_RECORDER
+
+
+def test_unbound_row_still_stops_when_watchlog_cannot_be_reached(monkeypatch):
+    with _Env() as env:
+        _stage_one_unbound_row()
+        _patch_recorder_io(monkeypatch, [])
+        offline = _Unreachable(lambda name: requests.ConnectionError("network not ready"))
+        with pytest.raises(SystemExit, match="preflight did not complete"):
+            _run_startup_once(monkeypatch, _base_cfg(env.root), offline)
+
+
+def test_bound_row_still_stops_on_a_definitive_contract_mismatch(monkeypatch):
+    class _OldContract(_JobCloud):
+        def call(self, name, **kw):
+            if name == "wl_multi_recorder_agent_contract":
+                self.calls.append((name, kw))
+                return {"ok": True, "version": mro.MULTI_RECORDER_CONTRACT_VERSION - 1,
+                        "features": sorted(mro.MULTI_RECORDER_REQUIRED_FEATURES)}
+            return super().call(name, **kw)
+
+    with _Env() as env:
+        _stage_one_bound_row()
+        _patch_recorder_io(monkeypatch, [])
+        with pytest.raises(SystemExit, match="preflight did not complete"):
+            _run_startup_once(monkeypatch, _base_cfg(env.root), _OldContract())
+
+
+class _ComesBack(_JobCloud):
+    """Unreachable for the first ``outage`` calls, then a contract-v4 database."""
+
+    def __init__(self, outage, recorder=SITE_RECORDER):
+        super().__init__()
+        self.outage = outage
+        self.recorder = recorder
+
+    def call(self, name, **kw):
+        if self.outage > 0:
+            self.outage -= 1
+            self.calls.append((name, kw))
+            raise requests.ConnectionError("network not ready")
+        if name == "wl_sync_recorders":
+            self.calls.append((name, kw))
+            return {str(row["local_key"]): self.recorder for row in kw["p_recorders"]}
+        return super().call(name, **kw)
+
+
+def test_background_check_confirms_the_saved_identity_once_watchlog_answers(monkeypatch):
+    with _Env() as env:
+        local_id = _stage_one_bound_row()
+        cfg = _base_cfg(env.root)
+        logs = []
+        monkeypatch.setattr(core, "log", lambda msg: logs.append(str(msg)))
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        cloud = _ComesBack(outage=2)
+        restart = {}
+
+        analytics_agent._retry_recorder_preflight(cfg, STATE, cloud, threading.Event(),
+                                                  restart, "bind")
+
+        assert restart == {}
+        synced = [kw["p_recorders"] for name, kw in cloud.calls if name == "wl_sync_recorders"]
+        assert [[r["local_key"] for r in rows] for rows in synced] == [[local_id]]
+        assert rr.recorder(local_id)["cloud_recorder_id"] == SITE_RECORDER
+        assert any("confirmed" in line for line in logs)
+
+
+def test_background_check_restarts_when_watchlog_refuses_the_saved_identity(monkeypatch):
+    with _Env() as env:
+        local_id = _stage_one_bound_row()
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        cloud = _ComesBack(outage=1, recorder=OTHER_RECORDER)
+        restart = {}
+
+        analytics_agent._retry_recorder_preflight(_base_cfg(env.root), STATE, cloud,
+                                                  threading.Event(), restart, "bind")
+
+        assert "restart" in restart.get("reason", "")
+        assert rr.recorder(local_id)["cloud_recorder_id"] == SITE_RECORDER
+
+
+def test_run_loop_restarts_cleanly_when_the_background_check_asks(monkeypatch):
+    """Run mode: started on the saved identity while offline; WatchLog then answers
+    with a different recorder identity, so the run loop exits for a clean start
+    (which fails closed) instead of running on an identity WatchLog rejects."""
+    with _Env() as env:
+        _stage_one_bound_row()
+        cfg = _base_cfg(env.root)
+        cfg.site_control_enabled = False
+        _patch_recorder_io(monkeypatch, [])
+
+        def idle(*_a, **_k):
+            return None
+
+        for name in ("collector", "recovery_worker", "health_worker", "command_worker"):
+            monkeypatch.setattr(core, name, idle)
+        monkeypatch.setattr(analytics_agent, "analytics_worker", idle)
+        monkeypatch.setattr(analytics_agent, "archive_worker", idle)
+        monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        real_sleep = time.sleep
+        monkeypatch.setattr(analytics_agent.time, "sleep", lambda _s: real_sleep(0.01))
+        # Startup's contract call fails; the background check then gets an answer.
+        cloud = _ComesBack(outage=1, recorder=OTHER_RECORDER)
+
+        with pytest.raises(SystemExit, match="restart"):
+            analytics_agent.enhanced_cmd_run(cfg, STATE, cloud, once=False)
+
+        assert cfg.recorder_cloud_id == SITE_RECORDER
+
