@@ -86,6 +86,46 @@ def _recorder_stream_live(holder: dict, clock: float) -> bool:
     return bool(latest and clock - latest < RECORDER_LIVE_SECONDS)
 
 
+def _stream_seen_at(stream: dict | None) -> datetime | None:
+    """Wall time of the event stream's latest activity (2xx answer or frame), or None
+    when the driver reports no stream activity at all."""
+    stamps = []
+    for key in ("connected_at", "last_frame_at"):
+        raw = (stream or {}).get(key)
+        if raw:
+            try:
+                stamps.append(datetime.fromisoformat(str(raw)))
+            except ValueError:
+                pass
+    return max(stamps) if stamps else None
+
+
+def _persist_stream_last_live(cfg, holder: dict, clock: float) -> None:
+    """Keep last_live.json at the recorder's latest event-stream activity.
+
+    This loop replaces core.cmd_run, which was the only periodic writer, so without this
+    last_live was never written and restart, reboot and outage gaps never opened recovery.
+    It is written only while the event stream is live, with the time of its last activity:
+    never from a probe, and never for a driver that cannot report its stream. With no file
+    yet this seeds it and opens no interval. A stored value older than the outage
+    threshold is a gap recovery_worker has not opened yet; it opens it and then moves
+    last_live on itself, so overwriting it here would erase the outage."""
+    if not getattr(cfg, "recovery_enabled", False) or not _recorder_stream_live(holder, clock):
+        return
+    seen = _stream_seen_at(holder.get("event_stream"))
+    if seen is None:
+        return
+    import recovery
+    try:
+        last_live = recovery.read_last_live(cfg.last_live_path)
+        if last_live is not None and (seen <= last_live or recovery.detect_outage(
+                last_live, seen, cfg.recovery_threshold_seconds)):
+            return
+        recovery.persist_last_live(cfg.last_live_path, seen)
+    except Exception as error:                      # noqa: BLE001 — never stop the loop
+        core.log(f"recovery: last_live not persisted ({type(error).__name__})")
+
+
 class Config(core.Config):
     def __init__(self, *args, **kwargs):
         # Preserve the core Config constructor contract. Existing-site staged
@@ -780,6 +820,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 except (RuntimeError, requests.RequestException) as error:
                     core.log("ERROR: heartbeat failed, will retry: "
                              + str(error).splitlines()[0][:200])
+                # Persist RECORDER observation, not PC/cloud liveness: a cloud outage does
+                # not stop it (events still spool); a dead event stream does.
+                _persist_stream_last_live(cfg, holder, clock)
             time.sleep(1)
     except KeyboardInterrupt:
         core.log("stopping...")
