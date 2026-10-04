@@ -660,20 +660,22 @@ def _is_auth_failure(err: Exception) -> bool:
 
 
 def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
-                    last_gen: str) -> tuple[str, str]:
+                    last_gen: str, seconds: float | None = None) -> tuple[str, str]:
     """Interruptible backoff between driver reconnects. Returns (outcome, gen).
 
     Confirmed auth failures escalate 5->15->30 min so a wrong password never
     hammers the recorder (lockout risk); everything else uses the short
-    DRIVER_RETRY_SECONDS. A credential change (Setup rewriting the DPAPI blob)
-    wakes the wait immediately, reloads the credential and lets the caller retry
-    now — never wait out 30 minutes after the operator fixes the password."""
+    DRIVER_RETRY_SECONDS, or ``seconds`` when given (the packaged collector's
+    jittered delay before reopening a dropped event stream on the same driver).
+    A credential change (Setup rewriting the DPAPI blob) wakes the wait
+    immediately, reloads the credential and lets the caller retry now — never
+    wait out 30 minutes after the operator fixes the password."""
     if auth_failures > 0:
         total = float(_AUTH_BACKOFF_SECONDS[min(auth_failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)])
         log(f"recorder authentication is failing; backing off {int(total) // 60} min "
             f"(will retry immediately if the credential is updated in Setup)")
     else:
-        total = float(DRIVER_RETRY_SECONDS)
+        total = float(DRIVER_RETRY_SECONDS if seconds is None else max(0.0, seconds))
     waited, step = 0.0, 5.0
     while waited < total:
         if stop.wait(min(step, total - waited)):

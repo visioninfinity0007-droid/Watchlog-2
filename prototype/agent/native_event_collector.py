@@ -10,6 +10,7 @@ not contain an object at capture time.
 from __future__ import annotations
 
 import base64
+import random
 import time
 
 import requests
@@ -18,6 +19,68 @@ import watchlog_agent as core
 import native_verification
 import nvr_health
 from drivers import DriverError
+
+# A Hikvision/Dahua event stream that drops (EOF, read timeout, reset) is reopened on the
+# SAME driver after a short jittered delay, not after DRIVER_RETRY_SECONDS plus a full
+# re-probe: alertStream/attach has no replay, so every second it is closed no event can
+# arrive. The delay doubles per consecutive failed reopen; after STREAM_REOPEN_MAX_ATTEMPTS
+# the collector falls back to the full re-probe path.
+STREAM_REOPEN_BASE_SECONDS = 0.5
+STREAM_REOPEN_MAX_ATTEMPTS = 5
+# A stream that stayed up at least this long before dropping resets the escalation.
+STREAM_STABLE_SECONDS = 60.0
+
+
+def _stream_reopen_delay(failures: int) -> float:
+    """Jittered reopen delay: under half a second after a stream that had been up,
+    doubling per consecutive failed reopen, never above the full retry wait."""
+    ceiling = min(float(core.DRIVER_RETRY_SECONDS),
+                  STREAM_REOPEN_BASE_SECONDS * (2 ** failures))
+    return random.uniform(ceiling / 2, ceiling)
+
+
+class _LiveEvents:
+    """A stream-reporting driver's live events, reopening a dropped stream on that driver.
+
+    Whether a drop followed a 2xx is read from the driver's event_stream state. An auth
+    failure, or a failure after STREAM_REOPEN_MAX_ATTEMPTS, propagates to the collector's
+    full path (auth backoff or re-probe). ``reload`` is set when the credential changed
+    during a reopen delay, so the collector re-opens the recorder with it at once."""
+
+    def __init__(self, driver, stop, cfg, stream: dict, last_gen):
+        self.driver, self.stop, self.cfg, self.stream = driver, stop, cfg, stream
+        self.last_gen = last_gen
+        self.reload = False
+
+    def __iter__(self):
+        failures = 0
+        while not self.stop.is_set():
+            opened_at = self.stream.get("connected_at")
+            started = time.monotonic()
+            error = None
+            try:
+                yield from self.driver.stream_events(self.stop)
+            except (DriverError, requests.RequestException) as exc:
+                if core._is_auth_failure(exc):
+                    raise                      # lockout guard: never fast-retry a login
+                error = exc
+            if self.stop.is_set():
+                return
+            stable = (self.stream.get("connected_at") != opened_at
+                      and time.monotonic() - started >= STREAM_STABLE_SECONDS)
+            failures = 0 if stable else failures + 1
+            if failures > STREAM_REOPEN_MAX_ATTEMPTS:
+                if error is not None:
+                    raise error
+                return
+            delay = _stream_reopen_delay(failures)
+            reason = nvr_health.redact(self.stream.get("last_error") or "") or "ended"
+            core.log(f"event stream dropped ({reason}); reopening in {delay:.1f}s")
+            outcome, self.last_gen = core._reconnect_wait(
+                self.stop, self.cfg, 0, self.last_gen, seconds=delay)
+            if outcome != "timeout":
+                self.reload = outcome == "reload"
+                return
 
 
 def spool_row(ev, agent_ts) -> dict:
@@ -64,6 +127,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
     while not stop.is_set():
         driver = None
         reports_stream = None
+        events = None
         auth_error = False
         try:
             driver, info = core.open_driver(cfg)
@@ -93,7 +157,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 )
 
             last_shot: dict[str, float] = {}
-            for ev in driver.stream_events(stop):
+            events = (_LiveEvents(driver, stop, cfg, stream, last_gen) if reports_stream
+                      else driver.stream_events(stop))
+            for ev in events:
                 if stop.is_set():
                     break
                 if holder is not None:
@@ -223,6 +289,11 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     driver.close()
                 except Exception:
                     pass
+            if isinstance(events, _LiveEvents):
+                last_gen = events.last_gen
+        if isinstance(events, _LiveEvents) and events.reload and not stop.is_set():
+            auth_failures = 0
+            continue                           # new credential: re-open the recorder now
         if not stop.is_set():
             # Escalating backoff on CONFIRMED auth failure (lockout guard); short retry
             # otherwise. A credential change in Setup wakes the wait and retries immediately.

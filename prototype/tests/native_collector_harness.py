@@ -59,13 +59,17 @@ def run_collector(monkeypatch, open_driver, *, holder=None, until=None, timeout=
     worker.start()
     deadline = time.monotonic() + timeout
     ok = False
-    while time.monotonic() < deadline and worker.is_alive():
+    while time.monotonic() < deadline:
         if until is not None and until(holder, spool):
             ok = True
+            break
+        if not worker.is_alive():
             break
         time.sleep(0.02)
     if until is None:
         ok = not worker.is_alive()
+    elif not ok:
+        ok = bool(until(holder, spool))    # the collector may have stopped itself first
     stop.set()
     worker.join(timeout=10)
     assert not worker.is_alive(), "collector did not stop"
