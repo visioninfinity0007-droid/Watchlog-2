@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: windows-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/multi-recorder-field-test' }}
 
 jobs:
   build-real-installer:
