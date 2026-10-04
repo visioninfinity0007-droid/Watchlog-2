@@ -95,6 +95,13 @@ def main():
             "'--registry-selftest'" in setup_ui_job
             and "Start-Process" in setup_ui_job
             and "$body.ok" in setup_ui_job,
+        "CI runs the Repair/Upgrade, registry preflight/staging and elevation tests on Windows":
+            all(name in setup_ui_job for name in (
+                "prototype/tests/test_existing_site_repair.py",
+                "prototype/tests/test_setup_registry_selftest.py",
+                "prototype/tests/test_setup_gui_elevation.py",
+                "prototype/tests/test_pilot_hardening.py::UpgradeAndUninstallLifecycleTests"))
+            and "python -m pytest" in setup_ui_job,
         "CI compiles the Repair/Upgrade NSIS, not only at release time":
             'Copy-Item prototype\\installer\\nsis\\watchlog-repair.nsi' in installer_job
             and 'Copy-Item prototype\\installer\\wl-repair-upgrade.ps1' in installer_job
