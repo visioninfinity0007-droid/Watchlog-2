@@ -5,6 +5,11 @@ Source contract over watchlog_agent.py: the recovery worker is started as a thre
 outage from persisted last-live on startup, opens a recovery interval, backfills with live
 priority + throttle, is gated by recovery_enabled, and is strictly READ-ONLY (never a recorder
 write). Persistence of last-live is on the heartbeat cadence only when recorder transport is fresh.
+
+The packaged Agent runs analytics_agent.enhanced_cmd_run (release_agent -> analytics_agent.main
+replaces core.cmd_run), so the worker composition is checked in THAT loop; watchlog_agent.cmd_run
+is the dormant core loop. Behaviour is covered by test_recovery_rpc_contract.py and
+test_worker_exception_survival.py.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = (ROOT / "agent" / "watchlog_agent.py").read_text(encoding="utf-8")
 ANALYTICS = (ROOT / "agent" / "analytics_agent.py").read_text(encoding="utf-8")
+SHIPPED = ANALYTICS.split("def enhanced_cmd_run(", 1)[1].split("\ndef ", 1)[0]
 NATIVE = (ROOT / "agent" / "native_event_collector.py").read_text(encoding="utf-8")
 INCIDENT = (ROOT / "agent" / "incident_evidence.py").read_text(encoding="utf-8")
 HIK_ARCHIVE = (ROOT / "agent" / "hikvision_archive.py").read_text(encoding="utf-8")
@@ -24,11 +30,24 @@ class RecoveryWiring(unittest.TestCase):
         self.assertIn("def recovery_worker(", SRC)
         self.assertIn("target=recovery_worker", SRC)
         self.assertIn("recov.join(", SRC)
+
+    def test_shipped_run_loop_starts_recovery_and_site_control(self):
         # The shipped release replaces core.cmd_run with analytics_agent.enhanced_cmd_run.
-        # Recovery must therefore be composed there too, not only in the dormant core loop.
-        self.assertIn("target=core.recovery_worker", ANALYTICS)
-        self.assertIn("recovery.start()", ANALYTICS)
-        self.assertIn("recovery.join(", ANALYTICS)
+        # Recovery and Site Control must therefore be composed there, not only in the dormant loop.
+        self.assertIn("target=core.recovery_worker", SHIPPED)
+        # The startup channel inventory reaches the worker (camera mapping + re-enumeration).
+        self.assertIn("args=(cfg, state, cloud, stop, spool, channels, holder)", SHIPPED)
+        self.assertIn("recovery.start()", SHIPPED)
+        self.assertIn("recovery.join(", SHIPPED)
+        self.assertIn("target=core.command_worker", SHIPPED)
+        self.assertIn("sitectl.start()", SHIPPED)
+
+    def test_recovery_intervals_use_camera_uuids_not_recorder_channels(self):
+        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
+        self.assertIn("_recovery_camera_ids(", worker)
+        self.assertIn("camera_channels=", worker)
+        self.assertNotIn("p_cameras=cams or []", worker,
+                         "an empty or channel-number camera list must never be sent")
 
     def test_real_collector_publishes_recorder_transport_truth(self):
         collector = SRC.split("def collector(", 1)[1].split("def upload_once(", 1)[0]
@@ -38,9 +57,9 @@ class RecoveryWiring(unittest.TestCase):
             self.assertIn('holder.pop("live_driver", None)', source)
 
     def test_recovery_accepts_startup_channel_dictionaries(self):
-        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
-        self.assertIn("if isinstance(item, dict)", worker)
-        self.assertIn('item.get("channel")', worker)
+        helper = SRC.split("def _recovery_camera_ids(", 1)[1].split("def recovery_worker(", 1)[0]
+        self.assertIn("isinstance(c, dict)", helper)
+        self.assertIn('c.get("channel")', helper)
 
     def test_outage_detection_and_report(self):
         self.assertIn("read_last_live", SRC)

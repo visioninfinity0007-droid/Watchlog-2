@@ -57,6 +57,7 @@ from pathlib import Path
 import requests
 
 import discover
+import nvr_health
 import recorder_probe
 import setup_wizard
 import vision
@@ -112,6 +113,15 @@ def mask(secret: str | None) -> str:
     if not secret:
         return "<unset>"
     return f"{secret[:6]}...{secret[-4:]} ({len(secret)} chars)"
+
+
+def worker_fault(worker: str, error: BaseException) -> None:
+    """Last-resort log for a background worker loop. It never raises: anything escaping a
+    worker's handler ends that thread for the life of the process, and nothing restarts it."""
+    try:
+        log(f"{worker}: {type(error).__name__}: {nvr_health.redact(str(error))}")
+    except BaseException:                              # noqa: BLE001
+        pass
 
 
 _RUNTIME_HEALTH_LOCK = threading.Lock()
@@ -1143,6 +1153,17 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
             stop.wait(cfg.health_seconds + jitter)
 
 
+def _site_control_driver(cfg: Config):
+    """The recorder driver a Site Control command runs against. 'auto' (the Config default, and
+    what older installers wrote) is not a registered driver name, so resolve it the way the health
+    cycle does instead of letting build() raise KeyError after the command was claimed."""
+    if cfg.nvr_driver in ("auto", ""):
+        driver, _info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
+                                   log=lambda *a, **k: None)
+        return driver
+    return build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+
+
 def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
     """Site Control (H6): poll for a queued READ command, run it against the recorder via the
     LOCAL driver, and return the structured result. OFF unless cfg.site_control_enabled — a new
@@ -1167,16 +1188,23 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
                 busy = True
                 action = cmd.get("action")
                 is_write = action in site_control.WRITE_ACTIONS
-                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
                 try:
-                    res = (site_control.execute_write(driver, action, cmd.get("params"))
-                           if is_write else
-                           site_control.execute_read(driver, action, cmd.get("params")))
-                finally:
+                    driver = _site_control_driver(cfg)
+                except Exception as e:                   # noqa: BLE001
+                    # The command is already claimed: answer it as failed instead of leaving
+                    # it claimed until it expires. The error is redacted (no recorder address).
+                    driver, res = None, {"action": action, "ok": False,
+                                         "error": nvr_health.redact(str(e)) or type(e).__name__}
+                if driver is not None:
                     try:
-                        driver.close()
-                    except Exception:                    # noqa: BLE001
-                        pass
+                        res = (site_control.execute_write(driver, action, cmd.get("params"))
+                               if is_write else
+                               site_control.execute_read(driver, action, cmd.get("params")))
+                    finally:
+                        try:
+                            driver.close()
+                        except Exception:                # noqa: BLE001
+                            pass
                 # Writes carry before/after/verified (transactional audit); reads carry 'data'.
                 cloud.call("wl_agent_complete_command",
                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
@@ -1184,8 +1212,8 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
                            p_status=("succeeded" if res.get("ok") else "failed"),
                            p_result=(res if is_write else res.get("data")),
                            p_error=res.get("error"))
-        except Exception as e:                           # noqa: BLE001 — Site Control never disturbs the agent
-            log(f"site control: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        except BaseException as e:                       # noqa: BLE001 — Site Control never disturbs the agent
+            worker_fault("site control", e)
         if not busy:
             stop.wait(cfg.site_control_seconds)          # idle poll; drain promptly when busy
 
@@ -2130,6 +2158,40 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+# holder flag: recovery_worker has read last_live.json while the recorder was live and holds no
+# gap the cloud has not accepted. A heartbeat that refreshes last_live must wait for it, or a
+# restart gap is overwritten before it is ever detected (or lost if the Agent restarts while held).
+LAST_LIVE_CHECKED = "last_live_checked"
+
+
+def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> dict:
+    """{recorder channel: cloud camera UUID} for opening and reading recovery intervals.
+
+    wl_open_recovery_interval takes camera UUIDs (uuid[]), never recorder channel numbers. They come
+    from wl_sync_cameras with the same startup payload main() sends, which is idempotent, so a boot
+    sync that failed (network not ready) is simply retried here. With no startup inventory (recorder
+    offline at boot) the recorder is enumerated again first. Returns {} while no mapping exists, so
+    the caller defers rather than guessing."""
+    payload = []
+    for c in channels or []:
+        ch = c.get("channel") if isinstance(c, dict) else getattr(c, "channel", None)
+        if ch is not None:
+            name = c.get("name") if isinstance(c, dict) else getattr(c, "name", None)
+            payload.append({"channel": str(ch), "name": name})
+    if not payload:
+        driver, _info = open_driver(cfg)
+        try:
+            payload = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+        finally:
+            driver.close()
+    if not payload:
+        return {}
+    mapping = cloud.call(
+        "wl_sync_cameras", p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+        p_cameras=payload) or {}
+    return {c["channel"]: str(mapping[c["channel"]]) for c in payload if mapping.get(c["channel"])}
+
+
 def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
                     spool, channels=None, holder=None) -> None:
     """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
@@ -2137,18 +2199,22 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     intervals and backfills each from the recorder archive in bounded, resumable, idempotent
     chunks (read-only; recovered events carry recorder_archive provenance). LIVE monitoring always
     has priority (yields when the live spool has a backlog) and it is throttled. OFF only if
-    recovery_enabled=false. A failure here can never disturb events/heartbeat/health."""
+    recovery_enabled=false. A failure here can never disturb events/heartbeat/health.
+
+    Intervals name cameras by cloud camera UUID. Until the channel->camera mapping exists nothing
+    is opened or claimed: a detected gap is held, never sent with recorder channel numbers or with
+    an empty camera list.
+
+    Time this worker saw the recorder live in is never reopened: one cycle is longer than the
+    outage threshold, so a gap between two of its checks is only known from a last_live a
+    heartbeat kept while the recorder was live."""
     if not cfg.recovery_enabled:
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
-    def _channel_id(item):
-        if isinstance(item, dict):
-            return item.get("channel")
-        return getattr(item, "channel", None)
-
-    cams = [str(ch) for ch in (_channel_id(c) for c in (channels or []))
-            if ch is not None] or None
+    camera_ids = {}                                     # {channel: camera UUID}; {} until synced
+    pending_gaps = []                                   # detected gaps the cloud has not accepted yet
+    seen_live_at = None                                 # this worker's last check with the recorder live
     holder = holder if holder is not None else {}
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
@@ -2170,60 +2236,89 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return bool(seen and time.monotonic() - seen < 150.0)
 
     while not stop.is_set():
-        # A very long Internet outage can fill the bounded local spool. trim() records
-        # exactly which local-observation interval had to be evicted; convert that durable
-        # marker into the same recorder-archive recovery pipeline once the NVR is live.
         try:
-            overflow_gap = spool.pending_recovery_gap()
-            if overflow_gap and recorder_is_live():
-                cloud.call("wl_open_recovery_interval",
-                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                           p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
-                           p_cameras=cams or [])
-                if spool.clear_recovery_gap(*overflow_gap):
-                    log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
-                        "opened recorder-archive reconciliation")
-        except Exception as e:                           # noqa: BLE001
-            log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
-
-        # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
-        # interval after the recorder is live again; while it is still down there is
-        # nothing to backfill and no reason to hammer it.
-        try:
-            if recorder_is_live():
-                last_live = rec.read_last_live(cfg.last_live_path)
-                now = now_utc()
-                outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
-                if outage:
-                    cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
-                               p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
-                               p_ended_at=iso(outage[1]), p_cameras=cams or [])
-                    rec.persist_last_live(cfg.last_live_path, now)
-                    log(f"recovery: detected recorder gap {iso(outage[0])}..{iso(outage[1])}; "
-                        "opened resumable archive recovery")
-        except Exception as e:                           # noqa: BLE001
-            log(f"recovery: gap detector skipped: {type(e).__name__}")
-
-        try:
-            driver, _info = open_archive_driver(cfg)
-            try:
-                runner = rec.RecoveryRunner(
-                    cloud, state["agent_id"], state["agent_key"], driver,
-                    lambda ev: spool.add(ev),
-                    chunk_seconds=cfg.recovery_chunk_seconds,
-                    throttle_seconds=cfg.recovery_throttle_seconds,
-                    live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
-                    detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
-                    snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
-                    log=log)
-                runner.run_once(limit=1)
-            finally:
+            if not camera_ids:
                 try:
-                    driver.close()
-                except Exception:                        # noqa: BLE001
-                    pass
-        except Exception as e:                           # noqa: BLE001 — recovery never disturbs the agent
-            log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+                    camera_ids = _recovery_camera_ids(cfg, state, cloud, channels)
+                except Exception as e:                   # noqa: BLE001
+                    log(f"recovery: camera inventory not synced yet; recovery deferred: "
+                        f"{type(e).__name__}")
+            cams = list(camera_ids.values())
+
+            # A very long Internet outage can fill the bounded local spool. trim() records
+            # exactly which local-observation interval had to be evicted; convert that durable
+            # marker into the same recorder-archive recovery pipeline once the NVR is live.
+            try:
+                overflow_gap = spool.pending_recovery_gap()
+                if overflow_gap and cams and recorder_is_live():
+                    cloud.call("wl_open_recovery_interval",
+                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                               p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
+                               p_cameras=cams)
+                    if spool.clear_recovery_gap(*overflow_gap):
+                        log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
+                            "opened recorder-archive reconciliation")
+            except Exception as e:                       # noqa: BLE001
+                log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
+
+            # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
+            # interval after the recorder is live again; while it is still down there is
+            # nothing to backfill and no reason to hammer it. A detected gap is held until the
+            # cloud accepts it, so a deferred open neither loses the gap nor stretches it over
+            # the live time that follows.
+            try:
+                if recorder_is_live():
+                    last_live = rec.read_last_live(cfg.last_live_path)
+                    now = now_utc()
+                    if seen_live_at is not None and (last_live is None or last_live <= seen_live_at):
+                        last_live = None                # nothing later than this worker's own check
+                    outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
+                    seen_live_at = now
+                    if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
+                                          for g in pending_gaps):
+                        pending_gaps = (pending_gaps + [outage])[-32:]
+                    # While a gap is held only in memory, last_live must keep its start for a
+                    # restart to find it again: the heartbeat may not move it on.
+                    holder[LAST_LIVE_CHECKED] = not pending_gaps
+                    while pending_gaps and cams:
+                        gap = pending_gaps[0]
+                        cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
+                                   p_agent_key=state["agent_key"], p_started_at=iso(gap[0]),
+                                   p_ended_at=iso(gap[1]), p_cameras=cams)
+                        pending_gaps.pop(0)
+                        log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
+                            "opened resumable archive recovery")
+                    if not pending_gaps:
+                        rec.persist_last_live(cfg.last_live_path, now)
+                        holder[LAST_LIVE_CHECKED] = True
+            except Exception as e:                       # noqa: BLE001
+                log(f"recovery: gap detector skipped: {type(e).__name__}")
+
+            # Claimed intervals carry camera UUIDs; without the mapping they cannot be read.
+            if camera_ids:
+                try:
+                    driver, _info = open_archive_driver(cfg)
+                    try:
+                        runner = rec.RecoveryRunner(
+                            cloud, state["agent_id"], state["agent_key"], driver,
+                            lambda ev: spool.add(ev),
+                            chunk_seconds=cfg.recovery_chunk_seconds,
+                            throttle_seconds=cfg.recovery_throttle_seconds,
+                            live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
+                            detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                            snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
+                            camera_channels={cam: ch for ch, cam in camera_ids.items()},
+                            log=log)
+                        runner.run_once(limit=1)
+                    finally:
+                        try:
+                            driver.close()
+                        except Exception:                # noqa: BLE001
+                            pass
+                except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
+                    log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
+            worker_fault("recovery", e)
         stop.wait(cfg.recovery_seconds)
 
 
