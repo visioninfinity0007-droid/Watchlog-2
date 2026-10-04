@@ -13,7 +13,7 @@ database rejects it with 22P02, which is why no interval was ever opened.
 """
 from __future__ import annotations
 
-import json, os, re, sys, threading, time
+import json, os, re, sys, tempfile, threading, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -137,10 +137,11 @@ def run() -> int:
             archive = _Archive()
             saved = core.open_archive_driver, core.log
             core.open_archive_driver, core.log = (lambda _cfg: (archive, None)), (lambda *_a: None)
+            tmp = tempfile.TemporaryDirectory()          # the worker keeps last_live while live
             try:
                 cfg = type("Cfg", (), dict(
                     recovery_enabled=True, recovery_seconds=300, recovery_ai_enabled=False,
-                    last_live_path=Path(os.devnull), recovery_threshold_seconds=180,
+                    last_live_path=Path(tmp.name) / "last_live.json", recovery_threshold_seconds=180,
                     recovery_chunk_seconds=3600, recovery_throttle_seconds=0.0,
                     recovery_live_backlog=500, recovery_ai_max_frames=40,
                     recovery_snapshot_seconds=300))()
@@ -148,6 +149,7 @@ def run() -> int:
                                      {"recorder_live_at": time.monotonic()})
             finally:
                 core.open_archive_driver, core.log = saved
+                tmp.cleanup()
 
             opens = [p for fn, p in cloud.calls if fn == "wl_open_recovery_interval"][1:]
             cams = dict(conn.execute("select channel, id::text from cameras where site_id=%s",(sid,)).fetchall())
