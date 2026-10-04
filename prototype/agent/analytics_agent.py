@@ -44,6 +44,7 @@ STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
 ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, retry rarely
+REGISTRY_RECHECK_SECONDS = 60                     # held on an unusable recorders.json
 # What THIS runtime can execute. Advertised to the server (0059) so it never treats a feature as
 # usable before a compatible agent reports it. This is runtime capability, NOT field-proven hardware.
 RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
@@ -762,6 +763,29 @@ def _report_retained_queues(cfg) -> None:
         core.log(f"recorder: retained-queue check skipped: {type(error).__name__}")
 
 
+def _hold_for_registry_repair(error: Exception) -> None:
+    """recorders.json exists but is malformed or untrusted: fail that recorder set closed.
+
+    Exiting would only make the launcher restart the Agent into the same failure
+    every 15 s forever. Instead monitor nothing (no recorder connection and no
+    heartbeat, so nothing is reported as watched), publish a clear local status,
+    and re-check periodically. Once Setup has repaired or quarantined the file,
+    exit so the launcher starts one clean runtime."""
+    reason = f"{type(error).__name__}: {str(error).splitlines()[0][:160]}"
+    core.log("ERROR: the recorder configuration on this PC cannot be trusted or read "
+             f"({reason}); monitoring is stopped until WatchLog Setup repairs it")
+    core.update_runtime_health(recorder_registry="needs_repair",
+                               recorder_registry_reason=reason)
+    while True:
+        time.sleep(REGISTRY_RECHECK_SECONDS)
+        try:
+            recorder_registry.recorders()
+        except Exception:  # noqa: BLE001 — still unusable; keep holding
+            continue
+        core.update_runtime_health(recorder_registry="ok", recorder_registry_reason=None)
+        raise SystemExit("recorder configuration is valid again; restarting WatchLog")
+
+
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None, channels=None) -> None:
     """Core event loop plus analytics worker.
@@ -781,10 +805,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         ]
     except Exception as error:
         if recorder_registry.registry_path().exists():
-            raise SystemExit(
-                "FATAL: multi-recorder registry exists but cannot be verified; "
-                "monitoring stopped rather than using ambiguous recorder identity."
-            ) from error
+            _hold_for_registry_repair(error)
         configured_recorders = []
 
     holder_seed = {}

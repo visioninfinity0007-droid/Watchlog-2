@@ -18,6 +18,7 @@ import configparser
 import ipaddress
 import json
 import os
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +28,17 @@ import credential_store
 from windows_secret import SecretError
 
 REGISTRY_SCHEMA = "watchlog.recorders.v1"
+
+# Owners a privileged reader may trust: SYSTEM, BUILTIN\Administrators, TrustedInstaller.
+_TRUSTED_OWNER_SIDS = frozenset({
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+})
+
+
+class RegistryUntrusted(ValueError):
+    """recorders.json exists but a non-administrator could have written it."""
 
 
 def data_dir() -> Path:
@@ -112,10 +124,200 @@ def validate_registry(payload: dict) -> dict:
     return {"schema": REGISTRY_SCHEMA, "recorders": normalized}
 
 
+# --- registry file trust ----------------------------------------------------
+#
+# %ProgramData%\WatchLog is not ACL-hardened, so a standard local user could plant
+# recorders.json for the SYSTEM Agent to read. A file whose owner is neither a
+# trusted principal, nor an administrator, nor the reading account itself is
+# rejected. Each lookup returns None when it cannot be performed (non-Windows,
+# API failure, unreachable domain): unknown is not treated as proof either way.
+
+def _sid_string(advapi32, kernel32, psid) -> str | None:
+    import ctypes
+    out = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(psid, ctypes.byref(out)):
+        return None
+    try:
+        return out.value
+    finally:
+        kernel32.LocalFree(out)
+
+
+def _win_apis():
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.LookupAccountSidW.argtypes = [
+        wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(ctypes.c_int),
+    ]
+    advapi32.LookupAccountSidW.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return advapi32, kernel32
+
+
+def _file_owner_sid(path: Path) -> str | None:
+    """String SID of the file's owner, or None when it cannot be read."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        advapi32, kernel32 = _win_apis()
+        owner, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
+        # SE_FILE_OBJECT=1, OWNER_SECURITY_INFORMATION=1
+        if advapi32.GetNamedSecurityInfoW(str(path), 1, 1, ctypes.byref(owner),
+                                          None, None, None, ctypes.byref(descriptor)) != 0:
+            return None
+        try:
+            return _sid_string(advapi32, kernel32, owner)
+        finally:
+            kernel32.LocalFree(descriptor)
+    except Exception:  # noqa: BLE001 — unknown, not proof
+        return None
+
+
+def _current_user_sid() -> str | None:
+    """String SID of the account this process runs as, or None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi32, kernel32 = _win_apis()
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+            return None
+        try:
+            size = wintypes.DWORD(0)
+            advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))   # TokenUser
+            buf = ctypes.create_string_buffer(size.value or 256)
+            if not advapi32.GetTokenInformation(token, 1, buf, ctypes.sizeof(buf), ctypes.byref(size)):
+                return None
+            psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]   # TOKEN_USER.User.Sid
+            return _sid_string(advapi32, kernel32, psid)
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _account_name(advapi32, psid) -> tuple[str, str] | None:
+    import ctypes
+    from ctypes import wintypes
+    name, domain = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+    n_len, d_len, use = wintypes.DWORD(256), wintypes.DWORD(256), ctypes.c_int()
+    if not advapi32.LookupAccountSidW(None, psid, name, ctypes.byref(n_len),
+                                      domain, ctypes.byref(d_len), ctypes.byref(use)):
+        return None
+    return name.value, domain.value
+
+
+def _is_local_admin(sid: str) -> bool | None:
+    """True/False when the account is (not) a local Administrators member, directly or
+    through a group; None when that cannot be determined."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi32, kernel32 = _win_apis()
+        netapi32 = ctypes.WinDLL("netapi32", use_last_error=True)
+        netapi32.NetUserGetLocalGroups.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ]
+        netapi32.NetUserGetLocalGroups.restype = wintypes.DWORD
+        netapi32.NetApiBufferFree.argtypes = [ctypes.c_void_p]
+
+        def lookup(text):
+            psid = ctypes.c_void_p()
+            if not advapi32.ConvertStringSidToSidW(text, ctypes.byref(psid)):
+                return None
+            try:
+                return _account_name(advapi32, psid)
+            finally:
+                kernel32.LocalFree(psid)
+
+        admins = lookup("S-1-5-32-544")      # localized group name
+        account = lookup(sid)
+        if not admins or not account:
+            return None
+        buf = ctypes.c_void_p()
+        read, total = wintypes.DWORD(), wintypes.DWORD()
+        # level 0, LG_INCLUDE_INDIRECT=1, MAX_PREFERRED_LENGTH
+        status = netapi32.NetUserGetLocalGroups(
+            None, f"{account[1]}\\{account[0]}" if account[1] else account[0],
+            0, 1, ctypes.byref(buf), 0xFFFFFFFF, ctypes.byref(read), ctypes.byref(total))
+        if status != 0:
+            return None
+        try:
+            names = ctypes.cast(buf, ctypes.POINTER(ctypes.c_wchar_p))
+            groups = {str(names[i] or "").lower() for i in range(read.value)}
+        finally:
+            netapi32.NetApiBufferFree(buf)
+        return admins[0].lower() in groups
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_TRUST_CACHE: dict = {}
+
+
+def registry_owner_trusted(path: Path) -> bool | None:
+    """False only when the owner is provably not trusted; None when unknown."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size, getattr(st, "st_ino", 0))
+    except OSError:
+        return None
+    if key in _TRUST_CACHE:
+        return _TRUST_CACHE[key]
+    owner = _file_owner_sid(path)
+    if owner is None:
+        verdict = None
+    elif owner in _TRUSTED_OWNER_SIDS or owner == _current_user_sid():
+        verdict = True
+    else:
+        verdict = _is_local_admin(owner)
+    # Remember only non-negative verdicts for this exact file: an untrusted file
+    # is re-checked every time, so an ownership repair is noticed at once.
+    _TRUST_CACHE.clear()
+    if verdict is not False:
+        _TRUST_CACHE[key] = verdict
+    return verdict
+
+
 def load_registry() -> dict:
     path = registry_path()
     if not path.exists():
         return {"schema": REGISTRY_SCHEMA, "recorders": []}
+    if registry_owner_trusted(path) is False:
+        raise RegistryUntrusted(
+            "the recorder configuration on this PC is not owned by SYSTEM or an "
+            "administrator; re-run WatchLog Setup to repair it"
+        )
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -127,11 +329,19 @@ def save_registry(payload: dict) -> dict:
     normalized = validate_registry(payload)
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(normalized, separators=(",", ":")), encoding="utf-8")
-    # Prove the exact staged bytes parse and satisfy the schema before publish.
-    validate_registry(json.loads(tmp.read_text(encoding="utf-8")))
-    tmp.replace(path)
+    # Exclusively created, unpredictable temp file: a pre-created
+    # recorders.json.tmp (owned by whoever planted it) can never become the registry.
+    fd, tmp_name = tempfile.mkstemp(prefix=".recorders.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(normalized, separators=(",", ":")))
+        # Prove the exact staged bytes parse and satisfy the schema before publish.
+        validate_registry(json.loads(tmp.read_text(encoding="utf-8")))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return normalized
 
 
