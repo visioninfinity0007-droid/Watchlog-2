@@ -35,19 +35,31 @@ def pinned_datetime(now: datetime):
     return Pinned
 
 
+class FakeRaw:
+    """urllib3's side of a streamed response: each read1 returns one queued read, at most amt bytes."""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+        self._pending = b""
+
+    def read1(self, amt=None, decode_content=None):
+        if not self._pending:
+            self._pending = next(self._chunks, b"")
+        size = len(self._pending) if amt is None or amt < 0 else amt
+        data, self._pending = self._pending[:size], self._pending[size:]
+        return data
+
+
 class FakeResponse:
     def __init__(self, status=200, text="", chunks=None):
         self.status_code = status
         self._text = text
-        self._chunks = chunks if chunks is not None else []
+        self.raw = FakeRaw(chunks if chunks is not None else [])
         self.closed = False
 
     @property
     def text(self):
         return self._text
-
-    def iter_content(self, chunk_size=0):
-        yield from self._chunks
 
     def close(self):
         self.closed = True

@@ -31,6 +31,7 @@ from typing import Iterable
 
 import requests
 from requests.auth import HTTPBasicAuth
+from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
 from drivers.dahua import DahuaDriver
@@ -38,6 +39,7 @@ from drivers.dahua import DahuaDriver
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
 CLIP_TOTAL_SECONDS = 90              # per get_clip, counted from the start of the call
+READ_SIZE = 64 * 1024                # most bytes one download read asks for
 FINDER_COUNT = 100                   # files per findNextFile page
 MAX_FINDER_PAGES = 20                # hard cap on the pages one archive search may read
 MAX_ZONE_DRIFT_SECONDS = 5 * 60      # a clock further than this from every civil offset has no zone
@@ -327,10 +329,28 @@ def has_recording(driver: DahuaDriver, channel: str, start: datetime, end: datet
     return bool(find_recordings(driver, channel, start, end, max_items=1))
 
 
+def _body_reads(response) -> Iterable[bytes]:
+    """Yield a streamed body one read at a time, each read returning whatever has arrived.
+
+    requests' iter_content blocks until a whole chunk has arrived, so a slow stream would reach the
+    deadline check only once per chunk. urllib3's read1 returns after at most one socket read, and
+    a socket read waits at most the read timeout. A urllib3 without read1 gets READ_SIZE chunks.
+    """
+    read1 = getattr(getattr(response, "raw", None), "read1", None)
+    if not callable(read1):
+        yield from response.iter_content(chunk_size=READ_SIZE)
+        return
+    while True:
+        chunk = read1(READ_SIZE, decode_content=True)
+        if not chunk:
+            return
+        yield chunk
+
+
 def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES, *, deadline=None) -> bytes:
     chunks: list[bytes] = []
     total = 0
-    for chunk in response.iter_content(chunk_size=256 * 1024):
+    for chunk in _body_reads(response):
         # A read timeout alone never ends a download that keeps trickling data.
         if deadline is not None and time.monotonic() >= deadline:
             raise DriverError("recorder did not export this footage window in time")
@@ -361,7 +381,9 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     and for archive segment times from :func:`enumerate_historical_events`, which come back on the
     agent clock; "recorder" for UTC times the recorder's own clock stamped, i.e. ONVIF UtcTime.
     CLIP_TOTAL_SECONDS is counted from the start of the call: the clock read and search spend it
-    too, the download starts only while some is left, and the download stops once it is spent.
+    too, the download starts only while some is left, and the download stops at the first read
+    that returns after it is spent. A read returns whatever has arrived and waits at most the read
+    timeout, so a stalled download overruns the budget by at most one read timeout.
     """
     deadline = time.monotonic() + CLIP_TOTAL_SECONDS
     native_channel = _native_channel(channel)
@@ -386,7 +408,7 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
             "subtype": 0,
         },
         stream=True,
-        # (connect, read): no single read may outlive what is left of the total budget.
+        # (connect, read): no single read may wait longer than was left when the download started.
         timeout=(DOWNLOAD_TIMEOUT[0], max(1.0, min(DOWNLOAD_TIMEOUT[1], remaining))),
     )
     # A streamed response holds the underlying connection open until it is fully
@@ -395,9 +417,10 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     # streamed connection would eventually exhaust the recorder's session pool.
     try:
         return _read_bounded(response, deadline=deadline)
-    except requests.RequestException as error:
-        # A stalled or reset download. requests' own text names the recorder's LAN host, which
-        # must not reach cloud-visible failure text.
+    except (requests.RequestException, Urllib3Error) as error:
+        # A stalled or reset download. requests' and urllib3's own text names the recorder's LAN
+        # host, which must not reach cloud-visible failure text. read1 reads below requests, so
+        # urllib3's errors arrive unwrapped.
         raise DriverError("recorder stopped sending this footage window") from error
     finally:
         try:
