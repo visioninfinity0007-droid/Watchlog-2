@@ -405,6 +405,14 @@ class RepairRecorderGate(unittest.TestCase):
                                         b_live_before=True))
         self.assertEqual(gate, "GATE=ROLLBACK")
 
+    def test_a_future_dated_marker_is_not_proof(self):
+        future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        gate, _ = self.run_gate(
+            health=self.multi_health(1),
+            registry=self.two_recorders(a_marker=future, b_marker=self.stale,
+                                        b_live_before=False))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+
     def test_every_recorder_live_still_passes(self):
         gate, result = self.run_gate(
             health={"recorder_seen_at": self.fresh, "multi_recorder": True,

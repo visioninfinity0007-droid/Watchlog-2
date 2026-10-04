@@ -402,9 +402,11 @@ function Test-RecorderProof($h, [datetime]$StartedAtUtc) {
   if ($null -eq $script:RecorderBaseline -or -not [bool]$h.multi_recorder) { return $false }
   $required = @($script:RecorderBaseline | Where-Object { $_.required })
   if ($required.Count -eq 0 -or [int]$h.recorders_live -lt $required.Count) { return $false }
+  # A marker dated in the future is not proof of anything that happened after the start.
+  $latest = [DateTime]::UtcNow.AddMinutes(5)
   foreach ($r in $required) {
     $seen = Read-LiveMarker $r.live_marker
-    if (-not $seen -or $seen -lt $StartedAtUtc) { return $false }
+    if (-not $seen -or $seen -lt $StartedAtUtc -or $seen -gt $latest) { return $false }
   }
   return $true
 }
