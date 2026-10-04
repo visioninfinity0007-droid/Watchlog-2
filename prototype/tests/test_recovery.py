@@ -9,6 +9,7 @@ recovered/unrecoverable status, and recorder_archive provenance on every recover
 from __future__ import annotations
 
 import json, sys, tempfile, unittest
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT / "agent"))
 import recovery  # noqa: E402
 import backfill  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+from drivers.onvif_driver import OnvifDriver  # noqa: E402
 
 T0 = datetime(2026, 6, 1, 17, 0, tzinfo=timezone.utc)
 
@@ -61,10 +63,11 @@ def interval(iv_id="iv1", start=T0, hours=3, status="pending", checkpoint=None):
 
 
 class _ArchiveDriverStub:
-    def __init__(self, name, info=None, fail_probe=False):
+    def __init__(self, name, info=None, fail_probe=False, channels=("1", "2")):
         self.name = name
         self.info = info
         self.fail_probe = fail_probe
+        self.channels = channels
         self.closed = False
 
     def probe(self):
@@ -72,15 +75,40 @@ class _ArchiveDriverStub:
             raise RuntimeError("native probe unavailable")
         return self.info
 
+    def list_channels(self):
+        return [type("Ch", (), {"channel": c, "name": None})() for c in self.channels]
+
     def close(self):
         self.closed = True
+
+
+class _LabelledOnvif(OnvifDriver):
+    """A real ONVIF driver whose GetProfiles names the recorder's own channel per video source."""
+    PROFILES = ("<Envelope>"
+                "<Profiles token='p1'><Name>MediaProfile_Channel1_MainStream</Name>"
+                "<VideoSourceConfiguration><SourceToken>000</SourceToken></VideoSourceConfiguration></Profiles>"
+                "<Profiles token='p2'><Name>MediaProfile_Channel2_MainStream</Name>"
+                "<VideoSourceConfiguration><SourceToken>001</SourceToken></VideoSourceConfiguration></Profiles>"
+                "</Envelope>")
+
+    def __init__(self):
+        super().__init__("http://192.0.2.10", "local-user", "local-password", timeout=1)
+        self.media_service = "http://192.0.2.10/onvif/media_service"
+        self.closed = False
+
+    def _call(self, *_a, **_k):
+        return ET.fromstring(self.PROFILES)
+
+    def close(self):
+        self.closed = True
+        super().close()
 
 
 class ArchiveTransportRouting(unittest.TestCase):
     def test_onvif_dahua_live_path_uses_native_archive_reader(self):
         live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
         native_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
-        live = _ArchiveDriverStub("onvif", live_info)
+        live = _LabelledOnvif()
         native = _ArchiveDriverStub("dahua-cgi", native_info)
         cfg = type("Cfg", (), {
             "nvr_url": "http://192.0.2.10",
@@ -94,9 +122,35 @@ class ArchiveTransportRouting(unittest.TestCase):
             driver, info = core.open_archive_driver(cfg)
         finally:
             core.open_driver, core.build = old_open, old_build
-        self.assertIs(driver, native)
+        self.assertEqual(driver.name, "dahua-cgi")
+        self.assertEqual(driver.channel_map, {"1": "1", "2": "2"})   # by label, never positional
         self.assertIs(info, native_info)
         self.assertTrue(live.closed)
+        driver.close()
+        self.assertTrue(native.closed)
+
+    def test_onvif_without_verified_channel_map_keeps_live_driver(self):
+        # MNVR-029: an ONVIF site whose profiles do not name the recorder's own channels has no
+        # label-consistent ONVIF-to-native map, so the native reader is refused instead of guessed.
+        live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        live = _ArchiveDriverStub("onvif", live_info)
+        native = _ArchiveDriverStub("dahua-cgi", live_info)
+        cfg = type("Cfg", (), {
+            "nvr_url": "http://192.0.2.10",
+            "nvr_username": "local-user",
+            "nvr_password": "local-password",
+        })()
+        old_open, old_build = core.open_driver, core.build
+        try:
+            core.open_driver = lambda _cfg: (live, live_info)
+            core.build = lambda name, *_a, **_kw: native
+            driver, info = core.open_archive_driver(cfg)
+        finally:
+            core.open_driver, core.build = old_open, old_build
+        self.assertIs(driver, live)
+        self.assertIs(info, live_info)
+        self.assertFalse(live.closed)
+        self.assertTrue(native.closed)
 
     def test_native_archive_probe_failure_preserves_live_onvif_driver(self):
         live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
@@ -118,6 +172,38 @@ class ArchiveTransportRouting(unittest.TestCase):
         self.assertIs(info, live_info)
         self.assertFalse(live.closed)
         self.assertTrue(native.closed)
+
+    def test_caller_owned_live_driver_is_reused_and_left_open(self):
+        # MNVR-063: acceptance and status pass their already-open live driver. No second
+        # recorder login, and the caller's driver stays open even when recorded media moves to
+        # the native reader (the caller still lists cameras and closes it).
+        live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        native_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        live = _LabelledOnvif()
+        native = _ArchiveDriverStub("dahua-cgi", native_info)
+        direct = _ArchiveDriverStub("dahua-cgi", live_info)
+        cfg = type("Cfg", (), {
+            "nvr_url": "http://192.0.2.10",
+            "nvr_username": "local-user",
+            "nvr_password": "local-password",
+        })()
+        opened = []
+        old_open, old_build = core.open_driver, core.build
+        try:
+            core.open_driver = lambda _cfg: opened.append(_cfg) or (live, live_info)
+            core.build = lambda name, *_a, **_kw: native
+            driver, info = core.open_archive_driver(cfg, live=(live, live_info))
+            same, same_info = core.open_archive_driver(cfg, live=(direct, live_info))
+        finally:
+            core.open_driver, core.build = old_open, old_build
+        self.assertEqual(opened, [])
+        self.assertEqual(driver.name, "dahua-cgi")
+        self.assertEqual(driver.channel_map, {"1": "1", "2": "2"})
+        self.assertIs(info, native_info)
+        self.assertFalse(live.closed)
+        self.assertIs(same, direct)                  # directly enrolled native site: same driver
+        self.assertIs(same_info, live_info)
+        self.assertFalse(direct.closed)
 
 
 class OutageDetection(unittest.TestCase):

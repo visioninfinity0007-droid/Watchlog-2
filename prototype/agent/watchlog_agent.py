@@ -552,16 +552,180 @@ def open_driver(cfg: Config):
         raise primary
 
 
-def open_archive_driver(cfg: Config):
+# ONVIF profile names of the form MediaProfile_Channel<N> are read as the recorder's own channel
+# number for that video source (the label 0117 already uses for physical_channel). ASSUMPTION,
+# IMPLEMENTED_UNVERIFIED: that ONVIF Channel<N> is the same input as native CGI/ISAPI channel N
+# has not been checked on recorder hardware. The ONVIF camera channel itself is only the order in
+# which GetProfiles listed the sources.
+_ONVIF_CHANNEL_LABEL = r"mediaprofile[_ -]*channel(\d+)"
+
+_ARCHIVE_CHANNEL_UNVERIFIED = ("WatchLog could not confirm which recorder input this camera uses, "
+                               "so recorded footage was not retrieved.")
+
+
+def _onvif_channel_labels(onvif) -> dict:
+    """{ONVIF camera channel: recorder channel labels on its profiles}. Read-only.
+
+    The camera channels and their SourceTokens come from the driver's own list_channels(), so
+    they are exactly the ids live events and the cloud use. A profile with no label adds "".
+    """
+    import re
+    channels = [str(c.channel) for c in onvif.list_channels()]
+    source_to_channel = dict(getattr(onvif, "_source_to_channel", None) or {})
+    media = getattr(onvif, "media_service", None)
+    if not media or not source_to_channel:
+        return {}
+    labels = {channel: set() for channel in channels}
+    root = onvif._call(media, "<trt:GetProfiles/>")
+    for prof in root.findall(".//Profiles"):
+        channel = source_to_channel.get(
+            (prof.findtext(".//VideoSourceConfiguration/SourceToken") or "").strip())
+        if channel not in labels:
+            continue
+        match = re.search(_ONVIF_CHANNEL_LABEL, prof.findtext("Name") or "", re.I)
+        labels[channel].add(str(int(match.group(1))) if match else "")
+    return labels
+
+
+def _consistent_native_channel_map(onvif, native) -> dict:
+    """ONVIF camera channel -> native recorder channel, only where the profile labels agree.
+
+    A camera is mapped only when every profile of its video source carries the same
+    MediaProfile_Channel<N> label, no other camera carries N on any of its profiles, and the
+    native transport lists channel N. A recorder that labels a channel 0 does not number channels
+    the way the native side does, so nothing is mapped. Everything else stays unmapped: refused,
+    never guessed. The map is label-consistent, not hardware-verified: reading Channel<N> as
+    native channel N is an assumption, IMPLEMENTED_UNVERIFIED (see _ONVIF_CHANNEL_LABEL).
+    """
+    labels = _onvif_channel_labels(onvif)
+    if any("0" in found for found in labels.values()):
+        return {}
+    single = {channel: next(iter(found)) for channel, found in labels.items()
+              if len(found) == 1 and "" not in found}
+    # Count every label of every camera, so a camera with mixed or conflicting labels still
+    # makes its N ambiguous for the others.
+    claimed = [label for found in labels.values() for label in found if label]
+    native_ids = {}
+    for row in native.list_channels():
+        raw = str(getattr(row, "channel", "") or "")
+        if raw.isdigit():
+            native_ids[str(int(raw))] = raw
+    return {channel: native_ids[label] for channel, label in single.items()
+            if claimed.count(label) == 1 and label in native_ids}
+
+
+class _MappedArchiveDriver:
+    """Vendor-native archive reader addressed by the ONVIF camera channels WatchLog uses.
+
+    Exposes only the read-only archive interface. Every call translates the camera channel
+    through the label-consistent ONVIF-to-native map; a camera without one is refused, never
+    guessed.
+    """
+
+    def __init__(self, native, channel_map: dict):
+        self._native = native
+        self.name = native.name
+        self.channel_map = dict(channel_map)
+
+    def native_channel(self, channel) -> str:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            raise DriverError(_ARCHIVE_CHANNEL_UNVERIFIED)
+        return native
+
+    def historical_capability(self) -> dict:
+        return self._native.historical_capability()
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit: int = 500) -> dict:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            return {"status": "unknown", "events": [], "next_cursor": None}
+        page = self._native.enumerate_historical_events(native, start, end,
+                                                        cursor=cursor, limit=limit) or {}
+        events = [dict(ev, channel=str(channel)) if isinstance(ev, dict) and "channel" in ev else ev
+                  for ev in (page.get("events") or [])]
+        return {**page, "events": events}
+
+    def get_clip(self, channel, start, end):
+        return self._native.get_clip(self.native_channel(channel), start, end)
+
+    def get_recorded_segment(self, channel, start, end) -> dict:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            return {"status": "unknown", "bytes": None}
+        return self._native.get_recorded_segment(native, start, end)
+
+    def close(self) -> None:
+        self._native.close()
+
+
+# The archive is opened every recovery cycle and for every footage request or archive-scan
+# camera. A vendor-native CGI/ISAPI that rejects the on-site credential must not be probed again
+# on each open (the drivers retry a 401 with Basic: two failed logins per probe). Confirmed auth
+# failures back off per recorder like the live collector (5 -> 15 -> 30 min); a credential change
+# in Setup clears the breaker at once.
+_NATIVE_ARCHIVE_AUTH: dict = {}
+_NATIVE_ARCHIVE_AUTH_LOCK = threading.Lock()
+
+
+def _native_archive_key(cfg: Config, native_name: str) -> tuple:
+    return (native_name, str(cfg.nvr_url or ""), str(cfg.nvr_username or ""))
+
+
+def _credential_generation():
+    try:
+        return credential_store.credential_generation()
+    except Exception:  # noqa: BLE001 — an unreadable token only means "no change seen"
+        return None
+
+
+def _native_archive_backoff(key: tuple) -> float:
+    """Seconds before a refused native archive login may be tried again (0 = probe now)."""
+    with _NATIVE_ARCHIVE_AUTH_LOCK:
+        entry = _NATIVE_ARCHIVE_AUTH.get(key)
+        if entry is None:
+            return 0.0
+        if entry["generation"] != _credential_generation():
+            _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            return 0.0
+        return max(0.0, entry["retry_at"] - time.monotonic())
+
+
+def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
+    """Record a native probe outcome: success clears the breaker, a rejected login escalates it."""
+    from drivers.base import NvrAuthFailed
+    with _NATIVE_ARCHIVE_AUTH_LOCK:
+        if error is None:
+            _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            return
+        if not (isinstance(error, NvrAuthFailed) or _is_auth_failure(error)):
+            return
+        generation = _credential_generation()
+        entry = _NATIVE_ARCHIVE_AUTH.get(key)
+        failures = entry["failures"] + 1 if entry and entry["generation"] == generation else 1
+        wait = _AUTH_BACKOFF_SECONDS[min(failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)]
+        _NATIVE_ARCHIVE_AUTH[key] = {"failures": failures, "generation": generation,
+                                     "retry_at": time.monotonic() + wait}
+
+
+def open_archive_driver(cfg: Config, *, live=None):
     """Open the best read-only recorder transport for archive/evidence work.
 
     Live monitoring may legitimately use ONVIF when that was the proven enrollment
     path. Recorded-media APIs are vendor-specific, however. When an ONVIF probe
     identifies the recorder vendor, make one bounded attempt to open the matching
-    native HTTP driver with the SAME on-site credential/address. Failure falls back
-    to the already-open ONVIF driver and therefore remains honestly unsupported.
+    native HTTP driver with the SAME on-site credential/address. The ONVIF camera
+    channel is only an enumeration ordinal, so the native reader is returned only
+    for cameras with a label-consistent ONVIF-to-native channel map (the label-to-
+    native equivalence is IMPLEMENTED_UNVERIFIED on hardware). Failure, or no
+    mapped camera, falls back to the already-open ONVIF driver and therefore
+    remains honestly unsupported.
+
+    ``live`` is an already-open live ``(driver, info)`` (acceptance, status) used instead of a
+    second recorder login. It is returned as is when it is the archive transport and is never
+    closed here: the caller still owns it.
     """
-    driver, info = open_driver(cfg)
+    driver, info = live if live is not None else open_driver(cfg)
     try:
         import dahua_archive
         import hikvision_archive
@@ -582,14 +746,21 @@ def open_archive_driver(cfg: Config):
     if not native_name:
         return driver, info
 
+    key = _native_archive_key(cfg, native_name)
+    wait = _native_archive_backoff(key)
+    if wait:
+        log(f"archive: vendor-native {native_name} rejected the recorder login; not retrying "
+            f"for {max(1, round(wait / 60))} min (keeping {driver.name})")
+        return driver, info
+
     candidate = None
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        driver.close()
-        log(f"archive: using vendor-native {native_name} transport for recorded media")
-        return candidate, native_info
+        _note_native_archive_probe(key, None)
+        channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
+        _note_native_archive_probe(key, error)
         if candidate is not None:
             try:
                 candidate.close()
@@ -599,10 +770,38 @@ def open_archive_driver(cfg: Config):
             f"keeping {driver.name} ({type(error).__name__})")
         return driver, info
 
+    if not channel_map:
+        try:
+            candidate.close()
+        except Exception:
+            pass
+        log(f"archive: no camera has a consistent ONVIF-to-{native_name} channel label; "
+            f"keeping {driver.name} (recorded media is not guessed)")
+        return driver, info
+    if live is None:
+        driver.close()
+    log(f"archive: using vendor-native {native_name} transport for recorded media "
+        f"({len(channel_map)} camera channel(s) mapped by profile label)")
+    return _MappedArchiveDriver(candidate, channel_map), native_info
+
+
+def _archive_transport(driver) -> dict | None:
+    """Which transport recorded media is read through, as reported by accept/status/recheck.
+    channel_map is the label-consistent ONVIF-to-native map (IMPLEMENTED_UNVERIFIED on hardware,
+    see _ONVIF_CHANNEL_LABEL), or None when channels are the driver's own."""
+    if driver is None:
+        return None
+    mapped = isinstance(driver, _MappedArchiveDriver)
+    return {"driver": getattr(driver, "name", None) or None,
+            "channel_map": dict(driver.channel_map) if mapped else None}
+
 
 def prove_recorder_archive(driver, channel) -> dict:
     """Run the matching vendor archive proof without guessing capabilities."""
     name = str(getattr(driver, "name", "") or "")
+    mapped = driver if isinstance(driver, _MappedArchiveDriver) else None
+    if mapped is not None and str(channel) not in mapped.channel_map:
+        return {"status": "unknown", "channel": str(channel), "detail": _ARCHIVE_CHANNEL_UNVERIFIED}
     try:
         if name == "dahua-cgi":
             import dahua_archive
@@ -611,6 +810,12 @@ def prove_recorder_archive(driver, channel) -> dict:
         if name == "hikvision-isapi":
             import hikvision_archive
             hikvision_archive.install()
+            if mapped is not None:
+                # The Hikvision proof calls the ISAPI module directly, so give it the native
+                # driver and channel and keep the camera channel in the result.
+                proof = hikvision_archive.prove_recorder_archive(mapped._native,
+                                                                 mapped.native_channel(channel))
+                return {**proof, "channel": str(channel)}
             return hikvision_archive.prove_recorder_archive(driver, channel)
     except Exception as error:  # noqa: BLE001
         return {"status": "unknown", "detail": f"archive proof failed: {type(error).__name__}"}
@@ -1566,11 +1771,21 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         return ("pass", f"{len(chans)} camera(s)") if chans else ("blocked", "no camera channels found")
 
     def _archive_check():
-        driver = holder.get("driver")
+        live = holder.get("driver")
         chans = holder.get("channels") or []
-        if driver is None or not chans:
+        if live is None or not chans:
             return "warn", "recorder/cameras unavailable to check the archive"
         channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        # Recorded media is read through open_archive_driver at runtime (incident footage,
+        # recovery), which on an ONVIF site can be the vendor-native reader. Prove THAT transport
+        # (MNVR-063), reusing the open live driver instead of logging in again.
+        try:
+            driver, _info = open_archive_driver(cfg, live=(live, holder.get("info")))
+        except Exception:  # noqa: BLE001 — soft check: an unopened archive only warns
+            return "warn", "the recorder archive could not be opened for this check"
+        if driver is not live:
+            holder["archive_driver"] = driver
+        holder["archive_transport"] = _archive_transport(driver)
         proof = archive_fn(driver, channel)
         status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
         return status, (proof or {}).get("detail")
@@ -1682,6 +1897,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     ]
 
     report = acceptance.run_checks(checks, log=print)
+    report["archive_transport"] = holder.get("archive_transport")
     stats = report["summary"]
     print()
     if report["ready"]:
@@ -1691,12 +1907,13 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     # Single machine-readable line for the installer status panel — contains no secrets.
     print("ACCEPTANCE_JSON " + json.dumps(report, separators=(",", ":")))
 
-    driver = holder.get("driver")
-    if driver is not None:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+    for key in ("driver", "archive_driver"):
+        driver = holder.get(key)
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
     return 0 if report["ready"] else 2
 
 
@@ -1953,18 +2170,30 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
                           state=state, running=None, last_heartbeat=None, cloud_ok=cloud_ok,
                           spool_backlog=spool_backlog, recovery_backlog=0)
 
-    # --- recorder + cameras + archive (one driver open, all guarded) ---
+    # --- recorder + cameras + archive (all guarded) ---
     driver = info = None
     try:
         driver, info = (_open_driver or open_driver)(cfg)
     except Exception:  # noqa: BLE001 — recorder unreachable is an honest state, not a crash
         driver = info = None
 
+    # Recorded media is read through open_archive_driver at runtime (incident footage, recovery),
+    # which on an ONVIF site can be the vendor-native reader: report and prove THAT transport,
+    # while recorder/cameras stay on the live driver (MNVR-063). The open live driver is reused,
+    # so a site whose live driver is already the archive transport is not logged in to twice.
+    archive_driver = None
+    if driver is not None:
+        try:
+            archive_driver, _archive_info = open_archive_driver(cfg, live=(driver, info))
+        except Exception:  # noqa: BLE001
+            archive_driver = None
+
     capability = None
     channels = []
     if driver is not None:
         try:
-            capability = driver.historical_capability() if hasattr(driver, "historical_capability") else None
+            capability = archive_driver.historical_capability() \
+                if hasattr(archive_driver, "historical_capability") else None
         except Exception:  # noqa: BLE001
             capability = None
         try:
@@ -1992,30 +2221,27 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     camera = ss.camera_view(merged, configured=configured or None, health=None)
 
     archive_status = None
-    if driver is not None and merged:
+    if archive_driver is not None and merged:
         try:
-            import dahua_archive
-            try:
-                dahua_archive.install()
-            except Exception:  # noqa: BLE001
-                pass
-            proof = (_archive or dahua_archive.prove_recorder_archive)(driver, merged[0]["channel"])
+            # The same proof acceptance and Recheck Archive run, on the runtime archive transport.
+            proof = (_archive or prove_recorder_archive)(archive_driver, merged[0]["channel"])
             archive_status = (proof or {}).get("status")
         except Exception:  # noqa: BLE001
             archive_status = None
     archive = ss.archive_view(proof_status=archive_status, last_proof_at=iso(now),
                               recovery_backlog=0)
+    archive["transport"] = _archive_transport(archive_driver)
 
     recording = ss.recording_view(camera["cameras"], recording=None)
 
     # Retention depth (P7): bounded, best-effort. Off by default so the panel refresh stays fast;
     # WATCHLOG_STATUS_RETENTION=1 (or a dedicated deep recheck) enables the archive-boundary probe.
     ret = _retention
-    if ret is None and driver is not None and merged and \
+    if ret is None and archive_driver is not None and merged and \
             os.environ.get("WATCHLOG_STATUS_RETENTION", "").strip().lower() in ("1", "true", "yes", "on"):
         try:
             import retention as _retmod
-            ret = _retmod.estimate_retention(driver, merged[0]["channel"], now=now)
+            ret = _retmod.estimate_retention(archive_driver, merged[0]["channel"], now=now)
         except Exception:  # noqa: BLE001
             ret = None
     if ret and ret.get("status") in ("measured", "at_least"):
@@ -2024,11 +2250,12 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     else:
         storage = ss.storage_view(None)              # honest 'Not available on this recorder'
 
-    if driver is not None:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+    for opened in (driver, archive_driver if archive_driver is not driver else None):
+        if opened is not None:
+            try:
+                opened.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     snap = ss.build_snapshot(agent=agent, recorder=recorder, camera=camera, recording=recording,
                              archive=archive, storage=storage, generated_at=iso(now))
@@ -2048,7 +2275,8 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
 
     now = _now or now_utc()
     out = {"schema": "watchlog.archive_recheck.v1", "state": "ARCHIVE FAILED",
-           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": ""}
+           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": "",
+           "transport": None}
     driver = None
     try:
         driver, _info = (_open_driver or open_archive_driver)(cfg)
@@ -2058,6 +2286,7 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
         out["detail"] = "recorder not reachable"
         print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
         return 0
+    out["transport"] = _archive_transport(driver)
     channel = "1"
     for prof in (getattr(cfg, "camera_profiles", None) or []):
         if prof.get("monitored", True) and prof.get("channel"):
