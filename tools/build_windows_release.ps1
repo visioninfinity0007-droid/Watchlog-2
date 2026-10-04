@@ -288,8 +288,10 @@ update_channel = production
   if ($setupBytes -lt $minimumSetupBytes) {
     throw "WatchLog-Setup.exe is suspiciously small ($setupBytes bytes); refusing to publish a stub/incomplete installer"
   }
-  if ($repairBytes -lt $minimumAgentBytes -or $repairBytes -ge $setupBytes) {
-    throw "WatchLog-Repair-Upgrade.exe size is implausible ($repairBytes bytes); it must contain the Agent but remain smaller than full Setup"
+  # Repair/Upgrade carries the Agent AND the Setup UI (Manage Recorders), so it is close to
+  # full Setup in size; it only lacks the readme/icon and adds its own orchestrator script.
+  if ($repairBytes -lt $minimumAgentBytes -or $repairBytes -gt ($setupBytes + 1MB)) {
+    throw "WatchLog-Repair-Upgrade.exe size is implausible ($repairBytes bytes); it must contain the Agent and the Setup UI and stay within 1 MB of full Setup"
   }
 
   # 5) Sign final artifacts, then calculate checksums of the exact distributed bytes.
@@ -312,7 +314,7 @@ update_channel = production
   $repairMb = [math]::Round($repairBytes / 1MB, 1)
   Write-Host ""
   Write-Host "Built $setup ($mb MB)" -ForegroundColor Green
-  Write-Host "Built $repair ($repairMb MB) - existing sites only; no Qt Setup UI" -ForegroundColor Green
+  Write-Host "Built $repair ($repairMb MB) - existing sites only; Agent + Setup UI for Manage Recorders, no discovery wizard" -ForegroundColor Green
   Write-Host "  Site Agent $([math]::Round($agentBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  Setup UI $([math]::Round($setupUiBytes / 1MB, 1)) MB" -ForegroundColor Gray
   Write-Host "  SETUP SHA256  $hash" -ForegroundColor Green

@@ -39,6 +39,7 @@ $StatePath = Join-Path $DataRoot "agent_state.json"
 $AgentKeyPath = Join-Path $DataRoot "Secrets\agent_key.dpapi"
 $RecorderCredentialPath = Join-Path $DataRoot "Secrets\nvr_credential.dpapi"
 $CandidateAgent = Join-Path $CandidateDir "watchlog-agent.exe"
+$CandidateSetupUi = Join-Path $CandidateDir "watchlog-setup-ui.exe"
 $UpgradeHelper = Join-Path $CandidateDir "wl-upgrade.ps1"
 $RegisterService = Join-Path $CandidateDir "register-service.ps1"
 $PreflightResult = Join-Path $CandidateDir ("repair-preflight-" + [guid]::NewGuid().ToString("N") + ".json")
@@ -46,6 +47,7 @@ $PreflightTask = "WatchLog Candidate Preflight " + [guid]::NewGuid().ToString("N
 
 $PayloadFiles = @(
   "watchlog-agent.exe",
+  "watchlog-setup-ui.exe",
   "run-agent.ps1",
   "register-service.ps1",
   "apply-remote-update.ps1",
@@ -298,6 +300,13 @@ try {
   Write-Repair "candidate version file=$fileVer runtime=$runVer expected=$ExpectedVersion"
   if ($fileVer -ne $ExpectedVersion -or $runVer -ne $ExpectedVersion) {
     Fail 22 "candidate executable version does not match this Repair/Upgrade release"
+  }
+  # The Setup UI (Manage Recorders, Site Status) is replaced together with the Agent. It is
+  # a windowed exe whose --version output cannot be captured, so prove its file version.
+  $uiVer = File-Version $CandidateSetupUi
+  Write-Repair "candidate setup UI version file=$uiVer expected=$ExpectedVersion"
+  if ($uiVer -ne $ExpectedVersion) {
+    Fail 22 "candidate Setup UI version does not match this Repair/Upgrade release"
   }
 
   $script:CurrentStage = "passive compatibility validation"

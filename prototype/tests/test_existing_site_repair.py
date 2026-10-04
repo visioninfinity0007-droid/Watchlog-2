@@ -162,10 +162,14 @@ class InstallerContract(unittest.TestCase):
         self.assertIn("Wait-NewRuntimeHealth", ps)
         self.assertIn("previous WatchLog restored", ps)
 
-    def test_repair_package_does_not_ship_qt_setup_ui_or_discovery_wizard(self):
+    def test_repair_package_ships_setup_ui_but_never_runs_the_setup_wizard(self):
+        # Manage Recorders lives only in watchlog-setup-ui.exe, so Repair/Upgrade must carry
+        # it. It is staged for Manage Recorders and Site Status, never launched as the
+        # first-run discovery wizard.
         nsis = (ROOT / "prototype/installer/nsis/watchlog-repair.nsi").read_text(encoding="utf-8")
         self.assertIn('File "watchlog-agent.exe"', nsis)
-        self.assertNotIn('File "watchlog-setup-ui.exe"', nsis)
+        self.assertIn('File "watchlog-setup-ui.exe"', nsis)
+        self.assertNotIn('ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe"', nsis)
         self.assertNotIn("Search Network", nsis)
         self.assertIn("Use WatchLog-Setup.exe for a new installation", nsis)
 
@@ -206,6 +210,10 @@ class InstallerContract(unittest.TestCase):
         self.assertIn('"watchlog.defaults.ini"', helper)
         self.assertIn('$PayloadFiles = if ($PayloadProfile -eq "repair")', helper)
         self.assertIn('"-PayloadProfile","repair"', repair)
+        # The repair payload carries the Setup UI, so its lock check, backup and rollback do too.
+        self.assertIn("watchlog-setup-ui.exe", _ps_array(helper, "$RepairPayloadFiles"))
+        self.assertIn("watchlog-setup-ui.exe", _ps_array(repair, "$PayloadFiles"))
+        self.assertNotIn("READ ME FIRST.txt", _ps_array(helper, "$RepairPayloadFiles"))
 
     def test_repair_failure_exits_cleanly_and_surfaces_real_stage(self):
         nsis = (ROOT / "prototype/installer/nsis/watchlog-repair.nsi").read_text(encoding="utf-8")
@@ -263,6 +271,72 @@ class InstallerContract(unittest.TestCase):
             self.assertIn(name, build)
             self.assertIn(name, workflow)
         self.assertIn("WatchLog-Repair-Upgrade.exe.sha256", workflow)
+
+
+def _ps_array(source: str, name: str) -> list[str]:
+    """Quoted entries of a PowerShell `$Name = @( ... )` literal."""
+    start = source.index(name + " = @(")
+    body = source[start:source.index(")", start)]
+    return [line.strip().strip(",").strip('"') for line in body.splitlines()[1:] if line.strip()]
+
+
+class ExistingSiteUpgradeReachesManageRecorders(unittest.TestCase):
+    def test_existing_site_upgrade_reaches_manage_recorders(self):
+        full = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text(encoding="utf-8")
+        repair = (ROOT / "prototype/installer/nsis/watchlog-repair.nsi").read_text(encoding="utf-8")
+        orchestrator = (ROOT / "prototype/installer/wl-repair-upgrade.ps1").read_text(encoding="utf-8")
+        helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
+        registry = (AGENT / "recorder_registry.py").read_text(encoding="utf-8")
+        build = (ROOT / "tools/build_windows_release.ps1").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/windows-release.yml").read_text(encoding="utf-8")
+
+        # (a) Full Setup refuses a connected site before touching anything and sends it to
+        #     Repair/Upgrade.
+        abort = full.index('Abort "Existing connected site: use WatchLog-Repair-Upgrade.exe"')
+        self.assertIn('"${DATAROOT}\\Secrets\\agent_key.dpapi"', full[:abort])
+        self.assertIn('"${DATAROOT}\\Secrets\\nvr_credential.dpapi"', full[:abort])
+        self.assertLess(abort, full.index('File "watchlog-setup-ui.exe"'))
+        # (b) 5.1 keeps the legacy singleton credential, so that redirect still fires after the
+        #     site runs 5.1: full Setup can never deliver Manage Recorders to it.
+        self.assertIn("COPY-ONLY", registry)
+        self.assertNotIn("nvr_credential_path().unlink", registry)
+
+        # (c) Repair/Upgrade therefore delivers the Setup UI itself, as part of the payload it
+        #     locks, backs up, replaces and rolls back together with the Agent.
+        self.assertIn('File "watchlog-setup-ui.exe"', repair)
+        self.assertIn("watchlog-setup-ui.exe", _ps_array(orchestrator, "$PayloadFiles"))
+        self.assertIn("watchlog-setup-ui.exe", _ps_array(helper, "$RepairPayloadFiles"))
+        for stage in ("Backup-Payload", "Restore-Payload", "Get-LockedPayloadFiles"):
+            body = helper[helper.index(f"function {stage}"):]
+            self.assertIn("foreach ($name in $PayloadFiles)", body[:body.index("\n}\n")])
+
+        # (d) Version-verified like the Agent: the candidate UI before the live site is
+        #     paused, and the installed UI after the copy (verify-version, repair profile).
+        checks = orchestrator[orchestrator.index('$script:CurrentStage = "candidate integrity and version checks"'):
+                              orchestrator.index('$script:CurrentStage = "passive compatibility validation"')]
+        self.assertIn("File-Version $CandidateSetupUi", checks)
+        self.assertIn("-ne $ExpectedVersion", checks)
+        verify = helper.split("'verify-version' {", 1)[1].split("'commit' {", 1)[0]
+        self.assertIn("Get-FileProductVersion $SetupExe", verify)
+        self.assertIn('$PayloadProfile -eq "repair"', verify)
+
+        # (e) The Manage Recorders and Site Status shortcuts are created only after the new
+        #     version is proven; a rolled-back site keeps its previous Start Menu.
+        failure = repair.index("SetErrorLevel $9")
+        success = repair.index('WriteRegStr HKLM "${ARPKEY}" "DisplayVersion"')
+        for shortcut, argument in (("WatchLog Manage Recorders.lnk", "--manage-recorders --config"),
+                                   ("WatchLog Site Status.lnk", "--status --config")):
+            line = next(row for row in repair.splitlines()
+                        if "CreateShortcut" in row and shortcut in row)
+            self.assertIn('"$INSTDIR\\watchlog-setup-ui.exe"', line)
+            self.assertIn(argument, line)
+            self.assertGreater(repair.index(line), failure)
+            self.assertGreater(repair.index(line), success)
+
+        # (f) The release no longer rejects a Repair/Upgrade that carries the Setup UI.
+        self.assertNotIn("$repairBytes -ge $setupBytes", build)
+        self.assertNotIn("no Qt Setup UI", build)
+        self.assertNotIn("$repair.Length -ge $setup.Length", workflow)
 
 
 if __name__ == "__main__":

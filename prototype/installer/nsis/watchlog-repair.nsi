@@ -1,5 +1,6 @@
 ; WatchLog Existing-Site Repair/Upgrade - NOT a first-time installer.
-; Carries only the Site Agent/runtime payload. No Qt Setup UI, no discovery wizard.
+; Carries the Site Agent/runtime payload plus the Setup UI that provides Manage Recorders
+; and Site Status. It never runs recorder discovery or the first-run setup wizard.
 
 Unicode true
 
@@ -13,6 +14,7 @@ Unicode true
 !define ARPKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WatchLog"
 !define CANDIDATE "${DATAROOT}\repair-candidate"
 !define RESULTFILE "${DATAROOT}\repair-upgrade-result.ini"
+!define STARTMENU "$SMPROGRAMS\WatchLog"
 
 Name "${APPNAME}"
 !ifndef OUTFILE
@@ -81,6 +83,7 @@ Section "Repair/Upgrade"
   SetOutPath "${CANDIDATE}"
   SetOverwrite on
   File "watchlog-agent.exe"
+  File "watchlog-setup-ui.exe"
   File "run-agent.ps1"
   File "register-service.ps1"
   File "apply-remote-update.ps1"
@@ -118,5 +121,12 @@ Section "Repair/Upgrade"
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "InstallLocation" "$INSTDIR"
+
+  ; The proven payload includes the Setup UI, so an upgraded site can add or repair
+  ; recorders without reinstalling. Written only after success: a rolled-back site keeps
+  ; its previous Setup UI and Start Menu.
+  CreateDirectory "${STARTMENU}"
+  CreateShortcut "${STARTMENU}\WatchLog Site Status.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--status --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+  CreateShortcut "${STARTMENU}\WatchLog Manage Recorders.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--manage-recorders --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
   RMDir /r "${CANDIDATE}"
 SectionEnd

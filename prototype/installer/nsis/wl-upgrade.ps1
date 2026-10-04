@@ -8,7 +8,8 @@
     preflight      - suspend the scheduled task, close/kill ONLY WatchLog-owned
                      processes from this InstallDir, verify EVERY replace-target
                      file is unlocked, and back up the current payload.
-    verify-version - prove the newly staged agent file/runtime version.
+    verify-version - prove the newly staged agent file/runtime version (and the
+                     staged Setup UI file version).
     commit         - prove the new registered agent is running as one logical
                      instance, then discard the rollback payload.
     rollback       - stop the new runtime, restore the complete previous payload,
@@ -51,9 +52,9 @@ $BackupRoot = Join-Path $DataRoot "upgrade-backup"
 $Manifest   = Join-Path $BackupRoot "manifest.json"
 
 # Scope lock/backup/rollback checks to the payload the caller actually replaces.
-# Full Setup replaces the Qt setup UI/readme/icon as well. Existing-site Repair/Upgrade
-# deliberately does not ship or replace those files, so an unrelated lock on one of them
-# must never block a repair.
+# Full Setup replaces the readme/icon as well. Existing-site Repair/Upgrade replaces the
+# Agent, its scripts and the Qt setup UI (Manage Recorders, Site Status) but deliberately
+# not the readme/icon, so an unrelated lock on one of those must never block a repair.
 $FullPayloadFiles = @(
   "watchlog-agent.exe",
   "watchlog-setup-ui.exe",
@@ -67,6 +68,7 @@ $FullPayloadFiles = @(
 )
 $RepairPayloadFiles = @(
   "watchlog-agent.exe",
+  "watchlog-setup-ui.exe",
   "run-agent.ps1",
   "register-service.ps1",
   "apply-remote-update.ps1",
@@ -541,6 +543,13 @@ switch ($Stage) {
     Write-Stage "installed file_version=$fileVer runtime_version=$runVer expected=$ExpectedVersion path=$AgentExe"
     if ($fileVer -ne $ExpectedVersion) { Fail 11 "file ProductVersion '$fileVer' != expected '$ExpectedVersion'" }
     if ($runVer -ne $ExpectedVersion) { Fail 11 "runtime --version '$runVer' != expected '$ExpectedVersion'" }
+    # A Setup UI left at the old version beside a new Agent is a mixed-version install.
+    # The repair payload always carries it; a full install verifies the one it wrote.
+    if ($PayloadProfile -eq "repair" -or (Test-Path -LiteralPath $SetupExe)) {
+      $uiVer = Get-FileProductVersion $SetupExe
+      Write-Stage "installed setup UI file_version=$uiVer expected=$ExpectedVersion path=$SetupExe"
+      if ($uiVer -ne $ExpectedVersion) { Fail 11 "setup UI file ProductVersion '$uiVer' != expected '$ExpectedVersion'" }
+    }
     Write-Stage "verify-version OK: on-disk file + runtime both report $ExpectedVersion"
     exit 0
   }
