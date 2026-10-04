@@ -78,7 +78,11 @@ def _seed_two():
 
 
 class _LifecycleCloud:
-    """Contract-v4 cloud that echoes the registry's own recorder bindings."""
+    """Contract-v4 cloud that echoes the registry's own recorder bindings.
+
+    wl_sync_recorders applies the 0154 desired-state rules: a non-empty payload
+    names exactly one primary and that primary is configured.
+    """
 
     def __init__(self):
         self.calls = []
@@ -89,6 +93,11 @@ class _LifecycleCloud:
             return {"ok": True, "version": sb.MULTI_RECORDER_SETUP_CONTRACT_VERSION,
                     "features": sorted(sb.MULTI_RECORDER_SETUP_FEATURES)}
         if name == "wl_sync_recorders":
+            rows = kw["p_recorders"]
+            if rows and sum(bool(r.get("is_primary")) for r in rows) != 1:
+                raise RuntimeError("recorder registry requires exactly one primary recorder")
+            if any(r.get("is_primary") and not r.get("is_configured", True) for r in rows):
+                raise RuntimeError("primary recorder must be configured")
             bound = {row["local_id"]: row["cloud_recorder_id"] for row in rr.recorders()}
             return {row["local_key"]: bound[row["local_key"]] for row in kw["p_recorders"]}
         raise AssertionError(name)

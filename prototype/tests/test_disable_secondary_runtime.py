@@ -4,7 +4,10 @@ FakeCloud emulates the recorder-foundation database rules that matter here:
 
 * an event WITHOUT recorder_id resolves through the legacy single-recorder path,
   which fails closed (42501) while more than one recorder is configured;
-* an event WITH recorder_id is accepted only for a configured recorder of the site.
+* an event WITH recorder_id is accepted only for a configured recorder of the site;
+* wl_sync_recorders is a desired-state sync (0154): a non-empty payload must name
+  exactly one primary, that primary must be configured, and the continuity
+  recorder can never be disabled.
 
 So the disable must reach the cloud before the change is committed locally, the
 Agent must keep using recorder-aware ingest with the remaining recorder's id, and
@@ -82,6 +85,7 @@ class FakeCloud:
     def __init__(self, local_a, local_b, *, b_configured=True):
         self.by_local = {local_a: CLOUD_A, local_b: CLOUD_B}
         self.configured = {CLOUD_A: True, CLOUD_B: b_configured}
+        self.primary = CLOUD_A
         self.calls = []
         self.ingested = []
         self.fail_sync = False
@@ -101,10 +105,21 @@ class FakeCloud:
         if name == "wl_sync_recorders":
             if self.fail_sync:
                 raise core.CloudError(name, 503, None, "temporarily unavailable")
+            rows = kw["p_recorders"]
+            if rows and sum(bool(r.get("is_primary")) for r in rows) != 1:
+                raise core.CloudError(name, 400, "22023",
+                                      "recorder registry requires exactly one primary recorder")
+            if any(r.get("is_primary") and not r.get("is_configured", True) for r in rows):
+                raise core.CloudError(name, 400, "22023", "primary recorder must be configured")
             out = {}
-            for row in kw["p_recorders"]:
+            for row in rows:
                 cloud_id = self.by_local[str(row["local_key"])]
+                if cloud_id == CLOUD_A and not row.get("is_configured", True):
+                    raise core.CloudError(name, 403, "42501",
+                                          "continuity recorder cannot be disabled in contract v4")
                 self.configured[cloud_id] = bool(row.get("is_configured", True))
+                if row.get("is_primary"):
+                    self.primary = cloud_id
                 out[str(row["local_key"])] = cloud_id
             return out
         if name == "wl_ingest_events":
@@ -202,11 +217,17 @@ def test_disable_drains_then_syncs_cloud_before_committing_locally(monkeypatch):
         assert _queued(queue) == 0
         assert out["retained_events"] == 0
         # ... then the cloud learned B is disabled before the PC committed it.
+        # The whole planned registry goes up, as the database requires: the
+        # configured primary A plus the disabled B.
         sync = [kw for name, kw in cloud.calls if name == "wl_sync_recorders"]
-        assert sync and all(not r["is_configured"] for r in sync[0]["p_recorders"])
-        assert [r["local_key"] for r in sync[0]["p_recorders"]] == [b]
+        assert len(sync) == 1
+        sent = {r["local_key"]: r for r in sync[0]["p_recorders"]}
+        assert set(sent) == {a, b}
+        assert sent[a]["is_primary"] is True and sent[a]["is_configured"] is True
+        assert sent[b]["is_primary"] is False and sent[b]["is_configured"] is False
         assert seen_local_state == [True]
         assert cloud.configured == {CLOUD_A: True, CLOUD_B: False}
+        assert cloud.primary == CLOUD_A
         assert rr.recorder(b)["is_configured"] is False
         assert out["is_configured"] is False
 
@@ -227,6 +248,57 @@ def test_cloud_refusal_leaves_the_recorder_enabled_locally(monkeypatch):
             assert "nothing was changed" in str(exc).lower()
         assert rr.load_registry() == before
         assert cloud.configured[CLOUD_B] is True
+
+
+def test_disable_never_sends_an_unbound_recorder(monkeypatch):
+    """A recorder the Agent has not bound yet has no cloud row; Setup must not
+    create one while disabling another recorder."""
+    with _Env() as env:
+        a, b = _seed_two_bound()
+        c = str(uuid.uuid4())
+        cs.save_recorder_credential(c, "user-c", "pw-c")
+        reg = rr.load_registry()
+        reg["recorders"].append(
+            {"local_id": c, "cloud_recorder_id": None, "display_name": "Recorder C",
+             "url": "http://192.0.2.30", "driver": "onvif", "is_primary": False,
+             "continuity_owner": False, "is_configured": True})
+        rr.save_registry(reg)
+        cloud = FakeCloud(a, b)
+        monkeypatch.setattr(core, "Cloud", cloud)
+        _activation_ok(monkeypatch)
+
+        sb.disable_managed_recorder(env.ini, b)
+
+        sync = [kw for name, kw in cloud.calls if name == "wl_sync_recorders"]
+        assert [{r["local_key"] for r in kw["p_recorders"]} for kw in sync] == [{a, b}]
+        assert rr.recorder(b)["is_configured"] is False
+        assert rr.recorder(c)["is_configured"] is True
+        assert rr.recorder(c)["cloud_recorder_id"] is None
+
+
+def test_a_partial_echo_is_not_a_confirmation(monkeypatch):
+    with _Env() as env:
+        a, b = _seed_two_bound()
+        cloud = FakeCloud(a, b)
+        real = cloud.call
+
+        def only_b(name, **kw):
+            out = real(name, **kw)
+            if name == "wl_sync_recorders":
+                return {b: out[b]}
+            return out
+
+        cloud.call = only_b
+        monkeypatch.setattr(core, "Cloud", cloud)
+        _activation_ok(monkeypatch)
+        before = rr.load_registry()
+
+        try:
+            sb.disable_managed_recorder(env.ini, b)
+            assert False, "an echo missing a sent recorder must not be committed locally"
+        except ValueError as exc:
+            assert "nothing was changed" in str(exc).lower()
+        assert rr.load_registry() == before
 
 
 def test_undrainable_queue_is_retained_and_reported(monkeypatch):

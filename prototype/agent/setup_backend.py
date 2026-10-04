@@ -797,18 +797,27 @@ def _drain_recorder_queue(cloud, state: dict, local_id: str, *, max_batches: int
 
 
 def _sync_recorder_lifecycle(cloud, state: dict, planned: dict, local_id: str) -> None:
-    """Send one recorder's planned lifecycle state to WatchLog and require an exact echo.
+    """Send the planned lifecycle state to WatchLog and require an exact echo.
 
-    Only that recorder's row is sent: Setup never creates a cloud recorder for an
-    unbound row (the background Agent owns first binding).
+    WatchLog's recorder sync is a desired-state sync: a non-empty payload must
+    name exactly one configured primary. So every cloud-bound row of the planned
+    registry is sent, as the Agent's startup sync does: the primary, the recorder
+    being changed and any other bound recorder. Unbound rows are left out: Setup
+    never creates a cloud recorder (the background Agent owns first binding).
     """
-    expected = next(
-        (row for row in planned["recorders"] if row["local_id"] == str(local_id)), None
-    )
+    bound = {
+        row["local_id"]: str(row["cloud_recorder_id"])
+        for row in planned["recorders"] if row.get("cloud_recorder_id")
+    }
     payload = [
         row for row in recorder_registry.registry_cloud_descriptors(planned)
-        if row["local_key"] == str(local_id)
+        if row["local_key"] in bound
     ]
+    if str(local_id) not in bound or not any(row["is_primary"] for row in payload):
+        raise ValueError(
+            "WatchLog has not finished connecting this site's recorders yet. "
+            "Nothing was changed on this PC."
+        )
     try:
         mapping = cloud.call(
             "wl_sync_recorders",
@@ -820,9 +829,8 @@ def _sync_recorder_lifecycle(cloud, state: dict, planned: dict, local_id: str) -
         raise ValueError(
             "WatchLog could not confirm the recorder change. Nothing was changed on this PC."
         ) from exc
-    if (expected is None or not isinstance(mapping, dict)
-            or {str(k) for k in mapping} != {str(local_id)}
-            or str(mapping[str(local_id)]) != str(expected.get("cloud_recorder_id"))):
+    if (not isinstance(mapping, dict)
+            or {str(k): str(v) for k, v in mapping.items()} != bound):
         raise ValueError(
             "WatchLog did not confirm the recorder change. Nothing was changed on this PC."
         )
