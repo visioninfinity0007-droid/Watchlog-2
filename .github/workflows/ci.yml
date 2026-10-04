@@ -26,7 +26,7 @@ jobs:
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Agent identity + camera enrollment tests
-        run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
+        run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py prototype/tests/test_recorder_registry.py prototype/tests/test_recorder_runtime.py prototype/tests/test_multi_recorder_event_identity.py prototype/tests/test_multi_recorder_health_store.py prototype/tests/test_multi_recorder_runtime_adapters.py prototype/tests/test_multi_recorder_cloud_binding.py prototype/tests/test_multi_recorder_camera_job_runtime.py prototype/tests/test_multi_recorder_analytics_runtime.py prototype/tests/test_multi_recorder_fanout.py prototype/tests/test_multi_recorder_continuity.py prototype/tests/test_recorder_manager.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
         run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py prototype/tests/test_reconcile_split.py prototype/tests/test_fault_model.py prototype/tests/test_apply_migrations.py -q
       - name: WordPress PHP syntax
@@ -240,6 +240,9 @@ jobs:
           # signature raised TypeError). Pure protect/unprotect, no DACL/elevation.
           python -c "from windows_secret import protect_bytes, unprotect_bytes; b=b'recorder-test-secret'; assert unprotect_bytes(protect_bytes(b)) == b; print('DPAPI round trip OK')"
           if ($LASTEXITCODE -ne 0) { throw "DPAPI round trip failed: $LASTEXITCODE" }
+          # Multi-recorder credential helper uses one independent DPAPI blob per recorder.
+          python -c "import uuid, credential_store as c; rid=str(uuid.uuid4()); c.save_recorder_credential(rid,'ci-user','ci-recorder-pw'); x=c.load_recorder_credential(rid); assert x['username']=='ci-user' and x['password']=='ci-recorder-pw' and x['local_id']==rid; c.delete_recorder_credential(rid); print('per-recorder DPAPI round trip OK')"
+          if ($LASTEXITCODE -ne 0) { throw "per-recorder DPAPI helper failed: $LASTEXITCODE" }
           # Real migration: seed a legacy watchlog.env in an isolated ProgramData and
           # prove the frozen setup UI migrates it into the encrypted split store
           # (a blank config would be a no-op that proves nothing about the store).
