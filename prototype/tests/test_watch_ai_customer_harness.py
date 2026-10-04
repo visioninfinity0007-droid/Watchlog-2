@@ -10,6 +10,7 @@ def read(rel):
 def main():
     problems = []
     gateway = read("prototype/supabase/functions/watchlog-ai/index.ts")
+    owner_context = read("prototype/supabase/migrations/0152_multi_recorder_owner_read_model.sql")
 
     required = [
         "trusted, experienced security and office manager",
@@ -22,10 +23,27 @@ def main():
         "WatchLog’s internal software and security implementation private",
         "Raw camera detections are evidence, not automatically unique people",
         "Do not mention AI confidence scores to customers",
+        "site-config-advisor-v2-multi-recorder-safe",
+        "Recorder capabilities are verified per recorder",
+        "recorders: (Array.isArray(ctx?.recorders)",
+        "const multiRecorder = recorders.length > 1;",
     ]
     for token in required:
         if token not in gateway:
             problems.append(f"Watch AI customer harness missing: {token}")
+
+
+    owner_required = [
+        "'facts_version','watchlog-ai-context-v7'",
+        "'recorders',coalesce(v_recorders->'recorders','[]'::jsonb)",
+        "when v_recorder_count<=1 then v_diag->'capabilities'",
+        "else '{}'::jsonb",
+        "when v_recorder_count<=1 then coalesce((v_diag->>'capability_known')::boolean,false)",
+        "else false",
+    ]
+    for token in owner_required:
+        if token not in owner_context:
+            problems.append(f"Multi-recorder AI owner context missing fail-closed truth guard: {token}")
 
     unsafe_customer_phrases = [
         "Full model reasoning is not configured",

@@ -114,11 +114,23 @@ function cameraName(c) {
   return c.name || `Camera ${c.channel}`;
 }
 
+function recorderView(row) {
+  const state = String(row?.state || "unknown").toLowerCase();
+  const issue = String(row?.issue || "").toLowerCase();
+  if (state === "healthy") return { label: "Available", tone: "ok" };
+  if (state === "offline") return { label: "Unavailable", tone: "bad" };
+  if (state === "attention" && issue === "storage") return { label: "Storage needs attention", tone: "warn" };
+  if (state === "attention" && issue === "sign_in") return { label: "Sign-in needs attention", tone: "warn" };
+  if (state === "attention") return { label: "Needs attention", tone: "warn" };
+  return { label: "Not verified", tone: "unknown" };
+}
+
 export default function CustomerCameraView() {
   const [email, setEmail] = useState("");
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState("");
   const [ctx, setCtx] = useState(null);
+  const [recorderSummary, setRecorderSummary] = useState(null);
   const [restaurantConfig, setRestaurantConfig] = useState(null);
   const [shots, setShots] = useState({});
   const [busy, setBusy] = useState("");
@@ -165,13 +177,15 @@ export default function CustomerCameraView() {
     if (!siteId) return;
     let live = true;
     setCtx(null);
+    setRecorderSummary(null);
     setShots({});
     shotsRef.current = {};
     (async () => {
       const sb = supabase();
-      const [contextResult, restaurantResult] = await Promise.all([
+      const [contextResult, restaurantResult, recorderResult] = await Promise.all([
         sb.rpc("wl_ai_context", { p_site_id: siteId }),
         sb.rpc("wl_restaurant_site_config", { p_site_id: siteId }),
+        sb.rpc("wl_my_site_recorders", { p_site_id: siteId }),
       ]);
       if (!live) return;
       if (contextResult.error) {
@@ -179,6 +193,9 @@ export default function CustomerCameraView() {
         return;
       }
       setCtx(contextResult.data || null);
+      setRecorderSummary(
+        !recorderResult.error ? recorderResult.data || null : null,
+      );
       setRestaurantConfig(
         !restaurantResult.error && restaurantResult.data?.enabled === true
           ? restaurantResult.data
@@ -212,6 +229,27 @@ export default function CustomerCameraView() {
     [ctx],
   );
   const cameraIds = useMemo(() => cameras.map((c) => c.id), [cameras]);
+  const recorderRows = recorderSummary?.recorders || [];
+  const multiRecorder = recorderRows.length > 1;
+  const recorderById = useMemo(
+    () => new Map(recorderRows.map((row) => [String(row.id), row])),
+    [recorderSummary],
+  );
+  const recorderByCamera = useMemo(() => {
+    const map = new Map();
+    for (const row of recorderRows) {
+      for (const cameraId of row.camera_ids || []) {
+        map.set(String(cameraId), String(row.id));
+      }
+    }
+    return map;
+  }, [recorderSummary]);
+  const recorderIssues = recorderRows.filter((row) =>
+    ["offline", "attention"].includes(String(row.state || "").toLowerCase()),
+  );
+  const recorderHealthy = recorderRows.filter(
+    (row) => String(row.state || "").toLowerCase() === "healthy",
+  ).length;
 
   const loadShot = useCallback(async (cameraId) => {
     if (!cameraId) return false;
@@ -380,18 +418,47 @@ export default function CustomerCameraView() {
     return map;
   }, [restaurantConfig]);
 
-  // Latest camera event per camera, from the site's most recent camera events. Events are
-  // matched by channel because that is the camera identity both lists share.
-  const latestEventByChannel = useMemo(() => {
+  // Latest camera event per camera. Camera UUID is canonical; recorder+channel
+  // is only a compatibility fallback for older cached context rows.
+  const latestEventByCamera = useMemo(() => {
     const map = new Map();
     for (const e of ctx?.recent_events || []) {
-      const key = String(e.channel ?? "");
-      if (key && !map.has(key)) map.set(key, e);
+      const cameraKey = e.camera_id ? "camera:" + String(e.camera_id) : "";
+      const recorderKey = e.recorder_id && e.channel != null
+        ? "recorder:" + String(e.recorder_id) + ":" + String(e.channel)
+        : "";
+      if (cameraKey && !map.has(cameraKey)) map.set(cameraKey, e);
+      if (recorderKey && !map.has(recorderKey)) map.set(recorderKey, e);
     }
     return map;
   }, [ctx]);
 
   const cameraGroups = useMemo(() => {
+    if (multiRecorder) {
+      const groups = recorderRows.map((row) => {
+        const view = recorderView(row);
+        return {
+          key: "recorder-" + row.id,
+          label: row.name,
+          description: view.label,
+          recorder: row,
+          cameras: cameras.filter((camera) =>
+            String(camera.recorder_id || recorderByCamera.get(String(camera.id)) || "") === String(row.id)
+          ),
+        };
+      }).filter((group) => group.cameras.length);
+      const assigned = new Set(groups.flatMap((group) => group.cameras.map((camera) => String(camera.id))));
+      const unassigned = cameras.filter((camera) => !assigned.has(String(camera.id)));
+      if (unassigned.length) {
+        groups.push({
+          key: "recorder-unverified",
+          label: "Recorder not verified",
+          description: "WatchLog has not verified which recorder these cameras belong to.",
+          cameras: unassigned,
+        });
+      }
+      return groups;
+    }
     if (!restaurantConfig) {
       return [{ key: "all", label: "Monitored cameras", description: "", cameras }];
     }
@@ -409,7 +476,7 @@ export default function CustomerCameraView() {
       target.cameras.push(camera);
     }
     return groups.filter((g) => g.cameras.length);
-  }, [cameras, restaurantConfig, roleByCamera]);
+  }, [cameras, restaurantConfig, roleByCamera, multiRecorder, recorderSummary]);
 
   const healthHref = withSite("/site-health/", siteId);
   const names = (list) =>
@@ -423,6 +490,17 @@ export default function CustomerCameraView() {
       lead = { tone: "unknown", title: "This site has not connected yet", body: "Camera states appear once the site connection is online.", action: <a className="ow-btn" href={withSite("/setup/", siteId)}>Continue setup</a> };
     } else if (!connected) {
       lead = { tone: "bad", title: "Site connection lost · camera states may be out of date", body: "Recent views and events may be missing until the site reconnects.", action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+    } else if (recorderIssues.length) {
+      const affected = new Set(recorderIssues.flatMap((row) => (row.camera_ids || []).map(String))).size;
+      const unavailable = recorderIssues.filter((row) => String(row.state || "").toLowerCase() === "offline").length;
+      lead = {
+        tone: unavailable ? "bad" : "warn",
+        title: `${recorderIssues.length} recorder${recorderIssues.length === 1 ? " needs" : "s need"} attention`,
+        body: affected
+          ? `${affected} camera${affected === 1 ? " is" : "s are"} affected. Open System Health for the recorder-level cause.`
+          : "Open System Health for the recorder-level cause.",
+        action: <a className="ow-btn" href={healthHref}>Check monitoring</a>,
+      };
     } else if (offline.length) {
       lead = { tone: "bad", title: `${offline.length} camera${offline.length === 1 ? " is" : "s are"} offline · evidence may be missing`, body: names(offline), action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
     } else if (attention.length || faults.length) {
@@ -447,6 +525,12 @@ export default function CustomerCameraView() {
         </div>
       </RailSection>
       <RailSection label="Cameras">
+        {recorderRows.length ? <Stat
+          label={multiRecorder ? "Recorders available" : "Recorder"}
+          value={multiRecorder
+            ? `${recorderHealthy} of ${recorderRows.length}`
+            : <Status tone={recorderView(recorderRows[0]).tone}>{recorderView(recorderRows[0]).label}</Status>}
+        /> : null}
         <Stat label="Monitored" value={String(cameras.length)} />
         <Stat label="Confirmed healthy" value={cameras.length ? `${healthy} of ${cameras.length}` : null} />
         <Stat label="Needs attention" value={String(needsAttention)} />
@@ -466,6 +550,7 @@ export default function CustomerCameraView() {
 
   const summary = ctx && cameras.length ? (
     <Summary items={[
+      ...(multiRecorder ? [{ value: `${recorderHealthy}/${recorderRows.length}`, label: "Recorders available", muted: recorderHealthy !== recorderRows.length }] : []),
       { value: `${healthy}/${cameras.length}`, label: "Cameras healthy" },
       { value: String(needsAttention), label: "Need attention" },
       { value: coverage === null ? "Not verified" : coverage + "%", label: "Coverage today", muted: coverage === null, ledger: coverage === null ? null : coverage / 100 },
@@ -478,7 +563,9 @@ export default function CustomerCameraView() {
     const recordingState = recordingView(c.recording_state);
     const role = roleByCamera.get(String(c.id));
     const purpose = role ? human(role) : c.purpose ? human(c.purpose) : "Purpose not set";
-    const latest = latestEventByChannel.get(String(c.channel ?? ""));
+    const recorderId = String(c.recorder_id || recorderByCamera.get(String(c.id)) || "");
+    const latest = latestEventByCamera.get("camera:" + String(c.id))
+      || (recorderId ? latestEventByCamera.get("recorder:" + recorderId + ":" + String(c.channel ?? "")) : null);
     const evidenceHref = latest?.event_id
       ? withSite("/incidents/evidence/?event=" + encodeURIComponent(latest.event_id), siteId)
       : withSite("/incidents/evidence/", siteId);

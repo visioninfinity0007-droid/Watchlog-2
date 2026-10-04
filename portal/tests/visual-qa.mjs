@@ -627,6 +627,42 @@ const fullyVerifiedOverrides = {
 const fullyVerifiedRoutes = [
   { slug: "health-fully-verified", path: `/site-health/?site=${SITE_ID}`, ready: "No unverified period today" },
 ];
+
+// Multi-recorder visual truth fixture: two physical recorders both expose Channel 1.
+// Recorder B is unavailable, so the UI should show one recorder root cause affecting its
+// cameras while Recorder A remains available. Recent events intentionally share Channel 1
+// and must stay attached to their canonical camera UUIDs.
+const multiRecorderOverrides = {
+  wl_ai_context: {
+    ...context,
+    facts_version: "watchlog-ai-context-v6",
+    cameras: [
+      { id: "c1", recorder_id: "rec-a", channel: 1, name: "Main entrance", monitor: true, health_state: "operational", recording_state: "recording", purpose: "entrance" },
+      { id: "c2", recorder_id: "rec-a", channel: 2, name: "Service area", monitor: true, health_state: "operational", recording_state: "recording", purpose: "queue" },
+      { id: "c3", recorder_id: "rec-b", channel: 1, name: "Rear access", monitor: true, health_state: "offline", recording_state: "unknown", purpose: "rear_access" },
+      { id: "c4", recorder_id: "rec-b", channel: 2, name: "Storage corridor", monitor: true, health_state: "unknown", recording_state: "unknown", purpose: "storage" },
+    ],
+    faults: [
+      { id: "recorder-fault", camera: "Rear access", reason: "nvr_unreachable", severity: "warning" },
+    ],
+    recent_events: [
+      { event_id: "event-rec-a-ch1", camera_id: "c1", recorder_id: "rec-a", channel: 1, camera: "Main entrance", event_type: "person", device_ts: "2026-10-01T07:55:00Z", recovered: false },
+      { event_id: "event-rec-b-ch1", camera_id: "c3", recorder_id: "rec-b", channel: 1, camera: "Rear access", event_type: "vehicle", device_ts: "2026-10-01T07:50:00Z", recovered: false },
+    ],
+  },
+  wl_my_site_recorders: {
+    enabled: true,
+    site_id: SITE_ID,
+    recorders: [
+      { id: "rec-a", name: "Main building recorder", state: "healthy", issue: null, checked_at: "2026-10-01T07:58:00Z", camera_count: 2, camera_ids: ["c1","c2"] },
+      { id: "rec-b", name: "Loading area recorder", state: "offline", issue: "connection", checked_at: "2026-10-01T07:57:00Z", camera_count: 2, camera_ids: ["c3","c4"] },
+    ],
+  },
+};
+const multiRecorderRoutes = [
+  { slug: "health-multi-recorder", path: `/site-health/?site=${SITE_ID}`, ready: "Loading area recorder" },
+  { slug: "cameras-multi-recorder", path: `/control-room/?site=${SITE_ID}`, ready: "Main building recorder" },
+];
 // Phase 28: each business site type renders its own operating story from the same governed day.
 const siteTypeRoutes = (type, home, dayNoun, week = "A period comparison is not available for this site yet.") => [
   { slug: `home-${type}`, path: `/home/?site=${SITE_ID}`, ready: home },
@@ -646,6 +682,7 @@ const scenarios = [
   { name: "retail", overrides: retailOverrides, routes: retailRoutes },
   { name: "restaurant", overrides: restaurantOverrides, routes: restaurantRoutes },
   { name: "coverage-complete", overrides: fullyVerifiedOverrides, routes: fullyVerifiedRoutes },
+  { name: "multi-recorder", overrides: multiRecorderOverrides, routes: multiRecorderRoutes },
 ];
 
 const viewports = [

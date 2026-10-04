@@ -218,6 +218,8 @@ jobs:
           node-version: '22'
       - name: Site-type intelligence contract
         run: python prototype/tests/test_site_type_intelligence_contract.py
+      - name: Multi-recorder owner portal contract
+        run: python prototype/tests/test_multi_recorder_portal_contract.py
 
   setup-ui-build:
     runs-on: windows-latest
