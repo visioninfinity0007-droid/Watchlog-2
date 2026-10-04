@@ -19,6 +19,7 @@ AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))
 
 import recovery_ai  # noqa: E402
+from drivers.base import DriverError  # noqa: E402
 
 
 class FakeDet:
@@ -299,6 +300,81 @@ class MediaInspect(unittest.TestCase):
         frame, diag = recovery_ai.inspect_and_decode(drv, "1", SEGS[0]["start"])
         self.assertIsNone(frame)
         self.assertFalse(diag["decoded"])
+
+
+
+class _WrappedClipDriver:
+    """Mirrors hikvision_archive/dahua_archive install(): get_recorded_segment IS get_clip."""
+    def __init__(self, outcome):
+        self.outcome, self.calls = outcome, 0
+
+    def get_clip(self, channel, start, end):
+        self.calls += 1
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+    def get_recorded_segment(self, channel, start, end):
+        return {"status": "supported", "bytes": self.get_clip(channel, start, end)}
+
+
+class SingleClipAttempt(unittest.TestCase):
+    """A failed recorded-clip download is not repeated through get_clip for the same sample."""
+    TS = SEGS[0]["start"]
+
+    def test_recovered_frame_does_not_repeat_a_failed_download(self):
+        for outcome in (None, DriverError("archive download timed out")):
+            drv = _WrappedClipDriver(outcome)
+            self.assertIsNone(recovery_ai.recovered_frame(drv, "1", self.TS, decoder=lambda b: b"J"))
+            self.assertEqual(drv.calls, 1, f"get_clip ran {drv.calls}x for {outcome!r}")
+
+    def test_inspect_and_decode_does_not_repeat_a_failed_download(self):
+        for outcome in (None, DriverError("archive download timed out")):
+            drv = _WrappedClipDriver(outcome)
+            frame, diag = recovery_ai.inspect_and_decode(drv, "1", self.TS, decoder=lambda b: b"J")
+            self.assertIsNone(frame)
+            self.assertFalse(diag["decoded"])
+            self.assertEqual(drv.calls, 1, f"get_clip ran {drv.calls}x for {outcome!r}")
+
+    def test_an_unsupported_segment_getter_still_falls_back_to_get_clip(self):
+        class ClipOnly:
+            calls = 0
+
+            def get_recorded_segment(self, channel, start, end):
+                return {"status": "unsupported", "bytes": None}
+
+            def get_clip(self, channel, start, end):
+                self.calls += 1
+                return b"clip"
+
+        drv = ClipOnly()
+        self.assertEqual(recovery_ai.recovered_frame(drv, "1", self.TS, decoder=lambda b: b"J"), b"J")
+        self.assertEqual(drv.calls, 1)
+
+    def test_vendor_archive_wrappers_download_once_per_failing_sample(self):
+        import dahua_archive
+        import hikvision_archive
+        from drivers.dahua import DahuaDriver
+        from drivers.hikvision import HikvisionDriver
+
+        for module, cls in ((hikvision_archive, HikvisionDriver), (dahua_archive, DahuaDriver)):
+            calls = []
+            original = module.get_clip
+
+            def counting(driver, channel, start, end):
+                calls.append(channel)
+                return None
+
+            module.get_clip = counting
+            try:
+                module.install()
+                drv = cls("http://192.0.2.10", "local-user", "local-password", timeout=2)
+                recovery_ai.recovered_frame(drv, "1", self.TS, decoder=lambda b: b"J")
+                recovery_ai.inspect_and_decode(drv, "1", self.TS, decoder=lambda b: b"J")
+            finally:
+                module.get_clip = original
+                module.install()
+            self.assertEqual(len(calls), 2, f"{module.__name__}: {len(calls)} downloads for 2 samples")
 
 
 if __name__ == "__main__":

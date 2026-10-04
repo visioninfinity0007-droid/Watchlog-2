@@ -192,6 +192,32 @@ def decoder_selftest() -> dict:
                 pass
 
 
+def _recorded_clip(driver, channel, start, end):
+    """One bounded recorded clip for [start, end), downloaded at most once.
+
+    On the vendor archive paths get_recorded_segment IS get_clip (a full search plus download
+    with its own time budget), so get_clip is only tried when there is no segment getter or it
+    says segments are unsupported. A download that failed or came back empty is not repeated."""
+    seg_getter = getattr(driver, "get_recorded_segment", None)
+    if callable(seg_getter):
+        try:
+            res = seg_getter(channel, start, end)
+        except Exception:  # noqa: BLE001 — the download itself failed; do not run it again
+            return None
+        if isinstance(res, dict):
+            if res.get("status") == SUPPORTED:
+                return res.get("bytes") or None
+        elif res is not None:
+            return res or None
+    clip_getter = getattr(driver, "get_clip", None)
+    if callable(clip_getter):
+        try:
+            return clip_getter(channel, start, end)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 def recovered_frame(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_FRAME_CLIP_SECONDS):
     """Obtain a representative historical frame (JPEG) for ``channel`` at footage time ``ts``.
 
@@ -213,24 +239,7 @@ def recovered_frame(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_F
         except Exception:  # noqa: BLE001 — fall through to clip decode
             pass
 
-    clip = None
-    seg_getter = getattr(driver, "get_recorded_segment", None)
-    if callable(seg_getter):
-        try:
-            res = seg_getter(channel, start, end) or {}
-            if isinstance(res, dict):
-                clip = res.get("bytes") if res.get("status") == SUPPORTED else None
-            else:
-                clip = res
-        except Exception:  # noqa: BLE001
-            clip = None
-    if not clip:
-        clip_getter = getattr(driver, "get_clip", None)
-        if callable(clip_getter):
-            try:
-                clip = clip_getter(channel, start, end)
-            except Exception:  # noqa: BLE001
-                clip = None
+    clip = _recorded_clip(driver, channel, start, end)
     return decode_jpeg_frame(clip, decoder=decoder) if clip else None
 
 
@@ -269,24 +278,7 @@ def inspect_and_decode(driver, channel, ts, *, decoder=None, clip_seconds=DEFAUL
         except Exception:  # noqa: BLE001
             pass
 
-    clip = None
-    seg = getattr(driver, "get_recorded_segment", None)
-    if callable(seg):
-        try:
-            res = seg(channel, start, end) or {}
-            if isinstance(res, dict):
-                clip = res.get("bytes") if res.get("status") == SUPPORTED else None
-            else:
-                clip = res
-        except Exception:  # noqa: BLE001
-            clip = None
-    if not clip:
-        cg = getattr(driver, "get_clip", None)
-        if callable(cg):
-            try:
-                clip = cg(channel, start, end)
-            except Exception:  # noqa: BLE001
-                clip = None
+    clip = _recorded_clip(driver, channel, start, end)
     if not clip:
         return None, diag
 
