@@ -2,7 +2,8 @@
 """Multi-recorder fresh-site continuity ownership (0146 + 0154): real Postgres.
 
 Runs after the normal full-chain apply (apply_migrations.py) and never
-re-executes a migration file. Everything is rolled back.
+re-executes a migration file. Everything is rolled back, except the rows case C
+must commit for a second session to see, which it deletes again.
 
 Sites created AFTER 0154 have no backfilled continuity owner, so the first
 recorder row a site ever gets must become its owner. Proves:
@@ -23,6 +24,12 @@ case B - a legacy row is created lazily first, then multi-recorder adoption:
   payload lists the secondary first, and an event re-sent with explicit
   recorder identity dedupes against the pre-upgrade legacy event;
 - every site still has exactly one continuity owner.
+
+case C - concurrent first contacts (separate sessions, committed rows that are
+deleted afterwards): while one session holds a lazily created legacy-default
+uncommitted, a legacy ingest, a recorder sync or a trusted camera insert in a
+second session waits on the per-site recorder-registry lock and then reuses or
+adopts that row, leaving one recorder and one continuity owner.
 """
 from __future__ import annotations
 
@@ -30,6 +37,9 @@ import json
 import os
 import re
 import sys
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,7 +156,7 @@ def run() -> int:
             def owners(site_id):
                 return [rid for rid, r in recorders(site_id).items() if r["continuity_owner"]]
 
-            def registry_lock_held(site_id):
+            def registry_lock_held(site_id, pid=None, granted=True):
                 # Two-key advisory locks show key1/key2 as unsigned classid/objid.
                 return observer.execute(
                     """select exists(
@@ -154,12 +164,12 @@ def run() -> int:
                           where l.pid=%s
                             and l.locktype='advisory'
                             and l.objsubid=2
-                            and l.granted
+                            and l.granted=%s
                             and l.classid=((hashtext('wl_site_recorder_registry')::bigint
                                             + 4294967296) %% 4294967296)::oid
                             and l.objid=((hashtext(%s::text)::bigint
                                           + 4294967296) %% 4294967296)::oid)""",
-                    (backend_pid, str(site_id)),
+                    (pid or backend_pid, granted, str(site_id)),
                 ).fetchone()[0]
 
             completed = []
@@ -429,6 +439,185 @@ def run() -> int:
             step(completed == ["A", "B", "B'"] and len(sites_seen) == 3 and bad == [],
                  "every case completed and every site with recorders has exactly one "
                  "continuity owner", str((completed, bad)))
+
+            # ----------------------------------------------------------------
+            # Case C: concurrent first contacts on a fresh site. A second
+            # session cannot see this script's uncommitted cases, so each race
+            # commits its own tenant/site/Agent and deletes them afterwards.
+            # Session 1 lazily creates legacy-default and keeps its transaction
+            # open; session 2 must wait on the recorder-registry lock taken
+            # BEFORE it counts recorders, then reuse or adopt that row. Without
+            # that lock session 2 counts no recorder, waits only inside its own
+            # recorders insert, then fails on a recorders unique index (local
+            # key, or one configured primary per site).
+            # ----------------------------------------------------------------
+            race_rows = []
+
+            def race(label, second, check):
+                with psycopg.connect(**dsn) as s1, psycopg.connect(**dsn) as s2:
+                    c1, c2 = s1.cursor(), s2.cursor()
+                    tenant_id = c1.execute(
+                        "insert into tenants(name) values (%s) returning id",
+                        (f"Fresh Race {label}",),
+                    ).fetchone()[0]
+                    site_id = c1.execute(
+                        "insert into sites(tenant_id,name) values (%s,%s) returning id",
+                        (tenant_id, f"Race {label} Site"),
+                    ).fetchone()[0]
+                    key = f"fresh-race-{label}-{uuid.uuid4().hex}"
+                    agent = c1.execute(
+                        """insert into agents(
+                             tenant_id,site_id,agent_key_hash,hostname,platform,
+                             agent_version,device_driver,last_seen_at
+                           ) values (
+                             %s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),
+                             %s,'windows','5.1.0','onvif',now()
+                           ) returning id""",
+                        (tenant_id, site_id, key, f"fresh-race-{label}"),
+                    ).fetchone()[0]
+                    s1.commit()
+                    race_rows.append((tenant_id, site_id))
+
+                    c1.execute("set local role anon")
+                    cams = c1.execute(
+                        "select wl_sync_cameras(%s,%s,%s::jsonb)",
+                        (agent, key, json.dumps([
+                            {"channel": "1", "name": "Camera 1", "is_configured": True},
+                        ])),
+                    ).fetchone()[0]
+                    c1.execute("reset role")
+                    legacy_id = str(c1.execute(
+                        "select id from recorders where site_id=%s", (site_id,),
+                    ).fetchone()[0])
+
+                    pid2 = c2.execute("select pg_backend_pid()").fetchone()[0]
+                    c2.execute("set local lock_timeout = '20s'")
+                    outcome = {}
+
+                    def worker():
+                        try:
+                            outcome["value"] = second(c2, agent, key, tenant_id, site_id)
+                        except psycopg.Error as exc:
+                            outcome["error"] = str(exc).splitlines()[0]
+
+                    t = threading.Thread(target=worker, daemon=True)
+                    t.start()
+                    waited = False
+                    deadline = time.monotonic() + 10
+                    while t.is_alive() and time.monotonic() < deadline:
+                        if registry_lock_held(site_id, pid2, granted=False):
+                            waited = True
+                            break
+                        time.sleep(0.05)
+                    s1.commit()
+                    t.join(30)
+                    if t.is_alive():
+                        s2.cancel()
+                        t.join(10)
+                    step(waited,
+                         f"C {label}: second session waits on the recorder-registry lock")
+                    if "value" not in outcome:
+                        s2.rollback()
+                        step(False, f"C {label}: second session completes after the first commits",
+                             outcome.get("error", "did not finish"))
+                        return
+                    s2.commit()
+                    rows = {
+                        str(r[0]): (r[1], r[2])
+                        for r in observer.execute(
+                            """select id,local_key,continuity_owner
+                                 from recorders where site_id=%s""",
+                            (site_id,),
+                        ).fetchall()
+                    }
+                    check(outcome["value"], legacy_id, cams, site_id, rows)
+
+            def ingest_second(c, agent, key, tenant_id, site_id):
+                c.execute("set local role anon")
+                res = c.execute(
+                    "select wl_ingest_events(%s,%s,%s::jsonb)",
+                    (agent, key, json.dumps([
+                        {"channel": "1", "event_type": "fresh_race_probe",
+                         "device_ts": ts.isoformat(), "agent_ts": ts.isoformat()},
+                    ])),
+                ).fetchone()[0]
+                c.execute("reset role")
+                return res
+
+            def ingest_check(res, legacy_id, cams, site_id, rows):
+                ev = observer.execute(
+                    """select recorder_id,camera_id from events
+                        where site_id=%s and event_type='fresh_race_probe'""",
+                    (site_id,),
+                ).fetchall()
+                step(res["inserted"] == 1
+                     and [(str(e[0]), str(e[1])) for e in ev] == [(legacy_id, str(cams["1"]))]
+                     and rows == {legacy_id: ("legacy-default", True)},
+                     "C ingest: legacy ingest reuses the waiting legacy-default and its camera",
+                     json.dumps(rows))
+
+            def sync_second(c, agent, key, tenant_id, site_id):
+                c.execute("set local role anon")
+                res = c.execute(
+                    "select wl_sync_recorders(%s,%s,%s::jsonb)",
+                    (agent, key, json.dumps([
+                        {"local_key": "rec-a", "display_name": "Recorder A",
+                         "is_primary": True, "is_configured": True},
+                    ])),
+                ).fetchone()[0]
+                c.execute("reset role")
+                return res
+
+            def sync_check(res, legacy_id, cams, site_id, rows):
+                step(str(res["rec-a"]) == legacy_id
+                     and rows == {legacy_id: ("rec-a", True)},
+                     "C sync: recorder sync adopts the waiting legacy-default as the only owner",
+                     json.dumps(rows))
+
+            def camera_second(c, agent, key, tenant_id, site_id):
+                return c.execute(
+                    """insert into cameras(tenant_id,site_id,channel,physical_channel,name,
+                                           is_configured,is_canonical)
+                       values (%s,%s,'9','9','Camera 9',true,true) returning recorder_id""",
+                    (tenant_id, site_id),
+                ).fetchone()[0]
+
+            def camera_check(res, legacy_id, cams, site_id, rows):
+                step(str(res) == legacy_id
+                     and rows == {legacy_id: ("legacy-default", True)},
+                     "C camera: trusted camera insert reuses the waiting legacy-default",
+                     json.dumps(rows))
+
+            try:
+                race("ingest", ingest_second, ingest_check)
+                race("sync", sync_second, sync_check)
+                race("camera", camera_second, camera_check)
+            finally:
+                # Recorder-scoped rows (events, coverage, cameras, ...) reference
+                # recorders ON DELETE RESTRICT, so they go before the tenant
+                # cascade; cameras last, as events reference them too.
+                scoped = [r[0] for r in observer.execute(
+                    """select distinct conrelid::regclass::text from pg_constraint
+                        where contype='f'
+                          and confrelid='public.recorders'::regclass
+                          and conrelid<>'public.cameras'::regclass"""
+                ).fetchall()] + ["public.cameras", "public.recorders"]
+                race_sites = [site_id for _, site_id in race_rows]
+                with observer.transaction():
+                    for table in scoped:
+                        observer.execute(
+                            f"delete from {table} where site_id = any(%s)", (race_sites,)
+                        )
+                    observer.execute(
+                        "delete from tenants where id = any(%s)",
+                        ([tenant_id for tenant_id, _ in race_rows],),
+                    )
+            left = observer.execute(
+                "select count(*) from sites where id = any(%s)",
+                ([site_id for _, site_id in race_rows],),
+            ).fetchone()[0]
+            step(len(race_rows) == 3 and left == 0,
+                 "C: committed race rows are removed", str((len(race_rows), left)))
 
         finally:
             conn.rollback()
