@@ -1750,38 +1750,51 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         progress("Verifying the recorder…")
         recorder = test_recorder(address, username, password, progress=progress, hint=hint)
 
-    progress("Encrypting recorder credentials on this PC…")
-    try:
-        credential_store.save_nvr_credential(username.strip(), password)
-    except SecretError as exc:
-        raise ValueError("Windows could not securely store the recorder credential on this PC.") from exc
-    _write_proven_config(config_path, public, enrollment_code, recorder, username, site_type, profiles)
-    _seed_recorder_identity(config_path, recorder)
-
-    progress("Connecting this site to WatchLog…")
-    cloud = core.Cloud(public["supabase_url"].rstrip("/"), public["supabase_publishable_key"])
+    # The legacy singleton store (watchlog.ini, nvr_credential.dpapi and the
+    # rediscovery identity) is written before Setup can know whether an existing
+    # registry belongs to this site. Until the registry names the same recorder,
+    # any failure or refusal puts those files back as they were, so the two
+    # stores never point at different recorders.
     state_path = programdata_dir() / "agent_state.json"
-    device = SimpleNamespace(vendor=recorder["vendor"], model=recorder["model"],
-                             driver=recorder["driver"])
-    # The identity this PC had before this run decides whether an existing
-    # recorder registry still belongs here (see _stage_recorder_registry).
-    prior_identity = _load_existing_identity(state_path)
-    # Honour the supplied site code first; only reuse a local identity that still
-    # authenticates. Never skip enrollment just because a stale agent_state.json exists.
-    state = establish_identity(cloud, state_path, enrollment_code, device, progress)
-
-    # Establish the recorder registry (stable local recorder UUID + independent
-    # DPAPI credential) before the background process starts. The legacy
-    # singleton files are retained so the proven 5.0.27 path still boots.
+    legacy_store = credential_store.snapshot_secret_files([
+        config_path, credential_store.nvr_credential_path(),
+        state_path.parent / "recorder_identity.json",
+    ])
     try:
-        _stage_recorder_registry(config_path, recorder, username.strip(), password,
-                                 prior_identity, state)
-    except recorder_registry.DuplicateRecorder:
-        raise                                   # customer-safe: says which action to take
-    except Exception as exc:
-        raise ValueError(
-            "Windows could not prepare this recorder for WatchLog multi-recorder storage."
-        ) from exc
+        progress("Encrypting recorder credentials on this PC…")
+        try:
+            credential_store.save_nvr_credential(username.strip(), password)
+        except SecretError as exc:
+            raise ValueError("Windows could not securely store the recorder credential on this PC.") from exc
+        _write_proven_config(config_path, public, enrollment_code, recorder, username, site_type, profiles)
+        _seed_recorder_identity(config_path, recorder)
+
+        progress("Connecting this site to WatchLog…")
+        cloud = core.Cloud(public["supabase_url"].rstrip("/"), public["supabase_publishable_key"])
+        device = SimpleNamespace(vendor=recorder["vendor"], model=recorder["model"],
+                                 driver=recorder["driver"])
+        # The identity this PC had before this run decides whether an existing
+        # recorder registry still belongs here (see _stage_recorder_registry).
+        prior_identity = _load_existing_identity(state_path)
+        # Honour the supplied site code first; only reuse a local identity that still
+        # authenticates. Never skip enrollment just because a stale agent_state.json exists.
+        state = establish_identity(cloud, state_path, enrollment_code, device, progress)
+
+        # Establish the recorder registry (stable local recorder UUID + independent
+        # DPAPI credential) before the background process starts. The legacy
+        # singleton files are retained so the proven 5.0.27 path still boots.
+        try:
+            _stage_recorder_registry(config_path, recorder, username.strip(), password,
+                                     prior_identity, state)
+        except recorder_registry.DuplicateRecorder:
+            raise                               # customer-safe: says which action to take
+        except Exception as exc:
+            raise ValueError(
+                "Windows could not prepare this recorder for WatchLog multi-recorder storage."
+            ) from exc
+    except BaseException:
+        credential_store.restore_secret_files(legacy_store)
+        raise
 
     progress("Adding cameras to this WatchLog site…")
     # Honor the operator's Monitor/Ignore + name choices so monitored cameras are configured

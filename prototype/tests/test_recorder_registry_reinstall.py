@@ -195,6 +195,19 @@ def test_same_site_rerun_keeps_identity_and_does_not_quarantine(monkeypatch):
         assert _quarantined(env.root, "recorders.json") == []
 
 
+def _legacy_store(env) -> dict:
+    """The legacy singleton files Setup writes before it reaches the registry."""
+    paths = [env.ini, cs.nvr_credential_path(), env.root / "recorder_identity.json"]
+    return {path.name: (path.read_bytes() if path.exists() else None) for path in paths}
+
+
+def _seed_identity_for_real(monkeypatch, env):
+    ident = env.root / "recorder_identity.json"
+    ident.write_text('{"serial": "SER-OLD"}', encoding="utf-8")
+    monkeypatch.setattr(sb, "_seed_recorder_identity", lambda _config, recorder: ident.write_text(
+        json.dumps({"serial": recorder.get("serial")}), encoding="utf-8"))
+
+
 def test_rerun_pointing_at_another_configured_recorder_is_refused_clearly(monkeypatch):
     with _Env() as env:
         env.ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\n", encoding="utf-8")
@@ -205,6 +218,8 @@ def test_rerun_pointing_at_another_configured_recorder_is_refused_clearly(monkey
                         username="b", password="b-pw")
         before = rr.load_registry()
         _patch_setup(monkeypatch, prior_state=SITE_ONE, new_state=SITE_ONE)
+        _seed_identity_for_real(monkeypatch, env)
+        legacy_before = _legacy_store(env)
 
         try:
             _finalize(env)                       # proves 192.0.2.50, which is recorder B
@@ -212,6 +227,60 @@ def test_rerun_pointing_at_another_configured_recorder_is_refused_clearly(monkey
         except rr.DuplicateRecorder as exc:
             assert "already configured" in str(exc)
         assert rr.load_registry() == before
+        # The legacy store still names the original recorder too: watchlog.ini,
+        # nvr_credential.dpapi and the rediscovery identity are put back.
+        assert _legacy_store(env) == legacy_before
+        assert cs.load_recorder_credential(old["local_id"])["username"] == "old"
+
+
+def test_failed_rerun_leaves_both_stores_on_the_same_recorder(monkeypatch):
+    """Enrollment fails after Setup rewrote the legacy store but before it reached
+    the registry: neither store may be left pointing at a different recorder."""
+    with _Env() as env:
+        env.ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\n", encoding="utf-8")
+        cs.save_nvr_credential("old", "old-pw")
+        old = rr.migrate_legacy_singleton(env.ini)
+        rr.apply_cloud_mapping({old["local_id"]: OLD_CLOUD})
+        before = rr.load_registry()
+        _patch_setup(monkeypatch, prior_state=SITE_ONE, new_state=SITE_ONE)
+        _seed_identity_for_real(monkeypatch, env)
+
+        def enrollment_down(*_a, **_k):
+            raise ValueError("WatchLog could not be reached. Check this PC's internet connection.")
+
+        monkeypatch.setattr(sb, "establish_identity", enrollment_down)
+        legacy_before = _legacy_store(env)
+
+        try:
+            _finalize(env)
+            assert False, "a failed enrollment must be reported"
+        except ValueError as exc:
+            assert "could not be reached" in str(exc)
+        assert _legacy_store(env) == legacy_before
+        assert rr.load_registry() == before
+
+
+def test_failed_registry_step_restores_the_legacy_store(monkeypatch):
+    with _Env() as env:
+        env.ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\n", encoding="utf-8")
+        cs.save_nvr_credential("old", "old-pw")
+        old = rr.migrate_legacy_singleton(env.ini)
+        rr.apply_cloud_mapping({old["local_id"]: OLD_CLOUD})
+        _patch_setup(monkeypatch, prior_state=SITE_ONE, new_state=SITE_ONE)
+        _seed_identity_for_real(monkeypatch, env)
+
+        def disk_full(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(rr, "update_recorder_connection", disk_full)
+        legacy_before = _legacy_store(env)
+
+        try:
+            _finalize(env)
+            assert False, "a failed registry update must be reported"
+        except ValueError as exc:
+            assert "could not prepare this recorder" in str(exc)
+        assert _legacy_store(env) == legacy_before
 
 
 def test_two_quarantines_in_the_same_second_both_survive(monkeypatch):
