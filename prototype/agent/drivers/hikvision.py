@@ -512,7 +512,7 @@ class HikvisionDriver(NvrDriver):
             tag = node.tag.lower()
             text = (node.text or "").strip().lower()
             if "targettype" in tag or tag in ("objecttype", "targetclass"):
-                for raw_target in re.split(r"[,;|\\s]+", text):
+                for raw_target in re.split(r"[,;|\s]+", text):
                     if raw_target in ("human", "person", "pedestrian"):
                         targets.append("human")
                     elif raw_target in ("vehicle", "car", "motorvehicle"):
