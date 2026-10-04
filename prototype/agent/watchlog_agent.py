@@ -542,14 +542,117 @@ def open_driver(cfg: Config):
         raise primary
 
 
+# ONVIF profile names of the form MediaProfile_Channel<N> carry the recorder's OWN channel number
+# for that video source (the label 0117 already uses for physical_channel). The ONVIF camera
+# channel itself is only the order in which GetProfiles listed the sources.
+_ONVIF_CHANNEL_LABEL = r"mediaprofile[_ -]*channel(\d+)"
+
+_ARCHIVE_CHANNEL_UNVERIFIED = ("WatchLog could not confirm which recorder input this camera uses, "
+                               "so recorded footage was not retrieved.")
+
+
+def _onvif_channel_labels(onvif) -> dict:
+    """{ONVIF camera channel: recorder channel labels on its profiles}. Read-only.
+
+    The camera channels and their SourceTokens come from the driver's own list_channels(), so
+    they are exactly the ids live events and the cloud use. A profile with no label adds "".
+    """
+    import re
+    channels = [str(c.channel) for c in onvif.list_channels()]
+    source_to_channel = dict(getattr(onvif, "_source_to_channel", None) or {})
+    media = getattr(onvif, "media_service", None)
+    if not media or not source_to_channel:
+        return {}
+    labels = {channel: set() for channel in channels}
+    root = onvif._call(media, "<trt:GetProfiles/>")
+    for prof in root.findall(".//Profiles"):
+        channel = source_to_channel.get(
+            (prof.findtext(".//VideoSourceConfiguration/SourceToken") or "").strip())
+        if channel not in labels:
+            continue
+        match = re.search(_ONVIF_CHANNEL_LABEL, prof.findtext("Name") or "", re.I)
+        labels[channel].add(str(int(match.group(1))) if match else "")
+    return labels
+
+
+def _verified_native_channel_map(onvif, native) -> dict:
+    """ONVIF camera channel -> native recorder channel, only where the recorder itself says so.
+
+    A camera is mapped only when every profile of its video source carries the same
+    MediaProfile_Channel<N> label, no other camera carries N, and the native transport lists
+    channel N. A recorder that labels a channel 0 does not number channels the way the native
+    side does, so nothing is mapped. Everything else stays unmapped: refused, never guessed.
+    """
+    labels = _onvif_channel_labels(onvif)
+    if any("0" in found for found in labels.values()):
+        return {}
+    single = {channel: next(iter(found)) for channel, found in labels.items()
+              if len(found) == 1 and "" not in found}
+    claimed = list(single.values())
+    native_ids = {}
+    for row in native.list_channels():
+        raw = str(getattr(row, "channel", "") or "")
+        if raw.isdigit():
+            native_ids[str(int(raw))] = raw
+    return {channel: native_ids[label] for channel, label in single.items()
+            if claimed.count(label) == 1 and label in native_ids}
+
+
+class _MappedArchiveDriver:
+    """Vendor-native archive reader addressed by the ONVIF camera channels WatchLog uses.
+
+    Exposes only the read-only archive interface. Every call translates the camera channel
+    through a verified ONVIF-to-native map; a camera without one is refused, never guessed.
+    """
+
+    def __init__(self, native, channel_map: dict):
+        self._native = native
+        self.name = native.name
+        self.channel_map = dict(channel_map)
+
+    def native_channel(self, channel) -> str:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            raise DriverError(_ARCHIVE_CHANNEL_UNVERIFIED)
+        return native
+
+    def historical_capability(self) -> dict:
+        return self._native.historical_capability()
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit: int = 500) -> dict:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            return {"status": "unknown", "events": [], "next_cursor": None}
+        page = self._native.enumerate_historical_events(native, start, end,
+                                                        cursor=cursor, limit=limit) or {}
+        events = [dict(ev, channel=str(channel)) if isinstance(ev, dict) and "channel" in ev else ev
+                  for ev in (page.get("events") or [])]
+        return {**page, "events": events}
+
+    def get_clip(self, channel, start, end):
+        return self._native.get_clip(self.native_channel(channel), start, end)
+
+    def get_recorded_segment(self, channel, start, end) -> dict:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            return {"status": "unknown", "bytes": None}
+        return self._native.get_recorded_segment(native, start, end)
+
+    def close(self) -> None:
+        self._native.close()
+
+
 def open_archive_driver(cfg: Config):
     """Open the best read-only recorder transport for archive/evidence work.
 
     Live monitoring may legitimately use ONVIF when that was the proven enrollment
     path. Recorded-media APIs are vendor-specific, however. When an ONVIF probe
     identifies the recorder vendor, make one bounded attempt to open the matching
-    native HTTP driver with the SAME on-site credential/address. Failure falls back
-    to the already-open ONVIF driver and therefore remains honestly unsupported.
+    native HTTP driver with the SAME on-site credential/address. The ONVIF camera
+    channel is only an enumeration ordinal, so the native reader is returned only
+    for cameras with a verified ONVIF-to-native channel map. Failure, or no
+    verified camera, falls back to the already-open ONVIF driver and therefore
+    remains honestly unsupported.
     """
     driver, info = open_driver(cfg)
     try:
@@ -576,9 +679,7 @@ def open_archive_driver(cfg: Config):
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        driver.close()
-        log(f"archive: using vendor-native {native_name} transport for recorded media")
-        return candidate, native_info
+        channel_map = _verified_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
         if candidate is not None:
             try:
@@ -589,10 +690,26 @@ def open_archive_driver(cfg: Config):
             f"keeping {driver.name} ({type(error).__name__})")
         return driver, info
 
+    if not channel_map:
+        try:
+            candidate.close()
+        except Exception:
+            pass
+        log(f"archive: no camera has a verified ONVIF-to-{native_name} channel map; "
+            f"keeping {driver.name} (recorded media is not guessed)")
+        return driver, info
+    driver.close()
+    log(f"archive: using vendor-native {native_name} transport for recorded media "
+        f"({len(channel_map)} camera channel(s) verified)")
+    return _MappedArchiveDriver(candidate, channel_map), native_info
+
 
 def prove_recorder_archive(driver, channel) -> dict:
     """Run the matching vendor archive proof without guessing capabilities."""
     name = str(getattr(driver, "name", "") or "")
+    mapped = driver if isinstance(driver, _MappedArchiveDriver) else None
+    if mapped is not None and str(channel) not in mapped.channel_map:
+        return {"status": "unknown", "channel": str(channel), "detail": _ARCHIVE_CHANNEL_UNVERIFIED}
     try:
         if name == "dahua-cgi":
             import dahua_archive
@@ -601,6 +718,12 @@ def prove_recorder_archive(driver, channel) -> dict:
         if name == "hikvision-isapi":
             import hikvision_archive
             hikvision_archive.install()
+            if mapped is not None:
+                # The Hikvision proof calls the ISAPI module directly, so give it the native
+                # driver and channel and keep the camera channel in the result.
+                proof = hikvision_archive.prove_recorder_archive(mapped._native,
+                                                                 mapped.native_channel(channel))
+                return {**proof, "channel": str(channel)}
             return hikvision_archive.prove_recorder_archive(driver, channel)
     except Exception as error:  # noqa: BLE001
         return {"status": "unknown", "detail": f"archive proof failed: {type(error).__name__}"}
