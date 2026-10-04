@@ -150,6 +150,9 @@ create index if not exists cameras_site_recorder_idx
 -- If the site is still unambiguously single-recorder, assign (or lazily create)
 -- its default recorder before NOT NULL/FK checks. Once multiple recorder rows
 -- exist, recorder_id becomes mandatory and the insert fails closed.
+-- Every recorder creator takes the per-site recorder-registry lock before it
+-- reads the site's recorders, so concurrent first contacts cannot both create
+-- a "first" recorder. 0154 makes a site's first recorder its continuity owner.
 create or replace function public.wl_camera_assign_default_recorder()
 returns trigger
 language plpgsql
@@ -171,6 +174,10 @@ begin
   if v_site.id is null then
     raise exception 'camera site/tenant lineage invalid' using errcode='42501';
   end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext('wl_site_recorder_registry'), hashtext(new.site_id::text)
+  );
 
   select count(*) into v_count
     from public.recorders
@@ -262,6 +269,10 @@ begin
   if v_site.id is null then
     raise exception 'agent site not found' using errcode='42501';
   end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext('wl_site_recorder_registry'), hashtext(v_agent.site_id::text)
+  );
 
   select count(*) into v_count
     from public.recorders

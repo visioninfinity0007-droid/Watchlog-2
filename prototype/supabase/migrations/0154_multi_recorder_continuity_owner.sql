@@ -14,6 +14,8 @@
 --   * is_primary MAY move between configured recorders;
 --   * continuity_owner is immutable after rollout/adoption;
 --   * exactly one recorder per site owns continuity whenever the site has recorders;
+--   * a site's first configured recorder becomes its owner (backfill below for
+--     existing sites; insert trigger for sites whose first recorder appears later);
 --   * legacy event dedupe uses continuity_owner, never is_primary;
 --   * Agent recorder sync may update is_primary/is_configured but never continuity_owner.
 
@@ -59,6 +61,49 @@ alter table public.recorders
   add constraint recorders_continuity_owner_configured_check
   check (not continuity_owner or is_configured);
 
+-- The backfill above only covers sites that already had recorders. A site whose
+-- first recorder appears later (a new enrollment, a lazy legacy-default from a
+-- 5.0.x sync/ingest or camera insert, or a first wl_sync_recorders) has no owner
+-- to inherit. The first configured recorder created for such a site becomes its
+-- owner, so a lazily created legacy-default keeps the legacy site:channel
+-- dedupe namespace. Creators hold the same per-site recorder-registry lock, so
+-- concurrent first contacts cannot both see an owner-less site.
+create or replace function public.wl_recorder_assign_continuity_owner()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+begin
+  if new.continuity_owner or not new.is_configured then
+    return new;
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext('wl_site_recorder_registry'), hashtext(new.site_id::text)
+  );
+
+  if not exists (
+    select 1 from public.recorders r
+     where r.site_id=new.site_id
+       and r.continuity_owner
+  ) then
+    new.continuity_owner := true;
+  end if;
+
+  return new;
+end
+$function$;
+
+revoke all on function public.wl_recorder_assign_continuity_owner()
+  from public,anon,authenticated,service_role;
+
+drop trigger if exists trg_recorder_assign_continuity_owner on public.recorders;
+create trigger trg_recorder_assign_continuity_owner
+before insert on public.recorders
+for each row
+execute function public.wl_recorder_assign_continuity_owner();
+
 -- Preserve the old event namespace ONLY for the immutable continuity owner.
 create or replace function public.wl_recorder_event_dedupe_key(
   p_site_id uuid,
@@ -97,6 +142,9 @@ revoke all on function public.wl_recorder_event_dedupe_key(
 -- exactly one CONFIGURED preferred primary. The function clears old preferred
 -- primary flags first, then applies the payload atomically inside the RPC
 -- transaction. continuity_owner is never accepted from or modified by the Agent.
+-- The payload primary is applied first, so on a site without recorders it is the
+-- first recorder created (and so the continuity owner), and on a legacy singleton
+-- site it is the item that adopts legacy-default, whatever the payload order.
 create or replace function public.wl_sync_recorders(
   p_agent_id uuid,
   p_agent_key text,
@@ -166,6 +214,12 @@ begin
       using errcode='22023';
   end if;
 
+  -- Serialize with the lazy legacy creators and other syncs for this site
+  -- before reading its registry.
+  perform pg_advisory_xact_lock(
+    hashtext('wl_site_recorder_registry'), hashtext(v_agent.site_id::text)
+  );
+
   select count(*) into v_existing
     from public.recorders
    where tenant_id=v_agent.tenant_id
@@ -192,7 +246,10 @@ begin
        and is_primary;
   end if;
 
-  for v_item in select value from jsonb_array_elements(p_recorders)
+  for v_item in
+    select r.value
+      from jsonb_array_elements(p_recorders) with ordinality r(value,ord)
+     order by coalesce((r.value->>'is_primary')::boolean,false) desc, r.ord
   loop
     v_local_key := btrim(coalesce(v_item->>'local_key',''));
     v_primary := coalesce((v_item->>'is_primary')::boolean,false);
@@ -255,10 +312,12 @@ begin
     end if;
 
     if v_recorder.id is null then
+      -- continuity_owner is left to trg_recorder_assign_continuity_owner: true
+      -- only when this is the site's first configured recorder.
       insert into public.recorders(
         tenant_id,site_id,local_key,display_name,
         vendor,model,driver,firmware,identity_fingerprint,
-        is_primary,is_configured,continuity_owner
+        is_primary,is_configured
       ) values (
         v_agent.tenant_id,v_agent.site_id,v_local_key,
         coalesce(nullif(btrim(v_item->>'display_name'),''),'Recorder'),
@@ -267,7 +326,7 @@ begin
         nullif(btrim(v_item->>'driver'),''),
         nullif(btrim(v_item->>'firmware'),''),
         nullif(btrim(v_item->>'identity_fingerprint'),''),
-        v_primary,v_configured,false
+        v_primary,v_configured
       )
       returning * into v_recorder;
     else
