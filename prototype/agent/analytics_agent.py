@@ -67,6 +67,25 @@ def runtime_capabilities(cfg) -> list[str]:
     return caps
 
 
+# Recorder liveness window, the same one the recovery worker uses for recorder_is_live.
+RECORDER_LIVE_SECONDS = 150.0
+
+
+def _recorder_stream_live(holder: dict, clock: float) -> bool:
+    """True while the recorder's event stream showed activity in the last 150 s.
+
+    Hikvision and Dahua drivers stamp last_activity_monotonic only after the event stream
+    answers 2xx and on every frame, keep-alives included, and the collector carries the
+    last activity into recorder_live_at when it drops a driver. A recorder whose probe
+    answers while its event stream is down is therefore NOT live: recorder_seen_at (the
+    Repair/Upgrade proof) does not advance. Drivers that cannot report their stream keep
+    the collector's transport stamp."""
+    driver = holder.get("live_driver")
+    activity = float(getattr(driver, "last_activity_monotonic", 0.0) or 0.0)
+    latest = max(activity, float(holder.get("recorder_live_at") or 0.0))
+    return bool(latest and clock - latest < RECORDER_LIVE_SECONDS)
+
+
 class Config(core.Config):
     def __init__(self, *args, **kwargs):
         # Preserve the core Config constructor contract. Existing-site staged
@@ -705,9 +724,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             core.upload_once(cloud, state, spool)
         except RuntimeError as error:
             core.log(f"ERROR: upload failed: {error}")
-        recorder_seen = float(holder.get("recorder_live_at") or 0.0)
-        recorder_live = bool(recorder_seen and time.monotonic() - recorder_seen < 150.0)
-        core.heartbeat(cloud, state, device, recorder_live=recorder_live)
+        recorder_live = _recorder_stream_live(holder, time.monotonic())
+        core.heartbeat(cloud, state, device, recorder_live=recorder_live,
+                       event_stream=holder.get("event_stream"))
         core.health_cycle(cloud, state, cfg, holder)
         spool.close()
         core.vision.build = original_build
@@ -755,9 +774,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             if clock >= next_heartbeat:
                 next_heartbeat = clock + cfg.heartbeat_seconds
                 try:
-                    recorder_seen = float(holder.get("recorder_live_at") or 0.0)
-                    recorder_live = bool(recorder_seen and clock - recorder_seen < 150.0)
-                    core.heartbeat(cloud, state, device, recorder_live=recorder_live)
+                    recorder_live = _recorder_stream_live(holder, clock)
+                    core.heartbeat(cloud, state, device, recorder_live=recorder_live,
+                                   event_stream=holder.get("event_stream"))
                 except (RuntimeError, requests.RequestException) as error:
                     core.log("ERROR: heartbeat failed, will retry: "
                              + str(error).splitlines()[0][:200])

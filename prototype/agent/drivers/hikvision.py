@@ -137,6 +137,10 @@ HIKVISION_HTTP_LOCK = threading.RLock()
 class HikvisionDriver(NvrDriver):
     name = "hikvision-isapi"
     verified_against_hardware = False
+    # Liveness comes from alertStream itself: last_activity_monotonic and event_stream are
+    # set only after the stream answers 2xx and on every received chunk, keep-alive frames
+    # included. A deviceInfo probe that answers says nothing about the event stream.
+    reports_stream_activity = True
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
@@ -149,6 +153,26 @@ class HikvisionDriver(NvrDriver):
         # The recorder's stated UTC offset, for naive alert times (MNVR-024).
         self._utc_offset: timedelta | None = None
         self._utc_offset_asked: float | None = None
+        # The collector may replace event_stream with its per-recorder state dict.
+        self.last_activity_monotonic = 0.0
+        self.event_stream: dict = {"connected": False, "connected_at": None,
+                                   "last_frame_at": None, "last_error": None}
+
+    # -- event-stream liveness (MNVR-008) -------------------------------
+
+    def _stream_up(self) -> None:
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream.update(connected=True, last_error=None,
+                                 connected_at=datetime.now(timezone.utc).isoformat())
+
+    def _stream_frame(self) -> None:
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream["last_frame_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _stream_down(self, error: str | None) -> None:
+        self.event_stream["connected"] = False
+        if error:
+            self.event_stream["last_error"] = error
 
     # -- helpers --------------------------------------------------------
 
@@ -528,17 +552,24 @@ class HikvisionDriver(NvrDriver):
         try:
             r = self._send("GET", url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
+            self._stream_down(explain(e))
             raise DriverError(f"alertStream: {e}") from e
         if r.status_code >= 400:
+            r.close()
+            self._stream_down(f"HTTP {r.status_code}")
             raise DriverError(f"alertStream: HTTP {r.status_code}")
+        self._stream_up()
 
         buf = b""
+        ended = "event stream ended by the recorder"
         try:
             for chunk in r.iter_content(chunk_size=1024):
                 if stop.is_set():
+                    ended = None
                     break
                 if not chunk:
                     continue
+                self._stream_frame()          # keep-alive frames count: the stream is alive
                 self._received = (time.monotonic(), datetime.now(timezone.utc))
                 buf += chunk
                 # Documents arrive back to back; split on the closing tag.
@@ -553,8 +584,15 @@ class HikvisionDriver(NvrDriver):
                         yield ev
                 if len(buf) > 1_000_000:      # runaway guard
                     buf = b""
+        except GeneratorExit:                 # the collector stopped reading
+            ended = None
+            raise
+        except Exception as e:
+            ended = explain(e) if isinstance(e, requests.RequestException) else type(e).__name__
+            raise
         finally:
             r.close()
+            self._stream_down(ended)
 
     # -- parsing --------------------------------------------------------
 

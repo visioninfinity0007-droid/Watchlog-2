@@ -86,6 +86,10 @@ def _parse_kv(text: str) -> dict[str, str]:
 class DahuaDriver(NvrDriver):
     name = "dahua-cgi"
     verified_against_hardware = False
+    # Liveness comes from the attach stream itself: last_activity_monotonic and
+    # event_stream are set only after attach answers 2xx and on every received line,
+    # heartbeats included. A getSystemInfo probe says nothing about the event stream.
+    reports_stream_activity = True
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
@@ -95,6 +99,26 @@ class DahuaDriver(NvrDriver):
         # (monotonic, wall) clock of the block being parsed, stamped by stream_events
         # when it arrived; None outside the stream (parse time is used then).
         self._received: tuple[float, datetime] | None = None
+        # The collector may replace event_stream with its per-recorder state dict.
+        self.last_activity_monotonic = 0.0
+        self.event_stream: dict = {"connected": False, "connected_at": None,
+                                   "last_frame_at": None, "last_error": None}
+
+    # -- event-stream liveness (MNVR-008) -------------------------------
+
+    def _stream_up(self) -> None:
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream.update(connected=True, last_error=None,
+                                 connected_at=datetime.now(timezone.utc).isoformat())
+
+    def _stream_frame(self) -> None:
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream["last_frame_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _stream_down(self, error: str | None) -> None:
+        self.event_stream["connected"] = False
+        if error:
+            self.event_stream["last_error"] = error
 
     # -- helpers --------------------------------------------------------
 
@@ -540,9 +564,13 @@ class DahuaDriver(NvrDriver):
         try:
             r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
+            self._stream_down(explain(e))
             raise DriverError(f"eventManager attach: {e}") from e
         if r.status_code >= 400:
+            r.close()
+            self._stream_down(f"HTTP {r.status_code}")
             raise DriverError(f"eventManager attach: HTTP {r.status_code}")
+        self._stream_up()
 
         blocks: queue.Queue = queue.Queue()
         closed = threading.Event()
@@ -552,6 +580,7 @@ class DahuaDriver(NvrDriver):
                 for raw_line in r.iter_lines(chunk_size=512):
                     if closed.is_set():
                         return
+                    self._stream_frame()            # heartbeats count: the stream is alive
                     if not raw_line:
                         continue
                     line = raw_line.decode("utf-8", "replace").strip()
@@ -562,6 +591,7 @@ class DahuaDriver(NvrDriver):
                 blocks.put(e)
 
         threading.Thread(target=_read, name="dahua-attach", daemon=True).start()
+        ended = None
         try:
             while not stop.is_set():
                 try:
@@ -569,8 +599,11 @@ class DahuaDriver(NvrDriver):
                 except queue.Empty:
                     continue
                 if item is None:
+                    ended = "event stream ended by the recorder"
                     break
                 if isinstance(item, Exception):
+                    ended = (explain(item) if isinstance(item, requests.RequestException)
+                             else type(item).__name__)
                     raise item
                 received_mono, received_at, line = item
                 self._received = (received_mono, received_at)
@@ -581,6 +614,7 @@ class DahuaDriver(NvrDriver):
             closed.set()
             self._received = None
             r.close()
+            self._stream_down(ended)
 
     # -- parsing --------------------------------------------------------
 
