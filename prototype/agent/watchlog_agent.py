@@ -64,6 +64,7 @@ import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 
 import credential_store
+import recorder_runtime
 from wl_version import VERSION as AGENT_VERSION  # single source of truth
 
 HEARTBEAT_SECONDS = 60
@@ -659,6 +660,23 @@ def _is_auth_failure(err: Exception) -> bool:
             or "sender not authorized" in s)
 
 
+def _credential_generation_for_cfg(cfg) -> str:
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if local_id:
+        return credential_store.recorder_credential_generation(local_id)
+    return credential_store.credential_generation()
+
+
+def _reload_credential_for_cfg(cfg) -> None:
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if local_id:
+        cred = credential_store.load_recorder_credential(local_id)
+        cfg.nvr_username = cred.get("username") or ""
+        cfg.nvr_password = cred.get("password") or ""
+        return
+    cfg.load_recorder_credential()
+
+
 def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
                     last_gen: str) -> tuple[str, str]:
     """Interruptible backoff between driver reconnects. Returns (outcome, gen).
@@ -679,10 +697,10 @@ def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
         if stop.wait(min(step, total - waited)):
             return "stop", last_gen
         waited += step
-        gen = credential_store.credential_generation()
+        gen = _credential_generation_for_cfg(cfg)
         if gen != last_gen:
             log("recorder credential changed in Setup; reloading and retrying now")
-            cfg.load_recorder_credential()
+            _reload_credential_for_cfg(cfg)
             return "reload", gen
     return "timeout", last_gen
 
@@ -693,7 +711,7 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
     # seconds, and a flapping NVR must not re-pay that on every retry.
     detector = vision.build(cfg, log)
     auth_failures = 0
-    last_gen = credential_store.credential_generation()
+    last_gen = _credential_generation_for_cfg(cfg)
     while not stop.is_set():
         driver = None
         auth_error = False
@@ -716,6 +734,9 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                recorder_id = getattr(cfg, "recorder_cloud_id", None)
+                if recorder_id:
+                    ev = ev.with_recorder_id(recorder_id)
                 if holder is not None:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = now_utc()
@@ -883,16 +904,19 @@ def persist_health(holder: dict, state: dict, cfg: Config, cam: dict, assessment
         return
     try:
         device_ts = iso(datetime.now(timezone.utc))
+        recorder_id = holder.get("recorder_cloud_id") or getattr(cfg, "recorder_cloud_id", None)
         for c in cam.get("cameras", []):
             ch = c.get("channel")
             if ch is None:
                 continue
             store.observe("camera", str(ch), c.get("health", "unknown"),
-                          c.get("reason", "unknown"), c.get("source", "probe"), device_ts)
+                          c.get("reason", "unknown"), c.get("source", "probe"), device_ts,
+                          recorder_id=recorder_id)
         # checkpoint: proof local monitoring continued this cycle (no raw probe/image data)
         store.checkpoint(device_ts,
                          nvr_state=(assessment.get("nvr") or {}).get("state", "unknown"),
-                         cameras_observed=len(cam.get("cameras", [])), cycle_ok=True)
+                         cameras_observed=len(cam.get("cameras", [])), cycle_ok=True,
+                         recorder_id=recorder_id)
         store.compact()
     except Exception as e:                              # noqa: BLE001
         log(f"health persist skipped: {type(e).__name__}")
@@ -909,14 +933,17 @@ def persist_recording_storage(holder: dict, state: dict, rs: dict) -> None:
         return
     try:
         device_ts = iso(datetime.now(timezone.utc))
+        recorder_id = holder.get("recorder_cloud_id")
         for c in (rs.get("recording") or {}).get("channels", []):
             ch = c.get("channel")
             if ch is not None:
                 store.observe("camera_recording", str(ch), c.get("state", "unknown"),
-                              c.get("reason", "unknown"), "probe", device_ts)
+                              c.get("reason", "unknown"), "probe", device_ts,
+                              recorder_id=recorder_id)
         st = rs.get("storage") or {}
         store.observe("nvr_storage", str(state["agent_id"]), st.get("state", "unknown"),
-                      st.get("reason", "unknown"), "probe", device_ts)
+                      st.get("reason", "unknown"), "probe", device_ts,
+                      recorder_id=recorder_id)
     except Exception as e:                              # noqa: BLE001
         log(f"recording/storage persist skipped: {type(e).__name__}")
 
@@ -925,8 +952,11 @@ def persist_recording_storage(holder: dict, state: dict, rs: dict) -> None:
 # STRUCTURAL poison can never become valid on a resend, so it is quarantined AT ONCE (observable);
 # anything else — notably unmapped_channel, where the camera may simply not be enrolled YET — is
 # retried under a bounded policy (health_store.defer_transitions), then quarantined if it never maps.
-_PERMANENT_REJECTIONS = frozenset({"missing_id", "wrong_layer", "missing_state",
-                                   "invalid_timestamp", "invalid_sequence"})
+_PERMANENT_REJECTIONS = frozenset({
+    "missing_id", "wrong_layer", "missing_state",
+    "invalid_timestamp", "invalid_sequence",
+    "invalid_recorder_id", "missing_recorder",
+})
 
 
 _TX_DISPOSITION_KEYS = ("accepted_ids", "duplicate_ids", "rejected")
@@ -1037,6 +1067,86 @@ def reconcile_health(holder: dict, state: dict, cloud: Cloud) -> None:
         store.mark_transitions_uploaded(uploaded)
 
 
+def _retry_recorder_cloud_inventory(cloud: Cloud, state: dict, cfg: Config,
+                                    holder: dict, assessment: dict, driver) -> None:
+    """Bind camera inventory/capabilities after a recorder recovers post-preflight.
+
+    Preflight may legitimately see an unreachable recorder. Multi-recorder runtime
+    must not require an Agent restart when it later comes back. This helper retries
+    only after authenticated channel enumeration succeeds and caches the channel
+    signature so steady-state health cycles do not churn the DB.
+
+    Failure is recorder-local and best-effort; callers still report recorder health.
+    """
+    recorder_id = str(getattr(cfg, "recorder_cloud_id", "") or "").strip()
+    channels_block = assessment.get("channels") or {}
+    if not recorder_id or driver is None or not channels_block.get("enumerated"):
+        return
+
+    reported = [
+        row for row in (channels_block.get("reported") or [])
+        if isinstance(row, dict) and row.get("channel") is not None
+    ]
+    channels = sorted({str(row["channel"]) for row in reported})
+    if not channels:
+        return
+
+    signature = tuple(channels)
+    mapping = holder.get("camera_mapping")
+    if holder.get("camera_sync_signature") == signature and isinstance(mapping, dict) and mapping:
+        return
+
+    payload = [
+        {
+            "channel": ch,
+            "name": next(
+                (
+                    str(row.get("name"))
+                    for row in reported
+                    if str(row.get("channel")) == ch and row.get("name")
+                ),
+                f"Camera {ch}",
+            ),
+        }
+        for ch in channels
+    ]
+    mapping = cloud.call(
+        "wl_sync_recorder_cameras",
+        p_agent_id=state["agent_id"],
+        p_agent_key=state["agent_key"],
+        p_recorder_id=recorder_id,
+        p_cameras=payload,
+    )
+    if not isinstance(mapping, dict):
+        raise RuntimeError("recorder camera retry returned no mapping")
+    if not set(channels).issubset({str(k) for k in mapping}):
+        raise RuntimeError("recorder camera retry mapping is incomplete")
+
+    holder["camera_mapping"] = {str(k): str(v) for k, v in mapping.items()}
+    holder["camera_sync_signature"] = signature
+    holder["synced_channels"] = [
+        {
+            "channel": ch,
+            "camera_id": str(mapping[ch]),
+        }
+        for ch in channels
+        if ch in mapping
+    ]
+
+    try:
+        capabilities = driver.capabilities()
+    except Exception:
+        capabilities = None
+    if isinstance(capabilities, dict):
+        cloud.call(
+            "wl_sync_recorder_capabilities",
+            p_agent_id=state["agent_id"],
+            p_agent_key=state["agent_key"],
+            p_recorder_id=recorder_id,
+            p_capabilities=capabilities,
+        )
+
+
 def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     """One combined recorder assessment feeding BOTH reports:
       * NVR connectivity/auth + channel inventory (increment 3), and
@@ -1064,8 +1174,16 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
 
         # --- NVR connectivity/auth + inventory (increment 3) ---
         try:
-            res = cloud.call("wl_report_health", p_agent_id=state["agent_id"],
-                             p_agent_key=state["agent_key"], p_report=assessment)
+            recorder_id = getattr(cfg, "recorder_cloud_id", None)
+            health_rpc = "wl_report_recorder_health" if recorder_id else "wl_report_health"
+            health_args = dict(
+                p_agent_id=state["agent_id"],
+                p_agent_key=state["agent_key"],
+                p_report=assessment,
+            )
+            if recorder_id:
+                health_args["p_recorder_id"] = recorder_id
+            res = cloud.call(health_rpc, **health_args)
             log(f"health reported: nvr={assessment['nvr'].get('state')} "
                 f"present={res.get('present')} missing={res.get('missing')} "
                 f"disabled={res.get('disabled')} unknown={res.get('unknown')}")
@@ -1075,6 +1193,21 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
         # --- camera hybrid health (increment 4), reusing THIS assessment + driver ---
         chans = [str(c["channel"]) for c in assessment.get("channels", {}).get("reported", [])
                  if c.get("channel")]
+
+        # A recorder may have been unreachable during startup preflight. Once
+        # authenticated enumeration succeeds, bind its cameras/capabilities here
+        # so live events, health and recovery no longer require an Agent restart.
+        if recorder_id:
+            try:
+                _retry_recorder_cloud_inventory(
+                    cloud, state, cfg, holder, assessment, driver
+                )
+            except Exception as e:                      # noqa: BLE001
+                log(
+                    "recorder inventory sync deferred: "
+                    f"{type(e).__name__}: {nvr_health.redact(str(e))}"
+                )
+
         mon = holder.get("monitor")
         if mon is None and chans:
             mon = camera_health.CameraHealthMonitor(
@@ -1089,8 +1222,18 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
             # increment 5: persist transitions + checkpoint LOCALLY first — survives an outage.
             persist_health(holder, state, cfg, cam, assessment)
             try:
-                cr = cloud.call("wl_report_camera_health", p_agent_id=state["agent_id"],
-                                p_agent_key=state["agent_key"], p_report=cam)
+                camera_health_rpc = (
+                    "wl_report_recorder_camera_health"
+                    if recorder_id else "wl_report_camera_health"
+                )
+                camera_health_args = dict(
+                    p_agent_id=state["agent_id"],
+                    p_agent_key=state["agent_key"],
+                    p_report=cam,
+                )
+                if recorder_id:
+                    camera_health_args["p_recorder_id"] = recorder_id
+                cr = cloud.call(camera_health_rpc, **camera_health_args)
                 log(f"camera health: op={cr.get('operational')} deg={cr.get('degraded')} "
                     f"off={cr.get('offline')} unk={cr.get('unknown')}")
             except Exception as e:                      # noqa: BLE001
@@ -1167,7 +1310,15 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
                 busy = True
                 action = cmd.get("action")
                 is_write = action in site_control.WRITE_ACTIONS
-                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+                job_cfg = recorder_runtime.config_for_cloud_recorder(
+                    cfg, cmd.get("recorder_id")
+                )
+                driver = build(
+                    job_cfg.nvr_driver,
+                    job_cfg.nvr_url,
+                    job_cfg.nvr_username,
+                    job_cfg.nvr_password,
+                )
                 try:
                     res = (site_control.execute_write(driver, action, cmd.get("params"))
                            if is_write else
@@ -2130,6 +2281,23 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+def _open_recovery_interval_for_cfg(cloud: Cloud, state: dict, cfg: Config,
+                                    started_at, ended_at, channels) -> dict:
+    recorder_id = getattr(cfg, "recorder_cloud_id", None)
+    args = dict(
+        p_agent_id=state["agent_id"],
+        p_agent_key=state["agent_key"],
+        p_started_at=started_at,
+        p_ended_at=ended_at,
+    )
+    if recorder_id:
+        args["p_recorder_id"] = recorder_id
+        args["p_channels"] = list(channels or [])
+        return cloud.call("wl_open_recorder_recovery_interval", **args)
+    args["p_cameras"] = list(channels or [])
+    return cloud.call("wl_open_recovery_interval", **args)
+
+
 def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
                     spool, channels=None, holder=None) -> None:
     """Automatic NVR outage recovery (0.4.4 §1/§2/§5). On start, the persisted last-live vs now
@@ -2147,9 +2315,14 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             return item.get("channel")
         return getattr(item, "channel", None)
 
-    cams = [str(ch) for ch in (_channel_id(c) for c in (channels or []))
-            if ch is not None] or None
     holder = holder if holder is not None else {}
+
+    def _current_channels():
+        source = channels() if callable(channels) else channels
+        return [
+            str(ch) for ch in (_channel_id(c) for c in (source or []))
+            if ch is not None
+        ] or None
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
     # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
@@ -2170,16 +2343,26 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return bool(seen and time.monotonic() - seen < 150.0)
 
     while not stop.is_set():
+        cams = _current_channels()
+        recorder_id = getattr(cfg, "recorder_cloud_id", None)
+        if recorder_id and not cams:
+            # Never guess a recorder channel. A recorder that was unreachable at
+            # startup waits until health enumeration has explicitly synced its
+            # camera inventory, then this same worker begins recovery automatically.
+            holder["recovery_waiting_for_inventory"] = True
+            stop.wait(min(max(5, cfg.recovery_seconds), 30))
+            continue
+        holder.pop("recovery_waiting_for_inventory", None)
+
         # A very long Internet outage can fill the bounded local spool. trim() records
         # exactly which local-observation interval had to be evicted; convert that durable
         # marker into the same recorder-archive recovery pipeline once the NVR is live.
         try:
             overflow_gap = spool.pending_recovery_gap()
             if overflow_gap and recorder_is_live():
-                cloud.call("wl_open_recovery_interval",
-                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                           p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
-                           p_cameras=cams or [])
+                _open_recovery_interval_for_cfg(
+                    cloud, state, cfg, overflow_gap[0], overflow_gap[1], cams or []
+                )
                 if spool.clear_recovery_gap(*overflow_gap):
                     log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
                         "opened recorder-archive reconciliation")
@@ -2195,9 +2378,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                 now = now_utc()
                 outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
                 if outage:
-                    cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
-                               p_agent_key=state["agent_key"], p_started_at=iso(outage[0]),
-                               p_ended_at=iso(outage[1]), p_cameras=cams or [])
+                    _open_recovery_interval_for_cfg(
+                        cloud, state, cfg, iso(outage[0]), iso(outage[1]), cams or []
+                    )
                     rec.persist_last_live(cfg.last_live_path, now)
                     log(f"recovery: detected recorder gap {iso(outage[0])}..{iso(outage[1])}; "
                         "opened resumable archive recovery")
@@ -2210,6 +2393,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                 runner = rec.RecoveryRunner(
                     cloud, state["agent_id"], state["agent_key"], driver,
                     lambda ev: spool.add(ev),
+                    recorder_id=getattr(cfg, "recorder_cloud_id", None),
                     chunk_seconds=cfg.recovery_chunk_seconds,
                     throttle_seconds=cfg.recovery_throttle_seconds,
                     live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
