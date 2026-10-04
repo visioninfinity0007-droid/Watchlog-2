@@ -38,9 +38,9 @@ class RecoveryWiring(unittest.TestCase):
             self.assertIn('holder.pop("live_driver", None)', source)
 
     def test_recovery_accepts_startup_channel_dictionaries(self):
-        worker = SRC.split("def recovery_worker(", 1)[1].split("def cmd_run(", 1)[0]
-        self.assertIn("if isinstance(item, dict)", worker)
-        self.assertIn('item.get("channel")', worker)
+        helper = SRC.split("def _recovery_camera_ids(", 1)[1].split("def recovery_worker(", 1)[0]
+        self.assertIn("isinstance(c, dict)", helper)
+        self.assertIn('c.get("channel")', helper)
 
     def test_outage_detection_and_report(self):
         self.assertIn("read_last_live", SRC)

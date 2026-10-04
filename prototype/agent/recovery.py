@@ -19,6 +19,7 @@ fully testable with the reference archive driver and no hardware.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +48,14 @@ def _as_dt(v):
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
     return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+
+
+def _is_uuid(v) -> bool:
+    try:
+        uuid.UUID(str(v))
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 # ---- last-live persistence (durable across Agent restart / reboot) -----------
@@ -83,9 +92,12 @@ class RecoveryRunner:
                  chunk_seconds: int = DEFAULT_CHUNK_SECONDS, throttle_seconds: float = 0.0,
                  live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
                  snapshot_interval_seconds=recovery_ai.DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
-                 log=print):
+                 camera_channels=None, log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
         self.driver, self.on_event = driver, on_event
+        # {cloud camera UUID: recorder channel}. Intervals name cameras by UUID
+        # (recovery_intervals.cameras is uuid[]); the archive driver reads channels.
+        self.camera_channels = {str(k): str(v) for k, v in (camera_channels or {}).items()}
         self.chunk_seconds = max(60, int(chunk_seconds))
         self.throttle_seconds = max(0.0, float(throttle_seconds))
         self.live_pending = live_pending or (lambda: False)
@@ -104,27 +116,56 @@ class RecoveryRunner:
                                p_agent_key=self.agent_key, p_started_at=_iso(_as_dt(last_live)),
                                p_ended_at=_iso(_as_dt(now)), p_cameras=list(cameras or []))
 
-    def _complete(self, interval_id, status, recovered, seen, cursor):
-        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id, p_agent_key=self.agent_key,
-                        p_id=interval_id, p_status=status, p_recovered_count=recovered,
-                        p_checkpoint={"cursor": _iso(cursor) if cursor else None,
-                                      "seen_keys": sorted(seen)[:20000]})
+    def _complete(self, interval_id, status, recovered, seen, cursor, *, detail=None):
+        params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key,
+                      p_id=interval_id, p_status=status, p_recovered_count=recovered,
+                      p_checkpoint={"cursor": _iso(cursor) if cursor else None,
+                                    "seen_keys": sorted(seen)[:20000]})
+        if detail:
+            params["p_detail"] = detail
+        self.cloud.call("wl_complete_recovery", **params)
+
+    def _channels(self, cameras):
+        """(recorder channels to read, cameras that could not be resolved) for an interval.
+
+        An empty camera list is a whole-site interval: read every camera the Agent knows. A
+        channel is never guessed, so with no known inventory nothing is read at all."""
+        if not cameras:
+            return list(dict.fromkeys(self.camera_channels.values())), 0
+        channels, unresolved = [], 0
+        for cam in cameras:
+            ch = self.camera_channels.get(str(cam))
+            if ch is None and not _is_uuid(cam):
+                ch = str(cam)                   # already a recorder channel (reference drivers)
+            if ch is None:
+                unresolved += 1                 # a camera UUID this Agent cannot map
+            elif ch not in channels:
+                channels.append(ch)
+        return channels, unresolved
 
     def _recover_interval(self, iv) -> dict:
         seen = set((iv.get("checkpoint") or {}).get("seen_keys") or [])
         resume = _as_dt((iv.get("checkpoint") or {}).get("cursor"))
         start = resume or _as_dt(iv["started_at"])
         end = _as_dt(iv["ended_at"])
-        cams = list(iv.get("cameras") or []) or [None]     # None => driver decides / all
-        recovered, any_unsupported, any_supported = 0, False, False
+        cams, unresolved = self._channels(iv.get("cameras") or [])
+        if not cams:
+            # Nothing can be read truthfully: never scan a guessed channel and never call the
+            # interval (or the site) recovered.
+            self._complete(iv["id"], "unrecoverable", 0, seen, resume,
+                           detail={"reason": "missing_channels"})
+            return {"id": iv["id"], "status": "unrecoverable", "recovered": 0, "yielded": False,
+                    "reason": "missing_channels"}
+        # A camera that cannot be mapped to a channel cannot be read, so the interval cannot be
+        # fully recovered.
+        recovered, any_unsupported, any_supported = 0, unresolved > 0, False
 
         for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
             if self.live_pending():
                 # LIVE has priority — checkpoint progress and yield; a later claim resumes here.
                 self._complete(iv["id"], "in_progress", recovered, seen, chunk_start)
                 return {"id": iv["id"], "status": "in_progress", "recovered": recovered, "yielded": True}
-            for cam in cams:
-                ch = cam if cam is not None else "1"
+            for ch in cams:
                 # (a) recorder-native event replay (the recorder's OWN recorded events)
                 res = backfill.backfill_events(self.driver, ch, chunk_start, chunk_end,
                                                seen=seen, on_event=self.on_event)
