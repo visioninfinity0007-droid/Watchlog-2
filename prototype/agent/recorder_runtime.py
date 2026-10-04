@@ -194,7 +194,11 @@ def config_for_cloud_recorder(base_cfg, recorder_id: str | None):
         return base_cfg
 
     if wanted:
-        deadline = time.monotonic() + UNBOUND_BINDING_WAIT_SECONDS
+        # Startup found a database without recorders: no binding will land in
+        # this process (the Agent restarts once WatchLog offers recorders).
+        wait = (0.0 if getattr(base_cfg, "recorder_backend_absent", False)
+                else UNBOUND_BINDING_WAIT_SECONDS)
+        deadline = time.monotonic() + wait
         while True:
             matches = [
                 row for row in rows

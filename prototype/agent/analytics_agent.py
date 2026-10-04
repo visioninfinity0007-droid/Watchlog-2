@@ -750,12 +750,15 @@ def _recorder_contract_absent(error: Exception) -> bool:
 def _adopt_registry_recorder_unbound(cfg) -> None:
     """One configured recorder on a database without recorders: the registry stays the
     authority for address and login, but no cloud recorder identity exists, so the
-    legacy recorder-less RPCs are used (recorder_cloud_id stays unset)."""
+    legacy recorder-less RPCs are used (recorder_cloud_id stays unset). No binding
+    can land in this process, so a job naming a recorder fails at once instead of
+    waiting for one (recorder_runtime.config_for_cloud_recorder)."""
     (ctx,) = recorder_runtime.load_contexts(cfg)
     for name in _BOUND_RECORDER_FIELDS:
         if name != "recorder_cloud_id":
             setattr(cfg, name, getattr(ctx.config, name))
     cfg.recorder_cloud_id = None
+    cfg.recorder_backend_absent = True
 
 
 def _preflight_transient(error: Exception) -> bool:
@@ -795,6 +798,9 @@ def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
     not answer. A confirmed identity ends the retry; a definitive refusal asks the
     run loop for a clean restart, so startup fails closed rather than running on an
     identity WatchLog rejects. Cameras are bound by the health cycle as usual.
+    "contract": startup found a database without recorders. Once WatchLog offers
+    the recorder contract its jobs carry recorder ids this unbound runtime cannot
+    serve, so ask for a clean restart that binds the recorder.
     """
     attempt = 0
     while not stop.wait(RECORDER_RECHECK_SECONDS[min(attempt, len(RECORDER_RECHECK_SECONDS) - 1)]):
@@ -805,14 +811,18 @@ def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
                 multi_recorder_orchestrator.bind_cloud_identities(
                     cloud, state, recorder_runtime.load_contexts(cfg))
         except Exception as error:  # noqa: BLE001
-            if _preflight_transient(error):
+            if mode == "contract" or _preflight_transient(error):
                 continue
             restart["reason"] = (
                 "recorder check refused the saved recorder identity "
                 f"({type(error).__name__}: {str(error).splitlines()[0][:160]}); "
                 "restarting WatchLog")
             return
-        core.log("recorder: saved recorder identity confirmed with WatchLog")
+        if mode == "contract":
+            restart["reason"] = ("WatchLog now supports recorder identity; "
+                                 "restarting WatchLog to bind this recorder")
+        else:
+            core.log("recorder: saved recorder identity confirmed with WatchLog")
         return
 
 
@@ -900,7 +910,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     holder_seed = {}
     recorder_bound = False
     prepared = None
-    recheck = None        # background recorder check still owed: "bind"
+    recheck = None        # background recorder check still owed: "bind" or "contract"
     if configured_recorders:
         try:
             prepared = multi_recorder_orchestrator.prepare_recorders(
@@ -911,6 +921,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 # Unambiguous: that database has no recorder identity to bind to and
                 # sends no recorder_id; the 5.0.x recorder-less RPCs serve this site.
                 _adopt_registry_recorder_unbound(cfg)
+                recheck = "contract"
                 core.log("recorder: this WatchLog site has no recorder-aware backend yet; "
                          "single-recorder runtime without recorder identity")
             else:

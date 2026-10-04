@@ -625,3 +625,69 @@ def test_run_loop_restarts_cleanly_when_the_background_check_asks(monkeypatch):
 
         assert cfg.recorder_cloud_id == SITE_RECORDER
 
+
+# --- a database without recorders: no binding is coming in this process -------
+
+def test_unbound_runtime_fails_a_recorder_job_at_once(monkeypatch):
+    with _Env() as env:
+        _stage_one_unbound_row()
+        cfg = _base_cfg(env.root)
+        _patch_recorder_io(monkeypatch, [])
+        _run_startup_once(monkeypatch, cfg, _PreRecorderDatabase())
+        assert cfg.recorder_cloud_id is None
+
+        # The database is migrated while this Agent runs: jobs now carry recorder_id.
+        started = time.monotonic()
+        with pytest.raises(ValueError, match="not mapped"):
+            recorder_runtime.config_for_cloud_recorder(cfg, SITE_RECORDER)
+        assert time.monotonic() - started < recorder_runtime.UNBOUND_BINDING_WAIT_SECONDS / 10
+
+
+class _Migrated(_JobCloud):
+    """Has no recorder contract for the first ``absent`` checks, then offers it."""
+
+    def __init__(self, absent):
+        super().__init__()
+        self.absent = absent
+
+    def call(self, name, **kw):
+        if name == "wl_multi_recorder_agent_contract" and self.absent > 0:
+            self.absent -= 1
+            self.calls.append((name, kw))
+            raise core.CloudError(name, 404, "PGRST202",
+                                  "Could not find the function public.wl_multi_recorder_agent_contract")
+        return super().call(name, **kw)
+
+
+def test_unbound_runtime_restarts_once_watchlog_offers_recorders(monkeypatch):
+    with _Env() as env:
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        cloud = _Migrated(absent=2)
+        restart = {}
+
+        analytics_agent._retry_recorder_preflight(_base_cfg(env.root), STATE, cloud,
+                                                  threading.Event(), restart, "contract")
+
+        assert cloud.names().count("wl_multi_recorder_agent_contract") == 3
+        assert "wl_sync_recorders" not in cloud.names()      # binding is startup's job
+        assert "restart" in restart.get("reason", "")
+
+
+def test_unbound_runtime_keeps_running_while_watchlog_has_no_recorders(monkeypatch):
+    with _Env() as env:
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        stop = threading.Event()
+        cloud = _Migrated(absent=3)
+        real = cloud.call
+
+        def counted(name, **kw):
+            if cloud.absent == 1:
+                stop.set()                          # the Agent is stopped meanwhile
+            return real(name, **kw)
+
+        cloud.call = counted
+        restart = {}
+        analytics_agent._retry_recorder_preflight(_base_cfg(env.root), STATE, cloud,
+                                                  stop, restart, "contract")
+        assert restart == {}
+        assert cloud.absent == 0
