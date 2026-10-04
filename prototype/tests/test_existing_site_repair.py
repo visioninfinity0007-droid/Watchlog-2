@@ -86,7 +86,10 @@ class ExistingSitePreflight(unittest.TestCase):
 
     def test_preflight_is_read_only_and_passes_valid_site(self):
         device = SimpleNamespace(vendor="hikvision", model="DS-7608NI-Q1", driver="hikvision-isapi")
-        with tempfile.TemporaryDirectory() as td,              patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
+        # On Windows the preflight reads the machine's DPAPI store; stand it in like the
+        # identity, recorder and cloud so the test never depends on (or reads) this PC.
+        with tempfile.TemporaryDirectory() as td,              patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(wa.credential_store, "load_nvr_credential_readonly",
+                          return_value={"username": "admin", "password": "secret"}),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
             out = Path(td) / "preflight.json"
             code = wa.cmd_existing_site_preflight(FakeCfg(), result_path=str(out))
             self.assertEqual(code, 0)
