@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""ONVIF property events: state is not an occurrence.
+"""ONVIF property events: state is not an occurrence, and recorder faults are
+not camera faults.
 
 MNVR-027  PropertyOperation=Initialized reports CURRENT state on every new
           subscription (and so on every resubscribe); it is not something that
           just happened. A boolean false (StorageFailure Failed=false) is a
           cleared state, not a disk_error.
+MNVR-028  Storage topics are recorder-scoped: channel None plus a flag, never
+          a camera channel.
 """
 from __future__ import annotations
 
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +23,7 @@ sys.path.insert(0, str(TESTS))
 
 import onvif_fake_recorder as fx  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+import native_event_collector  # noqa: E402
 
 MOTION_RULE = "tns1:RuleEngine/CellMotionDetector/Motion"
 DARK = "tns1:VideoSource/ImageTooDark/ImagingService"
@@ -95,6 +100,51 @@ def test_changed_and_plain_events_are_occurrences(driver):
 
 def test_storage_failure_false_is_cleared_state(driver):
     assert _events(driver, _storage("false")) == []
+
+
+def test_storage_failure_is_recorder_scoped_never_a_camera_channel(driver):
+    events = _events(driver, _storage("true"))
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.event_type == "disk_error"
+    assert ev.channel is None
+    assert ev.payload.get("recorder_scope") is True
+    assert driver.dropped_unmapped == 0
+
+
+def test_storage_topic_without_state_is_recorder_scoped(driver):
+    events = _events(driver, fx.notification(STORAGE, "2026-10-04T10:00:00Z",
+                                             {}, {}, operation=None))
+    assert [(e.channel, e.event_type, e.payload.get("recorder_scope")) for e in events] == [
+        (None, "disk_error", True)]
+
+
+def test_collector_keeps_a_storage_fault_off_every_camera(monkeypatch):
+    class Spool:
+        def __init__(self):
+            self.rows = []
+
+        def add(self, row):
+            self.rows.append(row)
+
+        def trim(self):
+            return 0
+
+    rec = fx.FakeRecorder()
+    rec.install(monkeypatch)
+    monkeypatch.setattr(core.credential_store, "credential_generation", lambda: "absent")
+    rec.queue(_storage("true"))
+    spool = Spool()
+    rec.stop = threading.Event()
+    native_event_collector.collector(fx.FakeCfg(), spool, rec.stop)
+
+    assert len(spool.rows) == 1
+    row = spool.rows[0]
+    assert row["event_type"] == "disk_error"
+    assert row["channel"] not in {str(n) for n in range(1, fx.CAMERAS + 1)}
+    assert row["payload"]["recorder_scope"] is True
+    assert "snapshot_b64" not in row
+    assert rec.calls_of("GetSnapshotUri") == []
 
 
 def test_generic_boolean_false_is_cleared(driver):

@@ -79,6 +79,12 @@ TOPIC_MAP = [
     ("Storage",             "disk_error"),
 ]
 
+# Event types that belong to the recorder, not to a camera. They carry no
+# video source, so they are emitted with channel None and a recorder_scope
+# flag; putting them on a channel would turn a recorder HDD fault into a
+# fault on whichever camera that channel happens to be.
+RECORDER_SCOPED_TYPES = {"disk_error"}
+
 # Data items that carry the state of a property event; false on one of them
 # is the falling edge. Any other item that is literally "false" (StorageFailure
 # "Failed", TamperDetector "IsTamper"...) is a cleared state too. "0" counts
@@ -178,7 +184,7 @@ class OnvifDriver(NvrDriver):
         self._profile_tokens: dict[str, str] = {}     # channel -> snapshot profile
         # Burst filter state, in receive-time monotonic seconds: neither the
         # PC clock nor the recorder clock can step it backwards.
-        self._last_emitted: dict[tuple[str, str], float] = {}
+        self._last_emitted: dict[tuple[str | None, str], float] = {}
         self._monotonic = time.monotonic
         # Events whose source token matched no camera. They are dropped, never
         # guessed onto a channel; the count and the last source are kept so
@@ -476,14 +482,17 @@ class OnvifDriver(NvrDriver):
         source = {}
         for item in inner.findall(".//Source/SimpleItem"):
             source[item.get("Name", "")] = item.get("Value", "")
-        channel = self._resolve_channel(source)
-        if channel is None:
-            # Unknown camera: drop and count. Never default to a channel; that
-            # pinned every camera's events on "1" and let one camera's burst
-            # window swallow another's events.
-            self.dropped_unmapped += 1
-            self.last_unmapped_source = source
-            return None
+        if etype in RECORDER_SCOPED_TYPES:
+            channel = None           # the recorder's own fault, no camera
+        else:
+            channel = self._resolve_channel(source)
+            if channel is None:
+                # Unknown camera: drop and count. Never default to a channel;
+                # that pinned every camera's events on "1" and let one camera's
+                # burst window swallow another's events.
+                self.dropped_unmapped += 1
+                self.last_unmapped_source = source
+                return None
 
         # Collapse repeats by when we received them. A wall-clock delta goes
         # negative on a backward step, passes "< window", and silently drops
@@ -495,13 +504,16 @@ class OnvifDriver(NvrDriver):
             return None
         self._last_emitted[key] = now
 
+        payload = {"vendor": "onvif", "topic": topic,
+                   "source": source, "data": data}
+        if channel is None:
+            payload["recorder_scope"] = True
         return Event(
             channel=channel,
             event_type=etype,
             device_ts=ts,
             device_event_id=None,
-            payload={"vendor": "onvif", "topic": topic,
-                     "source": source, "data": data},
+            payload=payload,
         )
 
     def _resolve_channel(self, source: dict) -> str | None:
