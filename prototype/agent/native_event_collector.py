@@ -19,6 +19,18 @@ import native_verification
 from drivers import DriverError
 
 
+def spool_row(ev, agent_ts) -> dict:
+    """The event as spooled for wl_ingest_events.
+
+    A recorder-scoped or channel-less event (channel None) is sent with a JSON null
+    channel so ingest joins no camera; Event.to_json alone would write the string "None".
+    """
+    row = ev.to_json(agent_ts)
+    if ev.channel is None:
+        row["channel"] = None
+    return row
+
+
 def collector(cfg, spool, stop, holder=None) -> None:
     """Core event collector with recorder-native AI precedence.
 
@@ -60,7 +72,10 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     holder["recorder_live_wall"] = core.now_utc()
 
                 raw = None
-                if cfg.snapshots and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
+                # A recorder-scoped or channel-less event (channel None) has no camera
+                # to take a still from.
+                if (cfg.snapshots and ev.channel is not None
+                        and ev.event_type not in core.NO_SNAPSHOT_EVENTS):
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
                         last_shot[ev.channel] = clock
@@ -130,12 +145,13 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 else:
                     ev.payload.setdefault("source", "recorder_event")
 
-                spool.add(ev.to_json(core.now_utc()))
+                spool.add(spool_row(ev, core.now_utc()))
 
                 # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to the
                 # shared health monitor straight from the event stream (best-effort; a health-side
                 # error must never disturb ingestion).
-                if holder is not None and ev.event_type in core.NATIVE_FAULT_TYPES:
+                if (holder is not None and ev.channel is not None
+                        and ev.event_type in core.NATIVE_FAULT_TYPES):
                     mon = holder.get("monitor")
                     if mon is not None:
                         try:

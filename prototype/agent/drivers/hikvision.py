@@ -107,6 +107,11 @@ EVENT_TYPE_MAP = {
     "vehicledetection": "vehicle",
 }
 
+# Alert types that describe the recorder itself (its disks, logins and network link),
+# not a camera. A channel field on these does not name a video input (MNVR-028).
+RECORDER_SCOPED_TYPES = {"diskfull", "diskerror", "illaccess", "illegalaccess",
+                         "ipconflict", "nicbroken"}
+
 # Hikvision repeats an active alarm every second for as long as it lasts.
 # Collapsing a burst into one event is the difference between 5 rows and
 # 500 for a single person walking past a camera. The window is timed on the
@@ -581,15 +586,29 @@ class HikvisionDriver(NvrDriver):
 
         etype = EVENT_TYPE_MAP.get(etype_raw.lower()) or etype_raw.lower()
 
-        channel = (_text(root, "channelID")
-                   or _text(root, "dynChannelID")
-                   or _text(root, "channelName") or "1")
+        # A recorder-level alert, or a camera alert without a channel id, has channel
+        # None plus a flag. Never camera "1", and never the camera NAME as a channel id
+        # (it joins no camera); the name stays in the payload only.
+        scope: dict = {}
+        native_channel = _text(root, "channelID") or _text(root, "dynChannelID")
+        if etype_raw.lower() in RECORDER_SCOPED_TYPES:
+            channel = None
+            scope["recorder_scoped"] = True
+            if native_channel:
+                scope["native_channel"] = native_channel
+        elif native_channel:
+            channel = native_channel
+        else:
+            channel = None
+            scope["channel_unknown"] = True
+            if _text(root, "channelName"):
+                scope["channelName"] = _text(root, "channelName")
 
         # Collapse the once-per-second repeat of a continuing alarm on the agent's
         # monotonic receive clock. Comparing recorder dateTimes dropped every later event
         # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
         received_mono, received_at = self._receive_clock()
-        key = (str(channel), etype)
+        key = (channel if channel is not None else f"recorder:{native_channel or ''}", etype)
         last = self._last_emitted.get(key)
         if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
@@ -636,7 +655,7 @@ class HikvisionDriver(NvrDriver):
         } or bool(targets)
 
         return Event(
-            channel=str(channel),
+            channel=channel,
             event_type=etype,
             device_ts=ts,
             device_event_id=None,     # ISAPI alerts carry no stable id
@@ -646,7 +665,7 @@ class HikvisionDriver(NvrDriver):
                      "targets": targets,
                      "eventDescription": _text(root, "eventDescription"),
                      "activePostCount": _text(root, "activePostCount"),
-                     **clock},
+                     **clock, **scope},
         )
 
     def close(self) -> None:

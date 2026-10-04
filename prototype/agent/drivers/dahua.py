@@ -56,6 +56,11 @@ EVENT_CODE_MAP = {
     "FaceDetection": "face",
 }
 
+# Codes whose index names a disk or an alarm input, not a video channel. They are
+# recorder-scoped: channel None plus a flag, never index+1 guessed onto a camera.
+RECORDER_SCOPED_CODES = {"AlarmLocal", "StorageNotExist", "StorageFailure",
+                         "StorageLowSpace"}
+
 # Events we subscribe to. "All" also works but floods the link with
 # heartbeats and config chatter on a busy NVR.
 SUBSCRIBE_CODES = ",".join(EVENT_CODE_MAP.keys())
@@ -599,17 +604,24 @@ class DahuaDriver(NvrDriver):
                 return None
             etype = code.lower() or "unknown"
 
-        # index is 0-based on the wire; channels are 1-based everywhere else.
-        try:
-            channel = str(int(fields.get("index", "0")) + 1)
-        except ValueError:
-            channel = "1"
+        scope: dict = {}
+        index = fields.get("index")
+        if code in RECORDER_SCOPED_CODES:
+            channel = None
+            scope = {"recorder_scoped": True, "native_index": index}
+        else:
+            # index is 0-based on the wire; channels are 1-based everywhere else.
+            try:
+                channel = str(int(index) + 1)
+            except (TypeError, ValueError):
+                channel = None            # no usable index: unknown, never camera 1
+                scope = {"channel_unknown": True, "native_index": index}
 
         # attach is live and carries no device clock field: the event time is when the
         # block arrived. Repeats collapse on the monotonic receive clock, so a backward
         # PC clock step cannot drop every later event of this type (MNVR-023).
         received_mono, ts = self._receive_clock()
-        key = (channel, etype)
+        key = (channel if channel is not None else f"recorder:{index}", etype)
         last = self._last_emitted.get(key)
         if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
@@ -622,7 +634,7 @@ class DahuaDriver(NvrDriver):
             device_event_id=None,
             payload={"vendor": "dahua", "code": code, "action": action,
                      "data": (data[:500] if sep else None),
-                     "clock_source": "agent_receive"},
+                     "clock_source": "agent_receive", **scope},
         )
 
     def close(self) -> None:
