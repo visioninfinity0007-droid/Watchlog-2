@@ -117,6 +117,7 @@ def test_hikvision_keepalives_keep_the_stream_fresh_without_events():
     assert d.event_stream["last_frame_at"] is not None
     assert d.event_stream["connected"] is False          # EOF: no longer connected
     assert d.event_stream["last_error"]
+    assert d._received is None                           # no stale receive clock after close
 
 
 def test_hikvision_read_timeout_is_recorded_as_the_stream_error():

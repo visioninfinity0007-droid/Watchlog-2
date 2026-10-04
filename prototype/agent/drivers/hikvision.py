@@ -591,6 +591,7 @@ class HikvisionDriver(NvrDriver):
             ended = explain(e) if isinstance(e, requests.RequestException) else type(e).__name__
             raise
         finally:
+            self._received = None
             r.close()
             self._stream_down(ended)
 
