@@ -122,6 +122,13 @@ Section "Repair/Upgrade"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "InstallLocation" "$INSTDIR"
 
+  ; The proven payload includes the Setup UI, so an upgraded site can add or repair
+  ; recorders without reinstalling. Written only after success: a rolled-back site keeps
+  ; its previous Setup UI and Start Menu.
+  CreateDirectory "${STARTMENU}"
+  CreateShortcut "${STARTMENU}\WatchLog Site Status.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--status --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+  CreateShortcut "${STARTMENU}\WatchLog Manage Recorders.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--manage-recorders --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+
   ; A multi-recorder site commits when the original recorder and every recorder that
   ; answered before the update are back. Say so plainly if others are still unreachable.
   ReadINIStr $7 "${RESULTFILE}" "recorders" "not_live_after"
@@ -130,11 +137,5 @@ Section "Repair/Upgrade"
     MessageBox MB_ICONINFORMATION|MB_OK "WatchLog was updated.$\r$\n$\r$\n$7 recorder(s) could not be reached before the update and still cannot be reached. Every recorder that was reachable before the update is back online.$\r$\n$\r$\nCheck them in WatchLog Site Status or WatchLog Manage Recorders." /SD IDOK
   ${EndIf}
 
-  ; The proven payload includes the Setup UI, so an upgraded site can add or repair
-  ; recorders without reinstalling. Written only after success: a rolled-back site keeps
-  ; its previous Setup UI and Start Menu.
-  CreateDirectory "${STARTMENU}"
-  CreateShortcut "${STARTMENU}\WatchLog Site Status.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--status --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
-  CreateShortcut "${STARTMENU}\WatchLog Manage Recorders.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--manage-recorders --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
   RMDir /r "${CANDIDATE}"
 SectionEnd
