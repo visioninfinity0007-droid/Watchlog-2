@@ -196,6 +196,7 @@ def test_rename_preserves_secret_and_restarts(monkeypatch):
 def test_verified_credential_repair_updates_only_target(monkeypatch):
     with _Env():
         a, b = _seed_two()
+        _activation_ok(monkeypatch)
         proven = {
             "url": "http://192.0.2.20",
             "vendor": "Dahua",
@@ -239,3 +240,106 @@ def test_manager_list_never_exposes_credentials():
         assert "user-a" not in raw and "user-b" not in raw
         assert len(rows) == 2
         assert sum(1 for row in rows if row["continuity_owner"]) == 1
+
+
+# --- Repair Login reaches the runtime (MNVR-012) ------------------------------
+
+def _proven(url, model="TEST"):
+    return {
+        "url": url, "vendor": "Hikvision", "model": model, "firmware": "1.0",
+        "driver": "hikvision", "serial": "SERIAL-" + model,
+        "channels": [{"channel": "1", "name": "Camera 1"}],
+        "verified_against_hardware": True,
+    }
+
+
+def _count_restarts(monkeypatch):
+    starts = []
+    monkeypatch.setattr(
+        sb, "ensure_background_agent",
+        lambda *a, **k: starts.append(1) or {"started": True, "detail": "test"},
+    )
+    monkeypatch.setattr(
+        sb, "confirm_background_agent",
+        lambda *a, **k: {"confirmed": True, "detail": "test"},
+    )
+    return starts
+
+
+def test_repair_on_continuity_owner_updates_legacy_store_and_restarts(monkeypatch):
+    with _Env():
+        a, _b = _seed_two()
+        cs.save_nvr_credential("user-a", "pw-a")      # legacy singleton mirror of A
+        legacy_generation = cs.credential_generation()
+        starts = _count_restarts(monkeypatch)
+
+        out = sb.repair_managed_recorder_credential(
+            a, "user-a2", "pw-a2", verified_recorder=_proven("http://192.0.2.10")
+        )
+
+        assert cs.load_recorder_credential(a)["password"] == "pw-a2"
+        # Until the legacy singleton files are retired, both stores move together.
+        legacy = cs.load_nvr_credential_readonly()
+        assert (legacy["username"], legacy["password"]) == ("user-a2", "pw-a2")
+        assert cs.credential_generation() != legacy_generation
+        # The running Agent is restarted so every thread uses the new login.
+        assert starts == [1]
+        assert out["activation"]["agent_start"]["started"] is True
+
+
+def test_repair_on_secondary_restarts_without_touching_legacy_store(monkeypatch):
+    with _Env():
+        _a, b = _seed_two()
+        cs.save_nvr_credential("user-a", "pw-a")
+        legacy_before = cs.nvr_credential_path().read_bytes()
+        starts = _count_restarts(monkeypatch)
+
+        sb.repair_managed_recorder_credential(
+            b, "user-b2", "pw-b2", verified_recorder=_proven("http://192.0.2.20", "B2")
+        )
+        assert cs.load_recorder_credential(b)["password"] == "pw-b2"
+        assert cs.nvr_credential_path().read_bytes() == legacy_before
+        assert starts == [1]
+
+
+def test_repair_restores_both_stores_when_the_legacy_write_fails(monkeypatch):
+    with _Env():
+        a, _b = _seed_two()
+        cs.save_nvr_credential("user-a", "pw-a")
+        per_recorder_before = cs.recorder_credential_path(a).read_bytes()
+        legacy_before = cs.nvr_credential_path().read_bytes()
+        starts = _count_restarts(monkeypatch)
+
+        def fail_legacy(*_a, **_k):
+            raise ws.SecretError("simulated DPAPI failure")
+
+        monkeypatch.setattr(cs, "save_nvr_credential", fail_legacy)
+        try:
+            sb.repair_managed_recorder_credential(
+                a, "user-a2", "pw-a2", verified_recorder=_proven("http://192.0.2.10")
+            )
+            assert False, "a half-written credential change must fail"
+        except ws.SecretError:
+            pass
+        assert cs.recorder_credential_path(a).read_bytes() == per_recorder_before
+        assert cs.nvr_credential_path().read_bytes() == legacy_before
+        assert starts == []
+
+
+def test_repair_reports_a_failed_restart_truthfully(monkeypatch):
+    with _Env():
+        _a, b = _seed_two()
+        monkeypatch.setattr(
+            sb, "ensure_background_agent",
+            lambda *a, **k: {"started": False, "detail": "simulated"},
+        )
+        try:
+            sb.repair_managed_recorder_credential(
+                b, "user-b2", "pw-b2", verified_recorder=_proven("http://192.0.2.20", "B2")
+            )
+            assert False, "a restart failure must be reported"
+        except ValueError as exc:
+            text = str(exc).lower()
+            assert "saved" in text and "restart" in text
+        # The verified login is kept; it is not rolled back to the rejected one.
+        assert cs.load_recorder_credential(b)["password"] == "pw-b2"

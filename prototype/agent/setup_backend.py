@@ -922,8 +922,12 @@ def repair_managed_recorder_credential(
         )
 
     # Only after successful hardware authentication may the protected secret move.
-    credential_store.save_recorder_credential(local_id, username.strip(), password)
-    credential_store.load_recorder_credential(local_id)
+    # The continuity recorder is also the legacy singleton, whose credential file
+    # is still read; both move together until those files are retired.
+    credential_store.replace_recorder_credential(
+        local_id, username.strip(), password,
+        mirror_legacy=bool(row.get("continuity_owner")),
+    )
     updated = recorder_registry.update_observed_identity(
         local_id,
         vendor=proven.get("vendor"),
@@ -938,7 +942,30 @@ def repair_managed_recorder_credential(
     out = _public_recorder_row(updated, credential_state="available")
     out["channels"] = list(proven.get("channels") or [])
     out["verified_against_hardware"] = bool(proven.get("verified_against_hardware"))
+    out["activation"] = _restart_for_credential_change(progress)
     return out
+
+
+def _restart_for_credential_change(progress: Callable[[str], None]) -> dict:
+    """Restart the installed Agent so every recorder thread uses the new login.
+
+    Collector, health, recovery and job threads each hold the credential they
+    loaded; only a restart reaches all of them. The verified login is already
+    saved, so a failed restart is reported truthfully rather than rolled back to
+    a login the recorder now rejects."""
+    progress("Restarting WatchLog with the updated recorder login…")
+    log_path = programdata_dir() / "agent.log"
+    offset = _log_size(log_path)
+    started = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
+    if not started.get("started"):
+        raise ValueError(
+            "The recorder login was verified and saved, but WatchLog could not "
+            "restart to use it yet. Restart this PC, or export a support bundle."
+        )
+    confirmed = confirm_background_agent(
+        timeout=45.0, since_offset=offset, log_path=log_path
+    )
+    return {"agent_start": started, "background": confirmed}
 
 
 def verify_recorder_archive(url: str, driver_name: str, username: str, password: str,
