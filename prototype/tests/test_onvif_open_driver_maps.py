@@ -95,6 +95,34 @@ def test_unknown_token_is_dropped_and_counted_never_channel_one(recorder):
     assert driver.dropped_unmapped == 2
 
 
+def test_unmapped_drop_is_reported_through_the_log_hook(recorder):
+    # A dropped event must not be silent: the first one is logged with the
+    # Source items it carried (the token the device really sends), then every
+    # LOG_EVERY-th. Never the recorder address or the credentials.
+    driver, _info = _open(recorder)
+    lines = []
+    driver.log = lines.append
+    every = fx.onvif_driver.LOG_EVERY
+    for _ in range(every):
+        # Distinct monotonic times are irrelevant: unmapped events never
+        # reach the burst filter.
+        recorder.queue(fx.notification(MOTION_ALARM, "2026-10-04T10:00:00Z",
+                                       {"Source": "VideoSourceToken_099"},
+                                       {"State": "true"}))
+    events = fx.stream(driver, recorder)
+    driver.close()
+
+    assert events == []
+    assert driver.dropped_unmapped == every
+    assert len(lines) == 2
+    assert "Source=VideoSourceToken_099" in lines[0]
+    assert "motion" in lines[0]
+    assert f"{every}" in lines[1]
+    for line in lines:
+        assert "192.0.2.10" not in line
+        assert fx.FakeCfg.nvr_password not in line
+
+
 def test_unknown_token_does_not_burst_suppress_a_real_camera(recorder):
     driver, _info = _open(recorder)
     recorder.queue(fx.notification(MOTION_ALARM, "2026-10-04T10:00:00Z",

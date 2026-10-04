@@ -107,6 +107,7 @@ SOURCE_ITEMS = (
 )
 
 BURST_WINDOW_SECONDS = 30
+LOG_EVERY = 100                    # a repeating condition: log the 1st, then every Nth
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 
@@ -194,10 +195,14 @@ class OnvifDriver(NvrDriver):
         self._last_emitted: dict[tuple[str | None, str], float] = {}
         self._monotonic = time.monotonic
         # Events whose source token matched no camera. They are dropped, never
-        # guessed onto a channel; the count and the last source are kept so
-        # the token the device actually sends can be read off a live site.
+        # guessed onto a channel, and reported through `log` with the Source
+        # items they carried, so the token the device actually sends shows up
+        # in the agent log of a live site.
         self.dropped_unmapped = 0
         self.last_unmapped_source: dict | None = None
+        # Diagnostics hook, a no-op until the caller sets it (as autodetect's
+        # `log`). Lines carry tokens and counts only: no address, no secret.
+        self.log = lambda m: None
 
     # -- SOAP -----------------------------------------------------------
 
@@ -555,6 +560,10 @@ class OnvifDriver(NvrDriver):
                 # burst window swallow another's events.
                 self.dropped_unmapped += 1
                 self.last_unmapped_source = source
+                items = ", ".join(f"{k}={v}" for k, v in source.items())
+                self._report(self.dropped_unmapped,
+                             f"onvif: dropped {etype} event ({topic[:80]}): "
+                             f"source [{items[:200] or 'none'}] matches no camera")
                 return None
 
         # Collapse repeats by when we received them. A wall-clock delta goes
@@ -601,6 +610,11 @@ class OnvifDriver(NvrDriver):
                     found.add(table[token])
                     break
         return found.pop() if len(found) == 1 else None
+
+    def _report(self, count: int, message: str) -> None:
+        """Log a repeating condition the first time, then every LOG_EVERY-th."""
+        if count == 1 or count % LOG_EVERY == 0:
+            self.log(f"{message} ({count} so far on this connection)")
 
     def get_snapshot(self, channel: str) -> bytes | None:
         """
