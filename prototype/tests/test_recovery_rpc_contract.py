@@ -153,11 +153,15 @@ class _Archive(backfill.ReferenceArchiveDriver):
 class _Cycles(threading.Event):
     """A stop event that ends recovery_worker after ``cycles`` loop iterations, synchronously."""
 
-    def __init__(self, cycles):
+    def __init__(self, cycles, between=None):
         super().__init__()
         self.left = cycles + 1                     # +1 for the start-up settle wait
+        self.between, self.waits = between, 0
 
     def wait(self, timeout=None):
+        self.waits += 1
+        if self.between and self.waits > 1:
+            self.between()                         # what other threads do between cycles
         self.left -= 1
         if self.left <= 0:
             self.set()
@@ -208,13 +212,15 @@ class RecoveryWorkerRpcContract(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _work(self, cloud, spool, channels, cycles=1, recorder=None):
+    def _work(self, cloud, spool, channels, cycles=1, recorder=None, holder=None, between=None):
         recorder = recorder or _Recorder()
-        holder = {"recorder_live_at": __import__("time").monotonic()}
+        if holder is None:
+            holder = {"recorder_live_at": __import__("time").monotonic()}
         with _Patch(core, open_archive_driver=lambda _cfg: (self.archive, None),
                     open_driver=recorder.open, log=lambda *_a: None):
-            core.recovery_worker(self.cfg, STATE, cloud, _Cycles(cycles), spool,
+            core.recovery_worker(self.cfg, STATE, cloud, _Cycles(cycles, between), spool,
                                  channels, holder)
+        return holder
 
     def test_signature_under_test_is_uuid_array(self):
         self.assertEqual(_latest_params("wl_open_recovery_interval")["p_cameras"], "uuid[]")
@@ -278,6 +284,36 @@ class RecoveryWorkerRpcContract(unittest.TestCase):
         self.assertEqual(cloud.rejected, [])
         self.assertEqual(sorted(cloud.opened[0]["cameras"]), sorted(CAMERA_IDS.values()))
         self.assertEqual(set(self.archive.channels), {"1", "3"})
+
+
+class LastLiveHandshake(RecoveryWorkerRpcContract):
+    """The heartbeat may refresh last_live.json only after recovery has read it while the
+    recorder was live (holder[LAST_LIVE_CHECKED]); otherwise a restart gap could be overwritten
+    before it was ever detected."""
+
+    def test_gap_check_is_not_marked_while_the_recorder_is_down(self):
+        recovery.persist_last_live(self.cfg.last_live_path, datetime.now(timezone.utc)
+                                   - timedelta(hours=2))
+        holder = self._work(StrictCloud(), _Spool(), CHANNELS, holder={})
+        self.assertFalse(holder.get(core.LAST_LIVE_CHECKED))
+
+    def test_a_held_gap_survives_the_heartbeat_overwriting_last_live(self):
+        lost_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        recovery.persist_last_live(self.cfg.last_live_path, lost_at)
+        cloud = StrictCloud(sync_failures=1)          # first cycle: no camera mapping yet
+        holder = {"recorder_live_at": __import__("time").monotonic()}
+
+        def heartbeat():
+            if holder.get(core.LAST_LIVE_CHECKED):
+                recovery.persist_last_live(self.cfg.last_live_path, datetime.now(timezone.utc))
+
+        self._work(cloud, _Spool(), CHANNELS, cycles=2, holder=holder, between=heartbeat)
+        self.assertTrue(holder.get(core.LAST_LIVE_CHECKED))
+        self.assertEqual(cloud.rejected, [])
+        self.assertEqual(len(cloud.opened), 1, "the restart gap was lost")
+        opened = datetime.fromisoformat(cloud.opened[0]["started_at"].replace("Z", "+00:00"))
+        self.assertLess(abs((opened - lost_at).total_seconds()), 1)
+        self.assertEqual(sorted(cloud.opened[0]["cameras"]), sorted(CAMERA_IDS.values()))
 
 
 class CompleteRecoveryContract(unittest.TestCase):

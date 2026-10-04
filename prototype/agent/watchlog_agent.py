@@ -2158,6 +2158,12 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+# holder flag: recovery_worker has read last_live.json while the recorder was live and holds
+# any gap it showed. A heartbeat that refreshes last_live must wait for it, or a restart gap is
+# overwritten before it is ever detected.
+LAST_LIVE_CHECKED = "last_live_checked"
+
+
 def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> dict:
     """{recorder channel: cloud camera UUID} for opening and reading recovery intervals.
 
@@ -2263,6 +2269,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
                                           for g in pending_gaps):
                         pending_gaps = (pending_gaps + [outage])[-32:]
+                    holder[LAST_LIVE_CHECKED] = True    # any gap is held; last_live may move on
                     if pending_gaps and cams:
                         while pending_gaps:
                             gap = pending_gaps[0]
