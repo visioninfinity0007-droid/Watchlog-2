@@ -1,7 +1,9 @@
 {
   "_comment": "Migration numbers intentionally absent on some branches may be listed under reserved. Exact legacy duplicate filename sets may be listed under historical_duplicates; any other gap or duplicate still fails migration lint.",
   "reserved": {
-    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main."
+    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main.",
+    "0144": "Reserved for 0144_portal_qa_truth_contracts: applied directly to production on 3 Oct 2026 (owner portal QA truth contracts) but not yet committed to git. Recover the exact production body into the repo, then remove this reservation.",
+    "0145": "Reserved for 0145_camera_preview_performance: applied directly to production on 3 Oct 2026 (camera preview batch contract) but not yet committed to git. Recover the exact production body into the repo, then remove this reservation."
   },
   "historical_duplicates": {
     "0115": [
