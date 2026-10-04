@@ -17,6 +17,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -310,6 +311,69 @@ def migrate_legacy_singleton(config_path: Path) -> dict | None:
         raise ValueError("recorder registry publish verification failed")
     credential_store.load_recorder_credential(local_id)
     return loaded
+
+
+def quarantine_registry() -> list[Path]:
+    """Move the registry and the per-recorder state it owns aside; never delete.
+
+    Used when the registry cannot belong to the installation being set up (left
+    by an earlier install, another site, or unreadable). The secondary
+    recorders' queued events move with it, so they can never drain into a
+    different site. Returns the quarantined paths."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    moved = []
+    for src in (registry_path(), data_dir() / "recorders"):
+        if src.exists():
+            dst = src.with_name(f"{src.name}.quarantine-{stamp}")
+            os.replace(src, dst)
+            moved.append(dst)
+    return moved
+
+
+def update_recorder_connection(local_id: str, *, url: str, driver: str,
+                               username: str, password: str,
+                               vendor: str | None = None, model: str | None = None,
+                               firmware: str | None = None,
+                               identity_fingerprint: str | None = None,
+                               mirror_legacy: bool = False) -> dict:
+    """Re-point one recorder at a freshly proven address and login.
+
+    The registry is the authority for recorder address and credential. Local and
+    cloud identity are kept; observed facts are replaced by what was just proven
+    (unknown stays unknown). If the registry write fails, the credential (and,
+    with mirror_legacy, the legacy singleton credential) is restored."""
+    current = load_registry()
+    wanted = str(local_id or "").strip()
+    if not any(row["local_id"] == wanted for row in current["recorders"]):
+        raise ValueError("recorder not found")
+    address = str(url or "").strip()
+    if any(row["local_id"] != wanted and row["url"] and row["url"] == address
+           for row in current["recorders"]):
+        raise ValueError("a recorder with this local address already exists")
+
+    paths = [credential_store.recorder_credential_path(wanted)]
+    if mirror_legacy:
+        paths.append(credential_store.nvr_credential_path())
+    snapshot = credential_store.snapshot_secret_files(paths)
+    credential_store.replace_recorder_credential(
+        wanted, username, password, mirror_legacy=mirror_legacy
+    )
+
+    def update(row):
+        row["url"] = address
+        row["driver"] = str(driver or "auto").strip().lower() or "auto"
+        row["vendor"] = str(vendor).strip() if vendor else None
+        row["model"] = str(model).strip() if model else None
+        row["firmware"] = str(firmware).strip() if firmware else None
+        row["identity_fingerprint"] = (
+            str(identity_fingerprint).strip() if identity_fingerprint else None
+        )
+
+    try:
+        return _replace_record(wanted, update)
+    except Exception:
+        credential_store.restore_secret_files(snapshot)
+        raise
 
 
 def add_recorder(*, display_name: str, url: str, driver: str,
