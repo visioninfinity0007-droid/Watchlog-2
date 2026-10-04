@@ -18,13 +18,14 @@ Authoritative branch:
 
 `main`
 
-Current authoritative source version:
+Current source line under validation:
 
-**5.0.24**
+**5.0.27**
 
-Current authoritative `main` at this context update:
-
-`7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
+5.0.27 is a **repair candidate, not a promoted fleet baseline** until its exact
+merge SHA, Windows workflow run, artifact IDs/hashes and physical HASCO +
+Al-Khalid acceptance are recorded below. Build 69 / 5.0.17 remains the
+field-proven discovery/connectivity baseline until that happens.
 
 Existing-site Repair/Upgrade implementation merge:
 
@@ -38,6 +39,43 @@ This main branch contains both:
 The separate `visioninfinity0007-droid/Watchlog-2` repository is no longer the
 product source of truth. It remains useful as a Windows release-line validation
 repository because Builds 69–83 were produced there and provide exact field/release evidence.
+
+---
+
+## 1A. 5.0.27 A-Z Agent repair candidate
+
+5.0.27 closes production-composition defects observed while 5.0.26 was
+heartbeating on HASCO and Al-Khalid without current event/snapshot evidence.
+
+Candidate scope:
+
+- production native-event collector publishes current recorder transport liveness;
+- packaged Analytics run loop starts the automatic recorder recovery worker;
+- runtime health advances recorder-seen proof only from current recorder activity,
+  not from a stale startup identity;
+- incident footage and recovery use a separate read-only vendor-native archive
+  transport when a proven live ONVIF path identifies Dahua/Hikvision;
+- archive scans execute bounded recorded-frame retrieval + local analytics instead
+  of the previous placeholder composition;
+- Hikvision incident footage has a 90-second total retrieval budget and a bounded
+  candidate count so one request cannot spend ~30 minutes cycling playback URIs.
+
+**Do not deploy merely because CI is green.** Promotion requires one exact Windows
+artifact to prove on HASCO first, then Al-Khalid:
+
+1. Repair/Upgrade passive preflight;
+2. recorder auth + configured channel inventory;
+3. continuous heartbeat without false recorder-seen freshness;
+4. native events and still evidence during the configured monitoring window;
+5. camera/NVR health;
+6. bounded incident clip retrieval for a known camera/time;
+7. automatic recovery of a controlled/reproducible gap where recorder archive
+   evidence exists, with RECOVERED provenance;
+8. Site Control poll/read path;
+9. remote-update poll + transactional rollback;
+10. reboot/restart survival and a quantified soak.
+
+Any failed gate keeps 5.0.27 unpromoted and preserves rollback.
 
 ---
 

@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -485,24 +486,133 @@ def _archive_backend_missing(error: Exception) -> bool:
         "schema cache" in text or "function" in text or "404" in text)
 
 
-def archive_worker(cfg: Config, state: dict, stop: threading.Event,
-                   authority: dict = None) -> None:
-    """Background historical-scan workload (migrations 0051/0055).
+def _archive_dt(value):
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
-    Runs in its own daemon thread on a slow cadence so it is LOWER priority than live
-    monitoring: bounded to one scan per cycle, interruptible via the shared stop event, and
-    it never blocks the collector or the analytics sampler. Idle (long back-off) when 0055 is
-    not deployed. Recorder-archive retrieval is not hardware-validated, so the runtime reports
-    a claimed scan with an honest status ('failed: retrieval unavailable') rather than ever
-    fabricating a recovered result. Recovered candidates carry the fixed 0051 provenance label.
-    """
+
+def _archive_scan_handlers(cfg: Config, detector, stop: threading.Event):
+    """Build bounded recorder-frame retrieval + the same local analytics used live."""
+    import recovery_ai
+
+    cached = analytics.load_config(cfg.analytics_config_path)
+    config = cached.get("config") or {}
+    camera_rows = {
+        str(row.get("id")): row
+        for row in (config.get("cameras") or [])
+        if row.get("id") and row.get("channel")
+    }
+    engines = {}
+
+    def retrieve_frames(camera_id, from_ts, to_ts):
+        camera = camera_rows.get(str(camera_id))
+        if camera is None:
+            core.log(f"analytics: archive camera {str(camera_id)[:8]} not present in local config")
+            return None
+        channel = str(camera["channel"])
+        driver = None
+        attempted_segments = 0
+        frames = []
+        try:
+            driver, _info = core.open_archive_driver(cfg)
+            enumerate_fn = getattr(driver, "enumerate_historical_events", None)
+            if not callable(enumerate_fn):
+                return None
+            start, end = _archive_dt(from_ts), _archive_dt(to_ts)
+            cursor = None
+            max_frames = max(1, min(int(cfg.recovery_ai_max_frames), 40))
+            while len(frames) < max_frames and not stop.is_set():
+                page = enumerate_fn(channel, start, end, cursor=cursor, limit=100) or {}
+                if page.get("status") != "supported":
+                    return None
+                rows = page.get("events") or []
+                for row in rows:
+                    attempted_segments += 1
+                    segment = row.get("segment") or {}
+                    ts = segment.get("start") or row.get("ts")
+                    if not ts:
+                        continue
+                    frame = recovery_ai.recovered_frame(driver, channel, ts)
+                    if frame:
+                        frames.append((frame, _archive_dt(ts).astimezone(timezone.utc)
+                                      .isoformat().replace("+00:00", "Z")))
+                    if len(frames) >= max_frames:
+                        break
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+            # Segments existed but none decoded: retrieval is unavailable, not "zero activity".
+            if attempted_segments and not frames:
+                return None
+            return frames
+        except Exception as error:  # noqa: BLE001
+            core.log(f"analytics: archive retrieval ch{channel} failed: "
+                     f"{type(error).__name__}: {str(error)[:120]}")
+            return None
+        finally:
+            if driver is not None:
+                try:
+                    driver.close()
+                except Exception:
+                    pass
+
+    def analyze_frame(camera_id, jpeg, ts, rule_ids):
+        if detector is None:
+            return []
+        camera = camera_rows.get(str(camera_id))
+        if camera is None:
+            return []
+        requested = tuple(sorted(str(x) for x in (rule_ids or [])))
+        engine = engines.get(requested)
+        if engine is None:
+            filtered = json.loads(json.dumps(config))
+            if requested:
+                wanted = set(requested)
+                for row in filtered.get("cameras") or []:
+                    row["rules"] = [
+                        rule for rule in (row.get("rules") or [])
+                        if str(rule.get("id")) in wanted
+                    ]
+            engine = analytics.AnalyticsEngine(log=core.log)
+            engine.configure(filtered)
+            engines[requested] = engine
+        try:
+            detections = detector.detect(jpeg)
+            if detections is None:
+                return []
+            image = Image.open(io.BytesIO(jpeg))
+            image.load()
+            events = engine.process(
+                str(camera["channel"]), detections, image.size, _archive_dt(ts))
+            out = []
+            for event in events:
+                meta = event.get("metadata") or {}
+                out.append({
+                    "result_type": event["event_type"],
+                    "recovered_at": event["occurred_at"],
+                    "confidence": meta.get("confidence"),
+                })
+            return out
+        except Exception as error:  # noqa: BLE001
+            core.log(f"analytics: archive analysis failed: {type(error).__name__}: "
+                     f"{str(error)[:120]}")
+            return []
+
+    return retrieve_frames, analyze_frame
+
+
+def archive_worker(cfg: Config, state: dict, stop: threading.Event,
+                   authority: dict = None, detector=None) -> None:
+    """Background historical scan using bounded vendor archive reads + local analytics."""
     if not cfg.analytics_enabled:
         return
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
-    # Retrieval + offline analysis are injected as unavailable until a future agent release
-    # proves recorder playback on real hardware; the runtime then fails scans honestly.
+    retrieve_frames, analyze_frame = _archive_scan_handlers(cfg, detector, stop)
     archive = ArchiveRuntime(cloud=cloud, state=state,
-                             retrieve_frames=None, analyze=None, log=core.log)
+                             retrieve_frames=retrieve_frames, analyze=analyze_frame, log=core.log)
     runtime = AgentRuntime(cloud=cloud, state=state,
                            engine=analytics.AnalyticsEngine(log=core.log),
                            archive=archive, log=core.log)
@@ -570,8 +680,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                                 args=(cfg, state, detector, stop, authority),
                                 daemon=True, name="analytics")
     archive = threading.Thread(target=archive_worker,
-                               args=(cfg, state, stop, authority),
+                               args=(cfg, state, stop, authority, detector),
                                daemon=True, name="archive")
+    recovery = threading.Thread(target=core.recovery_worker,
+                                args=(cfg, state, cloud, stop, spool, channels, holder),
+                                daemon=True, name="recovery")
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
     import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
     resume_evt = threading.Event()
@@ -592,13 +705,16 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             core.upload_once(cloud, state, spool)
         except RuntimeError as error:
             core.log(f"ERROR: upload failed: {error}")
-        core.heartbeat(cloud, state, device)
+        recorder_seen = float(holder.get("recorder_live_at") or 0.0)
+        recorder_live = bool(recorder_seen and time.monotonic() - recorder_seen < 150.0)
+        core.heartbeat(cloud, state, device, recorder_live=recorder_live)
         core.health_cycle(cloud, state, cfg, holder)
         spool.close()
         core.vision.build = original_build
         return
 
     archive.start()   # background historical scan; lower priority, run mode only
+    recovery.start()  # automatic LIVE-gap reconciliation from recorder archive
     health.start()    # Phase-A camera/NVR health probing on its own thread
     sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
                                daemon=True, name="sitecontrol")
@@ -639,7 +755,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             if clock >= next_heartbeat:
                 next_heartbeat = clock + cfg.heartbeat_seconds
                 try:
-                    core.heartbeat(cloud, state, device)
+                    recorder_seen = float(holder.get("recorder_live_at") or 0.0)
+                    recorder_live = bool(recorder_seen and clock - recorder_seen < 150.0)
+                    core.heartbeat(cloud, state, device, recorder_live=recorder_live)
                 except (RuntimeError, requests.RequestException) as error:
                     core.log("ERROR: heartbeat failed, will retry: "
                              + str(error).splitlines()[0][:200])
@@ -652,6 +770,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         collector.join(timeout=5)
         analytic.join(timeout=5)
         archive.join(timeout=5)
+        recovery.join(timeout=5)
         health.join(timeout=5)
         sitectl.join(timeout=5)
         spool.close()

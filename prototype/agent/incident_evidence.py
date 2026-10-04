@@ -113,7 +113,10 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                 continue
             driver = None
             try:
-                driver, info = core.open_driver(cfg)
+                # Footage/archive APIs are vendor-specific. A site's proven live path may
+                # still be ONVIF; recorded media gets one bounded native-vendor attempt without
+                # changing the live monitoring driver or exporting credentials.
+                driver, info = core.open_archive_driver(cfg)
                 start = _parse_time(row["start_at"])
                 end = _parse_time(row["end_at"])
                 core.log(

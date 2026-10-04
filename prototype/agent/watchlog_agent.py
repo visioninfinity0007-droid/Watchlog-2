@@ -542,6 +542,74 @@ def open_driver(cfg: Config):
         raise primary
 
 
+def open_archive_driver(cfg: Config):
+    """Open the best read-only recorder transport for archive/evidence work.
+
+    Live monitoring may legitimately use ONVIF when that was the proven enrollment
+    path. Recorded-media APIs are vendor-specific, however. When an ONVIF probe
+    identifies the recorder vendor, make one bounded attempt to open the matching
+    native HTTP driver with the SAME on-site credential/address. Failure falls back
+    to the already-open ONVIF driver and therefore remains honestly unsupported.
+    """
+    driver, info = open_driver(cfg)
+    try:
+        import dahua_archive
+        import hikvision_archive
+        dahua_archive.install()
+        hikvision_archive.install()
+    except Exception:  # noqa: BLE001 — capability remains honest if optional wiring fails
+        pass
+
+    if getattr(driver, "name", "") != "onvif":
+        return driver, info
+
+    vendor = str(getattr(info, "vendor", "") or "").strip().lower()
+    native_name = None
+    if "dahua" in vendor:
+        native_name = "dahua-cgi"
+    elif "hikvision" in vendor:
+        native_name = "hikvision-isapi"
+    if not native_name:
+        return driver, info
+
+    candidate = None
+    try:
+        candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+        native_info = candidate.probe()
+        driver.close()
+        log(f"archive: using vendor-native {native_name} transport for recorded media")
+        return candidate, native_info
+    except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
+        if candidate is not None:
+            try:
+                candidate.close()
+            except Exception:
+                pass
+        log(f"archive: vendor-native {native_name} unavailable; "
+            f"keeping {driver.name} ({type(error).__name__})")
+        return driver, info
+
+
+def prove_recorder_archive(driver, channel) -> dict:
+    """Run the matching vendor archive proof without guessing capabilities."""
+    name = str(getattr(driver, "name", "") or "")
+    try:
+        if name == "dahua-cgi":
+            import dahua_archive
+            dahua_archive.install()
+            return dahua_archive.prove_recorder_archive(driver, channel)
+        if name == "hikvision-isapi":
+            import hikvision_archive
+            hikvision_archive.install()
+            return hikvision_archive.prove_recorder_archive(driver, channel)
+    except Exception as error:  # noqa: BLE001
+        return {"status": "unknown", "detail": f"archive proof failed: {type(error).__name__}"}
+    return {
+        "status": "unsupported",
+        "detail": "Recorded-media access is not validated through this recorder transport.",
+    }
+
+
 # --- enrollment --------------------------------------------------------
 
 def enroll(cfg: Config, cloud: Cloud, device) -> dict:
@@ -768,19 +836,23 @@ def upload_once(cloud: Cloud, state: dict, spool) -> int:
     return res["inserted"]
 
 
-def heartbeat(cloud: Cloud, state: dict, device) -> None:
+def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None) -> None:
     cloud.call("wl_heartbeat", p_agent_id=state["agent_id"],
                p_agent_key=state["agent_key"], p_agent_version=AGENT_VERSION,
                p_device_vendor=device.vendor if device else None,
                p_device_model=device.model if device else None,
                p_device_driver=device.driver if device else None)
     stamp = iso(now_utc())
+    # The device object is startup identity and may remain populated long after a
+    # recorder disconnects. Repair/Upgrade health proof must advance recorder_seen_at
+    # only from CURRENT recorder transport activity.
+    recorder_is_live = bool(device) if recorder_live is None else bool(recorder_live)
     update_runtime_health(
         heartbeat_at=stamp,
         agent_id=state.get("agent_id"),
         site_id=state.get("site_id"),
         tenant_id=state.get("tenant_id"),
-        recorder_seen_at=(stamp if device else None),
+        recorder_seen_at=(stamp if recorder_is_live else None),
         recorder_vendor=(device.vendor if device else None),
         recorder_model=(device.model if device else None),
         recorder_driver=(device.driver if device else None),
@@ -1397,7 +1469,6 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     flow is testable with no cloud, recorder or spool.
     """
     import acceptance
-    import dahua_archive
     from types import SimpleNamespace
 
     open_driver_fn = _open_driver or open_driver
@@ -1408,7 +1479,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         spool_factory = lambda: Spool(cfg.spool_path, cfg.spool_max_rows)   # noqa: E731
     else:
         spool_factory = _spool_factory
-    archive_fn = _archive or dahua_archive.prove_recorder_archive
+    archive_fn = _archive or prove_recorder_archive
     live_seconds = int(live_seconds if live_seconds is not None
                        else (os.environ.get("WATCHLOG_ACCEPT_LIVE_SECONDS") or 10))
     state = _state if _state is not None else load_state(cfg.state_path)
@@ -1452,10 +1523,6 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         chans = holder.get("channels") or []
         if driver is None or not chans:
             return "warn", "recorder/cameras unavailable to check the archive"
-        try:
-            dahua_archive.install()
-        except Exception:  # noqa: BLE001 — a driver without the impl reports 'unsupported' honestly
-            pass
         channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
         proof = archive_fn(driver, channel)
         status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
@@ -1930,7 +1997,6 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
     (size + magic + decoder + result — never image contents or secrets). Exit 0 always.
     """
     import json as _json
-    import dahua_archive
     import recovery_ai
 
     now = _now or now_utc()
@@ -1938,18 +2004,13 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
            "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": ""}
     driver = None
     try:
-        driver, _info = (_open_driver or open_driver)(cfg)
+        driver, _info = (_open_driver or open_archive_driver)(cfg)
     except Exception:  # noqa: BLE001
         driver = None
     if driver is None:
         out["detail"] = "recorder not reachable"
         print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
         return 0
-    try:
-        dahua_archive.install()
-    except Exception:  # noqa: BLE001
-        pass
-
     channel = "1"
     for prof in (getattr(cfg, "camera_profiles", None) or []):
         if prof.get("monitored", True) and prof.get("channel"):
@@ -1958,7 +2019,7 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
     out["channel"] = channel
 
     try:
-        proof = (_archive or dahua_archive.prove_recorder_archive)(driver, channel) or {}
+        proof = (_archive or prove_recorder_archive)(driver, channel) or {}
         status = proof.get("status")
     except Exception:  # noqa: BLE001
         proof, status = {}, "error"
@@ -2144,14 +2205,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             log(f"recovery: gap detector skipped: {type(e).__name__}")
 
         try:
-            driver, _info = open_driver(cfg)
-            try:
-                import dahua_archive
-                import hikvision_archive
-                dahua_archive.install()
-                hikvision_archive.install()             # both vendors expose bounded archive reads
-            except Exception:                           # noqa: BLE001
-                pass
+            driver, _info = open_archive_driver(cfg)
             try:
                 runner = rec.RecoveryRunner(
                     cloud, state["agent_id"], state["agent_key"], driver,
