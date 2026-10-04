@@ -61,6 +61,19 @@ def nvr_credential_path() -> Path:
     return secrets_dir() / "nvr_credential.dpapi"
 
 
+def recorder_secrets_dir() -> Path:
+    return secrets_dir() / "recorders"
+
+
+def recorder_credential_path(local_id: str) -> Path:
+    """Per-recorder credential path. local_id is validated by recorder_registry;
+    keep this helper path-only so credential_store has no registry dependency."""
+    safe = str(local_id or "").strip()
+    if not safe or any(ch not in "0123456789abcdefABCDEF-" for ch in safe):
+        raise ValueError("invalid recorder local_id")
+    return recorder_secrets_dir() / f"{safe}.dpapi"
+
+
 def legacy_env_path() -> Path:
     return data_dir() / "watchlog.env"           # 0.3.3 plaintext (insecure)
 
@@ -209,6 +222,51 @@ def _cleanup_legacy(config_ini_path: Path | None) -> None:
                 tmp.replace(config_ini_path)
         except (configparser.Error, OSError):
             pass
+
+
+# --- multi-recorder credential store -----------------------------------------
+
+def save_recorder_credential(local_id: str, username: str, password: str) -> None:
+    """Store one recorder credential independently from every other recorder."""
+    write_json_secret(recorder_credential_path(local_id), {
+        "username": username,
+        "password": password,
+        "credential_version": CREDENTIAL_STORE_VERSION,
+        "local_id": str(local_id),
+    })
+
+
+def load_recorder_credential(local_id: str) -> dict:
+    """Load one recorder credential.
+
+    Missing/corrupt per-recorder state is an error. There is deliberately no
+    fallback to the singleton credential because that could authenticate against
+    the wrong physical recorder on a multi-recorder site.
+    """
+    path = recorder_credential_path(local_id)
+    if not path.exists():
+        raise SecretError(f"recorder credential missing for {local_id}")
+    cred = read_json_secret(path)
+    if str(cred.get("local_id") or "") != str(local_id):
+        raise SecretError(f"recorder credential identity mismatch for {local_id}")
+    return cred
+
+
+def delete_recorder_credential(local_id: str) -> None:
+    recorder_credential_path(local_id).unlink(missing_ok=True)
+
+
+def recorder_credential_generation(local_id: str) -> str:
+    """Generation token for one recorder's encrypted credential."""
+    path = recorder_credential_path(local_id)
+    if not path.exists():
+        return "absent"
+    try:
+        data = path.read_bytes()
+        digest = hashlib.blake2b(data, digest_size=8).hexdigest()
+        return f"{path.stat().st_mtime_ns}:{len(data)}:{digest}"
+    except OSError:
+        return "unknown"
 
 
 # --- agent cloud key (bearer secret) ---
