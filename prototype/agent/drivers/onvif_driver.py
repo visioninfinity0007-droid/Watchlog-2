@@ -79,6 +79,12 @@ TOPIC_MAP = [
     ("Storage",             "disk_error"),
 ]
 
+# Data items that carry the state of a property event; false on one of them
+# is the falling edge. Any other item that is literally "false" (StorageFailure
+# "Failed", TamperDetector "IsTamper"...) is a cleared state too. "0" counts
+# only for these keys, because elsewhere it may be an ObjectId or a count.
+STATE_KEYS = ("ismotion", "state", "isinside", "logicalstate")
+
 # Source SimpleItems that name the video input, and the token map each is
 # looked up in first. The ONVIF topic definitions use a VideoSourceConfiguration
 # token for rule-engine topics and a VideoSource token for VideoSource/*
@@ -116,6 +122,14 @@ def _xs_datetime(text: str | None) -> datetime | None:
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _is_cleared(data: dict) -> bool:
+    """True when the Data items say the property is off, not that it fired."""
+    known = [v for k, v in data.items() if k.lower() in STATE_KEYS]
+    if known:
+        return any(str(v).strip().lower() in ("false", "0") for v in known)
+    return any(str(v).strip().lower() == "false" for v in data.values())
 
 
 def _bind(table: dict, token: str, channel: str) -> None:
@@ -439,6 +453,14 @@ class OnvifDriver(NvrDriver):
         if inner is None:
             inner = outer            # a device that omits the wrapper
 
+        # PropertyOperation="Initialized" is the device reporting a property's
+        # CURRENT state because a subscription started, which happens on every
+        # reconnect and every replaced pull point; "Deleted" says the property
+        # is gone. Neither is an occurrence. Only "Changed", or a plain event
+        # with no PropertyOperation, is something that just happened.
+        if (inner.get("PropertyOperation") or "").lower() in ("initialized", "deleted"):
+            return None
+
         # device_ts is the recorder's own stamp; receive time only when the
         # message carries none we can read.
         ts = _xs_datetime(inner.get("UtcTime")) or datetime.now(timezone.utc)
@@ -448,10 +470,8 @@ class OnvifDriver(NvrDriver):
         data = {}
         for item in inner.findall(".//Data/SimpleItem"):
             data[item.get("Name", "")] = item.get("Value", "")
-        for key, val in data.items():
-            if key.lower() in ("ismotion", "state", "isinside", "logicalstate"):
-                if str(val).lower() in ("false", "0"):
-                    return None
+        if _is_cleared(data):
+            return None
 
         source = {}
         for item in inner.findall(".//Source/SimpleItem"):
