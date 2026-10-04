@@ -10,13 +10,14 @@ Anything advertising Profile S or Profile T should work here.
 Hand-rolled SOAP over requests, deliberately: the alternatives
 (onvif-zeep and friends) drag in lxml and zeep, which triples the
 PyInstaller payload and adds two more things to go wrong inside a frozen
-binary. Only five operations are needed.
+binary. Only a handful of operations are needed.
 
     GetDeviceInformation                identity
     GetCapabilities                     locate the events + media services
-    GetProfiles                         channels
+    GetProfiles                         channels, and the token maps events use
     CreatePullPointSubscription         start an event subscription
     PullMessages                        drain it, long-poll, outbound only
+    GetSnapshotUri                      stills
 
 Auth is WS-Security UsernameToken with a SHA-1 password digest, which is
 what ONVIF mandates and what nearly every device accepts.
@@ -77,6 +78,19 @@ TOPIC_MAP = [
     ("Storage",             "disk_error"),
 ]
 
+# Source SimpleItems that name the video input, and the token map each is
+# looked up in first. The ONVIF topic definitions use a VideoSourceConfiguration
+# token for rule-engine topics and a VideoSource token for VideoSource/*
+# topics; what a given device sends is not verified, so the other maps are
+# tried after the preferred one.
+SOURCE_ITEMS = (
+    ("videosourceconfigurationtoken", "config"),
+    ("videosourcetoken",              "source"),
+    ("videosource",                   "source"),
+    ("source",                        "source"),
+    ("profiletoken",                  "profile"),
+)
+
 BURST_WINDOW_SECONDS = 30
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
@@ -90,6 +104,13 @@ def _strip_ns(elem: ET.Element) -> ET.Element:
     for e in elem.iter():
         e.tag = _TAG.sub("", e.tag)
     return elem
+
+
+def _bind(table: dict, token: str, channel: str) -> None:
+    """Map a token to a channel. A token claimed by two cameras maps to None:
+    an event carrying it cannot be attributed, so it must not be guessed."""
+    if token:
+        table[token] = channel if table.get(token, channel) == channel else None
 
 
 def _security_header(user: str, password: str) -> str:
@@ -123,9 +144,18 @@ class OnvifDriver(NvrDriver):
         self.media_service: str | None = None
         self._sub_address: str | None = None
         self._sub_expires: datetime | None = None
-        self._source_to_channel: dict[str, str] = {}
-        self._profile_tokens: dict[str, str] = {}
+        # Token -> physical channel, one map per token kind, all filled by
+        # _load_profiles(). A value of None marks an ambiguous token.
+        self._source_to_channel: dict[str, str | None] = {}
+        self._config_to_channel: dict[str, str | None] = {}
+        self._profile_to_channel: dict[str, str | None] = {}
+        self._profile_tokens: dict[str, str] = {}     # channel -> snapshot profile
         self._last_emitted: dict[tuple[str, str], datetime] = {}
+        # Events whose source token matched no camera. They are dropped, never
+        # guessed onto a channel; the count and the last source are kept so
+        # the token the device actually sends can be read off a live site.
+        self.dropped_unmapped = 0
+        self.last_unmapped_source: dict | None = None
 
     # -- SOAP -----------------------------------------------------------
 
@@ -179,6 +209,14 @@ class OnvifDriver(NvrDriver):
             raw={"hardwareId": get("HardwareId")},
         )
         self._discover_services()
+        # The live collector, the stills worker and the analytics sampler use
+        # a driver that was only probed and never call list_channels() on it,
+        # so the token maps must be loaded here. Best effort: identification
+        # has succeeded; stream_events()/get_snapshot() retry the load.
+        try:
+            self._ensure_profiles()
+        except DriverError:
+            pass
         return info
 
     def _discover_services(self) -> None:
@@ -211,10 +249,24 @@ class OnvifDriver(NvrDriver):
             return advertised
 
     def list_channels(self) -> list[Channel]:
+        return self._load_profiles() or [Channel(channel="1", name="Channel 1")]
+
+    def _ensure_profiles(self) -> bool:
+        """Load the token maps on first use. True once a camera is mapped."""
+        if not self._profile_tokens:
+            self._load_profiles()
+        return bool(self._profile_tokens)
+
+    def _load_profiles(self) -> list[Channel]:
+        """
+        GetProfiles -> physical channels, plus every token an event or a
+        snapshot request can name for each one. Returns [] when the device
+        has no media service; the maps then stay empty rather than invented.
+        """
         if not self.media_service:
             self._discover_services()
         if not self.media_service:
-            return [Channel(channel="1", name="Channel 1")]
+            return []
 
         root = self._call(self.media_service, "<trt:GetProfiles/>")
 
@@ -233,6 +285,8 @@ class OnvifDriver(NvrDriver):
             src = prof.find(".//VideoSourceConfiguration/SourceToken")
             source_token = src.text.strip() if src is not None and src.text else ""
             profile_token = prof.get("token") or prof.findtext("token") or ""
+            vsc = prof.find(".//VideoSourceConfiguration")
+            config_token = (vsc.get("token") or "").strip() if vsc is not None else ""
 
             # If a device omits SourceToken, fail safe: that profile remains a
             # separate camera rather than accidentally merging unrelated views.
@@ -247,10 +301,16 @@ class OnvifDriver(NvrDriver):
                     "name": name,
                     "is_sub": is_sub,
                     "is_main": is_main,
+                    "profiles": [],
+                    "configs": [],
                 }
                 by_source[key] = row
                 groups.append(row)
-            elif row.get("is_sub") and not is_sub:
+            # Every profile and configuration of this source resolves to the
+            # same physical channel, whichever one an event happens to name.
+            row["profiles"].append(profile_token)
+            row["configs"].append(config_token)
+            if row.get("is_sub") and not is_sub:
                 # Prefer a non-sub/main profile for snapshot quality when both
                 # profiles point at the same physical video source.
                 row.update(profile_token=profile_token, name=name,
@@ -259,16 +319,20 @@ class OnvifDriver(NvrDriver):
                 row.update(profile_token=profile_token, name=name,
                            is_sub=is_sub, is_main=is_main)
 
-        self._source_to_channel.clear()
-        self._profile_tokens.clear()
+        sources: dict[str, str | None] = {}
+        configs: dict[str, str | None] = {}
+        profiles: dict[str, str | None] = {}
+        snapshot_profiles: dict[str, str] = {}
         out: list[Channel] = []
         for physical_idx, row in enumerate(groups, start=1):
             channel = str(physical_idx)
-            source_token = row.get("source_token") or ""
-            if source_token:
-                self._source_to_channel[source_token] = channel
+            _bind(sources, row.get("source_token") or "", channel)
+            for token in row["configs"]:
+                _bind(configs, token, channel)
+            for token in row["profiles"]:
+                _bind(profiles, token, channel)
             if row.get("profile_token"):
-                self._profile_tokens[channel] = str(row["profile_token"])
+                snapshot_profiles[channel] = str(row["profile_token"])
 
             raw_name = str(row.get("name") or "").strip()
             # Dahua/Hikvision ONVIF profile labels are transport/profile names,
@@ -278,7 +342,13 @@ class OnvifDriver(NvrDriver):
                 raw_name = f"Camera {physical_idx}"
             out.append(Channel(channel=channel,
                                name=raw_name or f"Camera {physical_idx}"))
-        return out or [Channel(channel="1", name="Channel 1")]
+
+        # Swap whole maps so a reader never sees a half-built one.
+        self._source_to_channel = sources
+        self._config_to_channel = configs
+        self._profile_to_channel = profiles
+        self._profile_tokens = snapshot_profiles
+        return out
 
     # -- events ---------------------------------------------------------
 
@@ -303,6 +373,11 @@ class OnvifDriver(NvrDriver):
                              + timedelta(minutes=SUBSCRIPTION_MINUTES))
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
+        # Without the token maps every event would be unattributable; fail
+        # the attempt so the collector reconnects, rather than stream blind.
+        if not self._ensure_profiles():
+            raise DriverError("device returned no ONVIF media profiles; "
+                              "events cannot be attributed to cameras")
         self._subscribe()
         action = ("http://www.onvif.org/ver10/events/wsdl/"
                   "PullPointSubscription/PullMessages")
@@ -362,10 +437,14 @@ class OnvifDriver(NvrDriver):
         source = {}
         for item in inner.findall(".//Source/SimpleItem"):
             source[item.get("Name", "")] = item.get("Value", "")
-        token = (source.get("VideoSourceConfigurationToken")
-                 or source.get("VideoSource")
-                 or source.get("Source") or "")
-        channel = self._source_to_channel.get(token, "1")
+        channel = self._resolve_channel(source)
+        if channel is None:
+            # Unknown camera: drop and count. Never default to a channel; that
+            # pinned every camera's events on "1" and let one camera's burst
+            # window swallow another's events.
+            self.dropped_unmapped += 1
+            self.last_unmapped_source = source
+            return None
 
         key = (channel, etype)
         last = self._last_emitted.get(key)
@@ -382,6 +461,29 @@ class OnvifDriver(NvrDriver):
                      "source": source, "data": data},
         )
 
+    def _resolve_channel(self, source: dict) -> str | None:
+        """
+        The physical channel a notification's Source items name, or None.
+
+        Each token is looked up in the map for its kind first, then in the
+        others, using the same physical-camera grouping as list_channels().
+        Items that disagree, or a token claimed by two cameras, give None.
+        """
+        tables = {"config": self._config_to_channel,
+                  "source": self._source_to_channel,
+                  "profile": self._profile_to_channel}
+        items = {str(k).lower(): str(v or "").strip() for k, v in source.items()}
+        found: set[str | None] = set()
+        for name, kind in SOURCE_ITEMS:
+            token = items.get(name)
+            if not token:
+                continue
+            for table in [tables[kind]] + [t for k, t in tables.items() if k != kind]:
+                if token in table:
+                    found.add(table[token])
+                    break
+        return found.pop() if len(found) == 1 else None
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         ONVIF GetSnapshotUri, then fetch the URI it hands back.
@@ -389,8 +491,17 @@ class OnvifDriver(NvrDriver):
         The URI often needs HTTP auth of its own, and devices frequently
         advertise it on an address they cannot actually be reached at, so
         it goes through the same rehosting as the service endpoints.
+
+        Callers hold a driver that was only probed (or, for Site Control,
+        only built), so the profile map is loaded here on first use.
         """
         token = self._profile_tokens.get(str(channel))
+        if not token:
+            try:
+                self._ensure_profiles()
+            except DriverError:
+                return None
+            token = self._profile_tokens.get(str(channel))
         if not token or not self.media_service:
             return None
         try:
