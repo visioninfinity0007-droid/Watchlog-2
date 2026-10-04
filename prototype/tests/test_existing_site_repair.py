@@ -433,6 +433,60 @@ class RepairRecorderGate(unittest.TestCase):
         self.assertEqual(gate, "GATE=ROLLBACK")
 
 
+_ROLLBACK_HARNESS = r"""
+param([string]$Script, [string]$Work)
+$ErrorActionPreference = "Stop"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+# Never run the real payload rollback here.
+function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) { "helper:$Stage" | Add-Content (Join-Path $Work "calls.log"); return 0 }
+$DataRoot = $Work
+$LogPath = Join-Path $Work "repair-upgrade.log"
+$ResultPath = Join-Path $Work "repair-upgrade-result.ini"
+$ConfigPath = Join-Path $Work "watchlog.ini"
+$RegistryResult = Join-Path $Work "registry-result.json"
+$RegistryStepTimeoutSec = 30
+$CandidateSetupUi = Join-Path $Work "fake-setup-ui.cmd"
+$script:RecorderReport = @()
+$script:RegistryState = ""
+$script:StagedRecorderId = "aaaaaaaa-0000-4000-8000-000000000001"
+$ok = Restore-Previous "health gate failed"
+$script:CurrentStage = "automatic recovery"
+Write-Result "failed" 38 "automatic recovery" "x" "y"
+"RESTORED=$ok STAGED=[$($script:StagedRecorderId)]"
+"""
+
+
+class RepairRegistryStagingRollback(unittest.TestCase):
+    def test_restore_previous_removes_a_registry_staged_by_this_repair(self):
+        if not POWERSHELL:
+            self.skipTest("Windows PowerShell is required to execute the repair rollback")
+        work = Path(tempfile.mkdtemp(prefix="wl-repair-staging-"))
+        self.addCleanup(shutil.rmtree, work, True)
+        calls = work / "calls.log"
+        # Stand-in for the candidate Setup UI: records its arguments, answers like
+        # --registry-rollback would (result path is the 6th argument).
+        (work / "fake-setup-ui.cmd").write_text(
+            "@echo off\r\n"
+            f'echo setup-ui:%* >> "{calls}"\r\n'
+            'echo {"ok":true,"action":"removed"} > %6\r\n',
+            encoding="ascii")
+        harness = work / "harness.ps1"
+        harness.write_text(_ROLLBACK_HARNESS, encoding="utf-8")
+        proc = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(harness), "-Script", str(REPAIR_PS1), "-Work", str(work)],
+            capture_output=True, text=True, timeout=120)
+        self.assertIn("RESTORED=True STAGED=[]", proc.stdout, proc.stdout + proc.stderr)
+        log = calls.read_text(encoding="ascii", errors="replace").splitlines()
+        self.assertEqual(log[0].strip(), "helper:rollback")
+        self.assertIn("--registry-rollback aaaaaaaa-0000-4000-8000-000000000001", log[1])
+        result = (work / "repair-upgrade-result.ini").read_text(encoding="ascii")
+        self.assertIn("registry=staging removed", result)
+
+
 class RepairRegistryOrchestration(unittest.TestCase):
     PS = REPAIR_PS1.read_text(encoding="utf-8")
 
@@ -458,6 +512,29 @@ class RepairRegistryOrchestration(unittest.TestCase):
         gate = gate[:gate.index("\n}\n")]
         self.assertIn("Test-RecorderProof $h $StartedAtUtc", gate)
         self.assertIn("Update-RecorderReportAfter $started", self.PS)
+
+    def test_legacy_recorder_is_staged_after_validation_and_before_replacement(self):
+        ps = self.PS
+        recorder_agent = ps.index("phase 2/2: current WatchLog paused/backed up")
+        probe = ps.index("Run-RegistryRecorderCandidate", recorder_agent)
+        staging = ps.index('Invoke-CandidateSetupUi @("--registry-migrate")')
+        replace = ps.index("Install-CandidatePayload", recorder_agent)
+        self.assertLess(probe, staging)
+        self.assertLess(staging, replace)
+        block = ps[staging - 400:staging]
+        self.assertIn("if (-not (Test-Path -LiteralPath $RegistryPath))", block)
+
+    def test_rollback_undoes_staging_and_legacy_is_never_retired(self):
+        ps = self.PS
+        restore = ps[ps.index("function Restore-Previous"):]
+        restore = restore[:restore.index("\n}\n")]
+        self.assertLess(restore.index('Invoke-UpgradeHelper "rollback"'),
+                        restore.index("Undo-RegistryStaging"))
+        self.assertIn('@("--registry-rollback", $script:StagedRecorderId)', ps)
+        # 5.1 still runs a one-recorder site from the legacy singleton: Repair/Upgrade
+        # must keep it until a runtime cutover is proven.
+        self.assertNotIn("Remove-Item -LiteralPath $RecorderCredentialPath", ps)
+        self.assertNotIn("--retire-legacy", ps)
 
     def test_nsis_reports_a_degraded_commit_without_hiding_it(self):
         nsis = (ROOT / "prototype/installer/nsis/watchlog-repair.nsi").read_text(encoding="utf-8")

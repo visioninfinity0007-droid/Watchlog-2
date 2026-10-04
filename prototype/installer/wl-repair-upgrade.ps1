@@ -12,12 +12,16 @@
     3. Candidate failure => stop immediately; current WatchLog remains untouched.
     4. Candidate pass => suspend WatchLog task, stop old runtime and back up old payload.
        The candidate then probes the recorder(s); with a registry, every configured
-       recorder, which records the pre-upgrade baseline.
+       recorder, which records the pre-upgrade baseline. A site without a registry has
+       its legacy recorder staged into one: legacy read + verify, stable UUID,
+       per-recorder DPAPI written + read back, registry published + re-read.
     5. Copy staged payload, verify version, register/start task.
     6. Require fresh cloud heartbeat + remote-update poll proof, and recorder proof:
        every recorder live, or on a multi-recorder site the continuity recorder plus
        every recorder that answered before the upgrade.
-    7. Commit only after health proof; otherwise rollback and prove old Agent restarted.
+    7. Commit only after health proof; otherwise rollback (including a registry staged
+       in step 4) and prove old Agent restarted. The legacy recorder settings are never
+       retired here: the 5.1 runtime still runs a one-recorder site from them.
 #>
 [CmdletBinding()]
 param(
@@ -57,6 +61,7 @@ $RegistryResult = Join-Path $CandidateDir ("repair-registry-" + [guid]::NewGuid(
 $script:RecorderBaseline = $null   # what must be live again for the commit gate
 $script:RecorderReport = @()       # per-recorder lines for repair-upgrade-result.ini
 $script:RegistryState = ""
+$script:StagedRecorderId = ""      # registry staged by THIS repair; undone on rollback
 
 $PayloadFiles = @(
   "watchlog-agent.exe",
@@ -225,10 +230,26 @@ function Invoke-CandidateSetupUi([string[]]$Arguments, [string]$Label) {
   return $obj
 }
 
+function Undo-RegistryStaging {
+  # A registry staged by THIS repair is not part of the previous working state.
+  if (-not $script:StagedRecorderId) { return }
+  $undo = Invoke-CandidateSetupUi @("--registry-rollback", $script:StagedRecorderId) "registry staging rollback"
+  if ($undo -and [bool]$undo.ok) {
+    $script:RegistryState = "staging removed"
+    Write-Repair "registry staged by this repair removed; previous recorder settings unchanged"
+  } else {
+    $script:RegistryState = "staging kept"
+    $action = if ($undo) { [string]$undo.action } else { "no result" }
+    Write-Repair "registry staged by this repair was kept ($action); the previous WatchLog does not use it"
+  }
+  $script:StagedRecorderId = ""
+}
+
 function Restore-Previous([string]$Why) {
   $script:CurrentStage = "automatic recovery"
   Write-Repair "restoring previous WatchLog: $Why"
   $rc = Invoke-UpgradeHelper "rollback"
+  Undo-RegistryStaging
   if ($rc -ne 0) {
     $script:RecoveryState = "Automatic recovery could not be proven. Do not uninstall WatchLog; use the support log."
     Write-Repair "ROLLBACK FAILURE($rc): previous payload restore/restart could not be proven"
@@ -523,6 +544,29 @@ try {
       Fail 30 "candidate could not reach the original WatchLog recorder through the recorder registry; previous WatchLog was restored and kept"
     }
     Set-RecorderBaseline $reg
+  }
+
+  # Transactional staging of the legacy singleton into the recorder registry. The candidate
+  # reads and verifies the legacy credential, creates the stable local UUID, writes and
+  # reads back the per-recorder credential, then publishes and re-reads the registry; any
+  # failure there removes what it created. The new Agent must then boot and pass the
+  # health gate with it, otherwise Restore-Previous removes it again. The legacy settings
+  # stay: retirement waits for a runtime that boots one-recorder sites from the registry.
+  if (-not (Test-Path -LiteralPath $RegistryPath)) {
+    $script:CurrentStage = "recorder registry staging"
+    Write-Repair "staging the existing recorder into the recorder registry; legacy recorder settings are kept"
+    $staged = Invoke-CandidateSetupUi @("--registry-migrate") "registry staging"
+    if (-not $staged -or -not [bool]$staged.ok) {
+      $detail = if ($staged -and $staged.error) { [string]$staged.error } else { "registry staging failed or returned no valid result" }
+      $restored = Restore-Previous ("registry staging failed: " + $detail)
+      if (-not $restored) { Fail 43 "registry staging failed AND previous WatchLog could not be proven running" }
+      Fail 42 "the existing recorder could not be prepared for this release; previous WatchLog restored"
+    }
+    if ([bool]$staged.migrated) {
+      $script:StagedRecorderId = [string]$staged.local_id
+      $script:RegistryState = "staged"
+      Write-Repair "existing recorder staged into the recorder registry; it is removed again if this update rolls back"
+    }
   }
 
   Write-Repair "beginning atomic payload replacement"
