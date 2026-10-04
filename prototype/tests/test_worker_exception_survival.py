@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Background workers outlive any exception.
+"""Background workers outlive any exception, and Site Control never strands a claimed command.
 
 recovery_worker and command_worker logged failures through nvr_health.redact, but nvr_health was
 only imported locally inside the health functions. The first exception in either thread therefore
 raised NameError inside its own except block and ended the thread for the life of the process:
 recovery never ran again after a recorder outage, and Site Control stopped polling.
 
+Site Control also built cfg.nvr_driver directly. 'auto' (the Config default, and what older
+installers wrote) is not a registered driver, so build() raised KeyError after the command had
+been claimed, and the command stayed claimed until it expired.
 """
 from __future__ import annotations
 
@@ -172,6 +175,18 @@ def _site_control_cfg(driver="hikvision-isapi"):
                            nvr_username="local-user", nvr_password="local-password")
 
 
+class _ChannelDriver:
+    def __init__(self):
+        self.closed = False
+
+    def list_channels(self):
+        return [SimpleNamespace(channel="1", name="Gate", enabled=True),
+                SimpleNamespace(channel="2", name="Yard", enabled=True)]
+
+    def close(self):
+        self.closed = True
+
+
 class _CommandCloud:
     """Hands out queued commands once, then idles; records completions."""
 
@@ -204,6 +219,52 @@ class CommandWorkerSurvives(unittest.TestCase):
                 self.assertTrue(thread.is_alive(), "Site Control thread died on a network error")
             finally:
                 _finish(thread, stop)
+
+    def test_auto_driver_runs_the_claimed_command(self):
+        cloud = _CommandCloud([{"id": "cmd-1", "action": "get_channels", "params": {}},
+                               {"id": "cmd-2", "action": "get_channels", "params": {}}])
+        recorder = _ChannelDriver()
+        detected = []
+
+        def autodetect(url, username, password, **_kw):
+            detected.append(url)
+            return recorder, SimpleNamespace(vendor="Hikvision", model="DS-7608")
+
+        def no_build(name, *_a, **_kw):
+            raise KeyError(f"unknown driver '{name}'")
+
+        with _Patch(core, autodetect=autodetect, build=no_build,
+                    update_runtime_health=lambda **_k: None):
+            thread, stop = _run(core.command_worker, _site_control_cfg("auto"), STATE, cloud)
+            try:
+                self.assertTrue(_wait_for(lambda: len(cloud.completions) >= 2),
+                                f"claimed commands completed: {cloud.completions}")
+            finally:
+                _finish(thread, stop)
+        self.assertEqual([c["p_command_id"] for c in cloud.completions], ["cmd-1", "cmd-2"])
+        self.assertTrue(all(c["p_status"] == "succeeded" for c in cloud.completions))
+        self.assertEqual([ch["channel"] for ch in cloud.completions[0]["p_result"]], ["1", "2"])
+        self.assertTrue(detected and recorder.closed)
+
+    def test_unreachable_recorder_fails_the_claimed_command_instead_of_stranding_it(self):
+        cloud = _CommandCloud([{"id": "cmd-1", "action": "get_channels", "params": {}}])
+
+        def autodetect(url, *_a, **_kw):
+            raise DriverError(f"no driver recognised the device at {url}")
+
+        with _Patch(core, autodetect=autodetect, update_runtime_health=lambda **_k: None):
+            thread, stop = _run(core.command_worker, _site_control_cfg("auto"), STATE, cloud)
+            try:
+                self.assertTrue(_wait_for(lambda: len(cloud.completions) >= 1),
+                                "the claimed command was left claimed")
+                self.assertTrue(_wait_for(lambda: cloud.claims >= 3),
+                                "Site Control stopped polling after the failed command")
+            finally:
+                _finish(thread, stop)
+        done = cloud.completions[0]
+        self.assertEqual((done["p_command_id"], done["p_status"]), ("cmd-1", "failed"))
+        self.assertTrue(done["p_error"])
+        self.assertNotIn("192.0.2.10", done["p_error"], "recorder LAN address leaked to the cloud")
 
 
 if __name__ == "__main__":

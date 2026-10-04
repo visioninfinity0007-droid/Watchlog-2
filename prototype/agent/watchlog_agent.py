@@ -1153,6 +1153,17 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
             stop.wait(cfg.health_seconds + jitter)
 
 
+def _site_control_driver(cfg: Config):
+    """The recorder driver a Site Control command runs against. 'auto' (the Config default, and
+    what older installers wrote) is not a registered driver name, so resolve it the way the health
+    cycle does instead of letting build() raise KeyError after the command was claimed."""
+    if cfg.nvr_driver in ("auto", ""):
+        driver, _info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
+                                   log=lambda *a, **k: None)
+        return driver
+    return build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+
+
 def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
     """Site Control (H6): poll for a queued READ command, run it against the recorder via the
     LOCAL driver, and return the structured result. OFF unless cfg.site_control_enabled — a new
@@ -1177,16 +1188,23 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
                 busy = True
                 action = cmd.get("action")
                 is_write = action in site_control.WRITE_ACTIONS
-                driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
                 try:
-                    res = (site_control.execute_write(driver, action, cmd.get("params"))
-                           if is_write else
-                           site_control.execute_read(driver, action, cmd.get("params")))
-                finally:
+                    driver = _site_control_driver(cfg)
+                except Exception as e:                   # noqa: BLE001
+                    # The command is already claimed: answer it as failed instead of leaving
+                    # it claimed until it expires. The error is redacted (no recorder address).
+                    driver, res = None, {"action": action, "ok": False,
+                                         "error": nvr_health.redact(str(e)) or type(e).__name__}
+                if driver is not None:
                     try:
-                        driver.close()
-                    except Exception:                    # noqa: BLE001
-                        pass
+                        res = (site_control.execute_write(driver, action, cmd.get("params"))
+                               if is_write else
+                               site_control.execute_read(driver, action, cmd.get("params")))
+                    finally:
+                        try:
+                            driver.close()
+                        except Exception:                # noqa: BLE001
+                            pass
                 # Writes carry before/after/verified (transactional audit); reads carry 'data'.
                 cloud.call("wl_agent_complete_command",
                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
