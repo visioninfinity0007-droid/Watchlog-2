@@ -1094,3 +1094,247 @@ $function$;
 -- unique constraint would still prevent Recorder A ch1 + Recorder B ch1.
 alter table public.cameras
   drop constraint if exists cameras_site_channel_uniq;
+
+-- Recorder push (0013/0108/0110) still has one site-level token, sends only a
+-- channel, and resolved cameras by site+channel. With site+channel no longer
+-- unique, an alarm on a multi-recorder site would attach to an arbitrary
+-- recorder's camera with recorder_id NULL (and its still could land on another
+-- camera). Until push identity is recorder-scoped, push fails closed on a site
+-- with more than one configured recorder; on a single-recorder site it keeps
+-- working and is attributed to that one recorder. ACLs from 0013/0108/0110 are
+-- kept: create or replace preserves them.
+create or replace function public.wl_push_recorder_for_site(
+  p_tenant_id uuid,
+  p_site_id uuid
+) returns uuid
+language plpgsql
+stable
+set search_path = public
+as $function$
+declare
+  v_count integer;
+  v_recorder_id uuid;
+begin
+  select count(*) into v_count
+    from public.recorders r
+   where r.tenant_id=p_tenant_id
+     and r.site_id=p_site_id
+     and r.is_configured;
+
+  if v_count > 1 then
+    raise exception 'recorder push is not available for a site with more than one recorder'
+      using errcode='42501';
+  end if;
+
+  -- NULL when the site has no recorder yet: events then resolve no camera.
+  select r.id into v_recorder_id
+    from public.recorders r
+   where r.tenant_id=p_tenant_id
+     and r.site_id=p_site_id
+     and r.is_configured;
+
+  return v_recorder_id;
+end
+$function$;
+
+revoke all on function public.wl_push_recorder_for_site(uuid,uuid)
+  from public, anon, authenticated, service_role;
+
+-- The single configured recorder is the site's continuity owner (0154), so the
+-- historical site:channel dedupe key is unchanged and still matches that
+-- recorder's Agent events.
+create or replace function public.wl_ingest_push(p_token text, p_events jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent       public.agents;
+  v_src         public.push_sources;
+  v_recorder_id uuid;
+  v_received    int;
+  v_inserted    int;
+  v_map         jsonb;
+  v_snaps       int := 0;
+begin
+  select p.* into v_src from public.push_sources p
+   where p.token = btrim(p_token) and p.enabled;
+  if v_src.id is null then
+    raise exception 'push source not recognised' using errcode = '28000';
+  end if;
+  select * into v_agent from public.agents where id = v_src.agent_id;
+
+  v_recorder_id := public.wl_push_recorder_for_site(v_agent.tenant_id, v_agent.site_id);
+
+  select count(*) into v_received
+    from jsonb_array_elements(coalesce(p_events, '[]'::jsonb));
+
+  with incoming as (
+    select
+      e->>'channel'                                     as channel,
+      coalesce(nullif(e->>'event_type',''), 'unknown')  as event_type,
+      nullif(e->>'device_event_id','')                  as device_event_id,
+      (e->>'device_ts')::timestamptz                    as device_ts,
+      coalesce((e->>'agent_ts')::timestamptz, now())    as agent_ts,
+      coalesce(e->'payload', '{}'::jsonb)               as payload
+    from jsonb_array_elements(coalesce(p_events, '[]'::jsonb)) e
+    where e->>'device_ts' is not null
+  ),
+  keyed as (
+    select i.*, public.wl_dedupe_key(v_agent.site_id, i.channel, i.device_event_id,
+                                     i.device_ts, i.event_type) as dedupe_key
+      from incoming i
+  ),
+  deduped as (
+    select distinct on (dedupe_key) * from keyed order by dedupe_key, device_ts
+  ),
+  ins as (
+    insert into public.events (tenant_id, site_id, recorder_id, camera_id, agent_id,
+                               event_type, device_event_id, device_ts, agent_ts,
+                               dedupe_key, payload)
+    select v_agent.tenant_id, v_agent.site_id, v_recorder_id, c.id, v_agent.id,
+           d.event_type, d.device_event_id, d.device_ts, d.agent_ts,
+           d.dedupe_key, d.payload
+      from deduped d
+      left join public.cameras c
+        on c.site_id = v_agent.site_id
+       and c.recorder_id = v_recorder_id
+       and c.channel = d.channel
+    on conflict (tenant_id, dedupe_key) do nothing
+    returning id, dedupe_key
+  )
+  select count(*),
+         coalesce(jsonb_agg(jsonb_build_object('id', id, 'k', dedupe_key)),
+                  '[]'::jsonb)
+    into v_inserted, v_map
+    from ins;
+
+  if v_map <> '[]'::jsonb then
+    with supplied as (
+      select public.wl_dedupe_key(v_agent.site_id, e->>'channel',
+                                  nullif(e->>'device_event_id',''),
+                                  (e->>'device_ts')::timestamptz,
+                                  coalesce(nullif(e->>'event_type',''), 'unknown')) as k,
+             e->>'channel'      as channel,
+             e->>'snapshot_b64' as b64
+        from jsonb_array_elements(coalesce(p_events, '[]'::jsonb)) e
+       where nullif(e->>'snapshot_b64','') is not null
+         and e->>'device_ts' is not null
+    ),
+    decoded as (
+      select distinct on (s.k)
+             (m->>'id')::bigint as event_id, s.channel,
+             decode(s.b64, 'base64') as img
+        from jsonb_array_elements(v_map) m
+        join supplied s on s.k = m->>'k'
+       order by s.k
+    ),
+    put as (
+      insert into public.snapshots (tenant_id, event_id, site_id, camera_id, image, bytes)
+      select v_agent.tenant_id, d.event_id, v_agent.site_id, c.id,
+             d.img, octet_length(d.img)
+        from decoded d
+        left join public.cameras c
+          on c.site_id = v_agent.site_id
+         and c.recorder_id = v_recorder_id
+         and c.channel = d.channel
+       where octet_length(d.img) between 1 and 3145728
+      on conflict (event_id) do nothing
+      returning 1
+    )
+    select count(*) into v_snaps from put;
+  end if;
+
+  update public.agents set last_seen_at = now() where id = v_agent.id;
+  update public.push_sources set last_push_at = now() where id = v_src.id;
+
+  return jsonb_build_object('received', v_received, 'inserted', v_inserted,
+                            'skipped', v_received - v_inserted,
+                            'snapshots', v_snaps, 'server_time', now());
+end
+$function$;
+
+create or replace function public.wl_push_liveness(p_token text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_src public.push_sources;
+begin
+  select * into v_src from public.push_sources where token = p_token and enabled;
+  if v_src.id is null then
+    raise exception 'push token not recognised' using errcode = '28000';
+  end if;
+
+  perform public.wl_push_recorder_for_site(v_src.tenant_id, v_src.site_id);
+
+  update public.push_sources set last_push_at = now() where id = v_src.id;
+  update public.agents set last_seen_at = now() where id = v_src.agent_id;
+
+  return jsonb_build_object('ok', true, 'recorded_at', now());
+end
+$function$;
+
+create or replace function public.wl_agent_issue_push_token(
+  p_agent_id  uuid,
+  p_agent_key text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent     public.agents;
+  v_new_agent uuid;
+  v_token     text;
+begin
+  select * into v_agent
+    from public.agents a
+   where a.id = p_agent_id
+     and a.agent_key_hash = encode(sha256(p_agent_key::bytea), 'hex');
+
+  if v_agent.id is null then
+    raise exception 'agent authentication failed' using errcode = '28000';
+  end if;
+
+  if coalesce(v_agent.device_driver, '') = 'recorder-push' then
+    raise exception 'a recorder-push agent cannot issue push tokens'
+      using errcode = '42501';
+  end if;
+
+  -- Neither reuse nor mint a site-level token for a multi-recorder site.
+  perform public.wl_push_recorder_for_site(v_agent.tenant_id, v_agent.site_id);
+
+  -- Reuse this site's live push source if it already has one.
+  select ps.token into v_token
+    from public.push_sources ps
+   where ps.site_id = v_agent.site_id
+     and ps.enabled
+   order by ps.created_at desc
+   limit 1;
+
+  if v_token is null then
+    -- A virtual agent to own the pushed events. agent_key_hash is required
+    -- but never used: this agent authenticates by push token, not by key.
+    insert into public.agents (tenant_id, site_id, agent_key_hash, hostname,
+                               device_driver, last_seen_at)
+    values (v_agent.tenant_id, v_agent.site_id,
+            md5(gen_random_uuid()::text || gen_random_uuid()::text),
+            'Recorder push', 'recorder-push', now())
+    returning id into v_new_agent;
+
+    insert into public.push_sources (tenant_id, site_id, agent_id)
+    values (v_agent.tenant_id, v_agent.site_id, v_new_agent)
+    returning token into v_token;
+  end if;
+
+  return jsonb_build_object(
+    'ok', true,
+    'token', v_token,
+    'site_id', v_agent.site_id,
+    'note', 'Point the recorder at the WatchLog push bridge with this token.');
+end
+$function$;
