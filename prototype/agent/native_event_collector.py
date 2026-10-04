@@ -29,12 +29,18 @@ def collector(cfg, spool, stop, holder=None) -> None:
     monitor so a camera drop is reflected without waiting for the next probe."""
     detector = core.vision.build(cfg, core.log)
     auth_failures = 0
-    last_gen = core.credential_store.credential_generation()
+    last_gen = core._credential_generation_for_cfg(cfg)
     while not stop.is_set():
         driver = None
         auth_error = False
         try:
             driver, info = core.open_driver(cfg)
+            if holder is not None:
+                holder["live_driver"] = driver
+                holder["recorder_live_at"] = time.monotonic()
+                holder["recorder_live_wall"] = core.now_utc()
+                holder["recorder_vendor"] = info.vendor
+                holder["recorder_model"] = info.model
             core.log(
                 f"driver {driver.name}: {info.vendor} {info.model or ''} "
                 f"fw={info.firmware or '?'}".rstrip()
@@ -49,6 +55,12 @@ def collector(cfg, spool, stop, holder=None) -> None:
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                recorder_id = getattr(cfg, "recorder_cloud_id", None)
+                if recorder_id:
+                    ev = ev.with_recorder_id(recorder_id)
+                if holder is not None:
+                    holder["recorder_live_at"] = time.monotonic()
+                    holder["recorder_live_wall"] = core.now_utc()
 
                 raw = None
                 if cfg.snapshots and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
@@ -155,6 +167,8 @@ def collector(cfg, spool, stop, holder=None) -> None:
             core.log(f"ERROR: driver crashed: {type(error).__name__}: {error}")
         finally:
             if driver:
+                if holder is not None and holder.get("live_driver") is driver:
+                    holder.pop("live_driver", None)
                 try:
                     driver.close()
                 except Exception:

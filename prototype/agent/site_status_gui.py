@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
     QFileDialog, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
-from setup_gui import STYLE, Worker, label, card_layout, MUTED, ICE, TEXT
+from setup_gui import (
+    STYLE, Worker, RecorderManagerWindow, label, card_layout, MUTED, ICE, TEXT
+)
 from status_controller import StatusController
 
 # customer-facing state -> (badge text, colour)
@@ -55,6 +57,7 @@ class SiteStatusWindow(QMainWindow):
         self.setMinimumSize(940, 680)
         self.setStyleSheet(STYLE)
         self._busy = False
+        self._recorder_manager = None
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -99,6 +102,7 @@ class SiteStatusWindow(QMainWindow):
         bar = QHBoxLayout()
         self._buttons = []
         specs = [
+            ("Manage Recorders", self.act_manage_recorders, "secondary"),
             ("Test Recorder", self.act_test_recorder, "secondary"),
             ("Rediscover Cameras", self.act_rediscover, "secondary"),
             ("Recheck Recording", self.act_recheck_recording, "secondary"),
@@ -207,6 +211,16 @@ class SiteStatusWindow(QMainWindow):
                 item = QTableWidgetItem(str(val))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.camera_table.setItem(row, col, item)
+
+    def act_manage_recorders(self):
+        if self._recorder_manager is None:
+            self._recorder_manager = RecorderManagerWindow(self.config_path, self)
+            self._recorder_manager.destroyed.connect(
+                lambda *_args: setattr(self, "_recorder_manager", None)
+            )
+        self._recorder_manager.show()
+        self._recorder_manager.raise_()
+        self._recorder_manager.activateWindow()
 
     def act_test_recorder(self):
         self._run(self.controller.test_recorder,
