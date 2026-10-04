@@ -10,7 +10,8 @@ not treated as the security boundary.
 A superseded Agent that keeps running (an old PC left on after a replacement was
 enrolled) must not take site authority back with its own heartbeat while the
 replacement is online. Failover to it still works once the replacement goes
-offline, and the replacement regains authority when it reports again.
+offline, and the replacement regains authority when it reports again and keeps
+it against the older Agent's later heartbeats.
 """
 from __future__ import annotations
 
@@ -313,10 +314,23 @@ def run() -> int:
             step(current_site_agent() == str(stale_agent),
                  "older Agent takes over when the replacement has gone offline")
             # ...and the replacement takes it back as soon as it reports again.
+            # The whole script shares one now(), so reports are aged to give each
+            # heartbeat its own time: the older Agent last reported 30 s ago...
+            cur.execute(
+                "update agents set last_seen_at=now()-interval '30 seconds' where id=%s",
+                (stale_agent,),
+            )
             as_anon("select wl_heartbeat(%s,%s,%s)", current_agent, current_key, "5.1.0")
-            as_anon("select wl_heartbeat(%s,%s,%s)", stale_agent, stale_key, "5.0.27")
             step(current_site_agent() == str(current_agent),
                  "replacement regains site authority when it reports again")
+            # ...and its next heartbeat lands 20 s after the replacement's.
+            cur.execute(
+                "update agents set last_seen_at=now()-interval '20 seconds' where id=%s",
+                (current_agent,),
+            )
+            as_anon("select wl_heartbeat(%s,%s,%s)", stale_agent, stale_key, "5.0.27")
+            step(current_site_agent() == str(current_agent),
+                 "older Agent heartbeat after the replacement reports cannot take authority back")
 
             # Current authority still uses the new path.
             ok = as_anon(
