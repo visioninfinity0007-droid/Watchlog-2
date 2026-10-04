@@ -17,6 +17,7 @@ binary. Only a handful of operations are needed.
     GetProfiles                         channels, and the token maps events use
     CreatePullPointSubscription         start an event subscription
     PullMessages                        drain it, long-poll, outbound only
+    Renew / Unsubscribe                 keep it alive, release it on close
     GetSnapshotUri                      stills
 
 Auth is WS-Security UsernameToken with a SHA-1 password digest, which is
@@ -36,7 +37,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Iterator
 from urllib.parse import urlparse
 
@@ -111,6 +112,10 @@ JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 PULL_TIMEOUT = "PT30S"
 PULL_LIMIT = 100
 SUBSCRIPTION_MINUTES = 10
+RENEW_MARGIN_SECONDS = 120         # renew this long before the grant runs out
+UNSUBSCRIBE_TIMEOUT = 5            # best effort; a dead link must not stall close()
+
+WSN_ACTION = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/"
 
 
 def _strip_ns(elem: ET.Element) -> ET.Element:
@@ -175,7 +180,8 @@ class OnvifDriver(NvrDriver):
         self.events_service: str | None = None
         self.media_service: str | None = None
         self._sub_address: str | None = None
-        self._sub_expires: datetime | None = None
+        self._renew_at: float | None = None          # monotonic deadline
+        self._granted_seconds: float | None = None   # last lifetime granted
         # Token -> physical channel, one map per token kind, all filled by
         # _load_profiles(). A value of None marks an ambiguous token.
         self._source_to_channel: dict[str, str | None] = {}
@@ -392,6 +398,8 @@ class OnvifDriver(NvrDriver):
             self._discover_services()
         if not self.events_service:
             raise DriverError("device advertises no ONVIF events service")
+        # Never leave the previous pull point running on the recorder.
+        self._unsubscribe()
 
         root = self._call(
             self.events_service,
@@ -404,24 +412,77 @@ class OnvifDriver(NvrDriver):
         if addr is None or not addr.text:
             raise DriverError("CreatePullPointSubscription returned no address")
         self._sub_address = self._rehost(addr.text.strip())
-        self._sub_expires = (datetime.now(timezone.utc)
-                             + timedelta(minutes=SUBSCRIPTION_MINUTES))
+        self._schedule_renewal(root)
 
-    def stream_events(self, stop: threading.Event) -> Iterator[Event]:
+    def _schedule_renewal(self, root: ET.Element) -> None:
+        """
+        Plan the next Renew from the lifetime the device actually granted.
+
+        A device may grant less than was asked for, and it stamps
+        TerminationTime with its own clock, so only TerminationTime minus
+        CurrentTime means anything; the PC clock is never compared with it.
+        Without both, the last grant seen (or the requested one) is assumed.
+        """
+        current = _xs_datetime(root.findtext(".//CurrentTime"))
+        ends = _xs_datetime(root.findtext(".//TerminationTime"))
+        if current and ends and ends > current:
+            self._granted_seconds = (ends - current).total_seconds()
+        granted = min(self._granted_seconds or SUBSCRIPTION_MINUTES * 60,
+                      SUBSCRIPTION_MINUTES * 60)
+        self._renew_at = (self._monotonic() + granted
+                          - min(RENEW_MARGIN_SECONDS, granted / 2))
+
+    def _renew(self) -> None:
+        root = self._call(
+            self._sub_address,
+            f'<wsnt:Renew xmlns:wsnt="{NS["wsnt"]}">'
+            f"<wsnt:TerminationTime>PT{SUBSCRIPTION_MINUTES}M</wsnt:TerminationTime>"
+            f"</wsnt:Renew>",
+            action=WSN_ACTION + "RenewRequest", to=self._sub_address)
+        self._schedule_renewal(root)
+
+    def _unsubscribe(self) -> None:
+        """
+        Release the current pull point. Every one left behind holds a
+        recorder subscription slot until its TerminationTime; enough of them
+        and the recorder refuses new subscriptions. Best effort and bounded.
+        """
+        address, self._sub_address = self._sub_address, None
+        self._renew_at = None
+        if not address:
+            return
+        try:
+            self._call(address, f'<wsnt:Unsubscribe xmlns:wsnt="{NS["wsnt"]}"/>',
+                       action=WSN_ACTION + "UnsubscribeRequest", to=address,
+                       timeout=UNSUBSCRIBE_TIMEOUT)
+        except DriverError:
+            pass                     # it lapses at its TerminationTime anyway
+
+    def _require_profiles(self, refresh: bool = False) -> None:
         # Without the token maps every event would be unattributable; fail
         # the attempt so the collector reconnects, rather than stream blind.
-        if not self._ensure_profiles():
+        if refresh or not self._profile_tokens:
+            self._load_profiles()
+        if not self._profile_tokens:
             raise DriverError("device returned no ONVIF media profiles; "
                               "events cannot be attributed to cameras")
+
+    def stream_events(self, stop: threading.Event) -> Iterator[Event]:
+        self._require_profiles()
         self._subscribe()
         action = ("http://www.onvif.org/ver10/events/wsdl/"
                   "PullPointSubscription/PullMessages")
 
         while not stop.is_set():
-            if (self._sub_expires
-                    and datetime.now(timezone.utc)
-                    > self._sub_expires - timedelta(minutes=2)):
-                self._subscribe()
+            if self._renew_at is not None and self._monotonic() >= self._renew_at:
+                try:
+                    self._renew()
+                except DriverError:
+                    # Renew refused or unsupported: replace the pull point
+                    # (_subscribe releases the old one first) and re-read the
+                    # profiles, whose tokens may have changed with it.
+                    self._require_profiles(refresh=True)
+                    self._subscribe()
 
             root = self._call(
                 self._sub_address,
@@ -585,4 +646,7 @@ class OnvifDriver(NvrDriver):
         return None
 
     def close(self) -> None:
+        # Release the recorder-side pull point; otherwise every reconnect
+        # leaves one alive until its TerminationTime.
+        self._unsubscribe()
         self.s.close()
