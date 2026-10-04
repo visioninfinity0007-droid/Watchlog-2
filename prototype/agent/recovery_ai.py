@@ -9,7 +9,7 @@ timestamp, a representative snapshot where retrievable, detections/labels, and r
 
 Honesty rules (never fabricate):
   * source='recovered' and recovered=True — never presented as a live observation;
-  * the event timestamp is the FOOTAGE time (segment start), never the recovery time;
+  * the event timestamp is the FOOTAGE time of the frame it carries, never the recovery time;
   * no frame source (driver cannot serve a recorded frame and no decoder is available) -> the
     segment yields status 'no_frame' and NO derived event (recorder-native replay still stands);
   * detector unavailable -> the frame is kept without labels, exactly like the live fail-open path;
@@ -71,8 +71,9 @@ def _ffmpeg_exe() -> str | None:
     return path if path and os.path.exists(path) else None
 
 
-def _ffmpeg_first_frame(clip_bytes: bytes) -> bytes | None:
-    """Decode one representative JPEG with bounded CPU/time/memory behavior."""
+def _ffmpeg_first_frame(clip_bytes: bytes, offset_seconds: float = 0.0) -> bytes | None:
+    """Decode one representative JPEG — the first frame at or after ``offset_seconds`` into the
+    media — with bounded CPU/time/memory behavior."""
     exe = _ffmpeg_exe()
     if not exe or not clip_bytes:
         return None
@@ -83,9 +84,10 @@ def _ffmpeg_first_frame(clip_bytes: bytes) -> bytes | None:
             tmp.write(clip_bytes)
             src = tmp.name
         out = src + ".jpg"
+        seek = ["-ss", f"{offset_seconds:.3f}"] if offset_seconds > 0 else []
         cmd = [
             exe, "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-y", "-i", src,
+            "-y", *seek, "-i", src,
             "-frames:v", "1",
             "-vf", "scale=1280:-2:force_original_aspect_ratio=decrease",
             "-q:v", "4",
@@ -145,20 +147,47 @@ def _opencv_first_frame(clip_bytes):  # dev-only fallback; not required by relea
                 pass
 
 
-def decode_jpeg_frame(clip_bytes, *, decoder=None):
-    """Return a representative JPEG frame from recorder-native clip bytes.
+def decode_jpeg_frame(clip_bytes, *, decoder=None, offset_seconds=0.0):
+    """Return a representative JPEG frame from recorder-native clip bytes: the first frame at or
+    after ``offset_seconds`` into the media.
 
     Production order: injected test decoder -> bundled FFmpeg -> optional OpenCV
-    dev fallback. Failure is always honest None; no fabricated frame.
+    dev fallback (media start only). Failure is always honest None; no fabricated frame.
     """
     if not clip_bytes:
         return None
+    offset = max(0.0, float(offset_seconds or 0.0))
     if decoder is not None:
         try:
-            return decoder(clip_bytes)
+            return decoder(clip_bytes, offset) if offset else decoder(clip_bytes)
         except Exception:
             return None
+    if offset:
+        return _ffmpeg_first_frame(clip_bytes, offset)
     return _ffmpeg_first_frame(clip_bytes) or _opencv_first_frame(clip_bytes)
+
+
+def _frame_at(clip, ts, segment_start, clip_seconds, decoder):
+    """The frame for footage time ``ts`` from a clip requested as [ts, ts + clip_seconds).
+
+    Some recorders answer with the whole recorded segment instead of the requested window (a
+    Hikvision playbackURI names the segment), so the media starts at ``segment_start`` and its
+    first frame is not the footage at ``ts``. When ts lies inside the segment, seek to
+    ts - segment_start. No frame there means the media was cut to the request, so its first frame
+    is at ts (to within the clip length) — unless the media also runs past the requested window:
+    then where it starts is unknown and no frame is claimed.
+    """
+    offset = (ts - segment_start).total_seconds() if segment_start is not None else 0.0
+    if offset <= 0:
+        return decode_jpeg_frame(clip, decoder=decoder)
+    if decoder is None and not _ffmpeg_exe():
+        return None                     # cannot seek, so the frame's footage time is unknown
+    frame = decode_jpeg_frame(clip, decoder=decoder, offset_seconds=offset)
+    if frame:
+        return frame
+    if decode_jpeg_frame(clip, decoder=decoder, offset_seconds=float(clip_seconds) + 1.0):
+        return None                     # longer than the request, shorter than the segment
+    return decode_jpeg_frame(clip, decoder=decoder)
 
 
 def decoder_selftest() -> dict:
@@ -218,13 +247,16 @@ def _recorded_clip(driver, channel, start, end):
     return None
 
 
-def recovered_frame(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_FRAME_CLIP_SECONDS):
+def recovered_frame(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_FRAME_CLIP_SECONDS,
+                    segment_start=None):
     """Obtain a representative historical frame (JPEG) for ``channel`` at footage time ``ts``.
 
     Order of preference, honest about capability:
       1. a driver that can serve a recorded frame directly (``get_recorded_frame``);
       2. otherwise a bounded recovered clip (``get_recorded_segment`` / ``get_clip``) decoded to one
-         frame via ``decode_jpeg_frame``.
+         frame via ``decode_jpeg_frame``. ``segment_start`` (start of the recorded segment ``ts``
+         was sampled from) lets the frame be taken at ``ts`` when the recorder returns the whole
+         segment instead of the requested window.
     Returns JPEG bytes, or None when no frame source is available.
     """
     start = _as_dt(ts)
@@ -240,7 +272,10 @@ def recovered_frame(driver, channel, ts, *, decoder=None, clip_seconds=DEFAULT_F
             pass
 
     clip = _recorded_clip(driver, channel, start, end)
-    return decode_jpeg_frame(clip, decoder=decoder) if clip else None
+    if not clip:
+        return None
+    seg_start = _as_dt(segment_start) if segment_start is not None else None
+    return _frame_at(clip, start, seg_start, clip_seconds, decoder)
 
 
 def media_kind(head: bytes) -> str:
@@ -388,8 +423,11 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                 "provenance": RECOVERED_SOURCE,
                 "reason": f"archive segments {cap} on this recorder"}
 
-    provider = frame_provider or (lambda drv, ch, ts: recovered_frame(
-        drv, ch, ts, decoder=decoder, clip_seconds=clip_seconds))
+    def provider(drv, ch, ts, segment_start):
+        if frame_provider is not None:
+            return frame_provider(drv, ch, ts)
+        return recovered_frame(drv, ch, ts, decoder=decoder, clip_seconds=clip_seconds,
+                               segment_start=segment_start)
     seen = seen if seen is not None else set()
     recovered = activity = snapshots = frames = no_frame = duplicates = attempted = 0
 
@@ -421,7 +459,7 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                     seen.add(key)
 
                     attempted += 1
-                    frame = provider(driver, channel, sample_ts)
+                    frame = provider(driver, channel, sample_ts, seg.get("start"))
                     status, event = analyze_segment(
                         detector, frame, channel=channel, ts=sample_ts,
                         device_event_id=f"{base_id}:{sample_iso}", segment=seg_window)

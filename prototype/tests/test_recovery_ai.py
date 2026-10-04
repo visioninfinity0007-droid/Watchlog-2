@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 AGENT = Path(__file__).resolve().parent.parent / "agent"
@@ -375,6 +375,117 @@ class SingleClipAttempt(unittest.TestCase):
                 module.get_clip = original
                 module.install()
             self.assertEqual(len(calls), 2, f"{module.__name__}: {len(calls)} downloads for 2 samples")
+
+
+
+def _media(start, seconds):
+    """Fake recorded media: where it starts and how long it runs (no codec needed)."""
+    return f"MEDIA|{start.isoformat()}|{int(seconds)}".encode()
+
+
+def _media_decoder(clip, offset=0.0):
+    """Decode the frame ``offset`` seconds into fake media; None past its end."""
+    _tag, start, seconds = clip.decode().split("|")
+    if offset > int(seconds):
+        return None
+    return b"FRAME@" + (datetime.fromisoformat(start) + timedelta(seconds=offset)).isoformat().encode()
+
+
+class _MediaArchive(OverlapDriver):
+    """mode='segment': the download is the WHOLE recorded segment, whatever window was asked for
+    (a Hikvision playbackURI names the segment). mode='window': the download is cut to the window.
+    mode='short': the whole-segment download is cut short (2 minutes)."""
+    def __init__(self, segments, mode):
+        super().__init__(segments)
+        self.mode = mode
+
+    def get_recorded_frame(self, channel, ts):
+        return None
+
+    def get_recorded_segment(self, channel, start, end):
+        if self.mode == "window":
+            return {"status": "supported", "bytes": _media(start, (end - start).total_seconds())}
+        for seg in self._segs:
+            s, e = datetime.fromisoformat(seg["start"]), datetime.fromisoformat(seg["end"])
+            if s <= start < e:
+                length = 120 if self.mode == "short" else (e - s).total_seconds()
+                return {"status": "supported", "bytes": _media(s, length)}
+        return {"status": "supported", "bytes": None}
+
+
+class RecoveredFramePosition(unittest.TestCase):
+    """A recovered snapshot is stamped with the footage time of the frame it actually holds."""
+    SEG = [{"start": "2026-09-14T07:30:00+00:00", "end": "2026-09-14T07:50:00+00:00", "id": "seg-20m"}]
+
+    def _run(self, mode):
+        got = []
+        summary = recovery_ai.backfill_intelligence(
+            _MediaArchive(self.SEG, mode), FakeDetector(keep=False), "1",
+            "2026-09-14T07:00:00+00:00", "2026-09-14T08:00:00+00:00",
+            on_event=got.append, decoder=_media_decoder, snapshot_interval_seconds=300)
+        frames = [base64.b64decode(e["snapshot_b64"]).decode() for e in got]
+        return summary, got, frames
+
+    def test_whole_segment_download_is_sampled_at_each_sample_position(self):
+        summary, got, frames = self._run("segment")
+        self.assertEqual(frames, ["FRAME@2026-09-14T07:30:00+00:00", "FRAME@2026-09-14T07:35:00+00:00",
+                                  "FRAME@2026-09-14T07:40:00+00:00", "FRAME@2026-09-14T07:45:00+00:00"])
+        for event, frame in zip(got, frames):
+            self.assertEqual(frame, "FRAME@" + event["device_ts"])
+
+    def test_window_cut_download_keeps_its_first_frame(self):
+        summary, got, frames = self._run("window")
+        self.assertEqual(len(frames), 4)
+        for event, frame in zip(got, frames):
+            self.assertEqual(frame, "FRAME@" + event["device_ts"])
+
+    def test_media_of_unknown_start_is_not_stamped_with_the_sample_time(self):
+        summary, got, frames = self._run("short")
+        # Only the sample at the segment start can be placed; the rest stay honest no-frames.
+        self.assertEqual(frames, ["FRAME@2026-09-14T07:30:00+00:00"])
+        self.assertEqual(summary["no_frame"], 3)
+
+    def test_recovered_frame_seeks_into_a_whole_segment(self):
+        drv = _MediaArchive(self.SEG, "segment")
+        ts = datetime(2026, 9, 14, 7, 42, 30, tzinfo=timezone.utc)
+        frame = recovery_ai.recovered_frame(drv, "1", ts, decoder=_media_decoder,
+                                            segment_start=self.SEG[0]["start"])
+        self.assertEqual(frame, b"FRAME@" + ts.isoformat().encode())
+
+
+    @unittest.skipUnless(recovery_ai._ffmpeg_exe(), "FFmpeg not available")
+    def test_ffmpeg_decode_follows_the_same_rules(self):
+        """The production decoder: seek inside media, nothing past its end."""
+        import os
+        import subprocess
+        import tempfile
+
+        def synth(seconds):
+            fd, path = tempfile.mkstemp(suffix=".mpg")
+            os.close(fd)
+            try:
+                subprocess.run([recovery_ai._ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+                                "-nostdin", "-y", "-f", "lavfi",
+                                "-i", f"testsrc=size=320x240:rate=10:duration={seconds}",
+                                "-c:v", "mpeg2video", "-f", "mpeg", path],
+                               check=True, timeout=60)
+                return open(path, "rb").read()
+            finally:
+                os.unlink(path)
+
+        seg_start = datetime(2026, 9, 14, 7, 30, tzinfo=timezone.utc)
+        whole = synth(20)                                  # the whole 20 s "segment"
+        at_12 = recovery_ai._frame_at(whole, seg_start + timedelta(seconds=12), seg_start, 6, None)
+        self.assertTrue(at_12 and at_12.startswith(b"\xff\xd8\xff"))
+        self.assertNotEqual(at_12, recovery_ai.decode_jpeg_frame(whole))
+        # Past the end of media that is longer than the request: its start is unknown.
+        self.assertIsNone(recovery_ai._frame_at(whole, seg_start + timedelta(seconds=40),
+                                                seg_start, 6, None))
+        # Media cut to the 6 s request: its first frame is the sample.
+        window = synth(5)
+        self.assertEqual(recovery_ai._frame_at(window, seg_start + timedelta(seconds=300),
+                                               seg_start, 6, None),
+                         recovery_ai.decode_jpeg_frame(window))
 
 
 if __name__ == "__main__":
