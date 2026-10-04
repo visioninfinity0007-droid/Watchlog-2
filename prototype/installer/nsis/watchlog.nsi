@@ -147,8 +147,9 @@ Section "Install"
   ; UPGRADE VERSION TRUTH: before starting anything, verify the on-disk binary's file ProductVersion
   ; AND its runtime --version both equal this release. If the binary was not actually replaced, roll
   ; back and abort rather than register/start/report a version that is not installed.
+  ; -VerifySetupUi: this installer also wrote the Setup UI, so its version must match too.
   ${If} $6 == "1"
-    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}" -VerifySetupUi' $9
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
       ${If} $9 == 0
@@ -351,6 +352,15 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
 
+  ; Multi-recorder state follows the same rule as the legacy credential. recorders.json
+  ; binds local recorder ids to this site's cloud recorder identities and names the
+  ; per-recorder credentials under Secrets\recorders. Remove it BEFORE those credentials:
+  ; a registry left without them made every later reinstall fail until someone deleted
+  ; it by hand.
+  Delete "${DATAROOT}\recorders.json"
+  Delete "${DATAROOT}\recorders.json.tmp"
+  RMDir /r "${DATAROOT}\Secrets\recorders"
+
   ; Remove the encrypted credential + agent key (the whole Secrets directory)
   ; and any legacy plaintext/blob remnants. Non-secret state and logs remain in
   ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
@@ -370,4 +380,6 @@ Section "Uninstall"
   Delete "${DATAROOT}\last_live.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
+  ; Secondary recorders keep their own spool, health ledger and last-live marker here.
+  RMDir /r "${DATAROOT}\recorders"
 SectionEnd

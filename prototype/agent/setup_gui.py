@@ -10,6 +10,7 @@ is redirected to ProgramData; the customer sees concise actionable messages.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -45,6 +46,9 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
+import credential_store
+import recorder_registry
+import recorder_runtime
 import setup_backend as backend
 from status_controller import StatusController
 
@@ -1705,6 +1709,340 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             os.environ["PROGRAMDATA"] = old_pd
 
 
+REGISTRY_RESULT_SCHEMA = "watchlog.registry_selftest.v1"
+# Upper bound for probing every recorder concurrently, so one unreachable recorder cannot
+# stall the Repair/Upgrade window.
+RECORDER_PROBE_SECONDS = 45.0
+
+
+def _write_result_json(result_path: str | None, result: dict) -> None:
+    if not result_path:
+        return
+    path = Path(result_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(result, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _finish(result_path: str | None, result: dict) -> int:
+    try:
+        _write_result_json(result_path, result)
+    except Exception:  # noqa: BLE001 - an unwritable result is a failed run
+        return 2
+    return 0 if result.get("ok") else 2
+
+
+def _run_registry_selftest(result_path: str | None = None) -> int:
+    """GUI-free proof that THIS packaged exe drives the multi-recorder storage path.
+
+    Runs in a private temporary ProgramData, never the PC's real one: legacy singleton ->
+    recorders.json + Secrets\\recorders\\<id>.dpapi, a stable re-migration, a second
+    recorder with an independent credential, contexts built by the Agent's own loader,
+    then rollback of the unbound recorder.
+    """
+    import secrets
+    import uuid
+    from types import SimpleNamespace
+
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": "isolated", "ok": False, "checks": {}}
+
+    def check(name: str, ok) -> None:
+        result["checks"][name] = bool(ok)
+        if not ok:
+            raise AssertionError(name)
+
+    old_pd = os.environ.get("PROGRAMDATA")
+    try:
+        with tempfile.TemporaryDirectory(prefix="wl-registry-selftest-",
+                                         ignore_cleanup_errors=True) as td:
+            os.environ["PROGRAMDATA"] = td
+            data = Path(td) / "WatchLog"
+            check("isolated_data_root", recorder_registry.data_dir() == data
+                  and credential_store.data_dir() == data)
+            data.mkdir(parents=True, exist_ok=True)
+            ini = data / "watchlog.ini"
+            ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\nnvr_driver = auto\n",
+                           encoding="utf-8")
+            first_pw, second_pw = secrets.token_urlsafe(18), secrets.token_urlsafe(18)
+            credential_store.save_nvr_credential("selftest-one", first_pw)
+
+            primary = recorder_registry.migrate_legacy_singleton(ini)
+            check("legacy_migrated_to_primary", primary and primary["is_primary"]
+                  and primary["continuity_owner"] and uuid.UUID(primary["local_id"]))
+            blob = credential_store.recorder_credential_path(primary["local_id"])
+            check("per_recorder_blob_written",
+                  recorder_registry.registry_path().exists() and blob.exists())
+            cred = credential_store.load_recorder_credential(primary["local_id"])
+            check("per_recorder_blob_round_trip", cred.get("username") == "selftest-one"
+                  and cred.get("password") == first_pw)
+            check("legacy_credential_retained", credential_store.nvr_credential_path().exists())
+            check("no_plaintext_in_blob", first_pw.encode("utf-8") not in blob.read_bytes())
+            again = recorder_registry.migrate_legacy_singleton(ini)
+            check("re_migration_keeps_stable_id",
+                  again and again["local_id"] == primary["local_id"])
+
+            second = recorder_registry.add_recorder(
+                display_name="Selftest Recorder 2", url="http://192.0.2.11", driver="auto",
+                username="selftest-two", password=second_pw)
+            check("second_credential_independent",
+                  credential_store.load_recorder_credential(second["local_id"]).get("password")
+                  == second_pw
+                  and credential_store.load_recorder_credential(primary["local_id"]).get("password")
+                  == first_pw)
+            base = SimpleNamespace(state_path=data / "agent_state.json",
+                                   spool_path=data / "spool.sqlite",
+                                   health_store_path=data / "health.sqlite",
+                                   last_live_path=data / "last_live.json")
+            contexts = recorder_runtime.load_contexts(base)
+            check("runtime_loads_every_recorder", sorted(c.local_id for c in contexts)
+                  == sorted([primary["local_id"], second["local_id"]]))
+            secondary = next(c for c in contexts if c.local_id == second["local_id"])
+            check("secondary_state_is_recorder_scoped",
+                  Path(secondary.config.spool_path).parent == data / "recorders" / second["local_id"])
+
+            recorder_registry.remove_unbound_recorder(second["local_id"])
+            check("unbound_rollback_deletes_its_credential",
+                  not credential_store.recorder_credential_path(second["local_id"]).exists()
+                  and [r["local_id"] for r in recorder_registry.recorders()] == [primary["local_id"]])
+            result["ok"] = True
+    except BaseException as exc:  # noqa: BLE001 - report every failure as a result
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        if old_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = old_pd
+    return _finish(result_path, result)
+
+
+def _probe_recorders(contexts: dict, report: list[dict]) -> None:
+    """Probe every recorder concurrently through the Agent's own driver path."""
+    import threading
+
+    outcome: dict[str, tuple[bool, str]] = {}
+
+    def probe(local_id: str, cfg) -> None:
+        driver = None
+        try:
+            driver, device = backend.core.open_driver(cfg)
+            channels = driver.list_channels() or []
+            outcome[local_id] = (bool(device) and len(channels) > 0, f"{len(channels)} channel(s)")
+        except BaseException as exc:  # noqa: BLE001 - classified, never the raw text (LAN address)
+            outcome[local_id] = (False, backend._classify_exception(exc))
+        finally:
+            if driver is not None:
+                try:
+                    driver.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    workers = [threading.Thread(target=probe, args=(local_id, ctx.config), daemon=True)
+               for local_id, ctx in contexts.items()]
+    for worker in workers:
+        worker.start()
+    stop_at = time.monotonic() + RECORDER_PROBE_SECONDS
+    for worker in workers:
+        worker.join(max(0.0, stop_at - time.monotonic()))
+    for entry in report:
+        live, detail = outcome.get(entry["local_id"], (False, "timeout"))
+        entry["live"] = bool(live)
+        entry["detail"] = detail
+
+
+def _run_registry_preflight(config_path: Path, *, mode: str,
+                            result_path: str | None = None) -> int:
+    """Read-only Repair/Upgrade validation of THIS site's recorder registry.
+
+    passive  - live Agent still running: the registry validates, every configured
+               recorder credential decrypts and the Agent's own loader builds a context
+               for each recorder. No network.
+    recorder - live Agent paused: also probes every configured recorder. The continuity
+               recorder must answer. Any other recorder that does not is reported, not
+               fatal: it is the pre-upgrade baseline the commit gate compares against.
+    Never migrates, writes the registry or changes a credential. A site with no registry
+    is left to the Agent's own --preflight-existing-site.
+    """
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": mode, "ok": False,
+              "registry": "absent", "recorders": []}
+    try:
+        if mode not in ("passive", "recorder"):
+            raise ValueError(f"unknown preflight mode {mode!r}")
+        if recorder_registry.registry_path().exists():
+            result["registry"] = "present"
+            rows = [row for row in recorder_registry.recorders() if row.get("is_configured")]
+            report = []
+            for row in rows:
+                entry = {"local_id": row["local_id"], "display_name": row["display_name"],
+                         "continuity_owner": bool(row.get("continuity_owner")),
+                         "is_primary": bool(row.get("is_primary")),
+                         "credential": "ok", "live": None, "detail": ""}
+                try:
+                    credential_store.load_recorder_credential(row["local_id"])
+                except Exception as exc:  # noqa: BLE001
+                    entry["credential"] = "needs_attention"
+                    entry["detail"] = type(exc).__name__
+                report.append(entry)
+            result["recorders"] = report
+            result["recorders_total"] = len(report)
+            if any(entry["credential"] != "ok" for entry in report):
+                raise RuntimeError("a configured recorder credential cannot be decrypted")
+
+            base = backend.core.Config(Path(config_path), read_only_credentials=True)
+            contexts = {ctx.local_id: ctx for ctx in recorder_runtime.load_contexts(base)}
+            # The runtime writes each recorder's last-live marker only with recovery on.
+            result["live_markers"] = bool(getattr(base, "recovery_enabled", False))
+            for entry in report:
+                entry["live_marker"] = str(contexts[entry["local_id"]].config.last_live_path)
+            if mode == "recorder":
+                _probe_recorders(contexts, report)
+                if not any(entry["continuity_owner"] and entry["live"] for entry in report):
+                    raise RuntimeError("the original WatchLog recorder did not answer")
+        result["ok"] = True
+    except BaseException as exc:  # noqa: BLE001 - includes SystemExit from strict config
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return _finish(result_path, result)
+
+
+def _recorder_blob_names() -> set[str]:
+    folder = credential_store.recorder_secrets_dir()
+    return {blob.name for blob in folder.glob("*.dpapi")} if folder.exists() else set()
+
+
+def _undo_registry_staging(keep_blobs: set[str]) -> bool:
+    """Remove a registry staged by Repair/Upgrade and the credentials it created. The
+    legacy singleton was never touched, so this is the previous working state."""
+    path = recorder_registry.registry_path()
+    for leftover in (path, path.with_suffix(path.suffix + ".tmp")):
+        leftover.unlink(missing_ok=True)
+    for name in _recorder_blob_names() - set(keep_blobs):
+        (credential_store.recorder_secrets_dir() / name).unlink(missing_ok=True)
+    return not path.exists()
+
+
+def _run_registry_migration(config_path: Path, *, result_path: str | None = None) -> int:
+    """Repair/Upgrade step: stage the legacy singleton recorder into the registry.
+
+    recorder_registry.migrate_legacy_singleton reads the legacy credential, creates the
+    stable local UUID, writes the per-recorder DPAPI blob and reads it back, publishes the
+    registry and re-reads both; this step then proves the Agent's own loader accepts it.
+    The legacy watchlog.ini recorder and nvr_credential.dpapi are NOT retired: the 5.1
+    runtime still runs a one-recorder site from them, so retirement waits for a release
+    whose runtime boots from the registry. Any failure removes what this step created.
+    """
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": "migrate", "ok": False,
+              "migrated": False, "registry": "existing"}
+    staged = False
+    keep = set()
+    try:
+        if not recorder_registry.registry_path().exists():
+            keep = _recorder_blob_names()
+            staged = True
+            primary = recorder_registry.migrate_legacy_singleton(Path(config_path))
+            if primary is None:
+                raise RuntimeError("this site has no legacy recorder to stage")
+            result.update(registry="created", migrated=True, local_id=primary["local_id"])
+            base = backend.core.Config(Path(config_path), read_only_credentials=True)
+            contexts = recorder_runtime.load_contexts(base)
+            if [ctx.local_id for ctx in contexts if ctx.continuity_owner] != [primary["local_id"]]:
+                raise RuntimeError("the staged registry does not load as the original recorder")
+            if not credential_store.load_nvr_credential_readonly():
+                raise RuntimeError("the legacy recorder credential was not retained")
+        result["ok"] = True
+    except BaseException as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        if staged:
+            try:
+                result["undone"] = _undo_registry_staging(keep)
+            except Exception:  # noqa: BLE001
+                result["undone"] = False
+    return _finish(result_path, result)
+
+
+def _run_registry_rollback(local_id: str, *, result_path: str | None = None) -> int:
+    """Undo a registry THIS Repair/Upgrade staged, after its payload rollback.
+
+    Only an untouched one-recorder registry holding exactly that unbound recorder is
+    removed. Anything else is kept: a recorder bound to a cloud identity is never
+    discarded locally, and a recorder added since belongs to the operator.
+    """
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": "rollback", "ok": False,
+              "action": "kept"}
+    try:
+        rows = recorder_registry.recorders() if recorder_registry.registry_path().exists() else []
+        if (len(rows) == 1 and rows[0]["local_id"] == str(local_id)
+                and not rows[0].get("cloud_recorder_id")):
+            credential_store.delete_recorder_credential(rows[0]["local_id"])
+            if _undo_registry_staging(_recorder_blob_names()):
+                result.update(ok=True, action="removed")
+        elif not rows:
+            result.update(ok=True, action="absent")
+    except BaseException as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return _finish(result_path, result)
+
+
+# Setup, Site Status and Manage Recorders read the SYSTEM+Administrators-only Secrets
+# store and (re)register the SYSTEM background task. A plain Start Menu launch under UAC
+# gets a filtered token, so every Secrets read failed with a raw "Access is denied".
+ADMIN_REQUIRED_EXIT = 5  # ERROR_ACCESS_DENIED
+ADMIN_REQUIRED_MESSAGE = (
+    "WatchLog needs administrator permission to open this window.\n\n"
+    "Accept the Windows permission prompt, or right-click the WatchLog shortcut "
+    "and choose Run as administrator."
+)
+# Marks the copy started through the permission prompt, so it never relaunches again.
+ELEVATED_RELAUNCH_ARG = "--elevated-relaunch"
+
+
+def _is_elevated() -> bool:
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 - unknown elevation is treated as not elevated
+        return False
+
+
+def _relaunch_elevated() -> bool:
+    """Start this same command again through the Windows permission prompt, marked as
+    the relaunched copy."""
+    try:
+        import ctypes
+        import subprocess
+        argv = sys.argv[1:] if getattr(sys, "frozen", False) else [
+            str(Path(sys.argv[0]).resolve()), *sys.argv[1:]]
+        if ELEVATED_RELAUNCH_ARG not in argv:
+            argv.append(ELEVATED_RELAUNCH_ARG)
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, subprocess.list2cmdline(argv), None, 1)
+        return int(rc) > 32
+    except Exception:  # noqa: BLE001 - declined prompt or no shell: report, never crash
+        return False
+
+
+def _show_admin_required() -> None:
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, ADMIN_REQUIRED_MESSAGE, "WatchLog", 0x10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _admin_required(*, interactive: bool, relaunched: bool = False) -> int:
+    """Interactive windows relaunch elevated, once: a relaunched copy that is still not
+    elevated (a standard user with UAC turned off gets no administrator token from
+    "runas") says so instead of relaunching forever. Installer and CI modes fail closed
+    and never detach: their caller waits on THIS process's exit code."""
+    if interactive:
+        if not relaunched and _relaunch_elevated():
+            return 0
+        _show_admin_required()
+    _emit_line("WatchLog: administrator permission is required.")
+    return ADMIN_REQUIRED_EXIT
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
@@ -1716,6 +2054,20 @@ def main() -> int:
     parser.add_argument("--installer-child", action="store_true")
     parser.add_argument("--manage-recorders", action="store_true",
                         help="open post-install CCTV recorder management")
+    parser.add_argument("--registry-selftest", action="store_true",
+                        help="prove the recorder registry + per-recorder credential path "
+                             "in a private ProgramData, without a window")
+    parser.add_argument("--existing-site", action="store_true",
+                        help="with --registry-selftest: read-only Repair/Upgrade validation "
+                             "of this site's recorder registry")
+    parser.add_argument("--preflight-mode", choices=("passive", "recorder"), default="passive")
+    parser.add_argument("--registry-migrate", action="store_true",
+                        help="Repair/Upgrade: stage the legacy recorder into the registry")
+    parser.add_argument("--registry-rollback", metavar="LOCAL_ID", default="",
+                        help="Repair/Upgrade: undo the registry staged by this repair")
+    parser.add_argument("--result-json", default="")
+    parser.add_argument(ELEVATED_RELAUNCH_ARG, dest="elevated_relaunch", action="store_true",
+                        help=argparse.SUPPRESS)
     args, _unknown = parser.parse_known_args()
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
@@ -1723,6 +2075,22 @@ def main() -> int:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
+
+    # Every mode below touches Secrets or the SYSTEM task.
+    if not _is_elevated():
+        return _admin_required(interactive=not (
+            args.migrate_only or args.registry_selftest or args.registry_migrate
+            or args.registry_rollback), relaunched=args.elevated_relaunch)
+
+    if args.registry_selftest:
+        if args.existing_site:
+            return _run_registry_preflight(config_path, mode=args.preflight_mode,
+                                           result_path=args.result_json)
+        return _run_registry_selftest(args.result_json)
+    if args.registry_migrate:
+        return _run_registry_migration(config_path, result_path=args.result_json)
+    if args.registry_rollback:
+        return _run_registry_rollback(args.registry_rollback, result_path=args.result_json)
 
     if args.status:
         # Post-install: the same WatchLog app opens into the Site Status / control panel.
