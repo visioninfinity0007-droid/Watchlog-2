@@ -76,6 +76,22 @@ def notification(topic: str, utc: str, source: dict, data: dict,
             '</tt:Message></wsnt:Message></wsnt:NotificationMessage>')
 
 
+class WallClock(datetime):
+    """Stands in for onvif_driver.datetime: now() reads `current`, so a test
+    sets (or steps) the PC clock that recorder stamps are compared with."""
+
+    current = datetime(2026, 10, 4, 10, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.current if tz is None else cls.current.astimezone(tz)
+
+    @classmethod
+    def install(cls, monkeypatch, at: datetime) -> None:
+        monkeypatch.setattr(onvif_driver, "datetime", cls)
+        cls.current = at
+
+
 class FakeClock:
     """Injected as OnvifDriver._monotonic; advanced explicitly by tests."""
 

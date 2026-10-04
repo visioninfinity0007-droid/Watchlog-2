@@ -107,6 +107,10 @@ SOURCE_ITEMS = (
 )
 
 BURST_WINDOW_SECONDS = 30
+# A recorder stamp further than this from the receive time is not trusted: a
+# clock reset by a power loss, or local time sent as UTC, would move every
+# event by its error. Delivery itself takes seconds, so minutes are a fault.
+CLOCK_SKEW_TOLERANCE_SECONDS = 300
 LOG_EVERY = 100                    # a repeating condition: log the 1st, then every Nth
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
@@ -200,6 +204,7 @@ class OnvifDriver(NvrDriver):
         # in the agent log of a live site.
         self.dropped_unmapped = 0
         self.last_unmapped_source: dict | None = None
+        self.clock_skewed = 0        # events whose recorder stamp was not trusted
         # Diagnostics hook, a no-op until the caller sets it (as autodetect's
         # `log`). Lines carry tokens and counts only: no address, no secret.
         self.log = lambda m: None
@@ -498,13 +503,18 @@ class OnvifDriver(NvrDriver):
                 f"</tev:PullMessages>",
                 action=action, to=self._sub_address,
                 timeout=self.timeout + 40)
+            # One receive time for the batch, read before anything is yielded:
+            # the consumer fetches a still per event, so a clock read per
+            # message would drift later and later through the batch.
+            received = datetime.now(timezone.utc)
 
             for msg in root.findall(".//NotificationMessage"):
-                ev = self._parse_notification(msg)
+                ev = self._parse_notification(msg, received)
                 if ev:
                     yield ev
 
-    def _parse_notification(self, msg: ET.Element) -> Event | None:
+    def _parse_notification(self, msg: ET.Element,
+                            received: datetime | None = None) -> Event | None:
         topic_node = msg.find("Topic")
         topic = (topic_node.text or "").strip() if topic_node is not None else ""
 
@@ -535,9 +545,19 @@ class OnvifDriver(NvrDriver):
         if (inner.get("PropertyOperation") or "").lower() in ("initialized", "deleted"):
             return None
 
-        # device_ts is the recorder's own stamp; receive time only when the
-        # message carries none we can read.
-        ts = _xs_datetime(inner.get("UtcTime")) or datetime.now(timezone.utc)
+        # device_ts is the recorder's own stamp while the recorder clock agrees
+        # with ours. Receive time when the message carries no stamp we can
+        # read, or one too far off to trust; that stamp and the offset are
+        # then kept in the payload rather than silently replaced.
+        received = received or datetime.now(timezone.utc)
+        stamped = _xs_datetime(inner.get("UtcTime"))
+        ts, skew = received, None
+        if stamped is not None:
+            offset = (stamped - received).total_seconds()
+            if abs(offset) <= CLOCK_SKEW_TOLERANCE_SECONDS:
+                ts = stamped
+            else:
+                skew = round(offset)
 
         # An ONVIF "event" fires on both rising and falling edge; the Data
         # SimpleItem carries the state. Drop the falling edge.
@@ -580,6 +600,14 @@ class OnvifDriver(NvrDriver):
                    "source": source, "data": data}
         if channel is None:
             payload["recorder_scope"] = True
+        if skew is not None:
+            payload["device_utc"] = (stamped.astimezone(timezone.utc).isoformat()
+                                     .replace("+00:00", "Z"))
+            payload["clock_skew_s"] = skew
+            self.clock_skewed += 1
+            self._report(self.clock_skewed,
+                         f"onvif: recorder clock is {skew:+d} s from this PC; "
+                         "event times use receive time")
         return Event(
             channel=channel,
             event_type=etype,

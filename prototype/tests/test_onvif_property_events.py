@@ -36,6 +36,8 @@ STORAGE = "tns1:Device/HardwareFailure/StorageFailure"
 def driver(monkeypatch):
     rec = fx.FakeRecorder()
     rec.install(monkeypatch)
+    # The PC clock agrees with the recorder's, so its stamps are trusted.
+    fx.WallClock.install(monkeypatch, rec.device_now)
     drv, _info = core.open_driver(fx.FakeCfg())
     drv.recorder = rec
     yield drv
@@ -77,10 +79,12 @@ def test_resubscribe_does_not_re_emit_initialized_state(driver):
     # the same current state reported again as Initialized.
     clock = fx.FakeClock()
     driver._monotonic = clock
+    fx.WallClock.current = datetime(2026, 10, 4, 10, 5, tzinfo=timezone.utc)
     first = _events(driver,
                     _motion(1, "Initialized"),
                     _motion(1, "Changed", utc="2026-10-04T10:05:00Z"))
     clock.advance(480)
+    fx.WallClock.current = datetime(2026, 10, 4, 10, 13, tzinfo=timezone.utc)
     second = _events(driver, _motion(1, "Initialized", utc="2026-10-04T10:13:00Z"))
 
     assert [(e.channel, e.device_ts) for e in first] == [
