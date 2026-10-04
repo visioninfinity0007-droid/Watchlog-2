@@ -737,6 +737,26 @@ def _adopt_single_recorder(cfg, prepared) -> tuple[list[dict], dict]:
     return channels, holder_seed
 
 
+def _recorder_contract_absent(error: Exception) -> bool:
+    """True only when the database definitively has no multi-recorder contract RPC
+    (a database from before the recorder foundation: no recorders, no recorder_id)."""
+    return (isinstance(error, core.CloudError)
+            and getattr(error, "fn", "") == "wl_multi_recorder_agent_contract"
+            and (getattr(error, "code", None) == "PGRST202"
+                 or getattr(error, "status", None) == 404))
+
+
+def _adopt_registry_recorder_unbound(cfg) -> None:
+    """One configured recorder on a database without recorders: the registry stays the
+    authority for address and login, but no cloud recorder identity exists, so the
+    legacy recorder-less RPCs are used (recorder_cloud_id stays unset)."""
+    (ctx,) = recorder_runtime.load_contexts(cfg)
+    for name in _BOUND_RECORDER_FIELDS:
+        if name != "recorder_cloud_id":
+            setattr(cfg, name, getattr(ctx.config, name))
+    cfg.recorder_cloud_id = None
+
+
 def _report_retained_queues(cfg) -> None:
     """Say on every start what a disabled recorder still has queued on this PC.
 
@@ -796,7 +816,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     More than one configured recorder activates true worker fan-out; exactly one
     runs the singleton loop below, bound to that recorder's cloud identity. With
     no registry the historical 5.0.x singleton runtime continues unchanged.
-    Failure never falls back to the primary recorder or to an unbound singleton.
+    Failure never falls back to the primary recorder or to an unbound singleton;
+    the one exception is a single configured recorder on a database that has no
+    recorders at all, which runs on the legacy recorder-less RPCs.
     """
     try:
         configured_recorders = [
@@ -815,18 +837,27 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
 
     holder_seed = {}
     recorder_bound = False
+    prepared = None
     if configured_recorders:
         try:
             prepared = multi_recorder_orchestrator.prepare_recorders(
                 cfg, state, cloud, core.open_driver
             )
         except Exception as error:
-            raise SystemExit(
-                "FATAL: recorder preflight did not complete; monitoring "
-                "stopped rather than running an unbound or partial recorder set. "
-                f"({type(error).__name__}: {str(error)[:160]})"
-            ) from error
+            if len(configured_recorders) == 1 and _recorder_contract_absent(error):
+                # Unambiguous: that database has no recorder identity to bind to and
+                # sends no recorder_id; the 5.0.x recorder-less RPCs serve this site.
+                _adopt_registry_recorder_unbound(cfg)
+                core.log("recorder: this WatchLog site has no recorder-aware backend yet; "
+                         "single-recorder runtime without recorder identity")
+            else:
+                raise SystemExit(
+                    "FATAL: recorder preflight did not complete; monitoring "
+                    "stopped rather than running an unbound or partial recorder set. "
+                    f"({type(error).__name__}: {str(error)[:160]})"
+                ) from error
 
+    if prepared is not None:
         if len(prepared) != len(configured_recorders):
             raise SystemExit(
                 "FATAL: recorder preflight returned an incomplete recorder set."

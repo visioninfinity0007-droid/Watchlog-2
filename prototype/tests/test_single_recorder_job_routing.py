@@ -369,3 +369,53 @@ def test_command_for_an_unknown_recorder_completes_as_failed(monkeypatch):
         completed = [kw for name, kw in cloud.calls if name == "wl_agent_complete_command"]
         assert [(c["p_command_id"], c["p_status"]) for c in completed] == [("cmd-1", "failed")]
         assert opened == []          # no recorder was guessed
+
+
+class _PreRecorderDatabase(_JobCloud):
+    """A database from before the multi-recorder foundation: no contract RPC."""
+
+    def call(self, name, **kw):
+        if name == "wl_multi_recorder_agent_contract":
+            self.calls.append((name, kw))
+            raise core.CloudError(name, 404, "PGRST202",
+                                  "Could not find the function public.wl_multi_recorder_agent_contract")
+        if name.startswith("wl_sync_recorder"):
+            raise AssertionError(f"{name} does not exist on this database")
+        return super().call(name, **kw)
+
+
+def test_single_registry_on_a_database_without_recorders_runs_unbound(monkeypatch):
+    """Such a database has no recorder concept and sends no recorder_id, so the
+    one-recorder runtime is unambiguous: it keeps monitoring on the legacy RPCs,
+    with the registry still the authority for address and login."""
+    with _Env() as env:
+        local_id = _stage_one_unbound_row()
+        cfg = _base_cfg(env.root)
+        cfg.nvr_url = "http://192.0.2.99"
+        opened = []
+        _patch_recorder_io(monkeypatch, opened)
+        cloud = _PreRecorderDatabase()
+
+        seen = _run_startup_once(monkeypatch, cfg, cloud)
+
+        assert getattr(cfg, "recorder_cloud_id", None) is None
+        assert seen["collector_recorder_id"] is None
+        assert cfg.recorder_local_id == local_id
+        assert cfg.nvr_url == "http://192.0.2.10"
+        assert (cfg.nvr_username, cfg.nvr_password) == ("registry-user", "registry-pw")
+        assert rr.recorder(local_id)["cloud_recorder_id"] is None
+        assert "wl_heartbeat" in cloud.names()
+
+
+def test_multi_registry_on_a_database_without_recorders_stops(monkeypatch):
+    with _Env() as env:
+        _stage_one_unbound_row()
+        rr.add_recorder(display_name="Second", url="http://192.0.2.20", driver="dahua-cgi",
+                        username="b", password="b-pw")
+        opened = []
+        _patch_recorder_io(monkeypatch, opened)
+        try:
+            _run_startup_once(monkeypatch, _base_cfg(env.root), _PreRecorderDatabase())
+            assert False, "several recorders cannot run on a database without recorders"
+        except SystemExit as exc:
+            assert "preflight did not complete" in str(exc)
