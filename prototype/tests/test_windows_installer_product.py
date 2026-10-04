@@ -75,6 +75,14 @@ def main():
             'Delete "${STARTMENU}\\WatchLog Site Status.lnk"' in nsis
             and 'Delete "${STARTMENU}\\WatchLog Manage Recorders.lnk"' in nsis,
         "NSIS no longer launches agent --setup": 'watchlog-agent.exe\" --setup' not in nsis,
+        "Setup / Site Status / Manage Recorders request elevation before Secrets or task work":
+            "ctypes.windll.shell32.IsUserAnAdmin()" in gui
+            and '"runas"' in gui
+            and "ADMIN_REQUIRED_EXIT" in gui
+            and "if not _is_elevated():" in gui
+            and gui.index("if not _is_elevated():", gui.index("def main() -> int:"))
+            < gui.index("if args.status:", gui.index("def main() -> int:"))
+            < gui.index("if args.manage_recorders:", gui.index("def main() -> int:")),
         "release packages setup UI": "watchlog-setup-ui.exe" in release,
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
         "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,

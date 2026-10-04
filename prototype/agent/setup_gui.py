@@ -1705,6 +1705,60 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             os.environ["PROGRAMDATA"] = old_pd
 
 
+# Setup, Site Status and Manage Recorders read the SYSTEM+Administrators-only Secrets
+# store and (re)register the SYSTEM background task. A plain Start Menu launch under UAC
+# gets a filtered token, so every Secrets read failed with a raw "Access is denied".
+ADMIN_REQUIRED_EXIT = 5  # ERROR_ACCESS_DENIED
+ADMIN_REQUIRED_MESSAGE = (
+    "WatchLog needs administrator permission to open this window.\n\n"
+    "Accept the Windows permission prompt, or right-click the WatchLog shortcut "
+    "and choose Run as administrator."
+)
+
+
+def _is_elevated() -> bool:
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 - unknown elevation is treated as not elevated
+        return False
+
+
+def _relaunch_elevated() -> bool:
+    """Start this same command again through the Windows permission prompt."""
+    try:
+        import ctypes
+        import subprocess
+        argv = sys.argv[1:] if getattr(sys, "frozen", False) else [
+            str(Path(sys.argv[0]).resolve()), *sys.argv[1:]]
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, subprocess.list2cmdline(argv), None, 1)
+        return int(rc) > 32
+    except Exception:  # noqa: BLE001 - declined prompt or no shell: report, never crash
+        return False
+
+
+def _show_admin_required() -> None:
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, ADMIN_REQUIRED_MESSAGE, "WatchLog", 0x10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _admin_required(*, interactive: bool) -> int:
+    """Interactive windows relaunch elevated. Installer and CI modes fail closed and
+    never detach: their caller waits on THIS process's exit code."""
+    if interactive:
+        if _relaunch_elevated():
+            return 0
+        _show_admin_required()
+    _emit_line("WatchLog: administrator permission is required.")
+    return ADMIN_REQUIRED_EXIT
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
@@ -1723,6 +1777,10 @@ def main() -> int:
         _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
+
+    # Every mode below touches Secrets or the SYSTEM task.
+    if not _is_elevated():
+        return _admin_required(interactive=not args.migrate_only)
 
     if args.status:
         # Post-install: the same WatchLog app opens into the Site Status / control panel.
