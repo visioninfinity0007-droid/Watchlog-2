@@ -5,7 +5,9 @@ keeps %ProgramData%\\WatchLog\\recorders.json and the per-recorder state folders
 Setup must quarantine that stale registry (moved aside, never deleted) and stage
 the newly proven recorder, instead of failing every reinstall with "Windows could
 not prepare this recorder". A registry from the same enrolled site is updated in
-place instead (MNVR-012), and an unreadable one is quarantined too.
+place instead (MNVR-012), and an unreadable one is quarantined too. After an
+uninstall the fresh row keeps the old continuity recorder's local id, so a
+same-site reinstall re-attaches to that WatchLog recorder instead of forking it.
 """
 from __future__ import annotations
 
@@ -105,16 +107,16 @@ def _patch_setup(monkeypatch, *, prior_state, new_state):
     monkeypatch.setattr(sb, "_clear_consumed_code", lambda *a, **k: True)
 
 
-def _finalize(env):
+def _finalize(env, url="http://192.0.2.50"):
     recorder = {
-        "url": "http://192.0.2.50", "vendor": "Hikvision", "model": "DS-NEW",
+        "url": url, "vendor": "Hikvision", "model": "DS-NEW",
         "firmware": "1.0", "driver": "hikvision", "serial": "SER-NEW",
         "channels": [{"channel": "1", "name": "Camera 1"}],
         "verified_against_hardware": True,
     }
     return sb.finalize_install(
         env.ini, {"supabase_url": "https://example.invalid", "supabase_publishable_key": "k"},
-        "SITE-CODE", "http://192.0.2.50", "admin", "new-pw", "custom", [],
+        "SITE-CODE", url, "admin", "new-pw", "custom", [],
         verified_recorder=recorder,
     )
 
@@ -123,13 +125,13 @@ def _quarantined(root: Path, name: str) -> list[Path]:
     return sorted(root.glob(f"{name}.quarantine-*"))
 
 
-def _assert_fresh_single_row(old_ids):
+def _assert_fresh_single_row(old_ids, url="http://192.0.2.50"):
     rows = rr.recorders()
     assert len(rows) == 1
     row = rows[0]
     assert row["local_id"] not in old_ids
     assert row["cloud_recorder_id"] is None           # bound later by the new Agent
-    assert row["url"] == "http://192.0.2.50"
+    assert row["url"] == url
     assert row["is_primary"] and row["continuity_owner"] and row["is_configured"]
     assert cs.load_recorder_credential(row["local_id"])["password"] == "new-pw"
 
@@ -143,7 +145,10 @@ def test_reinstall_quarantines_the_registry_left_by_uninstall(monkeypatch):
         out = _finalize(env)
 
         assert out["connected"] is True
-        _assert_fresh_single_row({a, b})
+        # Keeps the continuity recorder's local id (unbound, new login), so on the
+        # same site the new Agent re-attaches to that recorder; never B's id.
+        _assert_fresh_single_row({b})
+        assert rr.recorders()[0]["local_id"] == a
         # Moved aside for support, never deleted; the old recorders' queued events
         # can no longer drain into whatever site this PC is now enrolled in.
         (registry_copy,) = _quarantined(env.root, "recorders.json")
@@ -151,6 +156,18 @@ def test_reinstall_quarantines_the_registry_left_by_uninstall(monkeypatch):
         (state_copy,) = _quarantined(env.root, "recorders")
         assert (state_copy / b / "spool.sqlite").exists()
         assert not (env.root / "recorders" / b).exists()
+
+
+def test_reinstall_onto_the_old_secondary_does_not_take_the_continuity_identity(monkeypatch):
+    """Reusing the continuity id for the old secondary's device would graft that
+    recorder onto the continuity recorder's cameras and history."""
+    with _Env() as env:
+        a, b = _previous_install(env.root)
+        _patch_setup(monkeypatch, prior_state=None, new_state=SITE_ONE)
+
+        _finalize(env, url="HTTP://192.0.2.20:80")           # Old B's address
+
+        _assert_fresh_single_row({a, b}, url="HTTP://192.0.2.20:80")
 
 
 def test_moving_the_pc_to_another_site_quarantines_the_old_registry(monkeypatch):

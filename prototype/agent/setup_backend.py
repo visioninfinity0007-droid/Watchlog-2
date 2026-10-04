@@ -1680,8 +1680,12 @@ def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
     * A registry left by an earlier installation (uninstall removes the identity
       but keeps recorders.json), by another site, or unreadable: quarantine it
       (moved aside, never deleted) and stage fresh, instead of blocking every
-      reinstall.
+      reinstall. After an uninstall the site is unknown, so the fresh row keeps
+      the old continuity recorder's local id: on the same site the new Agent then
+      re-attaches to that WatchLog recorder instead of creating another one.
     """
+    fingerprint = f"serial:{recorder.get('serial')}" if recorder.get("serial") else None
+    reuse_local_id = None
     if recorder_registry.registry_path().exists():
         same_site = bool(
             prior_identity and prior_identity.get("site_id")
@@ -1703,18 +1707,19 @@ def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
                 vendor=recorder.get("vendor"),
                 model=recorder.get("model"),
                 firmware=recorder.get("firmware"),
-                identity_fingerprint=(
-                    f"serial:{recorder.get('serial')}" if recorder.get("serial") else None
-                ),
+                identity_fingerprint=fingerprint,
             )
             return
+        if not prior_identity:
+            reuse_local_id = recorder_registry.reusable_continuity_id(
+                recorder.get("url"), fingerprint)
         moved = recorder_registry.quarantine_registry()
         _setup_log(
             "recorder registry quarantined ("
             + ("unreadable" if same_site else "earlier installation or another site")
             + "): " + ", ".join(path.name for path in moved)
         )
-    recorder_registry.migrate_legacy_singleton(config_path)
+    recorder_registry.migrate_legacy_singleton(config_path, local_id=reuse_local_id)
 
 
 def finalize_install(config_path: Path, public: dict, enrollment_code: str,

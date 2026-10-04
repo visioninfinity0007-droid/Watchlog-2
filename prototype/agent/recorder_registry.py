@@ -462,13 +462,16 @@ def _read_legacy_public(config_path: Path) -> dict:
     return section
 
 
-def migrate_legacy_singleton(config_path: Path) -> dict | None:
+def migrate_legacy_singleton(config_path: Path, *, local_id: str | None = None) -> dict | None:
     """Stage the current singleton recorder into the multi-recorder store.
 
     This is intentionally COPY-ONLY during the compatibility phase. The legacy
     singleton credential and watchlog.ini recorder keys are retained so 5.0.27
     continues to run unchanged. A later runtime-cutover migration may retire the
     legacy form only after the new runtime proves it can boot from this registry.
+
+    ``local_id`` reuses a known local recorder id for the staged row (see
+    reusable_continuity_id); otherwise a new one is minted.
 
     Returns the primary recorder row, or None when no legacy recorder exists.
     """
@@ -493,7 +496,7 @@ def migrate_legacy_singleton(config_path: Path) -> dict | None:
     if singleton is None:
         raise SecretError("legacy recorder exists without a protected credential")
 
-    local_id = str(uuid.uuid4())
+    local_id = str(uuid.UUID(str(local_id))) if local_id else str(uuid.uuid4())
     credential_store.save_recorder_credential(
         local_id,
         singleton.get("username") or "admin",
@@ -589,6 +592,30 @@ def _reject_duplicate(rows, url, identity_fingerprint=None, *, ignore_local_id=N
             "this recorder is already in WatchLog but disabled; re-enable it instead"
         )
     raise DuplicateRecorder("this recorder is already configured in WatchLog")
+
+
+def reusable_continuity_id(url, identity_fingerprint=None) -> str | None:
+    """The continuity recorder's local id in the registry about to be quarantined,
+    for the freshly staged row of a reinstall whose site is unknown.
+
+    WatchLog looks a recorder up by local id within one site, so on the same site
+    the reused id re-attaches to the existing continuity recorder (its cameras and
+    history) instead of creating a second one; on another site it is simply a new
+    id. Its cloud id and credential are never carried over. Returns None for an
+    unreadable or untrusted registry, or when the newly proven recorder is one of
+    the registry's other recorders (that would graft it onto the continuity
+    recorder's identity)."""
+    try:
+        rows = recorders()
+    except Exception:  # noqa: BLE001 — never reuse ids from a file we cannot trust
+        return None
+    continuity = next((row for row in rows if row.get("continuity_owner")), None)
+    if continuity is None:
+        return None
+    same = _duplicate_of(rows, url, identity_fingerprint)
+    if same is not None and same["local_id"] != continuity["local_id"]:
+        return None
+    return continuity["local_id"]
 
 
 def quarantine_registry() -> list[Path]:
