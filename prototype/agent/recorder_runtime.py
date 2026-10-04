@@ -66,6 +66,11 @@ class RecorderContext:
         self.config.nvr_password = cred.get("password") or ""
 
 
+def recorder_state_dir(state_parent, local_id: str) -> Path:
+    """Durable state directory of a non-continuity recorder (spool, health, last-live)."""
+    return Path(state_parent) / "recorders" / str(local_id)
+
+
 def _bound_config(base_cfg, row: dict):
     """Copy the common Agent config, then override recorder-local fields only."""
     bound = copy.copy(base_cfg)
@@ -83,7 +88,7 @@ def _bound_config(base_cfg, row: dict):
     # or last-live marker would strand queued evidence / lose the outage boundary.
     # Secondary recorders get independent state files.
     state_parent = Path(getattr(base_cfg, "state_path")).parent
-    recorder_state = state_parent / "recorders" / row["local_id"]
+    recorder_state = recorder_state_dir(state_parent, row["local_id"])
     bound.recorder_state_dir = recorder_state
     if row.get("continuity_owner", row.get("is_primary")):
         bound.spool_path = Path(getattr(base_cfg, "spool_path"))

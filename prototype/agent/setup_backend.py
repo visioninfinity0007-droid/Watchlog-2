@@ -23,6 +23,7 @@ import wsdiscovery
 from drivers import DriverError, build
 import credential_store
 import recorder_registry
+import recorder_runtime
 from windows_secret import SecretError
 
 from wl_version import VERSION as SETUP_AGENT_VERSION  # single source of truth
@@ -751,20 +752,119 @@ def _assert_recorder_can_be_disabled(local_id: str) -> None:
         )
 
 
+def _lifecycle_cloud(config_path: Path) -> tuple:
+    """The enrolled Agent identity + cloud client Setup uses for lifecycle changes."""
+    public = read_public_defaults(config_path)
+    if not public.get("supabase_url") or not public.get("supabase_publishable_key"):
+        raise ValueError("WatchLog connection settings are unavailable on this PC.")
+    state = _load_existing_identity(programdata_dir() / "agent_state.json")
+    if not state:
+        raise ValueError(
+            "This PC is not linked to a WatchLog site. Run normal WatchLog Setup first."
+        )
+    cloud = core.Cloud(
+        public["supabase_url"].rstrip("/"),
+        public["supabase_publishable_key"],
+    )
+    return cloud, state
+
+
+def _drain_recorder_queue(cloud, state: dict, local_id: str, *, max_batches: int = 25) -> int:
+    """Upload what a recorder still has queued while WatchLog still accepts it.
+
+    Once WatchLog marks the recorder disabled it rejects that recorder's events,
+    so this runs first. Whatever cannot be sent now stays on this PC (it is never
+    deleted) and uploads if the recorder is re-enabled. Returns the number of
+    queued events retained locally.
+    """
+    path = recorder_runtime.recorder_state_dir(programdata_dir(), local_id) / "spool.sqlite"
+    if not path.exists():
+        return 0
+    from spool import Spool
+    spool = Spool(path)
+    try:
+        for _ in range(max_batches):
+            if not spool.count():
+                break
+            try:
+                core.upload_once(cloud, state, spool)
+            except Exception as exc:  # noqa: BLE001 — retained and reported, never lost
+                _setup_log(f"recorder queue upload stopped ({type(exc).__name__})")
+                break
+        return spool.count()
+    finally:
+        spool.close()
+
+
+def _sync_recorder_lifecycle(cloud, state: dict, planned: dict, local_id: str) -> None:
+    """Send one recorder's planned lifecycle state to WatchLog and require an exact echo.
+
+    Only that recorder's row is sent: Setup never creates a cloud recorder for an
+    unbound row (the background Agent owns first binding).
+    """
+    expected = next(
+        (row for row in planned["recorders"] if row["local_id"] == str(local_id)), None
+    )
+    payload = [
+        row for row in recorder_registry.registry_cloud_descriptors(planned)
+        if row["local_key"] == str(local_id)
+    ]
+    try:
+        mapping = cloud.call(
+            "wl_sync_recorders",
+            p_agent_id=state["agent_id"],
+            p_agent_key=state["agent_key"],
+            p_recorders=payload,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            "WatchLog could not confirm the recorder change. Nothing was changed on this PC."
+        ) from exc
+    if (expected is None or not isinstance(mapping, dict)
+            or {str(k) for k in mapping} != {str(local_id)}
+            or str(mapping[str(local_id)]) != str(expected.get("cloud_recorder_id"))):
+        raise ValueError(
+            "WatchLog did not confirm the recorder change. Nothing was changed on this PC."
+        )
+
+
 def disable_managed_recorder(
     config_path: Path,
     local_id: str,
     *,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
+    """Disable a secondary recorder: cloud first, then this PC, then restart.
+
+    The order matters. With the recorder still configured in WatchLog, its queued
+    events are uploaded first. WatchLog is then told it is disabled, so a site
+    left with one recorder never has its uploads rejected as ambiguous. Only
+    after WatchLog confirms is the change committed locally and the Agent
+    restarted with recorder-aware ingest for the remaining recorder(s).
+    """
+    progress = progress or (lambda _message: None)
     before = recorder_registry.load_registry()
     _assert_recorder_can_be_disabled(local_id)
+    planned = recorder_registry.planned_disable(local_id)
+    cloud, state = _lifecycle_cloud(config_path)
+    _require_multi_recorder_setup_contract(cloud, state)
+
+    progress("Sending this recorder's remaining activity to WatchLog…")
+    retained = _drain_recorder_queue(cloud, state, local_id)
+    if retained:
+        _setup_log(f"recorder {str(local_id)[:8]} disabled with {retained} queued "
+                   "event(s) kept on this PC")
+
+    progress("Updating the recorder on WatchLog…")
+    _sync_recorder_lifecycle(cloud, state, planned, local_id)
+
     row = recorder_registry.disable_recorder(local_id)
     activation = _activate_managed_registry_change(
         config_path, before, progress=progress
     )
     out = _public_recorder_row(row, credential_state="available")
     out["activation"] = activation
+    out["retained_events"] = retained
     return out
 
 

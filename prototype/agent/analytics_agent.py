@@ -736,6 +736,32 @@ def _adopt_single_recorder(cfg, prepared) -> tuple[list[dict], dict]:
     return channels, holder_seed
 
 
+def _report_retained_queues(cfg) -> None:
+    """Say on every start what a disabled recorder still has queued on this PC.
+
+    WatchLog rejects new uploads for a disabled recorder, so its queue is kept
+    (never deleted) and uploads only if the recorder is re-enabled. Reporting it
+    keeps that backlog visible instead of silently stranded."""
+    try:
+        state_parent = Path(cfg.state_path).parent
+        for row in recorder_registry.recorders():
+            if row.get("is_configured"):
+                continue
+            path = recorder_runtime.recorder_state_dir(state_parent, row["local_id"]) / "spool.sqlite"
+            if not path.exists():
+                continue
+            queue = Spool(path)
+            try:
+                queued = queue.count()
+            finally:
+                queue.close()
+            if queued:
+                core.log(f"recorder: {row['display_name']} is disabled; {queued} queued "
+                         "event(s) retained on this PC, uploaded only if it is re-enabled")
+    except Exception as error:  # noqa: BLE001 — a report must never stop monitoring
+        core.log(f"recorder: retained-queue check skipped: {type(error).__name__}")
+
+
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None, channels=None) -> None:
     """Core event loop plus analytics worker.
@@ -791,6 +817,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                     f"unavailable ({item.error}); its live/health workers will retry "
                     "independently"
                 )
+        _report_retained_queues(cfg)
 
         if len(prepared) > 1:
             detector = core.vision.build(cfg, core.log)

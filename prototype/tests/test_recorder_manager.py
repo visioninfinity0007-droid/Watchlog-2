@@ -77,6 +77,23 @@ def _seed_two():
     return a, b
 
 
+class _LifecycleCloud:
+    """Contract-v4 cloud that echoes the registry's own recorder bindings."""
+
+    def __init__(self):
+        self.calls = []
+
+    def call(self, name, **kw):
+        self.calls.append((name, kw))
+        if name == "wl_multi_recorder_agent_contract":
+            return {"ok": True, "version": sb.MULTI_RECORDER_SETUP_CONTRACT_VERSION,
+                    "features": sorted(sb.MULTI_RECORDER_SETUP_FEATURES)}
+        if name == "wl_sync_recorders":
+            bound = {row["local_id"]: row["cloud_recorder_id"] for row in rr.recorders()}
+            return {row["local_key"]: bound[row["local_key"]] for row in kw["p_recorders"]}
+        raise AssertionError(name)
+
+
 def _activation_ok(monkeypatch):
     monkeypatch.setattr(
         sb, "ensure_background_agent",
@@ -86,6 +103,12 @@ def _activation_ok(monkeypatch):
         sb, "confirm_background_agent",
         lambda *a, **k: {"confirmed": True, "detail": "test"},
     )
+    cloud = _LifecycleCloud()
+    monkeypatch.setattr(
+        sb, "_lifecycle_cloud",
+        lambda _config_path: (cloud, {"agent_id": "agent", "agent_key": "key"}),
+    )
+    return cloud
 
 
 def test_continuity_owner_cannot_be_disabled_after_primary_promotion(monkeypatch):

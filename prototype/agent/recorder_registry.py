@@ -435,18 +435,7 @@ def make_primary(local_id: str) -> dict:
     return result
 
 
-def disable_recorder(local_id: str) -> dict:
-    """Disable an ordinary recorder while preserving cloud/local history.
-
-    5.1 never disables the immutable continuity owner. Retiring that recorder
-    requires a separately designed quiesce + drain workflow so legacy
-    spool/health evidence cannot be stranded.
-    """
-    row = recorder(local_id)
-    if row is None:
-        raise ValueError("recorder not found")
-    if not row.get("is_configured"):
-        return row
+def _check_can_disable(row: dict) -> None:
     if row.get("continuity_owner"):
         raise ValueError(
             "the original WatchLog recorder cannot be disabled in this release"
@@ -459,6 +448,40 @@ def disable_recorder(local_id: str) -> dict:
         raise ValueError(
             "an unbound recorder must be rolled back instead of disabled"
         )
+
+
+def planned_disable(local_id: str) -> dict:
+    """Return the validated registry with this recorder disabled; nothing is saved.
+
+    Setup sends this lifecycle change to WatchLog BEFORE committing it locally.
+    """
+    current = load_registry()
+    wanted = str(local_id or "").strip()
+    row = next((r for r in current["recorders"] if r["local_id"] == wanted), None)
+    if row is None:
+        raise ValueError("recorder not found")
+    if row.get("is_configured"):
+        _check_can_disable(row)
+    rows = [
+        dict(r, is_configured=False) if r["local_id"] == wanted else dict(r)
+        for r in current["recorders"]
+    ]
+    return validate_registry({"schema": REGISTRY_SCHEMA, "recorders": rows})
+
+
+def disable_recorder(local_id: str) -> dict:
+    """Disable an ordinary recorder while preserving cloud/local history.
+
+    5.1 never disables the immutable continuity owner. Retiring that recorder
+    requires a separately designed quiesce + drain workflow so legacy
+    spool/health evidence cannot be stranded.
+    """
+    row = recorder(local_id)
+    if row is None:
+        raise ValueError("recorder not found")
+    if not row.get("is_configured"):
+        return row
+    _check_can_disable(row)
     return _replace_record(
         local_id,
         lambda item: item.__setitem__("is_configured", False),
@@ -483,16 +506,18 @@ def enable_recorder(local_id: str) -> dict:
     )
 
 
-def registry_cloud_descriptors() -> list[dict]:
+def registry_cloud_descriptors(registry: dict | None = None) -> list[dict]:
     """Return the full non-secret registry state, including disabled recorders.
 
     This is the only descriptor surface suitable for lifecycle synchronization.
     Runtime RecorderContexts intentionally omit disabled recorders, so using
     context.cloud_descriptor() alone would leave a disabled cloud recorder
-    incorrectly configured forever.
+    incorrectly configured forever. ``registry`` describes a planned state
+    (for example planned_disable()) instead of the saved one.
     """
     out = []
-    for row in recorders():
+    rows = validate_registry(registry)["recorders"] if registry is not None else recorders()
+    for row in rows:
         out.append({
             "local_key": row["local_id"],
             "display_name": row["display_name"],
