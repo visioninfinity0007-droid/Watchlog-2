@@ -241,3 +241,122 @@ def test_primary_existing_last_live_marker_stays_at_same_path():
         assert primary.config.last_live_path == base.last_live_path
         assert primary.config.last_live_path.read_text(encoding="utf-8") == payload
         assert secondary.config.last_live_path != base.last_live_path
+
+
+# --- cloud job resolution (MNVR-002 / MNVR-039) ------------------------------
+
+CLOUD_A = "11111111-1111-1111-1111-111111111111"
+CLOUD_B = "22222222-2222-2222-2222-222222222222"
+
+
+def test_job_for_healthy_recorder_does_not_decrypt_a_bad_sibling():
+    with _Env():
+        _a, b = _seed_two()
+        cs.recorder_credential_path(b).write_text("CORRUPT", encoding="utf-8")
+
+        cfg = rt.config_for_cloud_recorder(_base(), CLOUD_A)
+        assert cfg.nvr_url == "http://192.0.2.10"
+        assert cfg.nvr_username == "user-a" and cfg.nvr_password == "pw-a"
+        assert cfg.recorder_cloud_id == CLOUD_A
+
+        # The broken recorder's own jobs still fail closed; never a fallback.
+        try:
+            rt.config_for_cloud_recorder(_base(), CLOUD_B)
+            assert False, "a job for the corrupt recorder must fail closed"
+        except ws.SecretError:
+            pass
+
+
+def test_resolver_selects_the_row_before_any_decryption(monkeypatch):
+    with _Env():
+        a, _b = _seed_two()
+        decrypted = []
+        real = cs.load_recorder_credential
+
+        def spy(local_id):
+            decrypted.append(local_id)
+            return real(local_id)
+
+        monkeypatch.setattr(cs, "load_recorder_credential", spy)
+        rt.config_for_cloud_recorder(_base(), CLOUD_A)
+        assert decrypted == [a]
+
+
+def test_no_registry_routes_a_recorder_job_to_the_singleton_runtime():
+    with _Env():
+        base = _base()
+        assert not rr.registry_path().exists()
+        # 5.0.x singleton behaviour: the DB sends the site's single recorder id
+        # with every job, and the registry-less runtime is that recorder.
+        assert rt.config_for_cloud_recorder(base, CLOUD_A) is base
+        assert rt.config_for_cloud_recorder(base, None) is base
+
+
+def test_registry_jobs_stay_exact_and_fail_closed():
+    with _Env():
+        _seed_two()
+        base = _base()
+        try:
+            rt.config_for_cloud_recorder(base, "33333333-3333-3333-3333-333333333333")
+            assert False, "an unknown recorder must not resolve"
+        except ValueError as exc:
+            assert "not mapped" in str(exc)
+        try:
+            rt.config_for_cloud_recorder(base, None)
+            assert False, "a multi-recorder job needs recorder_id"
+        except ValueError as exc:
+            assert "recorder_id required" in str(exc)
+
+
+def test_job_for_a_disabled_recorder_is_not_routed():
+    with _Env():
+        _a, b = _seed_two()
+        rr.disable_recorder(b)
+        try:
+            rt.config_for_cloud_recorder(_base(), CLOUD_B)
+            assert False, "a disabled recorder must not receive jobs"
+        except ValueError as exc:
+            assert "not mapped" in str(exc)
+        # With one configured recorder left, a legacy job without recorder_id
+        # resolves to it from the registry, not from the legacy singleton.
+        cfg = rt.config_for_cloud_recorder(_base(), None)
+        assert cfg.nvr_url == "http://192.0.2.10"
+        assert cfg.recorder_cloud_id == CLOUD_A
+
+
+def test_job_claimed_during_startup_binding_waits_for_the_binding(monkeypatch):
+    with _Env():
+        a = str(uuid.uuid4())
+        cs.save_recorder_credential(a, "user-a", "pw-a")
+        rr.save_registry({
+            "schema": rr.REGISTRY_SCHEMA,
+            "recorders": [{
+                "local_id": a, "display_name": "Recorder A",
+                "url": "http://192.0.2.10", "driver": "onvif",
+                "is_primary": True, "is_configured": True,
+            }],
+        })
+        monkeypatch.setattr(rt, "UNBOUND_BINDING_WAIT_SECONDS", 5.0)
+        monkeypatch.setattr(rt, "UNBOUND_BINDING_POLL_SECONDS", 0.01)
+
+        sleeps = []
+
+        def bind_while_waiting(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 2:
+                rr.apply_cloud_mapping({a: CLOUD_A})
+
+        monkeypatch.setattr(rt.time, "sleep", bind_while_waiting)
+        cfg = rt.config_for_cloud_recorder(_base(), CLOUD_A)
+        assert cfg.recorder_cloud_id == CLOUD_A
+        assert cfg.nvr_url == "http://192.0.2.10"
+        assert len(sleeps) == 2
+
+        # Once every configured row is bound, an unknown id fails at once.
+        sleeps.clear()
+        try:
+            rt.config_for_cloud_recorder(_base(), CLOUD_B)
+            assert False
+        except ValueError:
+            pass
+        assert sleeps == []
