@@ -16,7 +16,7 @@ sys.path.insert(0, str(AGENT))
 import credential_store as cs  # noqa: E402
 import native_event_collector as native  # noqa: E402
 import watchlog_agent as core  # noqa: E402
-from drivers.base import Event  # noqa: E402
+from drivers.base import DeviceInfo, Event  # noqa: E402
 import windows_secret as ws  # noqa: E402
 
 
@@ -127,10 +127,19 @@ class _Driver:
         self.closed = True
 
 
+def _stop_instead_of_reconnecting(monkeypatch, stop):
+    """A collector error must fail the test, not back off and retry forever."""
+    def _reconnect_wait(_stop, _cfg, _failures, last_gen):
+        stop.set()
+        return "stop", last_gen
+    monkeypatch.setattr(core, "_reconnect_wait", _reconnect_wait)
+
+
 def test_packaged_native_collector_stamps_recorder_id(monkeypatch):
     stop = threading.Event()
     driver = _Driver(stop)
-    info = SimpleNamespace(vendor="Test", model="Recorder")
+    # The real DeviceInfo, so the collector's startup log line can read firmware.
+    info = DeviceInfo(vendor="Test", model="Recorder")
     spool = _Spool()
 
     cfg = SimpleNamespace(
@@ -143,6 +152,7 @@ def test_packaged_native_collector_stamps_recorder_id(monkeypatch):
     monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "open_driver", lambda _cfg: (driver, info))
     monkeypatch.setattr(core, "_credential_generation_for_cfg", lambda _cfg: "g0")
+    _stop_instead_of_reconnecting(monkeypatch, stop)
 
     native.collector(cfg, spool, stop, holder={})
 
@@ -155,7 +165,7 @@ def test_packaged_native_collector_stamps_recorder_id(monkeypatch):
 def test_core_collector_stamps_recorder_id(monkeypatch):
     stop = threading.Event()
     driver = _Driver(stop)
-    info = SimpleNamespace(vendor="Test", model="Recorder")
+    info = DeviceInfo(vendor="Test", model="Recorder")
     spool = _Spool()
     cfg = SimpleNamespace(
         snapshots=False,
@@ -167,6 +177,7 @@ def test_core_collector_stamps_recorder_id(monkeypatch):
     monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "open_driver", lambda _cfg: (driver, info))
     monkeypatch.setattr(core, "_credential_generation_for_cfg", lambda _cfg: "g0")
+    _stop_instead_of_reconnecting(monkeypatch, stop)
 
     core.collector(cfg, spool, stop, holder={})
     assert len(spool.rows) == 1
