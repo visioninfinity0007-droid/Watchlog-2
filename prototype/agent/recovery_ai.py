@@ -42,6 +42,10 @@ RECOVERED_SOURCE = "recovered"                        # AI over recovered footag
 PROVENANCE_LINE = "Recovered from recorder archive (WatchLog analysis of historical footage)"
 DEFAULT_FRAME_CLIP_SECONDS = 6                        # bounded clip length to sample one frame from
 DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 300              # restore one visual checkpoint every 5 min
+# A download cut to the requested window can start at the key frame before it, so it may run up
+# to one GOP longer than asked for. A margin, not a measured recorder behaviour (unverified on
+# hardware); a truncated whole-segment download runs far longer than this.
+KEY_FRAME_SLACK_SECONDS = 10
 
 
 def _as_dt(v) -> datetime:
@@ -177,8 +181,8 @@ def _frame_at(clip, ts, segment_start, clip_seconds, decoder):
     Hikvision playbackURI names the segment), so the media starts at ``segment_start`` and its
     first frame is not the footage at ``ts``. When ts lies inside the segment, seek to
     ts - segment_start. No frame there means the media was cut to the request, so its first frame
-    is at ts (to within the clip length) — unless the media also runs past the requested window:
-    then where it starts is unknown and no frame is claimed.
+    is at ts (to within the key-frame slack) — unless the media also runs past the requested
+    window plus that slack: then where it starts is unknown and no frame is claimed.
     """
     offset = (ts - segment_start).total_seconds() if segment_start is not None else 0.0
     if offset <= 0:
@@ -188,7 +192,8 @@ def _frame_at(clip, ts, segment_start, clip_seconds, decoder):
     frame = decode_jpeg_frame(clip, decoder=decoder, offset_seconds=offset)
     if frame:
         return frame
-    if decode_jpeg_frame(clip, decoder=decoder, offset_seconds=float(clip_seconds) + 1.0):
+    past_request = float(clip_seconds) + KEY_FRAME_SLACK_SECONDS
+    if decode_jpeg_frame(clip, decoder=decoder, offset_seconds=past_request):
         return None                     # longer than the request, shorter than the segment
     return decode_jpeg_frame(clip, decoder=decoder)
 

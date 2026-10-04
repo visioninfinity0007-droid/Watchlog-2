@@ -453,18 +453,20 @@ def _media_decoder(clip, offset=0.0):
 
 class _MediaArchive(OverlapDriver):
     """mode='segment': the download is the WHOLE recorded segment, whatever window was asked for
-    (a Hikvision playbackURI names the segment). mode='window': the download is cut to the window.
-    mode='short': the whole-segment download is cut short (2 minutes)."""
-    def __init__(self, segments, mode):
+    (a Hikvision playbackURI names the segment). mode='window': the download is cut to the window,
+    starting ``slack`` seconds early (at the key frame before it). mode='short': the whole-segment
+    download is cut short (2 minutes)."""
+    def __init__(self, segments, mode, slack=0):
         super().__init__(segments)
-        self.mode = mode
+        self.mode, self.slack = mode, slack
 
     def get_recorded_frame(self, channel, ts):
         return None
 
     def get_recorded_segment(self, channel, start, end):
         if self.mode == "window":
-            return {"status": "supported", "bytes": _media(start, (end - start).total_seconds())}
+            begins = start - timedelta(seconds=self.slack)
+            return {"status": "supported", "bytes": _media(begins, (end - begins).total_seconds())}
         for seg in self._segs:
             s, e = datetime.fromisoformat(seg["start"]), datetime.fromisoformat(seg["end"])
             if s <= start < e:
@@ -477,10 +479,10 @@ class RecoveredFramePosition(unittest.TestCase):
     """A recovered snapshot is stamped with the footage time of the frame it actually holds."""
     SEG = [{"start": "2026-09-14T07:30:00+00:00", "end": "2026-09-14T07:50:00+00:00", "id": "seg-20m"}]
 
-    def _run(self, mode):
+    def _run(self, mode, slack=0):
         got = []
         summary = recovery_ai.backfill_intelligence(
-            _MediaArchive(self.SEG, mode), FakeDetector(keep=False), "1",
+            _MediaArchive(self.SEG, mode, slack), FakeDetector(keep=False), "1",
             "2026-09-14T07:00:00+00:00", "2026-09-14T08:00:00+00:00",
             on_event=got.append, decoder=_media_decoder, snapshot_interval_seconds=300)
         frames = [base64.b64decode(e["snapshot_b64"]).decode() for e in got]
@@ -498,6 +500,17 @@ class RecoveredFramePosition(unittest.TestCase):
         self.assertEqual(len(frames), 4)
         for event, frame in zip(got, frames):
             self.assertEqual(frame, "FRAME@" + event["device_ts"])
+
+    def test_window_cut_download_from_an_earlier_key_frame_keeps_its_first_frame(self):
+        # Cut to the request but starting at the preceding key frame: a few seconds longer than
+        # asked for, still a clip of the sample, never mistaken for media of unknown start.
+        for slack in (2, 3, 4):
+            summary, got, frames = self._run("window", slack)
+            self.assertEqual((len(frames), summary["no_frame"]), (4, 0), f"slack {slack}s")
+            for event, frame in zip(got, frames):
+                shows = datetime.fromisoformat(frame.split("@", 1)[1])
+                self.assertEqual(shows, datetime.fromisoformat(event["device_ts"])
+                                 - timedelta(seconds=slack))
 
     def test_media_of_unknown_start_is_not_stamped_with_the_sample_time(self):
         summary, got, frames = self._run("short")
@@ -546,6 +559,12 @@ class RecoveredFramePosition(unittest.TestCase):
         self.assertEqual(recovery_ai._frame_at(window, seg_start + timedelta(seconds=300),
                                                seg_start, 6, None),
                          recovery_ai.decode_jpeg_frame(window))
+        # Cut to the request from the key frame 2-4 s before it: still its first frame.
+        for slack in (2, 3, 4):
+            window = synth(6 + slack)
+            self.assertEqual(recovery_ai._frame_at(window, seg_start + timedelta(seconds=300),
+                                                   seg_start, 6, None),
+                             recovery_ai.decode_jpeg_frame(window), f"slack {slack}s")
 
 
 if __name__ == "__main__":
