@@ -10,7 +10,9 @@ Safety / truth rules:
 * the recorder's own clock is read once per call. Times the Agent stamped (UTC
   cloud windows, Dahua CGI event receive times) move onto recorder wall time by
   the measured offset, drift included; times the recorder's own clock stamped
-  (archive segment times, ONVIF UtcTime) move by the recorder's zone only;
+  (archive segment times, ONVIF UtcTime) move by the recorder's zone only.
+  Archive segment times go back to UTC the same way, so no naive recorder-local
+  time leaves this module to be misread as UTC;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
 * downloads are bounded to the same 32 MiB pilot limit as incident_evidence;
@@ -86,6 +88,16 @@ def _text(driver: DahuaDriver, path: str, *, params=None, timeout=None) -> str:
     return _request(driver, path, params=params, timeout=timeout).text
 
 
+def _parse_time(value: str) -> datetime | None:
+    normalized = str(value).strip().replace("Z", "+0000")
+    for fmt in _TIME_FORMATS:
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_device_clock(text: str) -> datetime:
     """Return recorder wall clock as a naive datetime.
 
@@ -100,15 +112,11 @@ def _parse_device_clock(text: str) -> datetime:
         if value:
             candidates.append(value)
     for value in candidates:
-        normalized = value.replace("Z", "+0000")
-        for fmt in _TIME_FORMATS:
-            try:
-                parsed = datetime.strptime(normalized, fmt)
-                if parsed.tzinfo is not None:
-                    parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-                return parsed
-            except ValueError:
-                continue
+        parsed = _parse_time(value)
+        if parsed is not None:
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
     raise DriverError("recorder current time was not parseable; refusing ambiguous archive request")
 
 
@@ -167,6 +175,18 @@ def _fmt(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _segment_utc(value, zone: timedelta) -> str | None:
+    """Recorder-stamped archive time -> ISO-8601 UTC ("...Z"); None when the recorder gave none."""
+    if not value:
+        return None
+    parsed = _parse_time(value)
+    if parsed is None:
+        raise DriverError("recorder returned an unparseable archive segment time")
+    if parsed.tzinfo is None:
+        parsed = (parsed - zone).replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _native_channel(channel) -> int:
     try:
         native_channel = int(str(channel)) - 1
@@ -195,6 +215,12 @@ def _parse_items(text: str) -> list[dict]:
         idx, key, value = int(match.group(1)), match.group(2), match.group(3)
         rows.setdefault(idx, {})[key] = value
     return [rows[idx] for idx in sorted(rows)]
+
+
+def _row_fields(row: dict) -> tuple:
+    return (row.get("StartTime") or row.get("BeginTime") or row.get("startTime"),
+            row.get("EndTime") or row.get("endTime"),
+            row.get("FilePath") or row.get("filepath"))
 
 
 def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
@@ -327,26 +353,36 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
     recoverable intelligence (each recorded segment is a recovered evidence window). Honest
     status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
     with empty data, and never masquerading as live). Read-only; bounded by FINDER_COUNT.
+
+    ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC converted with
+    the recorder's zone, because the recorder's own clock stamped them; replaying them through
+    ``get_recorded_segment`` lands on the same recorder wall time.
     """
     try:
-        recs = find_recordings(driver, channel, start, end, max_items=min(max(1, int(limit)), FINDER_COUNT))
+        native_channel = _native_channel(channel)
+        recorder_clock = _recorder_clock(driver)
+        # Refuse before searching if segment times could not be converted back to UTC.
+        zone = _clock_shift(RECORDER_CLOCK, *recorder_clock)
+        local_start, local_end = _localize_window(driver, start, end, recorder_clock=recorder_clock)
+        rows = _find_local(driver, native_channel, local_start, local_end,
+                           max_items=min(max(1, int(limit)), FINDER_COUNT))
+        events = []
+        for row in rows:
+            st_raw, et_raw, path = _row_fields(row)
+            st, et = _segment_utc(st_raw, zone), _segment_utc(et_raw, zone)
+            events.append({
+                "ts": st,
+                "type": "recorded_segment",
+                # Identity stays recorder-native, so a zone change never re-recovers a file.
+                "device_event_id": path or f"{channel}:{st_raw}:{et_raw}",
+                "channel": str(channel),
+                "segment": {"start": st, "end": et, "path": path},
+            })
     except (NvrUnreachable, NvrAuthFailed):
         return {"status": "unknown", "events": [], "next_cursor": None}
     except DriverError:
         # An ambiguous clock/search response failed closed upstream — unknown, not unsupported.
         return {"status": "unknown", "events": [], "next_cursor": None}
-    events = []
-    for r in recs:
-        st = r.get("StartTime") or r.get("BeginTime") or r.get("startTime")
-        et = r.get("EndTime") or r.get("endTime")
-        path = r.get("FilePath") or r.get("filepath")
-        events.append({
-            "ts": st,
-            "type": "recorded_segment",
-            "device_event_id": path or f"{channel}:{st}:{et}",
-            "channel": str(channel),
-            "segment": {"start": st, "end": et, "path": path},
-        })
     return {"status": "supported", "events": events, "next_cursor": None}
 
 
@@ -428,8 +464,11 @@ def install() -> None:
     DahuaDriver.enumerate_historical_events = (
         lambda self, channel, start, end, cursor=None, limit=500:
         enumerate_historical_events(self, channel, start, end, cursor, limit))
+    # Recorded-segment replay is fed segment times from enumerate_historical_events, which the
+    # recorder's own clock stamped.
     DahuaDriver.get_recorded_segment = (
-        lambda self, channel, start, end: {"status": "supported", "bytes": get_clip(self, channel, start, end)})
+        lambda self, channel, start, end: {
+            "status": "supported", "bytes": get_clip(self, channel, start, end, clock=RECORDER_CLOCK)})
     DahuaDriver.historical_capability = lambda self: historical_capability(self)
 
 
