@@ -350,6 +350,31 @@ def run() -> int:
             ).fetchone()[0]
             step(nulls == 0, "analytic_events recorder_id is fully backfilled and non-null")
 
+            # A trusted/internal insert that predates recorder_id takes the
+            # recorder of its own camera (Recorder B here, not the primary).
+            direct = cur.execute(
+                """insert into analytic_events(
+                     tenant_id,site_id,camera_id,analytic_key,event_type,occurred_at,dedupe_key
+                   ) values (%s,%s,%s,'custom','line_crossing',now(),'analytics-direct-b')
+                   returning recorder_id""",
+                (ta, sa, cam_b),
+            ).fetchone()[0]
+            cur.execute("savepoint foreign_camera_sp")
+            foreign_blocked = False
+            try:
+                cur.execute(
+                    """insert into analytic_events(
+                         tenant_id,site_id,camera_id,analytic_key,event_type,occurred_at,dedupe_key
+                       ) values (%s,%s,%s,'custom','line_crossing',now(),'analytics-direct-foreign')""",
+                    (tb, sb, cam_b),
+                )
+            except psycopg.Error:
+                foreign_blocked = True
+            cur.execute("rollback to savepoint foreign_camera_sp")
+            step(str(direct) == str(rec_b) and foreign_blocked,
+                 "legacy direct analytic insert derives its camera's recorder; a foreign camera fails closed",
+                 str(direct))
+
             # Exact execute ACLs.
             def execute_grantees(sig):
                 rows = cur.execute(

@@ -50,6 +50,37 @@ alter table public.analytic_events
 create index if not exists analytic_events_recorder_occurred_idx
   on public.analytic_events(recorder_id,occurred_at desc);
 
+-- Compatibility for existing trusted/internal inserts that predate recorder_id
+-- (the same posture as the 0146 camera trigger). camera_id is mandatory and
+-- every camera belongs to exactly one recorder, so a missing recorder_id is the
+-- event's own camera's recorder, never a site+channel guess. A camera outside
+-- the row's tenant/site leaves it NULL and the insert fails closed.
+create or replace function public.wl_analytic_event_assign_recorder()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+begin
+  select c.recorder_id into new.recorder_id
+    from public.cameras c
+   where c.id=new.camera_id
+     and c.tenant_id=new.tenant_id
+     and c.site_id=new.site_id;
+  return new;
+end
+$function$;
+
+revoke all on function public.wl_analytic_event_assign_recorder()
+  from public,anon,authenticated,service_role;
+
+drop trigger if exists trg_analytic_event_assign_recorder on public.analytic_events;
+create trigger trg_analytic_event_assign_recorder
+before insert on public.analytic_events
+for each row
+when (new.recorder_id is null)
+execute function public.wl_analytic_event_assign_recorder();
+
 create or replace function public.wl_ingest_analytic_events(
   p_agent_id uuid,
   p_agent_key text,
