@@ -15,6 +15,8 @@ Safety / truth rules:
   time leaves this module to be misread as UTC;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
+* archive enumeration reads every finder page; a search too large to page ends
+  'partial', never 'supported';
 * downloads are bounded to the same 32 MiB pilot limit as incident_evidence and
   to a total time budget;
 * ambiguous clock/search/download responses fail closed with DriverError.
@@ -35,12 +37,14 @@ from drivers.dahua import DahuaDriver
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
 CLIP_TOTAL_SECONDS = 90              # whole get_clip: clock read, search and download
-FINDER_COUNT = 100
+FINDER_COUNT = 100                   # files per findNextFile page
+MAX_FINDER_PAGES = 20                # hard cap on the pages one archive search may read
 ZONE_STEP_SECONDS = 15 * 60          # every civil UTC offset is a whole number of quarter hours
 MAX_ZONE_DRIFT_SECONDS = 5 * 60      # beyond this the recorder's zone cannot be told from drift
 AGENT_CLOCK, RECORDER_CLOCK = "agent", "recorder"
 
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
+_FOUND_RE = re.compile(r"^\s*found\s*=\s*(\d+)", re.IGNORECASE | re.MULTILINE)
 _TIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
@@ -227,8 +231,14 @@ def _row_fields(row: dict) -> tuple:
 
 
 def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
-                local_end: datetime, *, max_items: int) -> list[dict]:
-    """One mediaFileFind session over an already recorder-local window."""
+                local_end: datetime, *, max_rows: int) -> tuple[list[dict], bool]:
+    """One mediaFileFind session over a recorder-local window: ``(rows, complete)``.
+
+    findNextFile hands out at most FINDER_COUNT files per call, so the session pages until the
+    recorder runs out of files (complete), ``max_rows`` rows are read, or MAX_FINDER_PAGES pages
+    were read. A full last page does not prove there is nothing more, so those two stops report
+    complete=False.
+    """
     finder = _finder_id(_text(
         driver,
         "/cgi-bin/mediaFileFind.cgi",
@@ -250,14 +260,26 @@ def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
         if str(started).strip().upper() != "OK":
             raise DriverError("recorder rejected the archive-search window")
 
-        result = _text(
-            driver,
-            "/cgi-bin/mediaFileFind.cgi",
-            params={"action": "findNextFile", "object": finder,
-                    "count": min(max(1, int(max_items)), FINDER_COUNT)},
-            timeout=max(driver.timeout, 30),
-        )
-        return _parse_items(result)
+        rows: list[dict] = []
+        for _page in range(MAX_FINDER_PAGES):
+            count = min(FINDER_COUNT, max_rows - len(rows))
+            result = _text(
+                driver,
+                "/cgi-bin/mediaFileFind.cgi",
+                params={"action": "findNextFile", "object": finder, "count": count},
+                timeout=max(driver.timeout, 30),
+            )
+            page = _parse_items(result)
+            found = _FOUND_RE.search(result)
+            found = int(found.group(1)) if found else len(page)
+            if found and not page:
+                raise DriverError("recorder archive search returned files that could not be read")
+            rows.extend(page)
+            if max(found, len(page)) < count:
+                return rows, True
+            if len(rows) >= max_rows:
+                return rows[:max_rows], False
+        return rows, False
     finally:
         # Best effort cleanup: finder handles are recorder resources. A cleanup
         # failure must not mask a successful/meaningful search result.
@@ -279,7 +301,8 @@ def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: dat
     """
     native_channel = _native_channel(channel)
     local_start, local_end = _localize_window(driver, start, end)
-    return _find_local(driver, native_channel, local_start, local_end, max_items=max_items)
+    return _find_local(driver, native_channel, local_start, local_end,
+                       max_rows=max(1, int(max_items)))[0]
 
 
 def has_recording(driver: DahuaDriver, channel: str, start: datetime, end: datetime) -> bool:
@@ -327,7 +350,7 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     local_start, local_end = _localize_window(driver, start, end, clock=clock)
     # Search first. This both proves the archive has media in the requested
     # channel/window and prevents a download call for an empty period.
-    if not _find_local(driver, native_channel, local_start, local_end, max_items=1):
+    if not _find_local(driver, native_channel, local_start, local_end, max_rows=1)[0]:
         return None
 
     remaining = deadline - time.monotonic()
@@ -368,22 +391,33 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
     """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end) become
     recoverable intelligence (each recorded segment is a recovered evidence window). Honest
     status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
-    with empty data, and never masquerading as live). Read-only; bounded by FINDER_COUNT.
+    with empty data, and never masquerading as live). Read-only.
 
     ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC converted with
     the recorder's zone, because the recorder's own clock stamped them; replaying them through
-    ``get_recorded_segment`` lands on the same recorder wall time.
+    ``get_recorded_segment`` lands on the same recorder wall time. Every finder page is read and
+    rows are ordered by recorder time, so ``cursor`` (a row offset) pages deterministically
+    however the recorder orders its answer. A search larger than MAX_FINDER_PAGES serves the rows
+    it read, then ends 'partial', never 'supported'.
     """
+    try:
+        offset = max(0, int(cursor or 0))
+    except (TypeError, ValueError):
+        return {"status": "unknown", "events": [], "next_cursor": None}
     try:
         native_channel = _native_channel(channel)
         recorder_clock = _recorder_clock(driver)
         # Refuse before searching if segment times could not be converted back to UTC.
         zone = _clock_shift(RECORDER_CLOCK, *recorder_clock)
         local_start, local_end = _localize_window(driver, start, end, recorder_clock=recorder_clock)
-        rows = _find_local(driver, native_channel, local_start, local_end,
-                           max_items=min(max(1, int(limit)), FINDER_COUNT))
+        rows, complete = _find_local(driver, native_channel, local_start, local_end,
+                                     max_rows=MAX_FINDER_PAGES * FINDER_COUNT)
+        if offset >= len(rows) and not complete:
+            return {"status": "partial", "events": [], "next_cursor": None}
+        rows.sort(key=lambda row: tuple(str(v or "") for v in _row_fields(row)))
+        page = rows[offset:offset + max(1, int(limit))]
         events = []
-        for row in rows:
+        for row in page:
             st_raw, et_raw, path = _row_fields(row)
             st, et = _segment_utc(st_raw, zone), _segment_utc(et_raw, zone)
             events.append({
@@ -399,7 +433,9 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
     except DriverError:
         # An ambiguous clock/search response failed closed upstream — unknown, not unsupported.
         return {"status": "unknown", "events": [], "next_cursor": None}
-    return {"status": "supported", "events": events, "next_cursor": None}
+    more = not complete or offset + len(page) < len(rows)
+    return {"status": "supported", "events": events,
+            "next_cursor": str(offset + len(page)) if more else None}
 
 
 def historical_capability(driver: DahuaDriver = None) -> dict:
