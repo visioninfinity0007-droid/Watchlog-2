@@ -15,11 +15,13 @@ That keeps Repair/Upgrade fail-safe while multi-recorder runtime is developed.
 from __future__ import annotations
 
 import configparser
+import ipaddress
 import json
 import os
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import credential_store
 from windows_secret import SecretError
@@ -313,6 +315,68 @@ def migrate_legacy_singleton(config_path: Path) -> dict | None:
     return loaded
 
 
+def _endpoint(url) -> tuple[str, int] | None:
+    """Normalised (host, port) of a recorder address.
+
+    Scheme and host are case-insensitive, the port defaults by scheme, and any
+    path, credentials or trailing slash are ignored, so "192.0.2.64",
+    "HTTP://192.0.2.64:80/" and "http://192.0.2.64/ISAPI" are one endpoint."""
+    text = str(url or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "http://" + text
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").strip().lower().rstrip(".")
+        port = parts.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if port is None:
+        port = 443 if (parts.scheme or "").lower() == "https" else 80
+    return host, port
+
+
+def _serial(identity_fingerprint) -> str | None:
+    text = str(identity_fingerprint or "").strip()
+    if not text.lower().startswith("serial:"):
+        return None
+    return text[len("serial:"):].strip().upper() or None
+
+
+def _duplicate_of(rows, url, identity_fingerprint=None, *, ignore_local_id=None):
+    """The existing row that is the same physical recorder, if any.
+
+    Same normalised endpoint, or the same serial number where both are known
+    (a recorder that moved address after DHCP is still the same recorder)."""
+    endpoint, serial = _endpoint(url), _serial(identity_fingerprint)
+    for row in rows:
+        if row["local_id"] == ignore_local_id:
+            continue
+        if endpoint and _endpoint(row.get("url")) == endpoint:
+            return row
+        if serial and _serial(row.get("identity_fingerprint")) == serial:
+            return row
+    return None
+
+
+def _reject_duplicate(rows, url, identity_fingerprint=None, *, ignore_local_id=None) -> None:
+    existing = _duplicate_of(rows, url, identity_fingerprint, ignore_local_id=ignore_local_id)
+    if existing is None:
+        return
+    if not existing.get("is_configured"):
+        raise ValueError(
+            "this recorder is already in WatchLog but disabled; re-enable it instead"
+        )
+    raise ValueError("this recorder is already configured in WatchLog")
+
+
 def quarantine_registry() -> list[Path]:
     """Move the registry and the per-recorder state it owns aside; never delete.
 
@@ -347,9 +411,8 @@ def update_recorder_connection(local_id: str, *, url: str, driver: str,
     if not any(row["local_id"] == wanted for row in current["recorders"]):
         raise ValueError("recorder not found")
     address = str(url or "").strip()
-    if any(row["local_id"] != wanted and row["url"] and row["url"] == address
-           for row in current["recorders"]):
-        raise ValueError("a recorder with this local address already exists")
+    _reject_duplicate(current["recorders"], address, identity_fingerprint,
+                      ignore_local_id=wanted)
 
     paths = [credential_store.recorder_credential_path(wanted)]
     if mirror_legacy:
@@ -386,8 +449,7 @@ def add_recorder(*, display_name: str, url: str, driver: str,
     Cloud recorder_id remains unset until the recorder-aware RPC sync assigns it.
     """
     current = load_registry()
-    if any(r["url"] and r["url"] == str(url).strip() for r in current["recorders"]):
-        raise ValueError("a recorder with this local address already exists")
+    _reject_duplicate(current["recorders"], url, identity_fingerprint)
 
     if is_primary:
         for row in current["recorders"]:

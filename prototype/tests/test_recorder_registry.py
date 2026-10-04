@@ -415,3 +415,72 @@ def test_setup_rerun_points_the_registry_primary_at_the_new_recorder(monkeypatch
         (ctx,) = recorder_runtime.load_contexts(base)
         assert ctx.config.nvr_url == "http://192.0.2.77"
         assert (ctx.config.nvr_username, ctx.config.nvr_password) == ("new-user", "new-pw")
+
+
+# --- the same physical recorder cannot be added twice (MNVR-042) -------------
+
+import pytest  # noqa: E402
+
+
+def _staged_with_serial(wl, url="http://192.0.2.64", serial="DS-7608NI-SER1"):
+    wl.mkdir(parents=True, exist_ok=True)
+    ini = wl / "watchlog.ini"
+    ini.write_text(f"[watchlog]\nnvr_url = {url}\nnvr_driver = hikvision\n", encoding="utf-8")
+    cs.save_nvr_credential("admin", "pw")
+    primary = rr.migrate_legacy_singleton(ini)
+    rr.update_observed_identity(primary["local_id"], identity_fingerprint=f"serial:{serial}")
+    return primary
+
+
+@pytest.mark.parametrize("address", [
+    "http://192.0.2.64/",
+    "HTTP://192.0.2.64:80",
+    "192.0.2.64",
+    "http://192.0.2.64:80/ISAPI/System/deviceInfo",
+    "http://admin@192.0.2.64",
+])
+def test_same_endpoint_written_differently_is_a_duplicate(address):
+    with _Env() as wl:
+        _staged_with_serial(wl)
+        before = sorted(p.name for p in cs.recorder_secrets_dir().glob("*.dpapi"))
+        with pytest.raises(ValueError, match="already"):
+            rr.add_recorder(display_name="Again", url=address, driver="hikvision",
+                            username="x", password="y")
+        assert sorted(p.name for p in cs.recorder_secrets_dir().glob("*.dpapi")) == before
+        assert len(rr.recorders()) == 1
+
+
+@pytest.mark.parametrize("serial", ["DS-7608NI-SER1", "ds-7608ni-ser1", " DS-7608NI-SER1 "])
+def test_same_serial_at_a_new_address_is_a_duplicate(serial):
+    with _Env() as wl:
+        _staged_with_serial(wl)
+        with pytest.raises(ValueError, match="already"):
+            rr.add_recorder(display_name="Moved", url="http://192.0.2.99", driver="hikvision",
+                            username="x", password="y", identity_fingerprint=f"serial:{serial}")
+        assert len(rr.recorders()) == 1
+
+
+@pytest.mark.parametrize("address,fingerprint", [
+    ("http://192.0.2.65", None),                     # another host
+    ("http://192.0.2.64:8080", None),                # another web port on the same host
+    ("http://192.0.2.66", "serial:OTHER-SERIAL"),    # another serial
+])
+def test_a_genuinely_different_recorder_is_still_accepted(address, fingerprint):
+    with _Env() as wl:
+        _staged_with_serial(wl)
+        rr.add_recorder(display_name="Second", url=address, driver="hikvision",
+                        username="x", password="y", identity_fingerprint=fingerprint)
+        assert len(rr.recorders()) == 2
+
+
+def test_readding_a_disabled_recorder_says_to_re_enable_it():
+    with _Env() as wl:
+        primary = _staged_with_serial(wl)
+        second = rr.add_recorder(display_name="Second", url="http://192.0.2.70",
+                                 driver="dahua-cgi", username="x", password="y")
+        rr.apply_cloud_mapping({primary["local_id"]: "11111111-1111-4111-8111-111111111111",
+                                second["local_id"]: "22222222-2222-4222-8222-222222222222"})
+        rr.disable_recorder(second["local_id"])
+        with pytest.raises(ValueError, match="re-enable"):
+            rr.add_recorder(display_name="Again", url="http://192.0.2.70/", driver="dahua-cgi",
+                            username="x", password="y")
