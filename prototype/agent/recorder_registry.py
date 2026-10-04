@@ -85,14 +85,9 @@ def validate_registry(payload: dict) -> dict:
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate recorder local_id")
 
-    configured_primaries = [
-        row for row in normalized if row["is_primary"] and row["is_configured"]
-    ]
-    if len(configured_primaries) > 1:
-        raise ValueError("at most one configured recorder may be primary")
-    if normalized and not configured_primaries:
-        raise ValueError("a non-empty recorder registry needs one configured primary")
-
+    # Continuity is checked first: it is the immutable 5.1 invariant, so a
+    # registry that disabled its continuity owner reports that, not the
+    # primary rule it also breaks as a consequence.
     continuity = [row for row in normalized if row["continuity_owner"]]
     if normalized and len(continuity) != 1:
         raise ValueError(
@@ -102,6 +97,14 @@ def validate_registry(payload: dict) -> dict:
         raise ValueError(
             "the continuity owner must remain configured in WatchLog 5.1"
         )
+
+    configured_primaries = [
+        row for row in normalized if row["is_primary"] and row["is_configured"]
+    ]
+    if len(configured_primaries) > 1:
+        raise ValueError("at most one configured recorder may be primary")
+    if normalized and not configured_primaries:
+        raise ValueError("a non-empty recorder registry needs one configured primary")
 
     return {"schema": REGISTRY_SCHEMA, "recorders": normalized}
 

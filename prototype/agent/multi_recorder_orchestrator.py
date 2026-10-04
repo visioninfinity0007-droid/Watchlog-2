@@ -173,10 +173,6 @@ def bind_cloud_identities(cloud, state: dict,
     if not contexts:
         return {}
 
-    primaries = [ctx for ctx in contexts if ctx.is_primary]
-    if len(primaries) != 1:
-        raise RuntimeError("multi-recorder cutover requires exactly one primary")
-
     registry_rows = recorder_registry.recorders()
     continuity_rows = [
         row for row in registry_rows if row.get("continuity_owner")
@@ -197,6 +193,10 @@ def bind_cloud_identities(cloud, state: dict,
         raise RuntimeError(
             "configured continuity recorder is missing from runtime contexts"
         )
+
+    primaries = [ctx for ctx in contexts if ctx.is_primary]
+    if len(primaries) != 1:
+        raise RuntimeError("multi-recorder cutover requires exactly one primary")
 
     if not continuity.cloud_recorder_id:
         # Before first cloud binding the continuity owner must still be the
