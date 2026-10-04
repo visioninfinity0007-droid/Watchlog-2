@@ -147,8 +147,9 @@ Section "Install"
   ; UPGRADE VERSION TRUTH: before starting anything, verify the on-disk binary's file ProductVersion
   ; AND its runtime --version both equal this release. If the binary was not actually replaced, roll
   ; back and abort rather than register/start/report a version that is not installed.
+  ; -VerifySetupUi: this installer also wrote the Setup UI, so its version must match too.
   ${If} $6 == "1"
-    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}" -VerifySetupUi' $9
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
       ${If} $9 == 0

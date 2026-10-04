@@ -553,6 +553,89 @@ class RepairRegistryOrchestration(unittest.TestCase):
         self.assertNotIn("the recorder is reachable", nsis)
 
 
+UPGRADE_HELPER = ROOT / "prototype/installer/nsis/wl-upgrade.ps1"
+
+# A real console exe whose file ProductVersion and --version output are both $Version.
+_STAND_IN_EXE = r'''
+param([string]$Out, [string]$Version)
+$src = @"
+using System.Reflection;
+[assembly: AssemblyInformationalVersion("$Version")]
+public static class Program { public static int Main(string[] a) { System.Console.WriteLine("$Version"); return 0; } }
+"@
+Add-Type -TypeDefinition $src -OutputAssembly $Out -OutputType ConsoleApplication
+'''
+
+
+class UpgradeHelperSetupUiVersion(unittest.TestCase):
+    """verify-version checks the Setup UI only when the caller says it replaced it.
+
+    The in-app updater (Site Status > Check for Updates > watchlog-agent --update) stages
+    only watchlog-agent.exe and runs the installed helper with the default profile, so the
+    Setup UI beside it is legitimately still the previous version.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not POWERSHELL:
+            raise unittest.SkipTest("Windows PowerShell is required to execute wl-upgrade.ps1")
+        cls.bin = Path(tempfile.mkdtemp(prefix="wl-verify-version-"))
+        script = cls.bin / "stand-in.ps1"
+        script.write_text(_STAND_IN_EXE, encoding="utf-8")
+        for version in ("5.1.0", "5.1.1"):
+            subprocess.run(
+                [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                 "-File", str(script), "-Out", str(cls.bin / f"{version}.exe"),
+                 "-Version", version],
+                check=True, capture_output=True, timeout=120)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.bin, True)
+
+    def verify(self, *, agent, setup_ui, extra=()):
+        work = Path(tempfile.mkdtemp(prefix="wl-verify-install-"))
+        self.addCleanup(shutil.rmtree, work, True)
+        install = work / "WatchLog"
+        install.mkdir()
+        shutil.copy2(self.bin / f"{agent}.exe", install / "watchlog-agent.exe")
+        shutil.copy2(self.bin / f"{setup_ui}.exe", install / "watchlog-setup-ui.exe")
+        proc = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(UPGRADE_HELPER), "-Stage", "verify-version",
+             "-InstallDir", str(install), "-ExpectedVersion", "5.1.1",
+             "-DataRootOverride", str(work / "data"), *extra],
+            capture_output=True, text=True, timeout=120)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def test_in_app_update_beside_an_older_setup_ui_passes(self):
+        # Exactly what cmd_update leaves and runs: new Agent, untouched Setup UI and no
+        # -PayloadProfile.
+        code, out = self.verify(agent="5.1.1", setup_ui="5.1.0")
+        self.assertEqual(code, 0, out)
+
+    def test_repair_profile_rejects_an_older_setup_ui(self):
+        code, out = self.verify(agent="5.1.1", setup_ui="5.1.0",
+                                extra=("-PayloadProfile", "repair"))
+        self.assertEqual(code, 11, out)
+        self.assertIn("setup UI file ProductVersion '5.1.0'", out)
+
+    def test_full_setup_rejects_an_older_setup_ui_it_wrote(self):
+        code, out = self.verify(agent="5.1.1", setup_ui="5.1.0", extra=("-VerifySetupUi",))
+        self.assertEqual(code, 11, out)
+
+    def test_matching_setup_ui_passes_for_both_callers_that_replace_it(self):
+        for extra in (("-PayloadProfile", "repair"), ("-VerifySetupUi",)):
+            with self.subTest(extra=extra):
+                code, out = self.verify(agent="5.1.1", setup_ui="5.1.1", extra=extra)
+                self.assertEqual(code, 0, out)
+
+    def test_full_setup_asks_for_the_setup_ui_check(self):
+        nsis = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text(encoding="utf-8")
+        line = next(row for row in nsis.splitlines() if "-Stage verify-version" in row)
+        self.assertIn("-VerifySetupUi", line)
+
+
 def _ps_array(source: str, name: str) -> list[str]:
     """Quoted entries of a PowerShell `$Name = @( ... )` literal."""
     start = source.index(name + " = @(")
