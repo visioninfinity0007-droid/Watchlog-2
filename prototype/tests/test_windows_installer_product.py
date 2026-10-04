@@ -30,6 +30,11 @@ def main():
     build_ui = text("prototype/agent/build_setup_gui.ps1")
     release = text("tools/build_windows_release.ps1")
     release_workflow = text(".github/workflows/windows-release.yml")
+    ci = text(".github/workflows/ci.yml")
+    security_gate = text(".github/workflows/windows-security-gate.yml")
+    setup_ui_job = ci[ci.index("\n  setup-ui-build:"):ci.index("\n  installer-contract:")]
+    installer_job = ci[ci.index("\n  installer-contract:"):ci.index("\n  integration:")]
+    gate_triggers = security_gate[security_gate.index("\non:"):security_gate.index("\njobs:")]
 
     checks = {
         "GUI is real PySide6": "from PySide6" in gui,
@@ -86,6 +91,17 @@ def main():
         "release packages setup UI": "watchlog-setup-ui.exe" in release,
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
         "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,
+        "CI runs the FROZEN setup UI through the recorder registry + per-recorder DPAPI selftest":
+            "'--registry-selftest'" in setup_ui_job
+            and "Start-Process" in setup_ui_job
+            and "$body.ok" in setup_ui_job,
+        "CI compiles the Repair/Upgrade NSIS, not only at release time":
+            'Copy-Item prototype\\installer\\nsis\\watchlog-repair.nsi' in installer_job
+            and 'Copy-Item prototype\\installer\\wl-repair-upgrade.ps1' in installer_job
+            and '"watchlog-repair.nsi"' in installer_job
+            and "WatchLog-Repair-Upgrade.exe" in installer_job,
+        "Windows security gate runs on pull requests to main":
+            "pull_request:" in gate_triggers and "branches: [main]" in gate_triggers,
         "uninstall removes the encrypted Secrets store": "RMDir /r" in nsis and "Secrets" in nsis,
         "uninstall removes the recorder registry and per-recorder state with the identity":
             all(target in nsis.split('Section "Uninstall"')[-1] for target in (

@@ -265,6 +265,22 @@ jobs:
           if (Test-Path (Join-Path $wl "watchlog.env")) { throw "legacy watchlog.env not removed after migration" }
           Remove-Item $pd -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "DPAPI round trip + real legacy migration verified."
+      - name: Exercise the frozen recorder registry selftest
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The PACKAGED exe migrates a legacy singleton into recorders.json + a per-recorder
+          # DPAPI blob, adds an independent second recorder, loads contexts with the Agent's
+          # own loader and rolls the unbound one back, inside a private temporary ProgramData
+          # it creates itself. No window. Start-Process -Wait: & does not wait for GUI exes.
+          $result = Join-Path $env:RUNNER_TEMP "wl-registry-selftest.json"
+          if (Test-Path $result) { Remove-Item $result -Force }
+          $rp = Start-Process -FilePath (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path -ArgumentList @('--registry-selftest','--result-json',"`"$result`"") -Wait -PassThru
+          if (-not (Test-Path $result)) { throw "frozen registry selftest wrote no result (exit $($rp.ExitCode))" }
+          $body = Get-Content $result -Raw | ConvertFrom-Json
+          $body.checks | Format-List | Out-String | Write-Host
+          if ($rp.ExitCode -ne 0 -or -not $body.ok) { throw "frozen registry selftest failed (exit $($rp.ExitCode)): $($body.error)" }
+          Write-Host "Frozen recorder registry + per-recorder DPAPI selftest PASSED."
 
   installer-contract:
     runs-on: windows-latest
@@ -284,6 +300,8 @@ jobs:
           Copy-Item prototype\installer\register-service.ps1 (Join-Path $stage "register-service.ps1")
           Copy-Item prototype\installer\apply-remote-update.ps1 (Join-Path $stage "apply-remote-update.ps1")
           Copy-Item prototype\installer\nsis\wl-upgrade.ps1 (Join-Path $stage "wl-upgrade.ps1")
+          Copy-Item prototype\installer\nsis\watchlog-repair.nsi (Join-Path $stage "watchlog-repair.nsi")
+          Copy-Item prototype\installer\wl-repair-upgrade.ps1 (Join-Path $stage "wl-repair-upgrade.ps1")
           Copy-Item "prototype\installer\READ ME FIRST.txt" (Join-Path $stage "READ ME FIRST.txt")
           Copy-Item prototype\installer\setup.ico (Join-Path $stage "setup.ico")
           # Syntax contract only: the real release workflow separately builds
@@ -305,6 +323,17 @@ jobs:
           Pop-Location
           if ($rc -ne 0) { throw "makensis failed with exit $rc" }
           if (-not (Test-Path (Join-Path $stage "WatchLog-Setup.exe"))) { throw "NSIS output missing" }
+          # Repair/Upgrade used to be compiled only by the release build, so a script
+          # regression merged green. Same zero-warning rule as the release build.
+          Push-Location $stage
+          $repairOut = & $makensis "/DICON=setup.ico" "watchlog-repair.nsi" 2>&1 | Out-String
+          $repairRc = $LASTEXITCODE
+          Pop-Location
+          Write-Host $repairOut
+          if ($repairRc -ne 0) { throw "repair makensis failed with exit $repairRc" }
+          if (-not (Test-Path (Join-Path $stage "WatchLog-Repair-Upgrade.exe"))) { throw "Repair/Upgrade NSIS output missing" }
+          $repairWarnings = ($repairOut -split "`r?`n") | Where-Object { $_ -match 'warning \d+:' }
+          if ($repairWarnings) { throw "Repair NSIS emitted warnings:`n$($repairWarnings -join "`n")" }
       - name: Transactional upgrade helper tests (locked-EXE gate, version truth, rollback, targeted kill)
         shell: powershell
         run: |
