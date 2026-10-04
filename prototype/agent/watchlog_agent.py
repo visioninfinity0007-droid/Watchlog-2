@@ -2158,9 +2158,9 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
-# holder flag: recovery_worker has read last_live.json while the recorder was live and holds
-# any gap it showed. A heartbeat that refreshes last_live must wait for it, or a restart gap is
-# overwritten before it is ever detected.
+# holder flag: recovery_worker has read last_live.json while the recorder was live and holds no
+# gap the cloud has not accepted. A heartbeat that refreshes last_live must wait for it, or a
+# restart gap is overwritten before it is ever detected (or lost if the Agent restarts while held).
 LAST_LIVE_CHECKED = "last_live_checked"
 
 
@@ -2269,7 +2269,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
                                           for g in pending_gaps):
                         pending_gaps = (pending_gaps + [outage])[-32:]
-                    holder[LAST_LIVE_CHECKED] = True    # any gap is held; last_live may move on
+                    # While a gap is held only in memory, last_live must keep its start for a
+                    # restart to find it again: the heartbeat may not move it on.
+                    holder[LAST_LIVE_CHECKED] = not pending_gaps
                     if pending_gaps and cams:
                         while pending_gaps:
                             gap = pending_gaps[0]
@@ -2280,6 +2282,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                             log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
                                 "opened resumable archive recovery")
                         rec.persist_last_live(cfg.last_live_path, now)
+                        holder[LAST_LIVE_CHECKED] = True
             except Exception as e:                       # noqa: BLE001
                 log(f"recovery: gap detector skipped: {type(e).__name__}")
 

@@ -316,6 +316,26 @@ class LastLiveHandshake(RecoveryWorkerRpcContract):
         self.assertEqual(sorted(cloud.opened[0]["cameras"]), sorted(CAMERA_IDS.values()))
 
 
+    def test_a_held_gap_survives_an_agent_restart(self):
+        lost_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        recovery.persist_last_live(self.cfg.last_live_path, lost_at)
+        cloud = StrictCloud(sync_failures=1)          # no camera mapping before the restart
+        holder = {"recorder_live_at": __import__("time").monotonic()}
+
+        def heartbeat():
+            if holder.get(core.LAST_LIVE_CHECKED):
+                recovery.persist_last_live(self.cfg.last_live_path, datetime.now(timezone.utc))
+
+        self._work(cloud, _Spool(), CHANNELS, cycles=1, holder=holder, between=heartbeat)
+        self.assertEqual(cloud.opened, [])
+        self.assertFalse(holder.get(core.LAST_LIVE_CHECKED), "last_live released with a gap held")
+        # The Agent restarts (update, watchdog, power) before the cloud accepted the gap.
+        self._work(cloud, _Spool(), CHANNELS, cycles=1)
+        self.assertEqual(len(cloud.opened), 1, "the held gap was lost across the restart")
+        opened = datetime.fromisoformat(cloud.opened[0]["started_at"].replace("Z", "+00:00"))
+        self.assertLess(abs((opened - lost_at).total_seconds()), 1)
+
+
 class CompleteRecoveryContract(unittest.TestCase):
     def test_runner_completion_parameters_exist_in_the_rpc(self):
         sig = _latest_params("wl_complete_recovery")
