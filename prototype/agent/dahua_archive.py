@@ -15,13 +15,15 @@ Safety / truth rules:
   time leaves this module to be misread as UTC;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
-* downloads are bounded to the same 32 MiB pilot limit as incident_evidence;
+* downloads are bounded to the same 32 MiB pilot limit as incident_evidence and
+  to a total time budget;
 * ambiguous clock/search/download responses fail closed with DriverError.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import re
+import time
 from typing import Iterable
 
 import requests
@@ -31,7 +33,8 @@ from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
 from drivers.dahua import DahuaDriver
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
-DOWNLOAD_TIMEOUT = 90
+DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
+CLIP_TOTAL_SECONDS = 90              # whole get_clip: clock read, search and download
 FINDER_COUNT = 100
 ZONE_STEP_SECONDS = 15 * 60          # every civil UTC offset is a whole number of quarter hours
 MAX_ZONE_DRIFT_SECONDS = 5 * 60      # beyond this the recorder's zone cannot be told from drift
@@ -283,10 +286,13 @@ def has_recording(driver: DahuaDriver, channel: str, start: datetime, end: datet
     return bool(find_recordings(driver, channel, start, end, max_items=1))
 
 
-def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES) -> bytes:
+def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES, *, deadline=None) -> bytes:
     chunks: list[bytes] = []
     total = 0
     for chunk in response.iter_content(chunk_size=256 * 1024):
+        # A read timeout alone never ends a download that keeps trickling data.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DriverError("recorder did not export this footage window in time")
         if not chunk:
             continue
         total += len(chunk)
@@ -312,8 +318,10 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     ``clock`` names the clock that stamped ``start``/``end``: "agent" (the default) for times the
     Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time;
     "recorder" for times the recorder's own clock stamped, i.e. archive segment times from
-    :func:`enumerate_historical_events` or ONVIF UtcTime.
+    :func:`enumerate_historical_events` or ONVIF UtcTime. The whole call, clock read and search
+    included, runs within CLIP_TOTAL_SECONDS.
     """
+    deadline = time.monotonic() + CLIP_TOTAL_SECONDS
     native_channel = _native_channel(channel)
     # One clock reading serves both the search and the download, so both use the same window.
     local_start, local_end = _localize_window(driver, start, end, clock=clock)
@@ -322,6 +330,9 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     if not _find_local(driver, native_channel, local_start, local_end, max_items=1):
         return None
 
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise DriverError("recorder did not export this footage window in time")
     response = _request(
         driver,
         "/cgi-bin/loadfile.cgi",
@@ -333,14 +344,19 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
             "subtype": 0,
         },
         stream=True,
-        timeout=max(driver.timeout, DOWNLOAD_TIMEOUT),
+        # (connect, read): no single read may outlive what is left of the total budget.
+        timeout=(DOWNLOAD_TIMEOUT[0], max(1.0, min(DOWNLOAD_TIMEOUT[1], remaining))),
     )
     # A streamed response holds the underlying connection open until it is fully
     # consumed OR explicitly closed. _read_bounded may raise (empty / oversized /
     # error-body) or return early, so the response is ALWAYS closed here — a leaked
     # streamed connection would eventually exhaust the recorder's session pool.
     try:
-        return _read_bounded(response)
+        return _read_bounded(response, deadline=deadline)
+    except requests.RequestException as error:
+        # A stalled or reset download. requests' own text names the recorder's LAN host, which
+        # must not reach cloud-visible failure text.
+        raise DriverError("recorder stopped sending this footage window") from error
     finally:
         try:
             response.close()
