@@ -106,6 +106,17 @@ def _strip_ns(elem: ET.Element) -> ET.Element:
     return elem
 
 
+def _xs_datetime(text: str | None) -> datetime | None:
+    """An xs:dateTime from the device as an aware datetime, or None."""
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _bind(table: dict, token: str, channel: str) -> None:
     """Map a token to a channel. A token claimed by two cameras maps to None:
     an event carrying it cannot be attributed, so it must not be guessed."""
@@ -413,16 +424,20 @@ class OnvifDriver(NvrDriver):
         if etype is None:
             return None
 
-        inner = msg.find(".//Message")
-        if inner is None:
+        # WS-BaseNotification wraps the ONVIF payload: wsnt:Message holds the
+        # tt:Message that carries UtcTime, PropertyOperation, Source and Data.
+        # With namespaces stripped both are "Message" and the first found is
+        # the wrapper, which has no UtcTime; take the inner one.
+        outer = msg.find(".//Message")
+        if outer is None:
             return None
+        inner = outer.find("Message")
+        if inner is None:
+            inner = outer            # a device that omits the wrapper
 
-        utc = inner.get("UtcTime")
-        try:
-            ts = (datetime.fromisoformat(utc.replace("Z", "+00:00"))
-                  if utc else datetime.now(timezone.utc))
-        except ValueError:
-            ts = datetime.now(timezone.utc)
+        # device_ts is the recorder's own stamp; receive time only when the
+        # message carries none we can read.
+        ts = _xs_datetime(inner.get("UtcTime")) or datetime.now(timezone.utc)
 
         # An ONVIF "event" fires on both rising and falling edge; the Data
         # SimpleItem carries the state. Drop the falling edge.
