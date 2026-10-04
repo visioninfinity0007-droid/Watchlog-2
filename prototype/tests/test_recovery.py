@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "agent"))
 
 import recovery  # noqa: E402
 import backfill  # noqa: E402
+import watchlog_agent as core  # noqa: E402
 
 T0 = datetime(2026, 6, 1, 17, 0, tzinfo=timezone.utc)
 
@@ -57,6 +58,66 @@ def interval(iv_id="iv1", start=T0, hours=3, status="pending", checkpoint=None):
     return {"id": iv_id, "started_at": start.isoformat(),
             "ended_at": (start + timedelta(hours=hours)).isoformat(),
             "cameras": ["1"], "status": status, "checkpoint": checkpoint or {}}
+
+
+class _ArchiveDriverStub:
+    def __init__(self, name, info=None, fail_probe=False):
+        self.name = name
+        self.info = info
+        self.fail_probe = fail_probe
+        self.closed = False
+
+    def probe(self):
+        if self.fail_probe:
+            raise RuntimeError("native probe unavailable")
+        return self.info
+
+    def close(self):
+        self.closed = True
+
+
+class ArchiveTransportRouting(unittest.TestCase):
+    def test_onvif_dahua_live_path_uses_native_archive_reader(self):
+        live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        native_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        live = _ArchiveDriverStub("onvif", live_info)
+        native = _ArchiveDriverStub("dahua-cgi", native_info)
+        cfg = type("Cfg", (), {
+            "nvr_url": "http://192.0.2.10",
+            "nvr_username": "local-user",
+            "nvr_password": "local-password",
+        })()
+        old_open, old_build = core.open_driver, core.build
+        try:
+            core.open_driver = lambda _cfg: (live, live_info)
+            core.build = lambda name, *_a, **_kw: native if name == "dahua-cgi" else None
+            driver, info = core.open_archive_driver(cfg)
+        finally:
+            core.open_driver, core.build = old_open, old_build
+        self.assertIs(driver, native)
+        self.assertIs(info, native_info)
+        self.assertTrue(live.closed)
+
+    def test_native_archive_probe_failure_preserves_live_onvif_driver(self):
+        live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
+        live = _ArchiveDriverStub("onvif", live_info)
+        native = _ArchiveDriverStub("dahua-cgi", fail_probe=True)
+        cfg = type("Cfg", (), {
+            "nvr_url": "http://192.0.2.10",
+            "nvr_username": "local-user",
+            "nvr_password": "local-password",
+        })()
+        old_open, old_build = core.open_driver, core.build
+        try:
+            core.open_driver = lambda _cfg: (live, live_info)
+            core.build = lambda name, *_a, **_kw: native
+            driver, info = core.open_archive_driver(cfg)
+        finally:
+            core.open_driver, core.build = old_open, old_build
+        self.assertIs(driver, live)
+        self.assertIs(info, live_info)
+        self.assertFalse(live.closed)
+        self.assertTrue(native.closed)
 
 
 class OutageDetection(unittest.TestCase):
