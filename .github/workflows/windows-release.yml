@@ -114,6 +114,9 @@ jobs:
             }
 
             if ($env:PRODUCTION -eq 'true') { $releaseArgs['Production'] = $true }
+            if ($env:GITHUB_REF -eq 'refs/heads/feat/multi-recorder-field-test') {
+              $releaseArgs['FieldTest'] = $true
+            }
             & .\tools\build_windows_release.ps1 @releaseArgs
             if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
 
