@@ -34,6 +34,7 @@ import hashlib
 import os
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
@@ -161,7 +162,10 @@ class OnvifDriver(NvrDriver):
         self._config_to_channel: dict[str, str | None] = {}
         self._profile_to_channel: dict[str, str | None] = {}
         self._profile_tokens: dict[str, str] = {}     # channel -> snapshot profile
-        self._last_emitted: dict[tuple[str, str], datetime] = {}
+        # Burst filter state, in receive-time monotonic seconds: neither the
+        # PC clock nor the recorder clock can step it backwards.
+        self._last_emitted: dict[tuple[str, str], float] = {}
+        self._monotonic = time.monotonic
         # Events whose source token matched no camera. They are dropped, never
         # guessed onto a channel; the count and the last source are kept so
         # the token the device actually sends can be read off a live site.
@@ -461,11 +465,15 @@ class OnvifDriver(NvrDriver):
             self.last_unmapped_source = source
             return None
 
+        # Collapse repeats by when we received them. A wall-clock delta goes
+        # negative on a backward step, passes "< window", and silently drops
+        # every later event of this (channel, type) until the clock catches up.
         key = (channel, etype)
+        now = self._monotonic()
         last = self._last_emitted.get(key)
-        if last and (ts - last).total_seconds() < BURST_WINDOW_SECONDS:
+        if last is not None and now - last < BURST_WINDOW_SECONDS:
             return None
-        self._last_emitted[key] = ts
+        self._last_emitted[key] = now
 
         return Event(
             channel=channel,

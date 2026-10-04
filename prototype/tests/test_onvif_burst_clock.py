@@ -6,6 +6,12 @@ MNVR-024  device_ts is the notification's own UtcTime. WS-BaseNotification
           wsnt:Message; with namespaces stripped both are "Message", and the
           first one found is the wrapper, which has no UtcTime, so the PC
           clock was used instead.
+MNVR-023  The burst filter runs on receive-time monotonic seconds. A
+          wall-clock comparison has no lower bound: when the PC clock (or the
+          recorder clock) steps backwards, (ts - last) is negative, passes
+          "< 30 s", and every event of that (channel, type) is dropped
+          silently until the clock catches up. Repeats are a property of when
+          WE received them, so the filter must not depend on either clock.
 """
 from __future__ import annotations
 
@@ -78,6 +84,29 @@ def test_fractional_and_offset_utc_time(driver):
 def test_unparseable_utc_time_falls_back_to_receive_time(driver):
     events = _feed(driver, 1, "not-a-time", T0 + timedelta(seconds=3), 0)
     assert [e.device_ts for e in events] == [T0 + timedelta(seconds=3)]
+
+
+def test_backward_clock_step_does_not_suppress_later_events(driver):
+    assert len(_feed(driver, 2, T0, T0, 0)) == 1
+    # NTP steps both clocks back 15 minutes; 40 s really elapsed.
+    stepped = T0 - timedelta(minutes=15)
+    events = _feed(driver, 2, stepped, stepped, 40)
+    assert [(e.channel, e.device_ts) for e in events] == [("2", stepped)]
+    # And the next one 40 s later still gets through.
+    later = stepped + timedelta(seconds=40)
+    assert len(_feed(driver, 2, later, later, 40)) == 1
+
+
+def test_repeat_inside_the_window_is_collapsed_whatever_the_clocks_say(driver):
+    assert len(_feed(driver, 5, T0, T0, 0)) == 1
+    # Only 10 s really elapsed, although both clocks jumped an hour.
+    jumped = T0 + timedelta(hours=1)
+    assert _feed(driver, 5, jumped, jumped, 10) == []
+
+
+def test_burst_key_is_the_resolved_camera(driver):
+    assert len(_feed(driver, 5, T0, T0, 0)) == 1
+    assert len(_feed(driver, 6, T0 + timedelta(seconds=5), T0 + timedelta(seconds=5), 5)) == 1
 
 
 if __name__ == "__main__":
