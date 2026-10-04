@@ -167,6 +167,36 @@ class VerifiedNativeChannelMap(unittest.TestCase):
         driver.get_clip("3", T0, T1)
         self.assertEqual(native.clips, ["2"])
 
+    def test_duplicate_label_beside_an_unlabelled_profile_is_ambiguous(self):
+        # Camera 2 also carries Channel1 (next to an unlabelled profile), so Channel1 is claimed
+        # twice and camera 1 must not be mapped to it either.
+        onvif = _onvif(_profiles(("MediaProfile_Channel1_MainStream", "000"),
+                                 ("MediaProfile_Channel1_MainStream", "001"),
+                                 ("Profile_X", "001"),
+                                 ("MediaProfile_Channel3_MainStream", "002")))
+        native = FakeNative()
+        driver, _info = _open(onvif, native)
+        for camera in ("1", "2"):
+            with self.assertRaises(DriverError):
+                driver.get_clip(camera, T0, T1)
+        driver.get_clip("3", T0, T1)
+        self.assertEqual(native.clips, ["3"])
+
+    def test_duplicate_label_inside_a_conflicting_label_set_is_ambiguous(self):
+        # Camera 1 carries Channel1 and Channel5 (refused on its own); camera 3 also claims
+        # Channel5, so camera 3 must not be mapped to it either.
+        onvif = _onvif(_profiles(("MediaProfile_Channel1_MainStream", "000"),
+                                 ("MediaProfile_Channel5_SubStream1", "000"),
+                                 ("MediaProfile_Channel2_MainStream", "001"),
+                                 ("MediaProfile_Channel5_MainStream", "002")))
+        native = FakeNative(channels=("1", "2", "3", "4", "5"))
+        driver, _info = _open(onvif, native)
+        for camera in ("1", "3"):
+            with self.assertRaises(DriverError):
+                driver.get_clip(camera, T0, T1)
+        driver.get_clip("2", T0, T1)
+        self.assertEqual(native.clips, ["2"])
+
     def test_conflicting_labels_on_one_source_are_refused(self):
         onvif = _onvif(_profiles(("MediaProfile_Channel1_MainStream", "000"),
                                  ("MediaProfile_Channel5_SubStream1", "000"),

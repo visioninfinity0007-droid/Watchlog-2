@@ -579,16 +579,19 @@ def _verified_native_channel_map(onvif, native) -> dict:
     """ONVIF camera channel -> native recorder channel, only where the recorder itself says so.
 
     A camera is mapped only when every profile of its video source carries the same
-    MediaProfile_Channel<N> label, no other camera carries N, and the native transport lists
-    channel N. A recorder that labels a channel 0 does not number channels the way the native
-    side does, so nothing is mapped. Everything else stays unmapped: refused, never guessed.
+    MediaProfile_Channel<N> label, no other camera carries N on any of its profiles, and the
+    native transport lists channel N. A recorder that labels a channel 0 does not number channels
+    the way the native side does, so nothing is mapped. Everything else stays unmapped: refused,
+    never guessed.
     """
     labels = _onvif_channel_labels(onvif)
     if any("0" in found for found in labels.values()):
         return {}
     single = {channel: next(iter(found)) for channel, found in labels.items()
               if len(found) == 1 and "" not in found}
-    claimed = list(single.values())
+    # Count every label of every camera, so a camera with mixed or conflicting labels still
+    # makes its N ambiguous for the others.
+    claimed = [label for found in labels.values() for label in found if label]
     native_ids = {}
     for row in native.list_channels():
         raw = str(getattr(row, "channel", "") or "")
