@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import re
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -28,6 +29,7 @@ MAX_CLIP_BYTES = 32 * 1024 * 1024
 SEARCH_LIMIT = 40
 DOWNLOAD_TIMEOUT = (5, 30)
 CLIP_TOTAL_SECONDS = 90
+CLIP_LOCK_WAIT_SECONDS = 120
 MAX_DOWNLOAD_CANDIDATES = 2
 ARCHIVE_PROOF_WINDOW = 1800
 # HTTP answers that say the endpoint or method itself is absent (an affirmative rejection).
@@ -47,6 +49,55 @@ class ArchiveRejected(DriverError):
         self.status = status
         self.affirmative = affirmative
         self.reason = reason
+
+
+class ClipError(DriverError):
+    """A typed incident-footage outcome.
+
+    The message is customer-safe and never carries the recorder address; ``detail`` is for
+    the local log only. Only ClipUnsupported is a capability verdict.
+    """
+
+    unsupported = False
+    default_reason = "The recorder did not return footage for this window."
+
+    def __init__(self, reason: str | None = None, *, detail: str = "",
+                 affirmative: bool = False) -> None:
+        super().__init__(reason or self.default_reason)
+        self.detail = detail
+        self.affirmative = affirmative or self.unsupported
+
+
+class ClipNotReturned(ClipError):
+    """The recorder answered without footage: refused, empty, or an error page."""
+
+
+class ClipUnsupported(ClipError):
+    unsupported = True
+    default_reason = ("This recorder does not expose on-demand incident footage through the "
+                      "validated WatchLog path.")
+
+
+class ClipNoRecording(ClipError):
+    default_reason = "The recorder found no recorded footage for this window."
+
+
+class ClipTooLarge(ClipError):
+    default_reason = "The footage for this window is larger than the 32 MiB download limit."
+
+
+class ClipTimedOut(ClipError):
+    default_reason = "The recorder did not finish sending the footage in time. Request it again."
+
+
+class ClipUnreachable(ClipError, NvrUnreachable):
+    default_reason = ("The recorder stopped responding while sending the footage. "
+                      "Request it again.")
+
+
+class ClipAuthRejected(ClipError, NvrAuthFailed):
+    default_reason = ("The recorder refused the WatchLog login for recorded footage. Check that "
+                      "the account is allowed to play back recordings.")
 
 
 def _utc(value: datetime) -> datetime:
@@ -167,10 +218,16 @@ def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, en
     response = _post(driver, "/ISAPI/ContentMgmt/search",
                      _search_body(channel, start, end, offset, limit), timeout=(8, 30))
     try:
-        root = _strip(ET.fromstring(response.content))
-    except ET.ParseError as error:
-        raise ArchiveRejected(f"Hikvision archive search returned invalid XML: {error}",
-                              reason="invalid_response") from error
+        try:
+            content = response.content
+        except requests.RequestException as error:
+            raise NvrUnreachable(
+                f"Hikvision archive search answer was cut off: {explain(error)}") from error
+        try:
+            root = _strip(ET.fromstring(content))
+        except ET.ParseError as error:
+            raise ArchiveRejected(f"Hikvision archive search returned invalid XML: {error}",
+                                  reason="invalid_response") from error
     finally:
         response.close()
 
@@ -244,32 +301,37 @@ def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
     return {"status": "supported", "events": events, "next_cursor": nxt}
 
 
-def _read_download_response(response, *, deadline=None) -> bytes | None:
+def _read_download_response(response, *, deadline=None) -> bytes:
     try:
         chunks = []
         total = 0
-        for chunk in response.iter_content(chunk_size=256 * 1024):
-            if deadline is not None and time.monotonic() >= deadline:
-                raise DriverError("Hikvision incident footage retrieval exceeded the time budget")
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > MAX_CLIP_BYTES:
-                raise DriverError("Hikvision incident footage exceeds the 32 MiB limit")
-            chunks.append(chunk)
+        try:
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ClipTimedOut(detail="budget spent during transfer")
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_CLIP_BYTES:
+                    raise ClipTooLarge(detail="transfer over the byte cap")
+                chunks.append(chunk)
+        except (requests.RequestException, OSError) as error:
+            # A stall, reset or truncated body mid-transfer. requests names the recorder
+            # address in these messages, so only the error type is kept.
+            raise ClipUnreachable(detail=f"transfer broke: {type(error).__name__}") from error
         data = b"".join(chunks)
         if not data:
-            return None
+            raise ClipNotReturned(detail="empty body")
         head = data[:500].lower()
         if (b"<responsestatus" in head or b"<html" in head or
                 b"<!doctype" in head or b"<cmsearchresult" in head):
-            return None
+            raise ClipNotReturned(detail="error body", affirmative=b"notsupport" in head)
         return data
     finally:
         response.close()
 
 
-def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) -> bytes | None:
+def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) -> bytes:
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<downloadRequest version="1.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
@@ -281,11 +343,12 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) 
     # Firmware families differ here: older RaCM documents use GET-with-body
     # while newer NVR examples also accept POST-with-body. Try both, using
     # only the recorder-returned playback URI and keeping the transfer bounded.
-    last_error = None
+    refused = []
+    transport = None
     with HIKVISION_HTTP_LOCK:
         for method in ("GET", "POST"):
             if deadline is not None and time.monotonic() >= deadline:
-                return None
+                raise ClipTimedOut(detail="budget spent before download")
             remaining = ((deadline - time.monotonic()) if deadline is not None else
                          float(DOWNLOAD_TIMEOUT[1]))
             timeout = (DOWNLOAD_TIMEOUT[0], max(5, min(DOWNLOAD_TIMEOUT[1], remaining)))
@@ -296,7 +359,7 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) 
                     stream=True, timeout=timeout,
                 )
             except requests.RequestException as error:
-                last_error = error
+                transport = ClipUnreachable(detail=f"{method}: {type(error).__name__}")
                 continue
 
             if response.status_code == 401:
@@ -311,25 +374,31 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) 
                             stream=True, timeout=timeout,
                         )
                     except requests.RequestException as error:
-                        last_error = error
+                        transport = ClipUnreachable(detail=f"{method}: {type(error).__name__}")
                         continue
-            if response.status_code in (401, 403):
-                response.close()
-                raise NvrAuthFailed(
-                    f"{url}: HTTP {response.status_code} — recorder rejected the username or password"
-                )
             if response.status_code >= 400:
+                status = response.status_code
+                detail = _error_head(response)
                 response.close()
+                if status in (401, 403) and not _not_supported(detail):
+                    raise ClipAuthRejected(detail=f"{method}: HTTP {status}")
+                refused.append(ClipNotReturned(
+                    detail=f"{method}: HTTP {status}",
+                    affirmative=status in NOT_SUPPORTED_HTTP or _not_supported(detail)))
                 continue
 
             driver.last_activity_monotonic = __import__("time").monotonic()
-            data = _read_download_response(response, deadline=deadline)
-            if data:
-                return data
+            try:
+                return _read_download_response(response, deadline=deadline)
+            except ClipNotReturned as error:
+                refused.append(error)       # empty or error body: the other method may serve it
+            # A spent budget, an oversize export or a broken transfer propagates: this method
+            # works, and repeating the transfer with the other one would only spend the budget.
 
-    if last_error is not None:
-        raise NvrUnreachable(f"{url}: {explain(last_error)}") from last_error
-    return None
+    if transport is not None:
+        raise transport
+    raise ClipNotReturned(detail="; ".join(e.detail for e in refused),
+                          affirmative=bool(refused) and all(e.affirmative for e in refused))
 
 def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> str:
     host = urlparse(driver.base_url).hostname or "127.0.0.1"
@@ -339,52 +408,116 @@ def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: da
     )
 
 
-def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> bytes | None:
+_MAIN_TRACK = re.compile(r"(/tracks/\d+?)01(?=[/?]|$)", re.IGNORECASE)
+
+
+def _sub_stream_uri(uri: str) -> str | None:
+    """The same window on the channel's sub stream (track N02), or None if the URI names no
+    main-stream track."""
+    smaller, count = _MAIN_TRACK.subn(r"\g<1>02", uri, count=1)
+    return smaller if count else None
+
+
+def _clip_outcome(failures: list, *, no_recording: bool) -> ClipError:
+    """The most actionable failure. 'Unsupported' needs every answer to be an affirmative
+    rejection; anything less certain stays a retryable failure."""
+    for kind in (ClipTooLarge, ClipUnreachable):
+        for failure in failures:
+            if isinstance(failure, kind):
+                return failure
+    detail = "; ".join(failure.detail for failure in failures if failure.detail)
+    if no_recording:
+        return ClipNoRecording(detail=detail)
+    if failures and all(failure.affirmative for failure in failures):
+        return ClipUnsupported(detail=detail)
+    return ClipNotReturned(detail=detail)
+
+
+def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> bytes:
     """Download a bounded incident window.
 
     Search first and use the recorder-returned playbackURI. That URI often
     carries firmware-specific name/size metadata required by ContentMgmt.
     Only if search yields no usable URI do we try a generic by-time URI.
+
+    Every failure raises a typed ClipError. Only an affirmative rejection is 'unsupported'; a
+    spent time budget, an oversize export, a refused login, a broken transfer or an empty
+    answer stays a retryable failure.
     """
     if end <= start:
         raise DriverError("invalid Hikvision incident footage time window")
 
-    deadline = time.monotonic() + CLIP_TOTAL_SECONDS
-    search_error = None
+    # Recovery, the archive scan and recording proofs share this lock. Waiting for it must not
+    # spend this request's download budget, so the deadline starts once the lock is held, and
+    # the wait itself is bounded.
+    if not HIKVISION_HTTP_LOCK.acquire(timeout=CLIP_LOCK_WAIT_SECONDS):
+        raise ClipTimedOut("The recorder was busy with other footage work. Request it again.",
+                           detail="archive lock wait")
+    try:
+        deadline = time.monotonic() + CLIP_TOTAL_SECONDS
+        return _clip_within_deadline(driver, str(channel), start, end, deadline)
+    finally:
+        HIKVISION_HTTP_LOCK.release()
+
+
+def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime,
+                          end: datetime, deadline: float) -> bytes:
+    failures = []
+    sources = []
+    searched = False
     try:
         result = search_recordings(
-            driver, str(channel), start, end, offset=0, limit=MAX_DOWNLOAD_CANDIDATES)
-        attempted = 0
+            driver, channel, start, end, offset=0, limit=MAX_DOWNLOAD_CANDIDATES)
+        searched = True
         for row in result.get("matches") or []:
             uri = row.get("playback_uri")
-            if not uri or attempted >= MAX_DOWNLOAD_CANDIDATES:
-                continue
-            attempted += 1
-            try:
-                data = _download_uri(driver, uri, deadline=deadline)
-                if data:
-                    return data
-            except (DriverError, NvrUnreachable):
-                if time.monotonic() >= deadline:
-                    break
-                continue
-    except (DriverError, NvrUnreachable) as error:
-        search_error = error
+            if uri and len(sources) < MAX_DOWNLOAD_CANDIDATES:
+                sources.append(uri)
+    except NvrAuthFailed as error:
+        raise ClipAuthRejected(detail="search") from error
+    except ArchiveRejected as error:
+        failures.append(ClipNotReturned(detail=f"search refused ({error.status})",
+                                        affirmative=error.affirmative))
+    except NvrUnreachable:
+        failures.append(ClipUnreachable(detail="search unreachable"))
+    except DriverError:
+        failures.append(ClipNotReturned(detail="search failed"))
+    matched = len(sources)
 
     # Compatibility fallback for firmware that supports download-by-time but
     # returns no usable search row. It shares the SAME total deadline.
-    if time.monotonic() < deadline:
-        try:
-            data = _download_uri(
-                driver, _by_time_uri(driver, str(channel), start, end), deadline=deadline)
-            if data:
-                return data
-        except (DriverError, NvrUnreachable):
-            pass
+    sources.append(_by_time_uri(driver, channel, start, end))
 
-    if search_error is not None:
-        raise search_error
-    return None
+    smaller_tried = False
+    while sources:
+        uri = sources.pop(0)
+        try:
+            return _download_uri(driver, uri, deadline=deadline)
+        except (ClipAuthRejected, ClipTimedOut):
+            raise       # the same login on every source, or no budget left: stop here
+        except ClipTooLarge as error:
+            if smaller_tried:
+                raise
+            failures.append(error)
+            smaller = _sub_stream_uri(uri)
+            if smaller:
+                # One retry of the same window on the lower-bitrate sub stream.
+                smaller_tried = True
+                sources.insert(0, smaller)
+        except ClipError as error:
+            failures.append(error)
+
+    raise _clip_outcome(failures, no_recording=searched and not matched)
+
+
+def get_recorded_segment(driver: HikvisionDriver, channel, start, end) -> dict:
+    """Recovery's bounded clip, with a typed status instead of 'supported' without bytes."""
+    try:
+        return {"status": "supported", "bytes": get_clip(driver, channel, start, end)}
+    except ClipError as error:
+        return {"status": "unsupported" if error.unsupported else "unknown", "bytes": None,
+                "reason": str(error)}
+
 
 def historical_capability(driver: HikvisionDriver = None) -> dict:
     # Recorded segments are searchable; the recorder's own event log is not searched, and a
@@ -431,14 +564,15 @@ def install() -> None:
         enumerate_historical_events(self, channel, start, end, cursor, limit)
     )
     HikvisionDriver.get_recorded_segment = (
-        lambda self, channel, start, end:
-        {"status": "supported", "bytes": get_clip(self, channel, start, end)}
+        lambda self, channel, start, end: get_recorded_segment(self, channel, start, end)
     )
     HikvisionDriver.historical_capability = lambda self: historical_capability(self)
 
 
 __all__ = [
-    "search_recordings", "enumerate_historical_events", "get_clip",
-    "historical_capability", "prove_recorder_archive", "install", "ArchiveRejected",
+    "search_recordings", "enumerate_historical_events", "get_clip", "get_recorded_segment",
+    "historical_capability", "prove_recorder_archive", "install",
+    "ArchiveRejected", "ClipError", "ClipNotReturned", "ClipUnsupported", "ClipNoRecording",
+    "ClipTooLarge", "ClipTimedOut", "ClipUnreachable", "ClipAuthRejected",
     "MAX_CLIP_BYTES", "SEARCH_LIMIT", "CLIP_TOTAL_SECONDS", "MAX_DOWNLOAD_CANDIDATES",
 ]
