@@ -51,7 +51,8 @@ class Paging(unittest.TestCase):
         self.assertEqual(len(res["events"]), 140)
         self.assertEqual(len({e["device_event_id"] for e in res["events"]}), 140)
         self.assertIsNone(res["next_cursor"])
-        self.assertEqual(len(self.finder_pages()), 2)
+        # 100 + 40 files, then the empty page that proves the archive has no more.
+        self.assertEqual(len(self.finder_pages()), 3)
 
     def test_backfill_recovers_every_file(self):
         out = []
@@ -78,6 +79,23 @@ class Paging(unittest.TestCase):
             res = backfill.backfill_events(self.drv, "1", W0, W1, on_event=out.append)
         # What was read is still served, but the scan cannot end as a complete "supported".
         self.assertEqual(first["status"], "supported")
+        self.assertIsNotNone(first["next_cursor"])
+        self.assertEqual(len(out), 100)
+        self.assertEqual(res["status"], "partial")
+
+    def test_recorder_that_serves_short_pages_is_read_to_the_end(self):
+        # A page shorter than asked for does not prove the archive is exhausted; only an empty one
+        # does.
+        self.rec.page_cap = 50
+        res = da.enumerate_historical_events(self.drv, "1", W0, W1)
+        self.assertEqual((res["status"], len(res["events"]), res["next_cursor"]), ("supported", 140, None))
+
+    def test_short_pages_past_the_cap_end_partial_not_supported(self):
+        self.rec.page_cap = 50
+        out = []
+        with mock.patch.object(da, "MAX_FINDER_PAGES", 2):
+            first = da.enumerate_historical_events(self.drv, "1", W0, W1)
+            res = backfill.backfill_events(self.drv, "1", W0, W1, on_event=out.append)
         self.assertIsNotNone(first["next_cursor"])
         self.assertEqual(len(out), 100)
         self.assertEqual(res["status"], "partial")

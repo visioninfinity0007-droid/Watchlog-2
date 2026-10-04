@@ -79,6 +79,7 @@ class FakeRecorder:
         self.auth = None
         self._finders: dict[str, list] = {}
         self.on_call = None               # optional hook(cgi, params) for clock/latency tricks
+        self.page_cap = None              # firmware that hands out fewer files per page than asked
 
     def wall_clock(self) -> datetime:
         return self.pc_now.astimezone(timezone.utc).replace(tzinfo=None) + self.zone + self.drift
@@ -105,7 +106,7 @@ class FakeRecorder:
                 return FakeResponse(text="OK\r\n")
             if action == "findNextFile":
                 hits = self._finders[params["object"]]
-                count = int(params["count"])
+                count = min(int(params["count"]), self.page_cap or int(params["count"]))
                 page, self._finders[params["object"]] = hits[:count], hits[count:]
                 return FakeResponse(text=self.items_text(page))
             return FakeResponse(text="OK\r\n")            # close / destroy

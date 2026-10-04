@@ -16,8 +16,8 @@ Safety / truth rules:
   this module to be misread as UTC;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
-* archive enumeration reads every finder page; a search too large to page ends
-  'partial', never 'supported';
+* archive enumeration reads finder pages until the recorder returns an empty
+  one; a search too large to page ends 'partial', never 'supported';
 * downloads are bounded to the same 32 MiB pilot limit as incident_evidence and
   to a total time budget;
 * ambiguous clock/search/download responses fail closed with DriverError.
@@ -254,10 +254,10 @@ def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
                 local_end: datetime, *, max_rows: int) -> tuple[list[dict], bool]:
     """One mediaFileFind session over a recorder-local window: ``(rows, complete)``.
 
-    findNextFile hands out at most FINDER_COUNT files per call, so the session pages until the
-    recorder runs out of files (complete), ``max_rows`` rows are read, or MAX_FINDER_PAGES pages
-    were read. A full last page does not prove there is nothing more, so those two stops report
-    complete=False.
+    findNextFile hands out at most FINDER_COUNT files per call, and firmware may hand out fewer,
+    so the session pages until a call returns no files (complete), ``max_rows`` rows are read, or
+    MAX_FINDER_PAGES calls were made. Neither of those two stops proves there is nothing more, so
+    they report complete=False.
     """
     finder = _finder_id(_text(
         driver,
@@ -294,9 +294,11 @@ def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
             found = int(found.group(1)) if found else len(page)
             if found and not page:
                 raise DriverError("recorder archive search returned files that could not be read")
-            rows.extend(page)
-            if max(found, len(page)) < count:
+            if not page:
+                # Only an empty page proves the archive is exhausted: a short one may just be the
+                # most this firmware hands out per call.
                 return rows, True
+            rows.extend(page)
             if len(rows) >= max_rows:
                 return rows[:max_rows], False
         return rows, False
