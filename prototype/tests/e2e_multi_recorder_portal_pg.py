@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0152_multi_recorder_owner_read_model.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -56,8 +55,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 
@@ -349,16 +346,24 @@ def run() -> int:
             # Disable the secondary through the governed Agent sync path. Historical
             # recorder/camera/event rows remain, but live owner context must stop
             # presenting that recorder's cameras/faults as current monitoring truth.
+            # 0154 recorder sync is a desired-state sync: the payload names the
+            # whole registry, including its one configured primary.
             anon_call(
                 "select wl_sync_recorders(%s,%s,%s::jsonb)",
                 agent_a, key_a,
                 json.dumps([
                     {
+                        "local_key": "rec-a",
+                        "display_name": "Loading area recorder",
+                        "is_primary": True,
+                        "is_configured": True,
+                    },
+                    {
                         "local_key": "rec-b",
                         "display_name": "Main building recorder",
                         "is_primary": False,
                         "is_configured": False,
-                    }
+                    },
                 ]),
             )
             after_disable = as_auth(

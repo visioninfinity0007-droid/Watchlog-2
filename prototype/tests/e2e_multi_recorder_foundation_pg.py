@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Multi-recorder foundation (0146): real Postgres execution and compatibility.
 
-Runs only against disposable/test Postgres. The whole test is rolled back.
+Runs only against disposable/test Postgres after the normal full-chain apply.
+No migration file is re-executed; legacy state is created with data. The whole
+test is rolled back. (The 0146 backfill of rows that exist when the migration
+runs is proven by e2e_multi_recorder_upgrade_rehearsal_pg.py.)
 
 Proves:
-- a simulated pre-0146 camera row is backfilled in place (same camera UUID),
+- a legacy insert without recorder_id is attached in place (same camera UUID),
 - legacy single-recorder camera/capability sync still works,
 - the upgraded Agent can adopt the legacy default recorder and add another,
 - Recorder A ch1 and Recorder B ch1 remain distinct,
@@ -23,7 +26,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0146_multi_recorder_foundation.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -119,10 +121,9 @@ def run() -> int:
                 ).fetchone()[0]
 
             # ------------------------------------------------------------------
-            # Simulate a legacy site/camera before 0146, then re-run 0146.
-            # CI has already applied 0146 globally, so temporarily relax only
-            # recorder_id NOT NULL inside this transaction. Full rollback restores
-            # the already-migrated disposable DB after the test.
+            # A legacy single-recorder site: a 5.0.x Agent and a trusted/internal
+            # camera insert that predates recorder_id. Created with data on the
+            # final chain; no migration is replayed.
             # ------------------------------------------------------------------
             ua, ta, sa = bootstrap(
                 "multi-recorder-a@watchlog.test", "Multi Recorder A", "Warehouse A"
@@ -130,39 +131,35 @@ def run() -> int:
             key_a = "agent-key-a"
             agent_a = add_agent(ta, sa, key_a, "a")
 
-            # 0146 is already present in the disposable DB. Disable only its
-            # compatibility trigger while creating one simulated pre-0146 row;
-            # re-running the migration below drops/recreates the trigger.
-            cur.execute("alter table public.cameras disable trigger trg_camera_assign_default_recorder")
-            cur.execute("alter table public.cameras alter column recorder_id drop not null")
-            legacy_camera_id = cur.execute(
-                """insert into public.cameras(
-                     tenant_id,site_id,recorder_id,channel,physical_channel,name,
-                     is_configured,is_canonical
-                   ) values (%s,%s,null,'1','1','Legacy Camera 1',true,true)
-                   returning id""",
-                (ta, sa),
-            ).fetchone()[0]
-
             step(cur.execute(
                 "select count(*) from public.recorders where site_id=%s", (sa,)
             ).fetchone()[0] == 0,
-                 "simulated pre-0146 site starts with camera but no recorder row")
+                 "legacy site starts with no recorder row")
 
-            cur.execute(MIG.read_text(encoding="utf-8"))
+            legacy_camera_id = cur.execute(
+                """insert into public.cameras(
+                     tenant_id,site_id,channel,physical_channel,name,
+                     is_configured,is_canonical
+                   ) values (%s,%s,'1','1','Legacy Camera 1',true,true)
+                   returning id""",
+                (ta, sa),
+            ).fetchone()[0]
 
             backfilled = cur.execute(
                 "select id,recorder_id from cameras where id=%s", (legacy_camera_id,)
             ).fetchone()
             rec_a = cur.execute(
-                "select id,local_key,is_primary,is_configured from recorders where site_id=%s",
+                """select id,local_key,is_primary,is_configured,continuity_owner
+                     from recorders where site_id=%s""",
                 (sa,),
             ).fetchall()
 
             step(backfilled is not None and backfilled[0] == legacy_camera_id and backfilled[1] is not None,
-                 "legacy camera UUID preserved while recorder_id is backfilled")
-            step(len(rec_a) == 1 and rec_a[0][1] == "legacy-default" and rec_a[0][2] is True,
-                 "exactly one primary default recorder created for legacy site")
+                 "legacy camera insert without recorder_id keeps its UUID and gets a recorder")
+            step(len(rec_a) == 1 and rec_a[0][1] == "legacy-default" and rec_a[0][2] is True
+                 and rec_a[0][4] is True
+                 and str(rec_a[0][0]) == str(backfilled[1]),
+                 "exactly one primary default recorder, the continuity owner, created for legacy site")
 
             # Legacy single-recorder camera sync must reuse the existing camera ID.
             legacy_map = as_anon(

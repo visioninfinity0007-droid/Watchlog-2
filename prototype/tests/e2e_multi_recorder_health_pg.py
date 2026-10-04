@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0147_multi_recorder_health_recovery.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -58,8 +57,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 
@@ -444,12 +441,14 @@ def run() -> int:
 
             # Site-wide coverage function must explicitly ignore recorder-specific
             # recovery. This is a truth guard: no partial-recorder recovery can
-            # promote the whole site's coverage.
+            # promote the whole site's coverage. In the final chain the site-wide
+            # three-class contract lives in wl_site_coverage_legacy_classes (0153),
+            # which wl_site_coverage_report_classes (0155) delegates to.
             coverage_def = cur.execute(
                 """select pg_get_functiondef(p.oid)
                      from pg_proc p join pg_namespace n on n.oid=p.pronamespace
                     where n.nspname='public'
-                      and p.proname='wl_site_coverage_report_classes'
+                      and p.proname='wl_site_coverage_legacy_classes'
                     limit 1"""
             ).fetchone()[0]
             step("ri.recorder_id is null" in coverage_def,

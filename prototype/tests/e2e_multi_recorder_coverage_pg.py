@@ -9,7 +9,7 @@ Proves:
 - a Recorder A outage affects only Recorder A cameras;
 - recorder-specific RECOVERED restores only that recorder's camera-time;
 - partial vs fully-unverified wall-clock impact is deterministic;
-- legacy site coverage remains present for compatibility;
+- the site coverage compatibility point switches to camera-time truth;
 - customer wrapper is tenant-isolated;
 - internal coverage helpers remain owner-only.
 """
@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0153_multi_recorder_coverage_truth.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -59,8 +58,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 
@@ -344,15 +341,24 @@ def run() -> int:
                 json.dumps(impact, default=str),
             )
 
-            classes = cur.execute(
+            # Final chain (0155): a site with more than one configured recorder
+            # gets camera-time coverage. Camera-time seconds are never relabelled
+            # as the legacy wall-clock LIVE/RECOVERED/UNVERIFIED classes.
+            classes = as_auth(
+                ua,
                 "select wl_site_coverage_report_classes(%s,%s,%s)",
-                (sa, start, end),
-            ).fetchone()[0]
+                sa, start, end,
+            )[0]
             step(
-                "classes" in classes
+                "classes" not in classes
+                and classes["multi_recorder"] is True
+                and classes["coverage_basis"] == "camera_time"
                 and "coverage_ratio" in classes
                 and classes["recorder_coverage"]["schema"] == "multi-recorder-coverage-v1",
-                "legacy site coverage stays present while recorder coverage is additive",
+                "multi-recorder site coverage is camera-time, never relabelled legacy classes",
+                json.dumps({k: classes.get(k) for k in
+                            ("multi_recorder", "coverage_basis", "coverage_ratio")},
+                           default=str),
             )
 
             # Authenticated wrapper: tenant A can read; tenant B cannot.

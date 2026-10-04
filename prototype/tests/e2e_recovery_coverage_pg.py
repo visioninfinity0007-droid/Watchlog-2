@@ -5,6 +5,9 @@ Rolled-back txn. An outage window is UNVERIFIED; the Agent opens a recovery inte
 the recovery worker claims it (in_progress) and completes it (recovered); coverage then reports
 the window as RECOVERED — and LIVE + RECOVERED + UNVERIFIED sum to wall exactly, never blended.
 
+Runs against the final migration chain (no migration file is re-executed): coverage is read
+the way the portal reads it, as an authenticated member of the site's tenant.
+
     python prototype/tests/e2e_recovery_coverage_pg.py
 """
 from __future__ import annotations
@@ -23,7 +26,6 @@ for k in ("SUPABASE_DB_HOST","SUPABASE_DB_PORT","SUPABASE_DB_USER","SUPABASE_DB_
     if os.environ.get(k): ENV[k] = os.environ[k]
 import psycopg  # noqa: E402
 
-MIG = (ROOT/"supabase"/"migrations"/"0098_recovery_and_coverage_classes.sql").read_text(encoding="utf-8")
 KEY = "recov-e2e-key"
 STEPS = []
 def step(ok, name, detail=""):
@@ -36,9 +38,24 @@ def run() -> int:
                dbname=ENV.get("SUPABASE_DB_NAME","postgres"), connect_timeout=30, autocommit=False)
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG)
-            tid = cur.execute("insert into tenants (name) values ('recov') returning id").fetchone()[0]
-            sid = cur.execute("insert into sites (tenant_id,name,timezone) values (%s,'recov','Asia/Karachi') returning id",(tid,)).fetchone()[0]
+            uid = cur.execute("insert into auth.users (id,email) values (gen_random_uuid(),'recov@watchlog.test') returning id").fetchone()[0]
+
+            def as_member(sql, *params):
+                cur.execute("savepoint member_sp")
+                cur.execute("select set_config('request.jwt.claims',%s,true)",
+                            (json.dumps({"sub": str(uid), "role": "authenticated"}),))
+                cur.execute("set local role authenticated")
+                try:
+                    return cur.execute(sql, params or None).fetchone()
+                finally:
+                    cur.execute("reset role")
+                    cur.execute("release savepoint member_sp")
+
+            def coverage(lo, hi):
+                return as_member("select wl_site_coverage_report_classes(%s,%s::timestamptz,%s::timestamptz)", sid, lo, hi)[0]
+
+            tid = as_member("select wl_bootstrap_tenant('recov','recov')")[0]["tenant_id"]
+            sid = cur.execute("select id from sites where tenant_id=%s",(tid,)).fetchone()[0]
             agent = cur.execute("""insert into agents (tenant_id, site_id, agent_key_hash, enrolled_at, last_seen_at)
                                    values (%s,%s, encode(sha256(%s::bytea),'hex'), '2026-05-01', now()) returning id""",(tid,sid,KEY)).fetchone()[0]
             cam = cur.execute("insert into cameras (tenant_id,site_id,channel,name) values (%s,%s,'1','Gate') returning id",(tid,sid)).fetchone()[0]
@@ -49,7 +66,7 @@ def run() -> int:
             cur.execute("""insert into agent_coverage_gaps (tenant_id,site_id,agent_id,started_at,ended_at,cause,source)
                            values (%s,%s,%s,%s::timestamptz,%s::timestamptz,'agent_restart','agent')""",(tid,sid,agent,gs,ge))
 
-            c0 = cur.execute("select wl_site_coverage_report_classes(%s,%s::timestamptz,%s::timestamptz)",(sid,lo,hi)).fetchone()[0]
+            c0 = coverage(lo, hi)
             cl0 = c0["classes"]
             step(cl0["unverified_seconds"] > 50000 and cl0["recovered_seconds"] == 0,
                  "outage window is UNVERIFIED, nothing recovered yet", f"unv={cl0['unverified_seconds']}")
@@ -60,14 +77,14 @@ def run() -> int:
             o2 = cur.execute("select wl_open_recovery_interval(%s,%s,%s::timestamptz,%s::timestamptz,%s::uuid[])",(agent,KEY,gs,ge,[str(cam)])).fetchone()[0]
             step(o2.get("duplicate") is True, "re-open is idempotent (duplicate)")
 
-            c1 = cur.execute("select wl_site_coverage_report_classes(%s,%s::timestamptz,%s::timestamptz)",(sid,lo,hi)).fetchone()[0]
+            c1 = coverage(lo, hi)
             step(c1["classes"]["recovered_seconds"] == 0, "pending (not recovered) does not count as recovered coverage")
 
             claim = cur.execute("select wl_agent_claim_recovery(%s,%s,5,900)",(agent,KEY)).fetchone()[0]
             step(len(claim)==1 and str(claim[0]["id"])==str(rid), "worker claims the pending interval (in_progress)")
 
             cur.execute("select wl_complete_recovery(%s,%s,%s,'recovered',%s,%s::jsonb)",(agent,KEY,rid,42,json.dumps({"cursor":"done"})))
-            c2 = cur.execute("select wl_site_coverage_report_classes(%s,%s::timestamptz,%s::timestamptz)",(sid,lo,hi)).fetchone()[0]
+            c2 = coverage(lo, hi)
             cl2 = c2["classes"]
             step(cl2["recovered_seconds"] > 50000, "after recovery the window is RECOVERED", f"rec={cl2['recovered_seconds']}")
             step(cl2["unverified_seconds"] < 100, "unverified drops to ~0 after full recovery", f"unv={cl2['unverified_seconds']}")

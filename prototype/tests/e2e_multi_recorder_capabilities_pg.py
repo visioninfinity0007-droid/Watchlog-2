@@ -21,7 +21,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0149_multi_recorder_capabilities.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -57,8 +56,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 
@@ -148,9 +145,10 @@ def run() -> int:
                 "select wl_multi_recorder_agent_contract(%s,%s)",
                 agent_a, key_a,
             )[0]
+            # Final chain: 0154 supersedes the 0149 handshake with contract v4.
             step(
                 contract["ok"] is True
-                and contract["version"] == 1
+                and contract["version"] == 4
                 and contract["configured_recorders"] == 0
                 and set(contract["features"]) == {
                     "recorders",
@@ -160,8 +158,11 @@ def run() -> int:
                     "recorder_recovery",
                     "recorder_reconciliation",
                     "recorder_capabilities",
+                    "recorder_job_routing",
+                    "recorder_analytics",
+                    "recorder_continuity",
                 },
-                "multi-recorder Agent contract advertises the complete 0146-0149 surface",
+                "multi-recorder Agent contract v4 advertises recorder capabilities",
                 json.dumps(contract, default=str),
             )
 
@@ -316,10 +317,19 @@ def run() -> int:
             rec_b_caps = cur.execute(
                 "select capabilities from recorders where id=%s", (rec_c,)
             ).fetchone()[0]
+            # The legacy overlay (wl_overlay_camera_truth) carries the canonical
+            # camera name/configuration; only the recorder RPC adds camera_id.
+            legacy_channels = site_b_caps["channels"]
+            cam_c_name = cur.execute(
+                "select name from cameras where id=%s", (cam_c,)
+            ).fetchone()[0]
             step(
                 legacy_out["ok"] is True
+                and str(legacy_out["recorder_id"]) == str(rec_c)
                 and site_b_caps == rec_b_caps
-                and str(site_b_caps["channels"][0]["camera_id"]) == str(cam_c),
+                and len(legacy_channels) == 1
+                and legacy_channels[0]["name"] == cam_c_name
+                and legacy_channels[0]["configured"] is True,
                 "legacy singleton capability sync still mirrors site + recorder truth",
                 json.dumps(site_b_caps, default=str),
             )

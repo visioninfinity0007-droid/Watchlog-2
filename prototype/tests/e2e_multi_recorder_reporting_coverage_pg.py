@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0155_multi_recorder_reporting_coverage.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -59,8 +58,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 

@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0148_multi_recorder_reconciliation.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -58,8 +57,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 
@@ -126,7 +123,7 @@ def run() -> int:
                 )[0]
 
             def sync_camera(agent_id, key, recorder_id, channel="1"):
-                return as_anon(
+                camera_id = as_anon(
                     "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
                     agent_id, key, recorder_id,
                     json.dumps([{
@@ -135,6 +132,19 @@ def run() -> int:
                         "is_configured": True,
                     }]),
                 )[0][channel]
+                # Durable reconciliation advances an existing current-state row; the
+                # Agent's current-state report creates it. Seed that prior state as
+                # data (unknown, never observed) instead of replaying a migration.
+                cur.execute(
+                    """insert into camera_health(
+                         camera_id,tenant_id,site_id,health_state,recording_state
+                       )
+                       select c.id,c.tenant_id,c.site_id,'unknown','unknown'
+                         from cameras c where c.id=%s
+                       on conflict (camera_id) do nothing""",
+                    (camera_id,),
+                )
+                return camera_id
 
             # --------------------------------------------------------------
             # Multi-recorder site A.

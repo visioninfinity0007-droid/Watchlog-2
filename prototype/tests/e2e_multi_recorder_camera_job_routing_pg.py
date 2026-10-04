@@ -22,7 +22,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIG = ROOT / "supabase" / "migrations" / "0150_multi_recorder_camera_job_routing.sql"
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -58,8 +57,6 @@ def run() -> int:
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
-            cur.execute(MIG.read_text(encoding="utf-8"))
-
             def claims(uid):
                 return json.dumps({"sub": str(uid), "role": "authenticated"})
 
@@ -241,21 +238,41 @@ def run() -> int:
             # ------------------------------------------------------------------
             # Incident footage: identical Channel 1 on A/B routes by camera UUID.
             # ------------------------------------------------------------------
+            # A clip request links exactly one event or incident (0058
+            # incident_clip_link_chk), so ingest one Channel 1 event per recorder.
+            as_anon(
+                "select wl_ingest_events(%s,%s,%s::jsonb)",
+                agent, key, json.dumps([
+                    {"recorder_id": str(rec), "channel": "1",
+                     "event_type": "routing_clip_probe",
+                     "device_ts": "2026-10-04T10:00:00Z",
+                     "agent_ts": "2026-10-04T10:00:00Z"}
+                    for rec in (rec_a, rec_b)
+                ]),
+            )
+            clip_events = {
+                str(r[0]): r[1]
+                for r in cur.execute(
+                    """select camera_id,id from events
+                        where site_id=%s and event_type='routing_clip_probe'""",
+                    (site,),
+                ).fetchall()
+            }
             clip_a = cur.execute(
                 """insert into incident_clip_requests(
-                     tenant_id,site_id,camera_id,start_at,end_at
+                     tenant_id,site_id,camera_id,event_id,start_at,end_at
                    ) values (
-                     %s,%s,%s,now()-interval '2 minutes',now()-interval '1 minute'
+                     %s,%s,%s,%s,now()-interval '2 minutes',now()-interval '1 minute'
                    ) returning id""",
-                (tenant, site, cam_a),
+                (tenant, site, cam_a, clip_events[str(cam_a)]),
             ).fetchone()[0]
             clip_b = cur.execute(
                 """insert into incident_clip_requests(
-                     tenant_id,site_id,camera_id,start_at,end_at
+                     tenant_id,site_id,camera_id,event_id,start_at,end_at
                    ) values (
-                     %s,%s,%s,now()-interval '2 minutes',now()-interval '1 minute'
+                     %s,%s,%s,%s,now()-interval '2 minutes',now()-interval '1 minute'
                    ) returning id""",
-                (tenant, site, cam_b),
+                (tenant, site, cam_b, clip_events[str(cam_b)]),
             ).fetchone()[0]
             clips = as_anon(
                 "select wl_agent_claim_clip_requests(%s,%s,2)", agent, key
@@ -429,10 +446,11 @@ def run() -> int:
             contract = as_anon(
                 "select wl_multi_recorder_agent_contract(%s,%s)", agent, key
             )[0]
+            # Final chain: 0154 contract v4 still advertises job routing.
             step(
-                contract["version"] == 2
+                contract["version"] == 4
                 and "recorder_job_routing" in set(contract["features"]),
-                "multi-recorder contract v2 gates on recorder job routing",
+                "multi-recorder contract v4 gates on recorder job routing",
                 json.dumps(contract, default=str),
             )
 
