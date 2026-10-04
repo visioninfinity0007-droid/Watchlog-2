@@ -2,6 +2,7 @@
 """Hardware-free contracts for the Hikvision ISAPI archive/download implementation."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -83,6 +84,21 @@ def last_page_driver():
     return d
 
 
+@contextmanager
+def without_media_probe():
+    # The fake recorder streams placeholder bytes, not real video, so the bundled-FFmpeg
+    # check is switched off for the transfer contracts below.
+    original = getattr(ha, "_probe_clip", None)
+    ha._probe_clip = lambda data: None
+    try:
+        yield
+    finally:
+        if original is None:
+            del ha._probe_clip
+        else:
+            ha._probe_clip = original
+
+
 def test_search_track_time_and_pagination():
     d = driver()
     start = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
@@ -157,7 +173,8 @@ def test_clip_download_is_bounded_binary_path():
     d = driver()
     start = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
     end = datetime(2026, 9, 25, 8, 0, 10, tzinfo=timezone.utc)
-    data = ha.get_clip(d, "1", start, end)
+    with without_media_probe():
+        data = ha.get_clip(d, "1", start, end)
     assert data == b"RECORDED-VIDEO"
     assert d.s.calls[0][1].endswith("/ISAPI/ContentMgmt/search")
     download = [row for row in d.s.calls if row[1].endswith("/ISAPI/ContentMgmt/download")]

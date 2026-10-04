@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import os
 import re
+import subprocess
+import tempfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -32,6 +35,13 @@ CLIP_TOTAL_SECONDS = 90
 CLIP_LOCK_WAIT_SECONDS = 120
 MAX_DOWNLOAD_CANDIDATES = 2
 ARCHIVE_PROOF_WINDOW = 1800
+# A bounded export may start on an earlier key frame. Beyond this slack a clip is a whole
+# recording segment, not the requested window.
+CLIP_WINDOW_SLACK_SECONDS = 15
+PROBE_TIMEOUT_SECONDS = 15
+# No real video fits 32 MiB over this long; a longer reported duration is a timestamp jump
+# (e.g. a PTS wrap), so the clip's timing stays unknown instead of being rejected.
+PROBE_MAX_PLAUSIBLE_SECONDS = 4 * 3600
 # HTTP answers that say the endpoint or method itself is absent (an affirmative rejection).
 NOT_SUPPORTED_HTTP = (404, 405, 501)
 
@@ -90,6 +100,10 @@ class ClipTimedOut(ClipError):
     default_reason = "The recorder did not finish sending the footage in time. Request it again."
 
 
+class ClipInvalid(ClipError):
+    default_reason = "The recorder returned data that is not playable footage for this window."
+
+
 class ClipUnreachable(ClipError, NvrUnreachable):
     default_reason = ("The recorder stopped responding while sending the footage. "
                       "Request it again.")
@@ -112,6 +126,10 @@ def _iso(value: datetime) -> str:
 
 def _compact(value: datetime) -> str:
     return _utc(value).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _parse(value: str) -> datetime:
+    return _utc(datetime.fromisoformat(str(value).strip().replace("Z", "+00:00")))
 
 
 def _track(channel: str, kind: str = "stream") -> int:
@@ -408,7 +426,32 @@ def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: da
     )
 
 
+_TIME_PARAM = re.compile(r"([?&](starttime|endtime)=)([^&]*)", re.IGNORECASE)
 _MAIN_TRACK = re.compile(r"(/tracks/\d+?)01(?=[/?]|$)", re.IGNORECASE)
+
+
+def _window_uri(playback_uri: str, start: datetime, end: datetime) -> str:
+    """Bound a recorder playbackURI to the requested window.
+
+    Search rows describe whole recording segments, so the URI's times cover the segment.
+    Keep the recorder's own locator metadata (name, size) and replace only starttime/endtime,
+    in the URI's own notation, adding them when the URI has none.
+    """
+    wanted = {"starttime": start, "endtime": end}
+    found = set()
+
+    def bounded(match):
+        key = match.group(2).lower()
+        found.add(key)
+        fmt = _iso if "-" in match.group(3) else _compact
+        return match.group(1) + fmt(wanted[key])
+
+    uri = _TIME_PARAM.sub(bounded, playback_uri)
+    missing = [key for key in ("starttime", "endtime") if key not in found]
+    if missing:
+        uri += ("&" if "?" in uri else "?") + "&".join(
+            f"{key}={_compact(wanted[key])}" for key in missing)
+    return uri
 
 
 def _sub_stream_uri(uri: str) -> str | None:
@@ -418,10 +461,77 @@ def _sub_stream_uri(uri: str) -> str | None:
     return smaller if count else None
 
 
+def _overlaps(row: dict, start: datetime, end: datetime) -> bool:
+    try:
+        return _parse(row["start"]) < _utc(end) and _parse(row["end"]) > _utc(start)
+    except (KeyError, TypeError, ValueError):
+        return False        # an unreadable span cannot be shown to cover the request
+
+
+def _probe_clip(data: bytes) -> dict | None:
+    """Inspect a downloaded clip with the bundled FFmpeg (it ships without ffprobe).
+
+    Returns {'video': bool, 'duration': seconds or None}, or None when the bundled tool is
+    unavailable or could not run; the clip is then neither confirmed nor rejected.
+    """
+    try:
+        from recovery_ai import _ffmpeg_exe
+        exe = _ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        return None
+    if not exe:
+        return None
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+            tmp.write(data)
+            path = tmp.name
+        # With no output file FFmpeg describes the input and exits non-zero; that is expected.
+        done = subprocess.run(
+            [exe, "-hide_banner", "-nostdin", "-i", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=PROBE_TIMEOUT_SECONDS, check=False,
+            creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    text = done.stderr.decode("utf-8", "replace")
+    duration = re.search(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)", text)
+    return {
+        "video": bool(re.search(r"Stream #\d+:\d+\S*: Video:", text)),
+        "duration": (int(duration.group(1)) * 3600 + int(duration.group(2)) * 60
+                     + float(duration.group(3))) if duration else None,
+    }
+
+
+def _check_clip(data: bytes, start: datetime, end: datetime) -> bytes:
+    """Where the bundled FFmpeg allows, confirm the bytes are video for this window."""
+    probe = _probe_clip(data)
+    if probe is None:
+        return data
+    if not probe.get("video"):
+        raise ClipInvalid(detail="no video stream")
+    window = (_utc(end) - _utc(start)).total_seconds()
+    duration = probe.get("duration")
+    if duration is not None and duration > PROBE_MAX_PLAUSIBLE_SECONDS:
+        duration = None
+    if duration is not None and duration > window + max(CLIP_WINDOW_SLACK_SECONDS, window / 4):
+        # The recorder exported a whole recording segment, not the requested window.
+        raise ClipInvalid("The recorder returned footage that does not match the requested window.",
+                          detail=f"{duration:.0f}s clip for a {window:.0f}s window")
+    return data
+
+
 def _clip_outcome(failures: list, *, no_recording: bool) -> ClipError:
     """The most actionable failure. 'Unsupported' needs every answer to be an affirmative
     rejection; anything less certain stays a retryable failure."""
-    for kind in (ClipTooLarge, ClipUnreachable):
+    for kind in (ClipTooLarge, ClipInvalid, ClipUnreachable):
         for failure in failures:
             if isinstance(failure, kind):
                 return failure
@@ -436,9 +546,11 @@ def _clip_outcome(failures: list, *, no_recording: bool) -> ClipError:
 def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> bytes:
     """Download a bounded incident window.
 
-    Search first and use the recorder-returned playbackURI. That URI often
-    carries firmware-specific name/size metadata required by ContentMgmt.
-    Only if search yields no usable URI do we try a generic by-time URI.
+    Search first and use the recorder-returned playbackURI, bounded to the requested window.
+    That URI often carries firmware-specific name/size metadata required by ContentMgmt.
+    Rows that do not overlap the window are ignored. Only if no row yields footage do we try a
+    generic by-time URI. A clip is returned once the bundled FFmpeg, where available, confirms
+    it is video of about the window's length.
 
     Every failure raises a typed ClipError. Only an affirmative rejection is 'unsupported'; a
     spent time budget, an oversize export, a refused login, a broken transfer or an empty
@@ -471,8 +583,8 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
         searched = True
         for row in result.get("matches") or []:
             uri = row.get("playback_uri")
-            if uri and len(sources) < MAX_DOWNLOAD_CANDIDATES:
-                sources.append(uri)
+            if uri and len(sources) < MAX_DOWNLOAD_CANDIDATES and _overlaps(row, start, end):
+                sources.append(_window_uri(uri, start, end))
     except NvrAuthFailed as error:
         raise ClipAuthRejected(detail="search") from error
     except ArchiveRejected as error:
@@ -492,7 +604,7 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
     while sources:
         uri = sources.pop(0)
         try:
-            return _download_uri(driver, uri, deadline=deadline)
+            return _check_clip(_download_uri(driver, uri, deadline=deadline), start, end)
         except (ClipAuthRejected, ClipTimedOut):
             raise       # the same login on every source, or no budget left: stop here
         except ClipTooLarge as error:
@@ -573,6 +685,6 @@ __all__ = [
     "search_recordings", "enumerate_historical_events", "get_clip", "get_recorded_segment",
     "historical_capability", "prove_recorder_archive", "install",
     "ArchiveRejected", "ClipError", "ClipNotReturned", "ClipUnsupported", "ClipNoRecording",
-    "ClipTooLarge", "ClipTimedOut", "ClipUnreachable", "ClipAuthRejected",
+    "ClipTooLarge", "ClipTimedOut", "ClipInvalid", "ClipUnreachable", "ClipAuthRejected",
     "MAX_CLIP_BYTES", "SEARCH_LIMIT", "CLIP_TOTAL_SECONDS", "MAX_DOWNLOAD_CANDIDATES",
 ]
