@@ -4,10 +4,11 @@
 ``OnvifDriver.list_channels`` numbers cameras in the order GetProfiles lists their video sources.
 ``open_archive_driver`` may read recorded media for an ONVIF site through the vendor-native
 transport (dahua-cgi / hikvision-isapi), which addresses the recorder's OWN channel numbers. So a
-camera may only be served natively when its ONVIF-to-native channel is VERIFIED: every profile of
-its source carries the recorder's own ``MediaProfile_Channel<N>`` label, no other camera carries N,
-and the native transport lists channel N. Anything else is refused, never guessed, so evidence can
-never come from the wrong camera. Hermetic: no recorder, no network.
+camera may only be served natively when its ONVIF-to-native channel is label-consistent: every
+profile of its source carries the same ``MediaProfile_Channel<N>`` label, no other camera carries N
+on any profile, and the native transport lists channel N. Anything else is refused, never guessed.
+That ONVIF Channel<N> is native channel N stays IMPLEMENTED_UNVERIFIED until checked on recorder
+hardware. Hermetic: no recorder, no network.
 """
 from __future__ import annotations
 
@@ -95,13 +96,13 @@ class FakeNative:
         self.closed = True
 
 
-def _open(onvif, native, vendor="Dahua"):
+def _open(onvif, native, vendor="Dahua", log=None):
     cfg = SimpleNamespace(nvr_url="http://192.0.2.10", nvr_username="local-user",
                           nvr_password="local-password")
     info = DeviceInfo(vendor=vendor, model="XVR", driver="onvif")
     with mock.patch.object(core, "open_driver", lambda _cfg: (onvif, info)), \
             mock.patch.object(core, "build", lambda name, *_a, **_k: native), \
-            mock.patch.object(core, "log", lambda *_a, **_k: None):
+            mock.patch.object(core, "log", log or (lambda *_a, **_k: None)):
         return core.open_archive_driver(cfg)
 
 
@@ -278,6 +279,26 @@ class MappedArchiveProof(unittest.TestCase):
         proof = core.prove_recorder_archive(driver, "4")
         self.assertEqual(proof["status"], "unknown")
         self.assertEqual(native.searches, [])
+
+
+class LabelEquivalenceStaysUnverified(unittest.TestCase):
+    """Truth rule: reading ONVIF Channel<N> as native channel N has not been checked on recorder
+    hardware, so the code and its log must not present the channel map as verified."""
+
+    def test_docstrings_mark_the_label_assumption_unverified(self):
+        for name in ("_consistent_native_channel_map", "open_archive_driver", "_archive_transport"):
+            fn = getattr(core, name, None)
+            self.assertIsNotNone(fn, name)
+            self.assertIn("IMPLEMENTED_UNVERIFIED", fn.__doc__ or "", name)
+
+    def test_archive_log_does_not_claim_verified_channels(self):
+        lines = []
+        _open(_onvif(GAPPED), FakeNative(), log=lines.append)                   # mapped
+        _open(_onvif(_profiles(("Profile_1", "VideoSource_1"))), FakeNative(),  # nothing mapped
+              log=lines.append)
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            self.assertNotRegex(line, r"(?i)\bverified\b")
 
 
 if __name__ == "__main__":

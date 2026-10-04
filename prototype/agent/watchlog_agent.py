@@ -542,9 +542,11 @@ def open_driver(cfg: Config):
         raise primary
 
 
-# ONVIF profile names of the form MediaProfile_Channel<N> carry the recorder's OWN channel number
-# for that video source (the label 0117 already uses for physical_channel). The ONVIF camera
-# channel itself is only the order in which GetProfiles listed the sources.
+# ONVIF profile names of the form MediaProfile_Channel<N> are read as the recorder's own channel
+# number for that video source (the label 0117 already uses for physical_channel). ASSUMPTION,
+# IMPLEMENTED_UNVERIFIED: that ONVIF Channel<N> is the same input as native CGI/ISAPI channel N
+# has not been checked on recorder hardware. The ONVIF camera channel itself is only the order in
+# which GetProfiles listed the sources.
 _ONVIF_CHANNEL_LABEL = r"mediaprofile[_ -]*channel(\d+)"
 
 _ARCHIVE_CHANNEL_UNVERIFIED = ("WatchLog could not confirm which recorder input this camera uses, "
@@ -575,14 +577,15 @@ def _onvif_channel_labels(onvif) -> dict:
     return labels
 
 
-def _verified_native_channel_map(onvif, native) -> dict:
-    """ONVIF camera channel -> native recorder channel, only where the recorder itself says so.
+def _consistent_native_channel_map(onvif, native) -> dict:
+    """ONVIF camera channel -> native recorder channel, only where the profile labels agree.
 
     A camera is mapped only when every profile of its video source carries the same
     MediaProfile_Channel<N> label, no other camera carries N on any of its profiles, and the
     native transport lists channel N. A recorder that labels a channel 0 does not number channels
     the way the native side does, so nothing is mapped. Everything else stays unmapped: refused,
-    never guessed.
+    never guessed. The map is label-consistent, not hardware-verified: reading Channel<N> as
+    native channel N is an assumption, IMPLEMENTED_UNVERIFIED (see _ONVIF_CHANNEL_LABEL).
     """
     labels = _onvif_channel_labels(onvif)
     if any("0" in found for found in labels.values()):
@@ -605,7 +608,8 @@ class _MappedArchiveDriver:
     """Vendor-native archive reader addressed by the ONVIF camera channels WatchLog uses.
 
     Exposes only the read-only archive interface. Every call translates the camera channel
-    through a verified ONVIF-to-native map; a camera without one is refused, never guessed.
+    through the label-consistent ONVIF-to-native map; a camera without one is refused, never
+    guessed.
     """
 
     def __init__(self, native, channel_map: dict):
@@ -702,8 +706,9 @@ def open_archive_driver(cfg: Config, *, live=None):
     identifies the recorder vendor, make one bounded attempt to open the matching
     native HTTP driver with the SAME on-site credential/address. The ONVIF camera
     channel is only an enumeration ordinal, so the native reader is returned only
-    for cameras with a verified ONVIF-to-native channel map. Failure, or no
-    verified camera, falls back to the already-open ONVIF driver and therefore
+    for cameras with a label-consistent ONVIF-to-native channel map (the label-to-
+    native equivalence is IMPLEMENTED_UNVERIFIED on hardware). Failure, or no
+    mapped camera, falls back to the already-open ONVIF driver and therefore
     remains honestly unsupported.
 
     ``live`` is an already-open live ``(driver, info)`` (acceptance, status) used instead of a
@@ -743,7 +748,7 @@ def open_archive_driver(cfg: Config, *, live=None):
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
         _note_native_archive_probe(key, None)
-        channel_map = _verified_native_channel_map(driver, candidate)
+        channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
         _note_native_archive_probe(key, error)
         if candidate is not None:
@@ -760,19 +765,20 @@ def open_archive_driver(cfg: Config, *, live=None):
             candidate.close()
         except Exception:
             pass
-        log(f"archive: no camera has a verified ONVIF-to-{native_name} channel map; "
+        log(f"archive: no camera has a consistent ONVIF-to-{native_name} channel label; "
             f"keeping {driver.name} (recorded media is not guessed)")
         return driver, info
     if live is None:
         driver.close()
     log(f"archive: using vendor-native {native_name} transport for recorded media "
-        f"({len(channel_map)} camera channel(s) verified)")
+        f"({len(channel_map)} camera channel(s) mapped by profile label)")
     return _MappedArchiveDriver(candidate, channel_map), native_info
 
 
 def _archive_transport(driver) -> dict | None:
     """Which transport recorded media is read through, as reported by accept/status/recheck.
-    channel_map is the verified ONVIF-to-native map, or None when channels are the driver's own."""
+    channel_map is the label-consistent ONVIF-to-native map (IMPLEMENTED_UNVERIFIED on hardware,
+    see _ONVIF_CHANNEL_LABEL), or None when channels are the driver's own."""
     if driver is None:
         return None
     mapped = isinstance(driver, _MappedArchiveDriver)

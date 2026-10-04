@@ -123,7 +123,7 @@ class ArchiveTransportRouting(unittest.TestCase):
         finally:
             core.open_driver, core.build = old_open, old_build
         self.assertEqual(driver.name, "dahua-cgi")
-        self.assertEqual(driver.channel_map, {"1": "1", "2": "2"})   # verified, never positional
+        self.assertEqual(driver.channel_map, {"1": "1", "2": "2"})   # by label, never positional
         self.assertIs(info, native_info)
         self.assertTrue(live.closed)
         driver.close()
@@ -131,7 +131,7 @@ class ArchiveTransportRouting(unittest.TestCase):
 
     def test_onvif_without_verified_channel_map_keeps_live_driver(self):
         # MNVR-029: an ONVIF site whose profiles do not name the recorder's own channels has no
-        # verified ONVIF-to-native map, so the native reader is refused instead of guessed.
+        # label-consistent ONVIF-to-native map, so the native reader is refused instead of guessed.
         live_info = type("Info", (), {"vendor": "Dahua", "model": "DH-XVR1B08-I"})()
         live = _ArchiveDriverStub("onvif", live_info)
         native = _ArchiveDriverStub("dahua-cgi", live_info)
