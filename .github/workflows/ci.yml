@@ -447,6 +447,12 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_reporting_coverage_pg.py
       - name: Multi-recorder authority — stale Agent cannot mutate recorder state
         run: python prototype/tests/e2e_multi_recorder_authority_pg.py
+      - name: Multi-recorder fresh site — first recorder owns continuity, lazy legacy then adoption (0146/0154)
+        run: python prototype/tests/e2e_multi_recorder_fresh_site_pg.py
+      - name: Multi-recorder push — single-recorder push works, multi-recorder push fails closed (0146)
+        run: python prototype/tests/e2e_multi_recorder_push_pg.py
+      - name: Multi-recorder upgrade rehearsal — 0001..0143 + 5.0.x data, then 0146..0155 on its own database
+        run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
