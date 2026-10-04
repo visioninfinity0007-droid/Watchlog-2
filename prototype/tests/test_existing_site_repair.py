@@ -670,11 +670,22 @@ class UpgradeHelperSetupUiVersion(unittest.TestCase):
         script = cls.bin / "stand-in.ps1"
         script.write_text(_STAND_IN_EXE, encoding="utf-8")
         for version in ("5.1.0", "5.1.1"):
+            exe = cls.bin / f"{version}.exe"
             subprocess.run(
                 [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                 "-File", str(script), "-Out", str(cls.bin / f"{version}.exe"),
-                 "-Version", version],
+                 "-File", str(script), "-Out", str(exe), "-Version", version],
                 check=True, capture_output=True, timeout=120)
+            # A freshly built exe can be briefly unrunnable on a busy Windows host. Prove the
+            # stand-in itself runs before the helper is judged on it.
+            for _attempt in range(10):
+                probe = subprocess.run([str(exe), "--version"], capture_output=True,
+                                       text=True, timeout=60)
+                if probe.returncode == 0 and probe.stdout.strip() == version:
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError(f"stand-in {version} exe does not run "
+                                   f"(exit {probe.returncode}): {probe.stderr[:200]}")
 
     @classmethod
     def tearDownClass(cls):
