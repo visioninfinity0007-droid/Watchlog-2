@@ -670,20 +670,22 @@ def _is_auth_failure(err: Exception) -> bool:
 
 
 def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
-                    last_gen: str) -> tuple[str, str]:
+                    last_gen: str, seconds: float | None = None) -> tuple[str, str]:
     """Interruptible backoff between driver reconnects. Returns (outcome, gen).
 
     Confirmed auth failures escalate 5->15->30 min so a wrong password never
     hammers the recorder (lockout risk); everything else uses the short
-    DRIVER_RETRY_SECONDS. A credential change (Setup rewriting the DPAPI blob)
-    wakes the wait immediately, reloads the credential and lets the caller retry
-    now — never wait out 30 minutes after the operator fixes the password."""
+    DRIVER_RETRY_SECONDS, or ``seconds`` when given (the packaged collector's
+    jittered delay before reopening a dropped event stream on the same driver).
+    A credential change (Setup rewriting the DPAPI blob) wakes the wait
+    immediately, reloads the credential and lets the caller retry now — never
+    wait out 30 minutes after the operator fixes the password."""
     if auth_failures > 0:
         total = float(_AUTH_BACKOFF_SECONDS[min(auth_failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)])
         log(f"recorder authentication is failing; backing off {int(total) // 60} min "
             f"(will retry immediately if the credential is updated in Setup)")
     else:
-        total = float(DRIVER_RETRY_SECONDS)
+        total = float(DRIVER_RETRY_SECONDS if seconds is None else max(0.0, seconds))
     waited, step = 0.0, 5.0
     while waited < total:
         if stop.wait(min(step, total - waited)):
@@ -846,7 +848,23 @@ def upload_once(cloud: Cloud, state: dict, spool) -> int:
     return res["inserted"]
 
 
-def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None) -> None:
+def _event_stream_health(stream: dict | None) -> dict | None:
+    """The recorder's event-stream state for the local health proof:
+    {connected, connected_at, last_frame_at, last_error}. connected is None when the
+    driver cannot report its stream. The error text is redacted (no URL, credential or
+    recorder address); this file stays non-secret."""
+    if not stream:
+        return None
+    import nvr_health
+    error = stream.get("last_error")
+    return {"connected": stream.get("connected"),
+            "connected_at": stream.get("connected_at"),
+            "last_frame_at": stream.get("last_frame_at"),
+            "last_error": nvr_health.redact(error) if error else None}
+
+
+def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None,
+              event_stream: dict | None = None) -> None:
     cloud.call("wl_heartbeat", p_agent_id=state["agent_id"],
                p_agent_key=state["agent_key"], p_agent_version=AGENT_VERSION,
                p_device_vendor=device.vendor if device else None,
@@ -866,6 +884,7 @@ def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None =
         recorder_vendor=(device.vendor if device else None),
         recorder_model=(device.model if device else None),
         recorder_driver=(device.driver if device else None),
+        event_stream=_event_stream_health(event_stream),
     )
     log("heartbeat ok")
 

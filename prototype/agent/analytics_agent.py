@@ -67,6 +67,69 @@ def runtime_capabilities(cfg) -> list[str]:
     return caps
 
 
+# Recorder liveness window, the same one the recovery worker uses for recorder_is_live.
+RECORDER_LIVE_SECONDS = 150.0
+
+
+def _recorder_stream_live(holder: dict, clock: float) -> bool:
+    """True while the recorder's event stream showed activity in the last 150 s.
+
+    Hikvision and Dahua drivers stamp last_activity_monotonic on every frame, keep-alives
+    included, and on a 2xx answer only while that stream stays open (a 200 that ends before
+    any chunk is taken back); the collector carries the last activity into recorder_live_at
+    when it drops a driver. A recorder whose probe
+    answers while its event stream is down is therefore NOT live: recorder_seen_at (the
+    Repair/Upgrade proof) does not advance. Drivers that cannot report their stream keep
+    the collector's transport stamp."""
+    driver = holder.get("live_driver")
+    activity = float(getattr(driver, "last_activity_monotonic", 0.0) or 0.0)
+    latest = max(activity, float(holder.get("recorder_live_at") or 0.0))
+    return bool(latest and clock - latest < RECORDER_LIVE_SECONDS)
+
+
+def _stream_seen_at(stream: dict | None) -> datetime | None:
+    """Wall time of the event stream's latest activity, or None when the driver reports
+    none. The 2xx answer (connected_at) counts only while that stream is still open: a
+    stream that ended without a frame must not move last_live forward."""
+    stream = stream or {}
+    keys = ("connected_at", "last_frame_at") if stream.get("connected") else ("last_frame_at",)
+    stamps = []
+    for key in keys:
+        raw = stream.get(key)
+        if raw:
+            try:
+                stamps.append(datetime.fromisoformat(str(raw)))
+            except ValueError:
+                pass
+    return max(stamps) if stamps else None
+
+
+def _persist_stream_last_live(cfg, holder: dict, clock: float) -> None:
+    """Keep last_live.json at the recorder's latest event-stream activity.
+
+    This loop replaces core.cmd_run, which was the only periodic writer, so without this
+    last_live was never written and restart, reboot and outage gaps never opened recovery.
+    It is written only while the event stream is live, with the time of its last activity:
+    never from a probe, and never for a driver that cannot report its stream. With no file
+    yet this seeds it and opens no interval. A stored value older than the outage
+    threshold is a gap recovery_worker has not opened yet; it opens it and then moves
+    last_live on itself, so overwriting it here would erase the outage."""
+    if not getattr(cfg, "recovery_enabled", False) or not _recorder_stream_live(holder, clock):
+        return
+    seen = _stream_seen_at(holder.get("event_stream"))
+    if seen is None:
+        return
+    import recovery
+    try:
+        last_live = recovery.read_last_live(cfg.last_live_path)
+        if last_live is not None and (seen <= last_live or recovery.detect_outage(
+                last_live, seen, cfg.recovery_threshold_seconds)):
+            return
+        recovery.persist_last_live(cfg.last_live_path, seen)
+    except Exception as error:                      # noqa: BLE001 — never stop the loop
+        core.log(f"recovery: last_live not persisted ({type(error).__name__})")
+
+
 class Config(core.Config):
     def __init__(self, *args, **kwargs):
         # Preserve the core Config constructor contract. Existing-site staged
@@ -655,7 +718,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     detector = original_build(cfg, core.log)
     core.vision.build = lambda _cfg, _log: detector
 
-    spool = Spool(cfg.spool_path)
+    spool = Spool(cfg.spool_path, cfg.spool_max_rows)   # per-deployment buffer cap, as core.cmd_run
     core.log(f"spool: {cfg.spool_path} ({spool.count()} queued)")
 
     # Shared single-authority signal: the analytics worker owns the lease and publishes its
@@ -705,9 +768,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             core.upload_once(cloud, state, spool)
         except RuntimeError as error:
             core.log(f"ERROR: upload failed: {error}")
-        recorder_seen = float(holder.get("recorder_live_at") or 0.0)
-        recorder_live = bool(recorder_seen and time.monotonic() - recorder_seen < 150.0)
-        core.heartbeat(cloud, state, device, recorder_live=recorder_live)
+        recorder_live = _recorder_stream_live(holder, time.monotonic())
+        core.heartbeat(cloud, state, device, recorder_live=recorder_live,
+                       event_stream=holder.get("event_stream"))
         core.health_cycle(cloud, state, cfg, holder)
         spool.close()
         core.vision.build = original_build
@@ -755,12 +818,15 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             if clock >= next_heartbeat:
                 next_heartbeat = clock + cfg.heartbeat_seconds
                 try:
-                    recorder_seen = float(holder.get("recorder_live_at") or 0.0)
-                    recorder_live = bool(recorder_seen and clock - recorder_seen < 150.0)
-                    core.heartbeat(cloud, state, device, recorder_live=recorder_live)
+                    recorder_live = _recorder_stream_live(holder, clock)
+                    core.heartbeat(cloud, state, device, recorder_live=recorder_live,
+                                   event_stream=holder.get("event_stream"))
                 except (RuntimeError, requests.RequestException) as error:
                     core.log("ERROR: heartbeat failed, will retry: "
                              + str(error).splitlines()[0][:200])
+                # Persist RECORDER observation, not PC/cloud liveness: a cloud outage does
+                # not stop it (events still spool); a dead event stream does.
+                _persist_stream_last_live(cfg, holder, clock)
             time.sleep(1)
     except KeyboardInterrupt:
         core.log("stopping...")
