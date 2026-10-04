@@ -45,9 +45,12 @@ DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 300              # restore one visual checkp
 
 
 def _as_dt(v) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
-    return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    """A zone-aware datetime, so archive times compare with the recovery window. A time without a
+    zone (Dahua mediaFileFind answers bare wall-clock strings) is read as UTC; turning recorder
+    local time into UTC is the archive driver's job."""
+    if not isinstance(v, datetime):
+        v = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
 
 
 def _iso(v) -> str:
