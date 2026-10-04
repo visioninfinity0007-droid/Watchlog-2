@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -25,6 +26,11 @@ from PIL import Image
 import analytics
 import analytics_setup
 import watchlog_agent as core
+import recorder_runtime
+import recorder_registry
+import recorder_analytics
+import multi_recorder_orchestrator
+import multi_recorder_fanout
 from action_runtime import ActionRuntime
 from archive_runtime import ArchiveRuntime
 from drivers import DriverError
@@ -231,15 +237,26 @@ def _send_bootstrap_once(cloud, state, cfg):
     return True
 
 
-def _service_snapshot_requests(cloud, state, driver, requests_list):
+def _service_snapshot_requests(cloud, state, cfg, driver, requests_list):
     completed = 0
     for request_row in (requests_list or [])[:SNAPSHOT_REQUESTS_PER_POLL]:
         channel = str(request_row.get("channel") or "")
         camera_id = request_row.get("camera_id")
         if not channel or not camera_id:
             continue
+        job_driver = None
+        close_job_driver = False
         try:
-            raw = driver.get_snapshot(channel)
+            job_cfg = recorder_runtime.config_for_cloud_recorder(
+                cfg, request_row.get("recorder_id")
+            )
+            if job_cfg is cfg and driver is not None:
+                job_driver = driver
+            else:
+                job_driver = _open_analytics_driver(job_cfg)
+                close_job_driver = True
+
+            raw = job_driver.get_snapshot(channel)
             if not raw:
                 core.log(f"analytics: config snapshot ch{channel} returned no image")
                 continue
@@ -257,6 +274,12 @@ def _service_snapshot_requests(cloud, state, driver, requests_list):
         except Exception as error:
             core.log(f"analytics: configuration still ch{channel} failed: "
                      f"{type(error).__name__}: {str(error)[:120]}")
+        finally:
+            if close_job_driver and job_driver is not None:
+                try:
+                    job_driver.close()
+                except Exception:
+                    pass
     return completed
 
 
@@ -293,6 +316,8 @@ def analytics_worker(cfg: Config, state: dict, detector,
     spool = Spool(cfg.analytics_spool_path)
     cached = analytics.load_config(cfg.analytics_config_path)
     version = int(cached.get("version") or 0)
+    # Control engine/runtime owns the one site-level lease. Recorder-specific
+    # inference state lives in RecorderAnalyticsMux below.
     engine = analytics.AnalyticsEngine(log=core.log)
     engine.configure(cached.get("config"))
     # The top-level orchestration seam: the engine's per-frame output flows through the
@@ -309,13 +334,17 @@ def analytics_worker(cfg: Config, state: dict, detector,
     runtime = AgentRuntime(cloud=cloud, state=state, engine=engine, lease=lease, actions=actions,
                            dedup_path=cfg.analytics_config_path.parent / "analytics_action_dedup.json",
                            log=core.log)
+    mux = recorder_analytics.RecorderAnalyticsMux(
+        cloud=cloud, state=state, lease=lease, actions=actions,
+        dedup_dir=cfg.analytics_config_path.parent, log=core.log)
+    mux.configure(cached.get("config"))
     sampler = FairSampler(cfg.analytics_max_fps)
     counters = {"samples_ok": 0, "sample_errors": 0,
                 "last_sample_at": None, "last_config_at": None}
     if cached.get("config"):
         core.log(f"analytics: loaded cached config v{version}")
 
-    driver = None
+    drivers = {}
     next_config = 0.0
     next_upload = 0.0
     next_status = 0.0
@@ -357,15 +386,24 @@ def analytics_worker(cfg: Config, state: dict, detector,
                         analytics.save_config(cfg.analytics_config_path, version,
                                               payload["config"])
                         engine.configure(payload["config"])
+                        mux.configure(payload["config"])
                         sampler.reset()
+                        # Config changes may add/move cameras across recorders. Close
+                        # cached transports so every next sample resolves fresh identity.
+                        for _drv in list(drivers.values()):
+                            try:
+                                _drv.close()
+                            except Exception:
+                                pass
+                        drivers.clear()
                         core.log(f"analytics: config updated to v{version}; "
-                                 f"{len(engine.sample_plan())} camera(s) active")
+                                 f"{mux.camera_count} camera(s) active")
                     snapshot_requests = payload.get("snapshot_requests") or []
                     if snapshot_requests:
-                        if driver is None:
-                            driver = _open_analytics_driver(cfg)
+                        # Each request resolves its own recorder. A dead primary
+                        # recorder must not block a healthy secondary-recorder snapshot.
                         _service_snapshot_requests(
-                            cloud, state, driver, snapshot_requests)
+                            cloud, state, cfg, None, snapshot_requests)
                 except (RuntimeError, requests.RequestException, DriverError) as error:
                     core.log("analytics: config poll failed; cached rules remain active: "
                              + str(error).splitlines()[0][:180])
@@ -373,7 +411,7 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     core.log(f"analytics: config error {type(error).__name__}: "
                              f"{str(error)[:160]}")
 
-            plan = engine.sample_plan()
+            plan = mux.sample_plan()
             capacity = sampler.summary(plan)
             capacity_signature = (capacity.get("active_cameras"),
                                   capacity.get("effective_max_seconds"),
@@ -394,10 +432,17 @@ def analytics_worker(cfg: Config, state: dict, detector,
             elif plan:
                 choice = sampler.choose(plan, clock)
                 if choice:
-                    channel, _requested, _effective = choice
+                    target, _requested, _effective = choice
+                    recorder_id, channel = mux.resolve_target(target)
+                    driver_key = recorder_id or "__legacy__"
                     try:
+                        driver = drivers.get(driver_key)
                         if driver is None:
-                            driver = _open_analytics_driver(cfg)
+                            job_cfg = recorder_runtime.config_for_cloud_recorder(
+                                cfg, recorder_id
+                            )
+                            driver = _open_analytics_driver(job_cfg)
+                            drivers[driver_key] = driver
                         raw = driver.get_snapshot(channel)
                         if raw:
                             found = detector.detect(raw)
@@ -405,10 +450,9 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                 image = Image.open(io.BytesIO(raw))
                                 image.load()
                                 when = core.now_utc()
-                                # on_frame runs the engine AND dispatches configured evidence
-                                # actions for exception firings (idempotent + cooldown-guarded).
-                                events = runtime.on_frame(
-                                    channel, found, image.size, when)
+                                # One site authority, recorder-isolated engine/tracker state.
+                                events = mux.on_frame(
+                                    target, found, image.size, when)
                                 for event in events:
                                     spool.add(event)
                                 dropped = spool.trim()
@@ -419,18 +463,19 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                 counters["last_sample_at"] = core.iso(when)
                     except (DriverError, requests.RequestException) as error:
                         counters["sample_errors"] += 1
-                        core.log(f"analytics: sampler ch{channel} failed: "
-                                 f"{str(error)[:140]}")
+                        core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
+                                 f"ch{channel} failed: {str(error)[:140]}")
+                        driver = drivers.pop(driver_key, None)
                         if driver is not None:
                             try:
                                 driver.close()
                             except Exception:
                                 pass
-                            driver = None
                     except Exception as error:
                         counters["sample_errors"] += 1
-                        core.log(f"analytics: sampler ch{channel} error: "
-                                 f"{type(error).__name__}: {str(error)[:140]}")
+                        core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
+                                 f"ch{channel} error: {type(error).__name__}: "
+                                 f"{str(error)[:140]}")
 
             if clock >= next_upload:
                 next_upload = clock + cfg.analytics_upload_seconds
@@ -464,13 +509,14 @@ def analytics_worker(cfg: Config, state: dict, detector,
 
             stop.wait(0.1)
     finally:
-        if driver is not None:
+        for driver in list(drivers.values()):
             try:
                 driver.close()
             except Exception:
                 pass
+        drivers.clear()
         try:
-            stopped = _status_payload(version, sampler, engine.sample_plan(),
+            stopped = _status_payload(version, sampler, mux.sample_plan(),
                                       spool, counters, detector)
             stopped["stopped_at"] = core.iso(core.now_utc())
             _write_json_atomic(cfg.analytics_status_path, stopped)
@@ -485,24 +531,143 @@ def _archive_backend_missing(error: Exception) -> bool:
         "schema cache" in text or "function" in text or "404" in text)
 
 
-def archive_worker(cfg: Config, state: dict, stop: threading.Event,
-                   authority: dict = None) -> None:
-    """Background historical-scan workload (migrations 0051/0055).
+def _archive_dt(value):
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
-    Runs in its own daemon thread on a slow cadence so it is LOWER priority than live
-    monitoring: bounded to one scan per cycle, interruptible via the shared stop event, and
-    it never blocks the collector or the analytics sampler. Idle (long back-off) when 0055 is
-    not deployed. Recorder-archive retrieval is not hardware-validated, so the runtime reports
-    a claimed scan with an honest status ('failed: retrieval unavailable') rather than ever
-    fabricating a recovered result. Recovered candidates carry the fixed 0051 provenance label.
-    """
+
+def _archive_scan_handlers(cfg: Config, detector, stop: threading.Event):
+    """Build bounded recorder-frame retrieval + the same local analytics used live."""
+    import recovery_ai
+
+    cached = analytics.load_config(cfg.analytics_config_path)
+    config = cached.get("config") or {}
+    camera_rows = {
+        str(row.get("id")): row
+        for row in (config.get("cameras") or [])
+        if row.get("id") and row.get("channel")
+    }
+    engines = {}
+
+    def retrieve_frames(camera_id, from_ts, to_ts):
+        camera = camera_rows.get(str(camera_id))
+        if camera is None:
+            core.log(f"analytics: archive camera {str(camera_id)[:8]} not present in local config")
+            return None
+        channel = str(camera["channel"])
+        driver = None
+        attempted_segments = 0
+        frames = []
+        try:
+            job_cfg = recorder_runtime.config_for_cloud_recorder(
+                cfg, camera.get("recorder_id")
+            )
+            driver, _info = core.open_archive_driver(job_cfg)
+            enumerate_fn = getattr(driver, "enumerate_historical_events", None)
+            if not callable(enumerate_fn):
+                return None
+            start, end = _archive_dt(from_ts), _archive_dt(to_ts)
+            cursor = None
+            max_frames = max(1, min(int(cfg.recovery_ai_max_frames), 40))
+            while len(frames) < max_frames and not stop.is_set():
+                page = enumerate_fn(channel, start, end, cursor=cursor, limit=100) or {}
+                if page.get("status") != "supported":
+                    return None
+                rows = page.get("events") or []
+                for row in rows:
+                    attempted_segments += 1
+                    segment = row.get("segment") or {}
+                    ts = segment.get("start") or row.get("ts")
+                    if not ts:
+                        continue
+                    frame = recovery_ai.recovered_frame(driver, channel, ts)
+                    if frame:
+                        frames.append((frame, _archive_dt(ts).astimezone(timezone.utc)
+                                      .isoformat().replace("+00:00", "Z")))
+                    if len(frames) >= max_frames:
+                        break
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+            # Segments existed but none decoded: retrieval is unavailable, not "zero activity".
+            if attempted_segments and not frames:
+                return None
+            return frames
+        except Exception as error:  # noqa: BLE001
+            core.log(f"analytics: archive retrieval ch{channel} failed: "
+                     f"{type(error).__name__}: {str(error)[:120]}")
+            return None
+        finally:
+            if driver is not None:
+                try:
+                    driver.close()
+                except Exception:
+                    pass
+
+    def analyze_frame(camera_id, jpeg, ts, rule_ids):
+        if detector is None:
+            return []
+        camera = camera_rows.get(str(camera_id))
+        if camera is None:
+            return []
+        requested = tuple(sorted(str(x) for x in (rule_ids or [])))
+        recorder_id = str(camera.get("recorder_id") or "")
+        engine_key = (recorder_id, requested)
+        engine = engines.get(engine_key)
+        if engine is None:
+            filtered = json.loads(json.dumps(config))
+            if recorder_id:
+                filtered["cameras"] = [
+                    row for row in (filtered.get("cameras") or [])
+                    if str(row.get("recorder_id") or "") == recorder_id
+                ]
+            if requested:
+                wanted = set(requested)
+                for row in filtered.get("cameras") or []:
+                    row["rules"] = [
+                        rule for rule in (row.get("rules") or [])
+                        if str(rule.get("id")) in wanted
+                    ]
+            engine = analytics.AnalyticsEngine(log=core.log)
+            engine.configure(filtered)
+            engines[engine_key] = engine
+        try:
+            detections = detector.detect(jpeg)
+            if detections is None:
+                return []
+            image = Image.open(io.BytesIO(jpeg))
+            image.load()
+            events = engine.process(
+                str(camera["channel"]), detections, image.size, _archive_dt(ts))
+            out = []
+            for event in events:
+                meta = event.get("metadata") or {}
+                out.append({
+                    "result_type": event["event_type"],
+                    "recovered_at": event["occurred_at"],
+                    "confidence": meta.get("confidence"),
+                })
+            return out
+        except Exception as error:  # noqa: BLE001
+            core.log(f"analytics: archive analysis failed: {type(error).__name__}: "
+                     f"{str(error)[:120]}")
+            return []
+
+    return retrieve_frames, analyze_frame
+
+
+def archive_worker(cfg: Config, state: dict, stop: threading.Event,
+                   authority: dict = None, detector=None) -> None:
+    """Background historical scan using bounded vendor archive reads + local analytics."""
     if not cfg.analytics_enabled:
         return
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
-    # Retrieval + offline analysis are injected as unavailable until a future agent release
-    # proves recorder playback on real hardware; the runtime then fails scans honestly.
+    retrieve_frames, analyze_frame = _archive_scan_handlers(cfg, detector, stop)
     archive = ArchiveRuntime(cloud=cloud, state=state,
-                             retrieve_frames=None, analyze=None, log=core.log)
+                             retrieve_frames=retrieve_frames, analyze=analyze_frame, log=core.log)
     runtime = AgentRuntime(cloud=cloud, state=state,
                            engine=analytics.AnalyticsEngine(log=core.log),
                            archive=archive, log=core.log)
@@ -535,11 +700,64 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
 
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None, channels=None) -> None:
-    """Core event loop plus analytics worker, sharing one detector instance.
+    """Core event loop plus analytics worker.
 
-    Accepts ``channels`` (the recorder channels enumerated at startup) because the core
-    dispatch in ``watchlog_agent.main`` passes it: this replaces ``core.cmd_run``, so its
-    signature MUST match. ``channels`` seeds the Phase-A camera-health monitor below."""
+    A validated local registry with >1 configured recorder activates true worker
+    fan-out only after cloud contract v4 preflight binds every recorder identity.
+    Failure never falls back to the primary recorder.
+    """
+    try:
+        configured_recorders = [
+            row for row in recorder_registry.recorders()
+            if row.get("is_configured")
+        ]
+    except Exception as error:
+        if recorder_registry.registry_path().exists():
+            raise SystemExit(
+                "FATAL: multi-recorder registry exists but cannot be verified; "
+                "monitoring stopped rather than using ambiguous recorder identity."
+            ) from error
+        configured_recorders = []
+
+    if len(configured_recorders) > 1:
+        detector = core.vision.build(cfg, core.log)
+        try:
+            prepared = multi_recorder_orchestrator.prepare_recorders(
+                cfg, state, cloud, core.open_driver
+            )
+        except Exception as error:
+            raise SystemExit(
+                "FATAL: multi-recorder preflight did not complete; monitoring "
+                "stopped rather than running a partial recorder set. "
+                f"({type(error).__name__}: {str(error)[:160]})"
+            ) from error
+
+        if len(prepared) != len(configured_recorders):
+            raise SystemExit(
+                "FATAL: multi-recorder preflight returned an incomplete recorder set."
+            )
+        if any(not getattr(item.context, "cloud_recorder_id", None) for item in prepared):
+            raise SystemExit(
+                "FATAL: one or more configured recorders have no cloud identity."
+            )
+
+        for item in prepared:
+            if item.error:
+                core.log(
+                    f"multi-recorder: {item.context.display_name} preflight probe "
+                    f"unavailable ({item.error}); its live/health workers will retry "
+                    "independently"
+                )
+
+        return multi_recorder_fanout.run(
+            cfg, state, cloud, once=once,
+            prepared_recorders=prepared,
+            detector=detector,
+            analytics_worker=analytics_worker,
+            archive_worker=archive_worker,
+        )
+
+    # Historical singleton path remains unchanged below.
     import camera_health
     original_build = core.vision.build
     detector = original_build(cfg, core.log)
@@ -570,8 +788,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                                 args=(cfg, state, detector, stop, authority),
                                 daemon=True, name="analytics")
     archive = threading.Thread(target=archive_worker,
-                               args=(cfg, state, stop, authority),
+                               args=(cfg, state, stop, authority, detector),
                                daemon=True, name="archive")
+    recovery = threading.Thread(target=core.recovery_worker,
+                                args=(cfg, state, cloud, stop, spool, channels, holder),
+                                daemon=True, name="recovery")
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
     import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
     resume_evt = threading.Event()
@@ -592,13 +813,16 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             core.upload_once(cloud, state, spool)
         except RuntimeError as error:
             core.log(f"ERROR: upload failed: {error}")
-        core.heartbeat(cloud, state, device)
+        recorder_seen = float(holder.get("recorder_live_at") or 0.0)
+        recorder_live = bool(recorder_seen and time.monotonic() - recorder_seen < 150.0)
+        core.heartbeat(cloud, state, device, recorder_live=recorder_live)
         core.health_cycle(cloud, state, cfg, holder)
         spool.close()
         core.vision.build = original_build
         return
 
     archive.start()   # background historical scan; lower priority, run mode only
+    recovery.start()  # automatic LIVE-gap reconciliation from recorder archive
     health.start()    # Phase-A camera/NVR health probing on its own thread
     sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
                                daemon=True, name="sitecontrol")
@@ -639,7 +863,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             if clock >= next_heartbeat:
                 next_heartbeat = clock + cfg.heartbeat_seconds
                 try:
-                    core.heartbeat(cloud, state, device)
+                    recorder_seen = float(holder.get("recorder_live_at") or 0.0)
+                    recorder_live = bool(recorder_seen and clock - recorder_seen < 150.0)
+                    core.heartbeat(cloud, state, device, recorder_live=recorder_live)
                 except (RuntimeError, requests.RequestException) as error:
                     core.log("ERROR: heartbeat failed, will retry: "
                              + str(error).splitlines()[0][:200])
@@ -652,6 +878,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         collector.join(timeout=5)
         analytic.join(timeout=5)
         archive.join(timeout=5)
+        recovery.join(timeout=5)
         health.join(timeout=5)
         sitectl.join(timeout=5)
         spool.close()

@@ -2,14 +2,40 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, say } from "../../lib/supabase";
-import { Nav, requireTenant } from "../shell";
+import { requireTenant } from "../shell";
 import { rememberSite, selectedSiteId, withSite } from "../site-context";
-import ui from "../portal.module.css";
+import {
+  OwnerPage,
+  SiteSelect,
+  Lead,
+  Section,
+  Status,
+  Ledger,
+  RailSection,
+  Stat,
+  Figure,
+  Summary,
+  Empty,
+  Loading,
+  Notice,
+  AskLinks,
+  ratioPct,
+} from "../owner/ui";
+import styles from "./cameras.module.css";
 
 function human(v) {
   return String(v || "Not verified")
     .replaceAll("_", " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function eventLabel(v) {
+  if (!v) return "Camera event";
+  return String(v)
+    .replace(/^analytic_/, "")
+    .replaceAll("_", " ")
+    .toLowerCase()
+    .replace(/^./, (c) => c.toUpperCase());
 }
 
 function ago(ts) {
@@ -19,6 +45,24 @@ function ago(ts) {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
+}
+
+function when(ts, timeZone) {
+  if (!ts) return "";
+  try {
+    return (
+      new Intl.DateTimeFormat("en-PK", {
+        timeZone: timeZone || "Asia/Karachi",
+        day: "numeric",
+        month: "short",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).format(new Date(ts)) + " · site time"
+    );
+  } catch {
+    return String(ts);
+  }
 }
 
 function sameCapture(a, b) {
@@ -31,27 +75,54 @@ function sameCapture(a, b) {
 function healthView(state) {
   switch (String(state || "unknown").toLowerCase()) {
     case "operational":
-      return { label: "Healthy", cls: "s-ok" };
+      return { label: "Healthy", tone: "ok" };
     case "degraded":
-      return { label: "Needs attention", cls: "s-warn" };
+      return { label: "Needs attention", tone: "warn" };
     case "offline":
-      return { label: "Offline", cls: "s-bad" };
+      return { label: "Offline", tone: "bad" };
     default:
-      return { label: "Not verified", cls: "s-unk" };
+      return { label: "Not verified", tone: "unknown" };
   }
 }
 
 function recordingView(state) {
   switch (String(state || "unknown").toLowerCase()) {
     case "recording":
-      return { label: "Recording confirmed", cls: "s-ok" };
+      return { label: "Recording confirmed", tone: "ok" };
     case "not_recording":
-      return { label: "Not recording", cls: "s-warn" };
+      return { label: "Not recording", tone: "warn" };
     case "storage_fault":
-      return { label: "Recording needs attention", cls: "s-warn" };
+      return { label: "Recording needs attention", tone: "warn" };
     default:
-      return { label: "Recording not verified", cls: "s-unk" };
+      return { label: "Recording not verified", tone: "unknown" };
   }
+}
+
+// One overall state per camera: a confirmed fault outranks attention, attention outranks
+// "not verified", and only a camera that is both healthy and confirmed recording reads as ok.
+function cameraTone(c) {
+  const health = healthView(c.health_state).tone;
+  const recording = recordingView(c.recording_state).tone;
+  if (health === "bad") return "bad";
+  if (health === "warn" || recording === "warn") return "warn";
+  if (health === "ok" && recording === "ok") return "ok";
+  return "unknown";
+}
+const toneRank = { bad: 0, warn: 1, unknown: 2, ok: 3 };
+
+function cameraName(c) {
+  return c.name || `Camera ${c.channel}`;
+}
+
+function recorderView(row) {
+  const state = String(row?.state || "unknown").toLowerCase();
+  const issue = String(row?.issue || "").toLowerCase();
+  if (state === "healthy") return { label: "Available", tone: "ok" };
+  if (state === "offline") return { label: "Unavailable", tone: "bad" };
+  if (state === "attention" && issue === "storage") return { label: "Storage needs attention", tone: "warn" };
+  if (state === "attention" && issue === "sign_in") return { label: "Sign-in needs attention", tone: "warn" };
+  if (state === "attention") return { label: "Needs attention", tone: "warn" };
+  return { label: "Not verified", tone: "unknown" };
 }
 
 export default function CustomerCameraView() {
@@ -59,6 +130,8 @@ export default function CustomerCameraView() {
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState("");
   const [ctx, setCtx] = useState(null);
+  const [recorderSummary, setRecorderSummary] = useState(null);
+  const [restaurantConfig, setRestaurantConfig] = useState(null);
   const [shots, setShots] = useState({});
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -104,16 +177,30 @@ export default function CustomerCameraView() {
     if (!siteId) return;
     let live = true;
     setCtx(null);
+    setRecorderSummary(null);
     setShots({});
     shotsRef.current = {};
     (async () => {
-      const r = await supabase().rpc("wl_ai_context", { p_site_id: siteId });
+      const sb = supabase();
+      const [contextResult, restaurantResult, recorderResult] = await Promise.all([
+        sb.rpc("wl_ai_context", { p_site_id: siteId }),
+        sb.rpc("wl_restaurant_site_config", { p_site_id: siteId }),
+        sb.rpc("wl_my_site_recorders", { p_site_id: siteId }),
+      ]);
       if (!live) return;
-      if (r.error) {
-        setError(say(r.error));
+      if (contextResult.error) {
+        setError(say(contextResult.error));
         return;
       }
-      setCtx(r.data || null);
+      setCtx(contextResult.data || null);
+      setRecorderSummary(
+        !recorderResult.error ? recorderResult.data || null : null,
+      );
+      setRestaurantConfig(
+        !restaurantResult.error && restaurantResult.data?.enabled === true
+          ? restaurantResult.data
+          : null,
+      );
       setError("");
     })();
     return () => {
@@ -121,7 +208,14 @@ export default function CustomerCameraView() {
     };
   }, [siteId]);
 
+  function chooseSite(id) {
+    setSiteId(id);
+    rememberSite(id, sites.find((x) => String(x.id) === String(id))?.name || "");
+    history.replaceState(null, "", "/control-room/?site=" + encodeURIComponent(id));
+  }
+
   const site = sites.find((s) => s.id === siteId);
+  const tz = site?.timezone;
   const faults = ctx?.faults || [];
   const cameras = useMemo(
     () =>
@@ -129,13 +223,33 @@ export default function CustomerCameraView() {
         .filter((c) => c.monitor)
         .sort(
           (a, b) =>
-            (a.health_state === "offline" ? 0 : 1) -
-              (b.health_state === "offline" ? 0 : 1) ||
+            toneRank[cameraTone(a)] - toneRank[cameraTone(b)] ||
             (a.channel || 0) - (b.channel || 0),
         ),
     [ctx],
   );
   const cameraIds = useMemo(() => cameras.map((c) => c.id), [cameras]);
+  const recorderRows = recorderSummary?.recorders || [];
+  const multiRecorder = recorderRows.length > 1;
+  const recorderById = useMemo(
+    () => new Map(recorderRows.map((row) => [String(row.id), row])),
+    [recorderSummary],
+  );
+  const recorderByCamera = useMemo(() => {
+    const map = new Map();
+    for (const row of recorderRows) {
+      for (const cameraId of row.camera_ids || []) {
+        map.set(String(cameraId), String(row.id));
+      }
+    }
+    return map;
+  }, [recorderSummary]);
+  const recorderIssues = recorderRows.filter((row) =>
+    ["offline", "attention"].includes(String(row.state || "").toLowerCase()),
+  );
+  const recorderHealthy = recorderRows.filter(
+    (row) => String(row.state || "").toLowerCase() === "healthy",
+  ).length;
 
   const loadShot = useCallback(async (cameraId) => {
     if (!cameraId) return false;
@@ -271,7 +385,7 @@ export default function CustomerCameraView() {
     const previous = refreshTimers.current.get(c.id);
     if (previous) window.clearTimeout(previous);
 
-    // Realtime normally resolves this as soon as the agent uploads the new
+    // Realtime normally resolves this as soon as the site connection uploads the new
     // preview. This bounded fallback reconciles once in case that event was
     // missed during a network transition.
     const timer = window.setTimeout(() => {
@@ -285,133 +399,285 @@ export default function CustomerCameraView() {
   const recording = cameras.filter(
     (c) => String(c.recording_state || "").toLowerCase() === "recording",
   ).length;
+  const healthy = cameras.filter(
+    (c) => String(c.health_state || "").toLowerCase() === "operational",
+  ).length;
+  const offline = cameras.filter((c) => cameraTone(c) === "bad");
+  const attention = cameras.filter((c) => cameraTone(c) === "warn");
+  const unverified = cameras.filter((c) => cameraTone(c) === "unknown");
+  const needsAttention = offline.length + attention.length;
+  const connected = Boolean(ctx?.connectivity?.agent_online);
+  const seen = Boolean(ctx?.connectivity?.last_seen);
+  const coverage = ratioPct(ctx?.coverage?.coverage_ratio);
+
+  const roleByCamera = useMemo(() => {
+    const map = new Map();
+    for (const row of restaurantConfig?.cameras || []) {
+      map.set(String(row.camera_id), row.role || "");
+    }
+    return map;
+  }, [restaurantConfig]);
+
+  // Latest camera event per camera. Camera UUID is canonical; recorder+channel
+  // is only a compatibility fallback for older cached context rows.
+  const latestEventByCamera = useMemo(() => {
+    const map = new Map();
+    for (const e of ctx?.recent_events || []) {
+      const cameraKey = e.camera_id ? "camera:" + String(e.camera_id) : "";
+      const recorderKey = e.recorder_id && e.channel != null
+        ? "recorder:" + String(e.recorder_id) + ":" + String(e.channel)
+        : "";
+      if (cameraKey && !map.has(cameraKey)) map.set(cameraKey, e);
+      if (recorderKey && !map.has(recorderKey)) map.set(recorderKey, e);
+    }
+    return map;
+  }, [ctx]);
+
+  const cameraGroups = useMemo(() => {
+    if (multiRecorder) {
+      const groups = recorderRows.map((row) => {
+        const view = recorderView(row);
+        return {
+          key: "recorder-" + row.id,
+          label: row.name,
+          description: view.label,
+          recorder: row,
+          cameras: cameras.filter((camera) =>
+            String(camera.recorder_id || recorderByCamera.get(String(camera.id)) || "") === String(row.id)
+          ),
+        };
+      }).filter((group) => group.cameras.length);
+      const assigned = new Set(groups.flatMap((group) => group.cameras.map((camera) => String(camera.id))));
+      const unassigned = cameras.filter((camera) => !assigned.has(String(camera.id)));
+      if (unassigned.length) {
+        groups.push({
+          key: "recorder-unverified",
+          label: "Recorder not verified",
+          description: "WatchLog has not verified which recorder these cameras belong to.",
+          cameras: unassigned,
+        });
+      }
+      return groups;
+    }
+    if (!restaurantConfig) {
+      return [{ key: "all", label: "Monitored cameras", description: "", cameras }];
+    }
+    const defs = [
+      { key: "dining", label: "Customer areas", description: "Dining-floor views for diner and table activity.", roles: new Set(["dining_floor"]) },
+      { key: "operations", label: "Service operations", description: "Kitchen, service handoff, cash-counter and service-access views.", roles: new Set(["kitchen","service_handoff","cash_counter","service_access"]) },
+      { key: "security", label: "Management & security", description: "Office and management views for security context.", roles: new Set(["office_security"]) },
+      { key: "other", label: "Other cameras", description: "Cameras without a restaurant area.", roles: new Set([]) },
+    ];
+    const groups = defs.map((d) => ({ ...d, cameras: [] }));
+    for (const camera of cameras) {
+      const role = roleByCamera.get(String(camera.id)) || "";
+      let target = groups.find((g) => g.roles.has(role));
+      if (!target) target = groups[groups.length - 1];
+      target.cameras.push(camera);
+    }
+    return groups.filter((g) => g.cameras.length);
+  }, [cameras, restaurantConfig, roleByCamera, multiRecorder, recorderSummary]);
+
+  const healthHref = withSite("/site-health/", siteId);
+  const names = (list) =>
+    list.slice(0, 3).map(cameraName).join(" · ") +
+    (list.length > 3 ? ` and ${list.length - 3} more` : "");
+
+  // One conclusion, driven only by governed camera and connection state.
+  let lead = null;
+  if (ctx && cameras.length) {
+    if (!connected && !seen) {
+      lead = { tone: "unknown", title: "This site has not connected yet", body: "Camera states appear once the site connection is online.", action: <a className="ow-btn" href={withSite("/setup/", siteId)}>Continue setup</a> };
+    } else if (!connected) {
+      lead = { tone: "bad", title: "Site connection lost · camera states may be out of date", body: "Recent views and events may be missing until the site reconnects.", action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+    } else if (recorderIssues.length) {
+      const affected = new Set(recorderIssues.flatMap((row) => (row.camera_ids || []).map(String))).size;
+      const unavailable = recorderIssues.filter((row) => String(row.state || "").toLowerCase() === "offline").length;
+      lead = {
+        tone: unavailable ? "bad" : "warn",
+        title: `${recorderIssues.length} recorder${recorderIssues.length === 1 ? " needs" : "s need"} attention`,
+        body: affected
+          ? `${affected} camera${affected === 1 ? " is" : "s are"} affected. Open System Health for the recorder-level cause.`
+          : "Open System Health for the recorder-level cause.",
+        action: <a className="ow-btn" href={healthHref}>Check monitoring</a>,
+      };
+    } else if (offline.length) {
+      lead = { tone: "bad", title: `${offline.length} camera${offline.length === 1 ? " is" : "s are"} offline · evidence may be missing`, body: names(offline), action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+    } else if (attention.length || faults.length) {
+      const n = attention.length || faults.length;
+      lead = { tone: "warn", title: `${n} camera${n === 1 ? " needs" : "s need"} attention`, body: attention.length ? names(attention) : "Open System Health for the affected cameras.", action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+    } else if (unverified.length) {
+      lead = { tone: "unknown", title: `${healthy} of ${cameras.length} cameras confirmed healthy`, body: `Recording confirmed on ${recording} of ${cameras.length}. Anything WatchLog cannot verify stays marked Not verified.` };
+    } else {
+      lead = { tone: "ok", title: `All ${cameras.length} cameras healthy · recording confirmed`, body: coverage === null ? "Monitoring coverage for today is not verified yet." : `Monitoring ${coverage}% verified today.` };
+    }
+  }
+
+  const rail = ctx ? (
+    <>
+      <RailSection label="Monitoring coverage" action={<a href={healthHref}>Health</a>}>
+        {coverage === null ? <Figure value="—" unit="not verified yet" /> : <Figure value={coverage + "%"} unit="verified today" />}
+        <div style={{ marginTop: 10 }}>
+          <Ledger ratio={coverage === null ? null : coverage / 100} classes={ctx?.coverage?.classes} />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <Stat label="Site connection" value={<Status tone={connected ? "ok" : seen ? "bad" : "unknown"}>{connected ? "Connected" : seen ? "Disconnected" : "Not connected yet"}</Status>} />
+        </div>
+      </RailSection>
+      <RailSection label="Cameras">
+        {recorderRows.length ? <Stat
+          label={multiRecorder ? "Recorders available" : "Recorder"}
+          value={multiRecorder
+            ? `${recorderHealthy} of ${recorderRows.length}`
+            : <Status tone={recorderView(recorderRows[0]).tone}>{recorderView(recorderRows[0]).label}</Status>}
+        /> : null}
+        <Stat label="Monitored" value={String(cameras.length)} />
+        <Stat label="Confirmed healthy" value={cameras.length ? `${healthy} of ${cameras.length}` : null} />
+        <Stat label="Needs attention" value={String(needsAttention)} />
+        <Stat label="Not verified" note="health or recording" value={String(unverified.length)} muted={!unverified.length} />
+        <Stat label="Recording confirmed" value={cameras.length ? `${recording} of ${cameras.length}` : null} />
+      </RailSection>
+      <RailSection label="Evidence">
+        <a className="ow-rail-link" href={withSite("/incidents/evidence/", siteId)}><span>Camera event history</span><i>Open</i></a>
+        <a className="ow-rail-link" href={withSite("/archive/", siteId)}><span>Saved video</span><i>Open</i></a>
+        <a className="ow-rail-link" href={withSite("/site-control/", siteId)}><span>Camera settings</span><i>Open</i></a>
+      </RailSection>
+      <RailSection label="Ask WatchLog">
+        <AskLinks siteId={siteId} prompts={["Are all my cameras recording right now?", "Which cameras need attention, and why?", "What did the cameras show most recently?"]} />
+      </RailSection>
+    </>
+  ) : null;
+
+  const summary = ctx && cameras.length ? (
+    <Summary items={[
+      ...(multiRecorder ? [{ value: `${recorderHealthy}/${recorderRows.length}`, label: "Recorders available", muted: recorderHealthy !== recorderRows.length }] : []),
+      { value: `${healthy}/${cameras.length}`, label: "Cameras healthy" },
+      { value: String(needsAttention), label: "Need attention" },
+      { value: coverage === null ? "Not verified" : coverage + "%", label: "Coverage today", muted: coverage === null, ledger: coverage === null ? null : coverage / 100 },
+    ]} />
+  ) : null;
+
+  function renderCamera(c) {
+    const shot = shots[c.id];
+    const health = healthView(c.health_state);
+    const recordingState = recordingView(c.recording_state);
+    const role = roleByCamera.get(String(c.id));
+    const purpose = role ? human(role) : c.purpose ? human(c.purpose) : "Purpose not set";
+    const recorderId = String(c.recorder_id || recorderByCamera.get(String(c.id)) || "");
+    const latest = latestEventByCamera.get("camera:" + String(c.id))
+      || (recorderId ? latestEventByCamera.get("recorder:" + recorderId + ":" + String(c.channel ?? "")) : null);
+    const evidenceHref = latest?.event_id
+      ? withSite("/incidents/evidence/?event=" + encodeURIComponent(latest.event_id), siteId)
+      : withSite("/incidents/evidence/", siteId);
+    return (
+      <article className={styles.cam} key={c.id} aria-label={cameraName(c)}>
+        <i className={`${styles.tick} ${styles[cameraTone(c)] || ""}`} aria-hidden="true" />
+        <div className={`${styles.thumb} ${shot?.image ? "" : styles.none}`}>
+          {shot?.image ? (
+            <img
+              src={shot.image}
+              alt={`Recent view from ${c.name || `camera ${c.channel}`}`}
+            />
+          ) : (
+            <span>
+              {shot === undefined
+                ? "Loading recent view…"
+                : "No recent view"}
+            </span>
+          )}
+        </div>
+        <div className={styles.main}>
+          <h3>{cameraName(c)}</h3>
+          <p className={`${styles.purpose} ${role || c.purpose ? "" : styles.unset}`}>{purpose}</p>
+          <div className={styles.states}>
+            <Status tone={health.tone}>{health.label}</Status>
+            <Status tone={recordingState.tone}>{recordingState.label}</Status>
+          </div>
+          <p className={styles.evidence}>
+            {latest ? (
+              <span title={when(latest.device_ts, tz)}>
+                Latest camera event · {eventLabel(latest.event_type)} · {ago(latest.device_ts)}
+                {latest.recovered ? " · recovered from saved video" : ""}
+              </span>
+            ) : (
+              <span>No recent camera event listed</span>
+            )}
+          </p>
+          <div className="ow-row-meta">
+            <span title={shot?.captured ? when(shot.captured, tz) : undefined}>
+              {shot?.captured
+                ? `Recent view ${ago(shot.captured)}`
+                : "No recent view"}
+            </span>
+          </div>
+        </div>
+        <div className={styles.act}>
+          <a href={evidenceHref}>View evidence</a>
+          <button
+            type="button"
+            className="ow-btn small quiet"
+            aria-busy={busy === c.id}
+            disabled={busy === c.id}
+            onClick={() => refresh(c)}
+          >
+            {busy === c.id ? "Refreshing…" : "Refresh view"}
+          </button>
+        </div>
+      </article>
+    );
+  }
 
   return (
-    <div className="shell">
-      <Nav active="Control Room" email={email} currentSiteId={siteId} />
-      <main className="main">
-        <header className="target-page-head">
-          <div>
-            <div className="target-eyebrow">Cameras</div>
-            <h1>{site?.name || "Site"} cameras</h1>
-            <p>
-              {cameras.length
-                ? `${cameras.length} monitored · ${recording} with recording currently confirmed`
-                : "See the cameras WatchLog is monitoring at this site."}
-            </p>
-          </div>
-          <div className="target-actions">
-            <a
-              className={ui.secondaryLink}
-              href={withSite("/control-room/advanced/", siteId)}
+    <OwnerPage
+      active="Control Room"
+      email={email}
+      siteId={siteId}
+      kicker={["Cameras & Evidence", tz ? "Site time " + tz.replace(/^.*\//, "").replace(/_/g, " ") : null]}
+      title={`Cameras & evidence at ${site?.name || "this site"}`}
+      actions={
+        <>
+          <SiteSelect sites={sites} value={siteId} onChange={chooseSite} />
+          <a className="ow-btn quiet" href={withSite("/incidents/evidence/", siteId)}>Camera evidence</a>
+          <a className="ow-btn quiet" href={withSite("/archive/", siteId)}>Saved video</a>
+        </>
+      }
+      rail={rail}
+      summary={summary}
+    >
+      {error && <Notice tone="bad">{error}</Notice>}
+
+      {!ctx ? (
+        <Loading label="Checking this site's cameras" />
+      ) : cameras.length === 0 ? (
+        <Empty
+          title="No cameras are selected for monitoring yet."
+          action={<a className="ow-btn quiet small" href={withSite("/setup/", siteId)}>Continue Guided Setup</a>}
+        >
+          Choose the cameras to monitor in Guided Setup.
+        </Empty>
+      ) : (
+        <>
+          {lead && <Lead tone={lead.tone} title={lead.title} body={lead.body} action={lead.action} />}
+
+          {cameraGroups.map((group, gi) => (
+            <Section
+              key={group.key}
+              first={gi === 0}
+              title={group.label}
+              count={group.cameras.length}
+              note={group.description || undefined}
             >
-              Edit layouts
-            </a>
-          </div>
-        </header>
-
-        {error && <div className="err">{error}</div>}
-
-        {!ctx ? (
-          <div className={ui.emptyCard}>Checking this site's cameras…</div>
-        ) : (
-          <>
-            {cameras.length === 0 ? (
-              <div className={ui.emptyCard}>
-                No cameras are selected for monitoring yet. Continue Guided Setup
-                to choose them.
+              <div className={styles.list}>
+                {group.cameras.map(renderCamera)}
               </div>
-            ) : faults.length ? (
-              <div className={ui.callout}>
-                <span className={ui.statusDot} />
-                <div>
-                  <strong>
-                    {faults.length} item{faults.length === 1 ? "" : "s"} need
-                    attention.
-                  </strong>
-                  <p>
-                    Review the affected cameras below or open Site Health for
-                    more context.
-                  </p>
-                  <a
-                    className={ui.primaryLink}
-                    href={withSite("/site-health/", siteId)}
-                  >
-                    Open Site Health
-                  </a>
-                </div>
-              </div>
-            ) : (
-              <div className={ui.callout}>
-                <span className={ui.statusDot} />
-                <div>
-                  <strong>No current camera fault is reported.</strong>
-                  <p>
-                    Statuses that WatchLog cannot currently verify remain marked
-                    as not verified below.
-                  </p>
-                </div>
-              </div>
-            )}
+            </Section>
+          ))}
 
-            {cameras.length > 0 && (
-              <section className="camera-view-grid">
-                {cameras.map((c) => {
-                  const shot = shots[c.id];
-                  const health = healthView(c.health_state);
-                  const recordingState = recordingView(c.recording_state);
-                  return (
-                    <article className="camera-view-card" key={c.id}>
-                      <div className="camera-view-media">
-                        {shot?.image ? (
-                          <img
-                            src={shot.image}
-                            alt={`Preview from ${c.name || `camera ${c.channel}`}`}
-                          />
-                        ) : (
-                          <span>
-                            {shot === undefined
-                              ? "Loading preview…"
-                              : "No recent preview"}
-                          </span>
-                        )}
-                      </div>
-                      <div className="camera-view-body">
-                        <div className="camera-view-title">
-                          <div>
-                            <b>{c.name || `Camera ${c.channel}`}</b>
-                            <small>{human(c.purpose || "general")}</small>
-                          </div>
-                          <span className={`pill ${health.cls}`}>
-                            {health.label}
-                          </span>
-                        </div>
-                        <div className="camera-view-meta">
-                          <span>
-                            {shot?.captured
-                              ? `Preview ${ago(shot.captured)}`
-                              : "No recent preview"}
-                          </span>
-                          <span className={`pill ${recordingState.cls}`}>
-                            {recordingState.label}
-                          </span>
-                        </div>
-                        <button
-                          className="ghost small"
-                          disabled={busy === c.id}
-                          onClick={() => refresh(c)}
-                        >
-                          {busy === c.id ? "Refreshing…" : "Refresh preview"}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </section>
-            )}
-          </>
-        )}
-      </main>
-    </div>
+          <Section title="Ask WatchLog" className="ow-narrow-only">
+            <AskLinks siteId={siteId} prompts={["Are all my cameras recording right now?", "Which cameras need attention, and why?"]} />
+          </Section>
+        </>
+      )}
+    </OwnerPage>
   );
 }

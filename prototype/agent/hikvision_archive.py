@@ -11,6 +11,7 @@ fabricating recovered evidence.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import time
 import uuid
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
@@ -24,7 +25,9 @@ from drivers.hikvision import HikvisionDriver, HIKVISION_HTTP_LOCK
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 SEARCH_LIMIT = 40
-DOWNLOAD_TIMEOUT = (8, 90)
+DOWNLOAD_TIMEOUT = (5, 30)
+CLIP_TOTAL_SECONDS = 90
+MAX_DOWNLOAD_CANDIDATES = 2
 ARCHIVE_PROOF_WINDOW = 1800
 
 
@@ -184,11 +187,13 @@ def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
     return {"status": "supported", "events": events, "next_cursor": nxt}
 
 
-def _read_download_response(response) -> bytes | None:
+def _read_download_response(response, *, deadline=None) -> bytes | None:
     try:
         chunks = []
         total = 0
         for chunk in response.iter_content(chunk_size=256 * 1024):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise DriverError("Hikvision incident footage retrieval exceeded the time budget")
             if not chunk:
                 continue
             total += len(chunk)
@@ -207,7 +212,7 @@ def _read_download_response(response) -> bytes | None:
         response.close()
 
 
-def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
+def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) -> bytes | None:
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<downloadRequest version="1.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
@@ -222,11 +227,16 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
     last_error = None
     with HIKVISION_HTTP_LOCK:
         for method in ("GET", "POST"):
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            remaining = ((deadline - time.monotonic()) if deadline is not None else
+                         float(DOWNLOAD_TIMEOUT[1]))
+            timeout = (DOWNLOAD_TIMEOUT[0], max(5, min(DOWNLOAD_TIMEOUT[1], remaining)))
             try:
                 response = driver.s.request(
                     method, url, data=body.encode("utf-8"),
                     headers={"Content-Type": "application/xml"},
-                    stream=True, timeout=DOWNLOAD_TIMEOUT,
+                    stream=True, timeout=timeout,
                 )
             except requests.RequestException as error:
                 last_error = error
@@ -241,7 +251,7 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
                         response = driver.s.request(
                             method, url, data=body.encode("utf-8"),
                             headers={"Content-Type": "application/xml"},
-                            stream=True, timeout=DOWNLOAD_TIMEOUT,
+                            stream=True, timeout=timeout,
                         )
                     except requests.RequestException as error:
                         last_error = error
@@ -256,7 +266,7 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str) -> bytes | None:
                 continue
 
             driver.last_activity_monotonic = __import__("time").monotonic()
-            data = _read_download_response(response)
+            data = _read_download_response(response, deadline=deadline)
             if data:
                 return data
 
@@ -282,30 +292,38 @@ def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: dateti
     if end <= start:
         raise DriverError("invalid Hikvision incident footage time window")
 
+    deadline = time.monotonic() + CLIP_TOTAL_SECONDS
     search_error = None
     try:
-        result = search_recordings(driver, str(channel), start, end, offset=0, limit=8)
+        result = search_recordings(
+            driver, str(channel), start, end, offset=0, limit=MAX_DOWNLOAD_CANDIDATES)
+        attempted = 0
         for row in result.get("matches") or []:
             uri = row.get("playback_uri")
-            if not uri:
+            if not uri or attempted >= MAX_DOWNLOAD_CANDIDATES:
                 continue
+            attempted += 1
             try:
-                data = _download_uri(driver, uri)
+                data = _download_uri(driver, uri, deadline=deadline)
                 if data:
                     return data
             except (DriverError, NvrUnreachable):
+                if time.monotonic() >= deadline:
+                    break
                 continue
     except (DriverError, NvrUnreachable) as error:
         search_error = error
 
     # Compatibility fallback for firmware that supports download-by-time but
-    # returns no search row for a very small incident window.
-    try:
-        data = _download_uri(driver, _by_time_uri(driver, str(channel), start, end))
-        if data:
-            return data
-    except (DriverError, NvrUnreachable):
-        pass
+    # returns no usable search row. It shares the SAME total deadline.
+    if time.monotonic() < deadline:
+        try:
+            data = _download_uri(
+                driver, _by_time_uri(driver, str(channel), start, end), deadline=deadline)
+            if data:
+                return data
+        except (DriverError, NvrUnreachable):
+            pass
 
     if search_error is not None:
         raise search_error
@@ -360,5 +378,5 @@ def install() -> None:
 __all__ = [
     "search_recordings", "enumerate_historical_events", "get_clip",
     "historical_capability", "prove_recorder_archive", "install",
-    "MAX_CLIP_BYTES", "SEARCH_LIMIT",
+    "MAX_CLIP_BYTES", "SEARCH_LIMIT", "CLIP_TOTAL_SECONDS", "MAX_DOWNLOAD_CANDIDATES",
 ]

@@ -36,6 +36,11 @@ from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
                    explain)
 
+# requests.Session mutates auth state during Digest/Basic fallback. Archive
+# search/download and normal ISAPI reads may run on background threads, so
+# serialize HTTP operations that share a driver session.
+HIKVISION_HTTP_LOCK = threading.RLock()
+
 # ISAPI namespaces vary by firmware; strip them rather than guess.
 _TAG = re.compile(r"\{.*?\}")
 
@@ -90,6 +95,10 @@ BURST_WINDOW_SECONDS = 30
 # A camera that will not produce a still must not stall the event loop.
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
+
+# Archive search/download helpers share the driver's requests.Session. Serialize
+# those bounded HTTP operations so one session is never mutated concurrently.
+HIKVISION_HTTP_LOCK = threading.RLock()
 
 
 
