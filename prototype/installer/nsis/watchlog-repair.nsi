@@ -36,7 +36,7 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TITLE "WatchLog update completed"
-!define MUI_FINISHPAGE_TEXT "The new WatchLog Agent is online, the recorder is reachable, and online-update polling has been proven.$\r$\n$\r$\nFuture approved WatchLog updates can now be delivered remotely."
+!define MUI_FINISHPAGE_TEXT "The new WatchLog Agent is online, every recorder that was reachable before the update is reachable again, and online-update polling has been proven.$\r$\n$\r$\nFuture approved WatchLog updates can now be delivered remotely."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_LANGUAGE "English"
 
@@ -121,6 +121,14 @@ Section "Repair/Upgrade"
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "InstallLocation" "$INSTDIR"
+
+  ; A multi-recorder site commits when the original recorder and every recorder that
+  ; answered before the update are back. Say so plainly if others are still unreachable.
+  ReadINIStr $7 "${RESULTFILE}" "recorders" "not_live_after"
+  ${If} $7 != ""
+  ${AndIf} $7 != "0"
+    MessageBox MB_ICONINFORMATION|MB_OK "WatchLog was updated.$\r$\n$\r$\n$7 recorder(s) could not be reached before the update and still cannot be reached. Every recorder that was reachable before the update is back online.$\r$\n$\r$\nCheck them in WatchLog Site Status or WatchLog Manage Recorders." /SD IDOK
+  ${EndIf}
 
   ; The proven payload includes the Setup UI, so an upgraded site can add or repair
   ; recorders without reinstalling. Written only after success: a rolled-back site keeps

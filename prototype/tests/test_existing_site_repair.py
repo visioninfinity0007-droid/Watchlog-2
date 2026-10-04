@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -271,6 +274,195 @@ class InstallerContract(unittest.TestCase):
             self.assertIn(name, build)
             self.assertIn(name, workflow)
         self.assertIn("WatchLog-Repair-Upgrade.exe.sha256", workflow)
+
+
+REPAIR_PS1 = ROOT / "prototype/installer/wl-repair-upgrade.ps1"
+POWERSHELL = shutil.which("powershell.exe") or shutil.which("powershell")
+
+# Loads ONLY the function definitions of wl-repair-upgrade.ps1 through the PowerShell AST,
+# so the orchestrator body (which pauses and replaces a live install) never runs. Every
+# path it touches points into this test's temporary directory.
+_GATE_HARNESS = r"""
+param([string]$Script, [string]$Work, [string]$Scenario)
+$ErrorActionPreference = "Stop"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+$s = Get-Content -LiteralPath $Scenario -Raw | ConvertFrom-Json
+$DataRoot = $Work
+$LogPath = Join-Path $Work "repair-upgrade.log"
+$ResultPath = Join-Path $Work "repair-upgrade-result.ini"
+$HealthPath = Join-Path $Work "runtime-health.json"
+$HealthTimeoutSec = 2
+$ExpectedVersion = "5.1.0"
+$script:RecorderBaseline = $null
+$script:RecorderReport = @()
+if ($s.registry) {
+  if (Get-Command Set-RecorderReport -ErrorAction SilentlyContinue) { Set-RecorderReport $s.registry }
+  if (Get-Command Set-RecorderBaseline -ErrorAction SilentlyContinue) { Set-RecorderBaseline $s.registry }
+}
+$started = [DateTimeOffset]::Parse([string]$s.started_at).UtcDateTime
+$h = Wait-NewRuntimeHealth $started
+if (Get-Command Update-RecorderReportAfter -ErrorAction SilentlyContinue) { Update-RecorderReportAfter $started }
+$script:CurrentStage = "complete"
+Write-Result "success" 0 "complete" "done" "kept"
+if ($h) { "GATE=PASS" } else { "GATE=ROLLBACK" }
+"""
+
+
+class RepairRecorderGate(unittest.TestCase):
+    """Commit gate: continuity recorder live + no regression versus before the upgrade."""
+
+    def setUp(self):
+        if not POWERSHELL:
+            self.skipTest("Windows PowerShell is required to execute the repair gate")
+        self.work = Path(tempfile.mkdtemp(prefix="wl-repair-gate-"))
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.started = datetime.now(timezone.utc) - timedelta(seconds=60)
+        self.fresh = (self.started + timedelta(seconds=30)).isoformat()
+        self.stale = (self.started - timedelta(hours=2)).isoformat()
+
+    def marker(self, name, when):
+        path = self.work / name / "last_live.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"last_live": when}), encoding="utf-8")
+        return str(path)
+
+    def run_gate(self, *, health, registry=None):
+        health = {"schema": "watchlog.runtime_health.v1", "agent_version": "5.1.0",
+                  "heartbeat_at": self.fresh, "remote_update_poll_at": self.fresh, **health}
+        (self.work / "runtime-health.json").write_text(json.dumps(health), encoding="utf-8")
+        scenario = self.work / "scenario.json"
+        scenario.write_text(json.dumps({"started_at": self.started.isoformat(),
+                                        "registry": registry}), encoding="utf-8")
+        harness = self.work / "harness.ps1"
+        harness.write_text(_GATE_HARNESS, encoding="utf-8")
+        proc = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(harness), "-Script", str(REPAIR_PS1), "-Work", str(self.work),
+             "-Scenario", str(scenario)],
+            capture_output=True, text=True, timeout=120)
+        self.assertIn("GATE=", proc.stdout, proc.stdout + proc.stderr)
+        result = (self.work / "repair-upgrade-result.ini").read_text(encoding="ascii")
+        return proc.stdout.strip().splitlines()[-1], result
+
+    def two_recorders(self, *, a_marker, b_marker, b_live_before, live_markers=True):
+        return {"ok": True, "registry": "present", "live_markers": live_markers,
+                "recorders": [
+                    {"local_id": "aaaaaaaa-0000-4000-8000-000000000001",
+                     "display_name": "Primary Recorder", "continuity_owner": True,
+                     "credential": "ok", "live": True, "detail": "8 channel(s)",
+                     "live_marker": self.marker("a", a_marker)},
+                    {"local_id": "bbbbbbbb-0000-4000-8000-000000000002",
+                     "display_name": "Warehouse", "continuity_owner": False,
+                     "credential": "ok", "live": b_live_before,
+                     "detail": "4 channel(s)" if b_live_before else "web_unreachable",
+                     "live_marker": self.marker("b", b_marker)},
+                ]}
+
+    def multi_health(self, live):
+        # Fan-out advances recorder_seen_at only when EVERY recorder is live.
+        return {"recorder_seen_at": self.stale, "multi_recorder": True,
+                "recorders_total": 2, "recorders_live": live}
+
+    def test_secondary_already_offline_before_upgrade_does_not_force_rollback(self):
+        gate, result = self.run_gate(
+            health=self.multi_health(1),
+            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.stale,
+                                        b_live_before=False))
+        self.assertEqual(gate, "GATE=PASS")
+        self.assertIn("[recorders]", result)
+        self.assertIn("not_live_after=1", result)
+        self.assertIn("Primary Recorder | id=aaaaaaaa-0000-4000-8000-000000000001 | "
+                      "continuity=yes | credential=ok | before=live | after=live", result)
+        self.assertIn("Warehouse", result)
+        self.assertIn("before=offline (web_unreachable) | after=not seen since the update",
+                      result)
+
+    def test_secondary_live_before_and_dead_after_rolls_back(self):
+        gate, result = self.run_gate(
+            health=self.multi_health(1),
+            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.stale,
+                                        b_live_before=True))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+        self.assertIn("before=live | after=not seen since the update", result)
+
+    def test_continuity_recorder_must_be_live_again(self):
+        gate, _ = self.run_gate(
+            health=self.multi_health(1),
+            registry=self.two_recorders(a_marker=self.stale, b_marker=self.fresh,
+                                        b_live_before=False))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+
+    def test_markers_cannot_outvote_the_protected_live_count(self):
+        gate, _ = self.run_gate(
+            health=self.multi_health(1),
+            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.fresh,
+                                        b_live_before=True))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+
+    def test_every_recorder_live_still_passes(self):
+        gate, result = self.run_gate(
+            health={"recorder_seen_at": self.fresh, "multi_recorder": True,
+                    "recorders_total": 2, "recorders_live": 2},
+            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.fresh,
+                                        b_live_before=True))
+        self.assertEqual(gate, "GATE=PASS")
+        self.assertIn("not_live_after=0", result)
+
+    def test_without_per_recorder_proof_every_recorder_is_required(self):
+        gate, _ = self.run_gate(
+            health=self.multi_health(1),
+            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.stale,
+                                        b_live_before=False, live_markers=False))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+
+    def test_single_recorder_site_keeps_the_recorder_seen_rule(self):
+        self.assertEqual(self.run_gate(health={"recorder_seen_at": self.fresh})[0], "GATE=PASS")
+        gate, result = self.run_gate(health={"recorder_seen_at": self.stale})
+        self.assertEqual(gate, "GATE=ROLLBACK")
+        self.assertNotIn("[recorders]", result)
+
+    def test_old_runtime_health_never_counts(self):
+        gate, _ = self.run_gate(
+            health={**self.multi_health(2), "agent_version": "5.0.27",
+                    "recorder_seen_at": self.fresh},
+            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.fresh,
+                                        b_live_before=True))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+
+
+class RepairRegistryOrchestration(unittest.TestCase):
+    PS = REPAIR_PS1.read_text(encoding="utf-8")
+
+    def test_registry_is_validated_before_pause_and_probed_before_replacement(self):
+        ps = self.PS
+        passive_agent = ps.index("passive preflight PASSED")
+        passive_registry = ps.index('@("--registry-selftest","--existing-site","--preflight-mode","passive")')
+        pause = ps.index('$rc = Invoke-UpgradeHelper "preflight"')
+        recorder_agent = ps.index("phase 2/2: current WatchLog paused/backed up")
+        probe = ps.index("Run-RegistryRecorderCandidate", recorder_agent)
+        baseline = ps.index("Set-RecorderBaseline $reg", probe)
+        replace = ps.index("Install-CandidatePayload", recorder_agent)
+        self.assertLess(passive_agent, passive_registry)
+        self.assertLess(passive_registry, pause)
+        self.assertLess(pause, recorder_agent)
+        self.assertLess(recorder_agent, probe)
+        self.assertLess(probe, baseline)
+        self.assertLess(baseline, replace)
+        self.assertIn('"--registry-selftest","--existing-site","--preflight-mode","recorder"', ps)
+
+    def test_commit_gate_uses_per_recorder_proof(self):
+        gate = self.PS[self.PS.index("function Wait-NewRuntimeHealth"):]
+        gate = gate[:gate.index("\n}\n")]
+        self.assertIn("Test-RecorderProof $h $StartedAtUtc", gate)
+        self.assertIn("Update-RecorderReportAfter $started", self.PS)
+
+    def test_nsis_reports_a_degraded_commit_without_hiding_it(self):
+        nsis = (ROOT / "prototype/installer/nsis/watchlog-repair.nsi").read_text(encoding="utf-8")
+        self.assertIn('ReadINIStr $7 "${RESULTFILE}" "recorders" "not_live_after"', nsis)
+        self.assertNotIn("the recorder is reachable", nsis)
 
 
 def _ps_array(source: str, name: str) -> list[str]:

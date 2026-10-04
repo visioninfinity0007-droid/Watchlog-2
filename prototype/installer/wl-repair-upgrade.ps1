@@ -7,10 +7,16 @@
     1. Verify candidate payload/version.
     2. Run the staged candidate as SYSTEM against existing config/DPAPI identity
        while the current WatchLog remains running. No installed file is touched.
+       A site with a recorder registry also has every configured recorder credential
+       decrypted and loaded by the candidate (read-only).
     3. Candidate failure => stop immediately; current WatchLog remains untouched.
     4. Candidate pass => suspend WatchLog task, stop old runtime and back up old payload.
+       The candidate then probes the recorder(s); with a registry, every configured
+       recorder, which records the pre-upgrade baseline.
     5. Copy staged payload, verify version, register/start task.
-    6. Require fresh cloud heartbeat + recorder + remote-update poll proof.
+    6. Require fresh cloud heartbeat + remote-update poll proof, and recorder proof:
+       every recorder live, or on a multi-recorder site the continuity recorder plus
+       every recorder that answered before the upgrade.
     7. Commit only after health proof; otherwise rollback and prove old Agent restarted.
 #>
 [CmdletBinding()]
@@ -22,7 +28,8 @@ param(
   [int]$PreflightTimeoutSec = 75,
   [int]$HealthTimeoutSec = 120,
   [int]$RecorderPreflightAttempts = 3,
-  [int]$RecorderRetryDelaySec = 5
+  [int]$RecorderRetryDelaySec = 5,
+  [int]$RegistryStepTimeoutSec = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +51,12 @@ $UpgradeHelper = Join-Path $CandidateDir "wl-upgrade.ps1"
 $RegisterService = Join-Path $CandidateDir "register-service.ps1"
 $PreflightResult = Join-Path $CandidateDir ("repair-preflight-" + [guid]::NewGuid().ToString("N") + ".json")
 $PreflightTask = "WatchLog Candidate Preflight " + [guid]::NewGuid().ToString("N")
+$RegistryPath = Join-Path $DataRoot "recorders.json"
+$RegistryResult = Join-Path $CandidateDir ("repair-registry-" + [guid]::NewGuid().ToString("N") + ".json")
+# Multi-recorder state reported by the candidate's registry checks.
+$script:RecorderBaseline = $null   # what must be live again for the commit gate
+$script:RecorderReport = @()       # per-recorder lines for repair-upgrade-result.ini
+$script:RegistryState = ""
 
 $PayloadFiles = @(
   "watchlog-agent.exe",
@@ -75,7 +88,7 @@ function Write-Result([string]$Status, [int]$Code, [string]$Stage, [string]$Mess
   try {
     New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
     $tmp = $ResultPath + ".tmp"
-    @(
+    $lines = @(
       "[repair]",
       "status=$(Clean-IniValue $Status)",
       "code=$Code",
@@ -83,7 +96,23 @@ function Write-Result([string]$Status, [int]$Code, [string]$Stage, [string]$Mess
       "message=$(Clean-IniValue $Message)",
       "recovery=$(Clean-IniValue $Recovery)",
       "log=$(Clean-IniValue $LogPath)"
-    ) | Set-Content -LiteralPath $tmp -Encoding ASCII
+    )
+    if ($script:RegistryState) { $lines += "registry=$(Clean-IniValue $script:RegistryState)" }
+    # Per-recorder outcome (display name and local id only, never a recorder address).
+    $report = @($script:RecorderReport | Where-Object { $null -ne $_ })
+    if ($report.Count -gt 0) {
+      $lines += @("", "[recorders]", "count=$($report.Count)",
+                  "not_live_after=$(@($report | Where-Object { $_.after -ne 'live' }).Count)")
+      $i = 0
+      foreach ($r in $report) {
+        $i++
+        $continuity = if ($r.continuity) { "yes" } else { "no" }
+        $lines += ("recorder{0}={1} | id={2} | continuity={3} | credential={4} | before={5} | after={6}" -f
+                   $i, (Clean-IniValue $r.name), (Clean-IniValue $r.local_id), $continuity,
+                   (Clean-IniValue $r.credential), (Clean-IniValue $r.before), (Clean-IniValue $r.after))
+      }
+    }
+    $lines | Set-Content -LiteralPath $tmp -Encoding ASCII
     Move-Item -LiteralPath $tmp -Destination $ResultPath -Force
   } catch {}
 }
@@ -156,6 +185,44 @@ function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) {
     }
   }
   return $rc
+}
+
+function Invoke-CandidateSetupUi([string[]]$Arguments, [string]$Label) {
+  # The candidate Setup UI runs the registry checks with the candidate's own registry,
+  # credential and driver code. It is a windowed exe (& would not wait), and it is
+  # bounded so an unreachable recorder cannot stall the repair.
+  Remove-Item -LiteralPath $RegistryResult -Force -ErrorAction SilentlyContinue
+  $argList = @($Arguments) + @("--config", ('"' + $ConfigPath + '"'), "--result-json", ('"' + $RegistryResult + '"'))
+  try {
+    $p = Start-Process -FilePath $CandidateSetupUi -ArgumentList $argList -PassThru -WindowStyle Hidden
+    $null = $p.Handle
+    if (-not $p.WaitForExit($RegistryStepTimeoutSec * 1000)) {
+      try { $p.Kill() } catch {}
+      Write-Repair "$Label timed out after $RegistryStepTimeoutSec s"
+      return $null
+    }
+    $rc = $p.ExitCode
+  } catch {
+    Write-Repair "$Label could not start: $($_.Exception.Message)"
+    return $null
+  }
+  if (-not (Test-Path -LiteralPath $RegistryResult)) {
+    Write-Repair "$Label returned no structured result (exit=$rc)"
+    return $null
+  }
+  try {
+    $obj = Get-Content -LiteralPath $RegistryResult -Raw | ConvertFrom-Json
+  } catch {
+    Write-Repair "$Label result parse failed: $($_.Exception.Message)"
+    return $null
+  }
+  Write-Repair "$Label exit=$rc ok=$([bool]$obj.ok) error=$([string]$obj.error)"
+  foreach ($r in @($obj.recorders | Where-Object { $null -ne $_ })) {
+    Write-Repair ("  recorder '{0}' continuity={1} credential={2} live={3} {4}" -f
+                  [string]$r.display_name, [bool]$r.continuity_owner, [string]$r.credential,
+                  [string]$r.live, [string]$r.detail)
+  }
+  return $obj
 }
 
 function Restore-Previous([string]$Why) {
@@ -244,6 +311,97 @@ function Run-RecorderCandidate {
   return $lastResult
 }
 
+function Run-RegistryRecorderCandidate {
+  # Same transient session-handoff tolerance as the Agent's recorder preflight.
+  $attempts = [Math]::Max(1, $RecorderPreflightAttempts)
+  $last = $null
+  for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+    $last = Invoke-CandidateSetupUi @("--registry-selftest","--existing-site","--preflight-mode","recorder") "registry recorder probe $attempt/$attempts"
+    if ($last -and [bool]$last.ok) { return $last }
+    if ($attempt -lt $attempts) { Start-Sleep -Seconds ([Math]::Max(1, $RecorderRetryDelaySec)) }
+  }
+  return $last
+}
+
+function Set-RecorderReport($Registry) {
+  if ($null -eq $Registry) { return }
+  $script:RecorderReport = @(foreach ($r in @($Registry.recorders | Where-Object { $null -ne $_ })) {
+    $before = if ($null -eq $r.live) { "not probed" } elseif ([bool]$r.live) { "live" } else { "offline ($([string]$r.detail))" }
+    [pscustomobject]@{
+      name = [string]$r.display_name
+      local_id = [string]$r.local_id
+      continuity = [bool]$r.continuity_owner
+      credential = [string]$r.credential
+      live_marker = [string]$r.live_marker
+      before = $before
+      after = "not checked"
+    }
+  })
+}
+
+function Set-RecorderBaseline($Registry) {
+  # The commit gate compares the new runtime with this: the continuity recorder plus
+  # every recorder that answered the candidate's probe before anything was replaced.
+  $script:RecorderBaseline = $null
+  $rows = @($Registry.recorders | Where-Object { $null -ne $_ })
+  if ($rows.Count -le 1) { return }
+  if (-not [bool]$Registry.live_markers) {
+    Write-Repair "per-recorder live proof unavailable (recovery disabled); the commit gate requires every recorder"
+    return
+  }
+  $script:RecorderBaseline = @(foreach ($r in $rows) {
+    [pscustomobject]@{
+      local_id = [string]$r.local_id
+      required = ([bool]$r.continuity_owner -or [bool]$r.live)
+      live_marker = [string]$r.live_marker
+    }
+  })
+  $required = @($script:RecorderBaseline | Where-Object { $_.required }).Count
+  Write-Repair "recorder baseline: $required of $($rows.Count) recorder(s) must be live again after the update"
+}
+
+function Read-LiveMarker([string]$Path) {
+  # The runtime's per-recorder last-live marker (written at each heartbeat while that
+  # recorder's own transport is live).
+  try {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $m = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    if (-not $m.last_live) { return $null }
+    return [DateTimeOffset]::Parse([string]$m.last_live).UtcDateTime
+  } catch { return $null }
+}
+
+function Test-RecorderProof($h, [datetime]$StartedAtUtc) {
+  # Every configured recorder live: the single-recorder rule, and the strongest proof.
+  $recorder = if ($h.recorder_seen_at) { [DateTimeOffset]::Parse([string]$h.recorder_seen_at).UtcDateTime } else { $null }
+  if ($recorder -and $recorder -ge $StartedAtUtc) { return $true }
+  # Multi-recorder: the continuity recorder plus every recorder that answered before the
+  # upgrade must be live again. A recorder already offline before is reported, never a
+  # reason for a site-wide rollback. The protected live count bounds the markers.
+  if ($null -eq $script:RecorderBaseline -or -not [bool]$h.multi_recorder) { return $false }
+  $required = @($script:RecorderBaseline | Where-Object { $_.required })
+  if ($required.Count -eq 0 -or [int]$h.recorders_live -lt $required.Count) { return $false }
+  foreach ($r in $required) {
+    $seen = Read-LiveMarker $r.live_marker
+    if (-not $seen -or $seen -lt $StartedAtUtc) { return $false }
+  }
+  return $true
+}
+
+function Update-RecorderReportAfter([datetime]$StartedAtUtc) {
+  $allLive = $false
+  try {
+    $h = Get-Content -LiteralPath $HealthPath -Raw | ConvertFrom-Json
+    $seen = if ($h.recorder_seen_at) { [DateTimeOffset]::Parse([string]$h.recorder_seen_at).UtcDateTime } else { $null }
+    $allLive = [bool]([string]$h.agent_version -eq $ExpectedVersion -and $seen -and $seen -ge $StartedAtUtc)
+  } catch {}
+  foreach ($r in @($script:RecorderReport | Where-Object { $null -ne $_ })) {
+    $marker = Read-LiveMarker $r.live_marker
+    $r.after = if ($allLive -or ($marker -and $marker -ge $StartedAtUtc)) { "live" } else { "not seen since the update" }
+    Write-Repair "  recorder '$($r.name)' before=$($r.before) after=$($r.after)"
+  }
+}
+
 function Install-CandidatePayload {
   foreach ($name in $PayloadFiles) {
     $src = Join-Path $CandidateDir $name
@@ -260,12 +418,11 @@ function Wait-NewRuntimeHealth([datetime]$StartedAtUtc) {
       if (Test-Path -LiteralPath $HealthPath) {
         $h = Get-Content -LiteralPath $HealthPath -Raw | ConvertFrom-Json
         $heartbeat = if ($h.heartbeat_at) { [DateTimeOffset]::Parse([string]$h.heartbeat_at).UtcDateTime } else { $null }
-        $recorder = if ($h.recorder_seen_at) { [DateTimeOffset]::Parse([string]$h.recorder_seen_at).UtcDateTime } else { $null }
         $updater = if ($h.remote_update_poll_at) { [DateTimeOffset]::Parse([string]$h.remote_update_poll_at).UtcDateTime } else { $null }
         if ([string]$h.agent_version -eq $ExpectedVersion -and
             $heartbeat -and $heartbeat -ge $StartedAtUtc -and
-            $recorder -and $recorder -ge $StartedAtUtc -and
-            $updater -and $updater -ge $StartedAtUtc) {
+            $updater -and $updater -ge $StartedAtUtc -and
+            (Test-RecorderProof $h $StartedAtUtc)) {
           return $h
         }
       }
@@ -319,6 +476,21 @@ try {
 
   Write-Repair "passive preflight PASSED: identity + DPAPI + cloud + decoder + signed updater; current WatchLog still running"
 
+  # The Agent preflight proves the legacy singleton recorder only. With a recorder
+  # registry the candidate runtime uses EVERY configured recorder, so prove that too
+  # before the live site is paused.
+  if (Test-Path -LiteralPath $RegistryPath) {
+    $script:CurrentStage = "recorder registry validation"
+    $reg = Invoke-CandidateSetupUi @("--registry-selftest","--existing-site","--preflight-mode","passive") "registry preflight (passive)"
+    Set-RecorderReport $reg
+    if (-not $reg -or -not [bool]$reg.ok) {
+      $detail = if ($reg -and $reg.error) { [string]$reg.error } else { "registry preflight timed out or returned no valid result" }
+      Fail 30 ("candidate cannot run this site's recorders; installed WatchLog was NOT changed. " + $detail)
+    }
+    $script:RegistryState = "present ($(@($reg.recorders | Where-Object { $null -ne $_ }).Count) configured recorder(s))"
+    Write-Repair "registry preflight PASSED: every configured recorder credential decrypts and loads in the candidate"
+  }
+
   $script:CurrentStage = "pause and unlock current WatchLog"
   $rc = Invoke-UpgradeHelper "preflight"
   if ($rc -ne 0) {
@@ -336,8 +508,24 @@ try {
     Fail 30 "candidate recorder/channel validation failed; previous WatchLog was restored and kept"
   }
 
-  Write-Repair "recorder preflight PASSED; beginning atomic payload replacement"
+  Write-Repair "recorder preflight PASSED"
 
+  # Re-read: Manage Recorders may have created the registry before the pause closed it.
+  if (Test-Path -LiteralPath $RegistryPath) {
+    $script:CurrentStage = "recorder registry probe"
+    Write-Repair "probing every configured recorder with the candidate before replacing files"
+    $reg = Run-RegistryRecorderCandidate
+    Set-RecorderReport $reg
+    if (-not $reg -or -not [bool]$reg.ok) {
+      $detail = if ($reg -and $reg.error) { [string]$reg.error } else { "registry recorder probe failed or returned no valid result" }
+      $restored = Restore-Previous $detail
+      if (-not $restored) { Fail 31 "registry recorder probe failed AND previous WatchLog could not be proven running" }
+      Fail 30 "candidate could not reach the original WatchLog recorder through the recorder registry; previous WatchLog was restored and kept"
+    }
+    Set-RecorderBaseline $reg
+  }
+
+  Write-Repair "beginning atomic payload replacement"
   $script:CurrentStage = "install candidate files"
   try {
     Install-CandidatePayload
@@ -369,6 +557,7 @@ try {
   $script:CurrentStage = "prove updated WatchLog health"
   Write-Repair "new WatchLog started; waiting for cloud + recorder + online-update health proof"
   $health = Wait-NewRuntimeHealth $started
+  Update-RecorderReportAfter $started
   if (-not $health) {
     $restored = Restore-Previous "new runtime did not prove heartbeat + recorder + remote-update polling"
     if (-not $restored) { Fail 39 "new runtime unhealthy AND rollback could not be proven" }
@@ -385,8 +574,14 @@ try {
 
   $script:CurrentStage = "complete"
   $script:RecoveryState = "WatchLog $ExpectedVersion is installed and healthy."
-  Write-Repair "SUCCESS: WatchLog $ExpectedVersion healthy; cloud heartbeat + recorder + remote-update polling proven"
-  Write-Result "success" 0 $script:CurrentStage "WatchLog $ExpectedVersion updated successfully." $script:RecoveryState
+  $message = "WatchLog $ExpectedVersion updated successfully."
+  $notLive = @($script:RecorderReport | Where-Object { $null -ne $_ -and $_.after -ne "live" }).Count
+  if ($notLive -gt 0) {
+    # Degraded, not regressed: only recorders that were already unreachable before.
+    $message += " $notLive recorder(s) that could not be reached before the update are still not reachable."
+  }
+  Write-Repair "SUCCESS: WatchLog $ExpectedVersion healthy; cloud heartbeat + recorder + remote-update polling proven (recorders still not reachable: $notLive)"
+  Write-Result "success" 0 $script:CurrentStage $message $script:RecoveryState
   exit 0
 }
 catch {
@@ -395,4 +590,5 @@ catch {
 }
 finally {
   try { Remove-Item -LiteralPath $PreflightResult -Force -ErrorAction SilentlyContinue } catch {}
+  try { Remove-Item -LiteralPath $RegistryResult -Force -ErrorAction SilentlyContinue } catch {}
 }
