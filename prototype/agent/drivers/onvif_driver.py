@@ -199,11 +199,14 @@ class OnvifDriver(NvrDriver):
         """
         Devices often advertise service URLs using their own idea of their
         address (a stale DHCP lease, or 0.0.0.0). Keep the host we can
-        actually reach and take only the path.
+        actually reach and take the rest of the URL as advertised. The query
+        matters: a snapshot URI or subscription address may name the channel,
+        profile or pull point there, and dropping it would send every
+        camera's request to the same URL.
         """
         try:
             adv, base = urlparse(advertised), urlparse(self.base_url)
-            return f"{base.scheme}://{base.netloc}{adv.path}"
+            return adv._replace(scheme=base.scheme, netloc=base.netloc).geturl()
         except ValueError:
             return advertised
 
