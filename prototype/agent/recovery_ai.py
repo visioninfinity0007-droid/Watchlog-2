@@ -22,6 +22,7 @@ fully testable with fakes and no hardware or video codec.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import shutil
 import subprocess
@@ -342,6 +343,16 @@ def analyze_segment(detector, frame_jpeg, *, channel, ts, device_event_id=None, 
     return ("recovered" if activity else "snapshot"), event
 
 
+def _segment_ref(raw: dict, channel, fallback_ts) -> str:
+    """Stable id of one recorded segment, for dedupe keys and recovered event ids. A recorder
+    playback URI or file path carries the recorder's address and storage layout, so only a
+    digest of it leaves the site."""
+    ref = str(raw.get("device_event_id") or f"{channel}:{fallback_ts}")
+    if "://" in ref or "/" in ref:
+        return "seg-" + hashlib.sha256(ref.encode("utf-8")).hexdigest()[:20]
+    return ref
+
+
 def _segment_sample_times(segment: dict, fallback_ts, interval_seconds: int):
     """Yield bounded historical sample timestamps across one recorded segment."""
     start = _as_dt(segment.get("start") or fallback_ts)
@@ -398,10 +409,12 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
             for raw in res.get("events", []) or []:
                 seg = raw.get("segment") or {}
                 fallback_ts = seg.get("start") or raw.get("ts")
+                base_id = _segment_ref(raw, channel, fallback_ts)
+                # Only the footage window travels with the event, never the recorder URI/path.
+                seg_window = {"start": seg.get("start"), "end": seg.get("end")}
                 for sample_ts in _segment_sample_times(
                         seg, fallback_ts, snapshot_interval_seconds):
                     sample_iso = _iso(sample_ts)
-                    base_id = raw.get("device_event_id") or f"{channel}:{fallback_ts}"
                     key = f"ai:{base_id}:{sample_iso}"
                     if key in seen:
                         duplicates += 1
@@ -412,7 +425,7 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                     frame = provider(driver, channel, sample_ts)
                     status, event = analyze_segment(
                         detector, frame, channel=channel, ts=sample_ts,
-                        device_event_id=f"{base_id}:{sample_iso}", segment=seg)
+                        device_event_id=f"{base_id}:{sample_iso}", segment=seg_window)
                     if status == "no_frame":
                         no_frame += 1
                         continue

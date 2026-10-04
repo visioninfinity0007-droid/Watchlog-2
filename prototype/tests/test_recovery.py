@@ -8,7 +8,7 @@ recovered/unrecoverable status, and recorder_archive provenance on every recover
 """
 from __future__ import annotations
 
-import sys, tempfile, unittest
+import json, sys, tempfile, unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -322,10 +322,10 @@ class DeepRecoveryRun(unittest.TestCase):
                                          log=lambda *a: None)
         out = runner.run_once(limit=1)
         self.assertEqual(out[0]["status"], "recovered")
-        # both intelligence sources present: recorder-native replay AND AI over footage
+        # Recorded segments are footage, not recorder events: they feed the AI pass and are
+        # never replayed as recorder_archive events of their own.
         sources = {e["source"] for e in events}
-        self.assertIn("recorder_archive", sources)
-        self.assertIn("recovered", sources)
+        self.assertEqual(sources, {"recovered"})
         # the recovered-intelligence events carry a historical snapshot + historical timestamp
         ai = [e for e in events if e["source"] == "recovered"]
         self.assertEqual(len(ai), 3)
@@ -333,7 +333,7 @@ class DeepRecoveryRun(unittest.TestCase):
             self.assertTrue(e.get("snapshot_b64"))
             self.assertEqual([o["label"] for o in e["payload"]["objects"]], ["person"])
             self.assertLess(datetime.fromisoformat(e["device_ts"]), T0 + timedelta(hours=3))
-        self.assertEqual(out[0]["recovered"], 6)          # 3 replay + 3 AI
+        self.assertEqual(out[0]["recovered"], 3)          # 3 AI frames; segments are not events
 
     def test_visual_backfill_runs_without_detector(self):
         cloud = FakeCloud([interval()])
@@ -362,10 +362,9 @@ class DeepRecoveryRun(unittest.TestCase):
             frame_provider=lambda d, c, ts: None,
             log=lambda *a: None)
         out = runner.run_once(limit=1)
-        # Native archive replay recovered evidence, but the visual timeline did not.
+        # The archive answered, but the visual timeline was not recovered: never "recovered".
         self.assertEqual(out[0]["status"], "partial")
-        self.assertTrue(any(e.get("source") == "recorder_archive" for e in events))
-        self.assertFalse(any(e.get("source") == "recovered" for e in events))
+        self.assertEqual(events, [])
 
     def test_partial_when_only_ai_supported(self):
         # events unsupported but segments supported -> partial (recovered SOME, not all sources)
@@ -380,6 +379,70 @@ class DeepRecoveryRun(unittest.TestCase):
         out = runner.run_once(limit=1)
         self.assertEqual(out[0]["status"], "partial")
         self.assertTrue(all(e["source"] == "recovered" for e in events))
+
+
+
+RECORDER_IP = "192.0.2.64"
+
+
+class HikvisionShapedArchive(DeepArchiveDriver):
+    """Rows shaped like hikvision_archive.enumerate_historical_events: the device_event_id and
+    segment carry the recorder's playback URI, which embeds its LAN address."""
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        page = super().enumerate_historical_events(channel, start, end, cursor, limit)
+        for ev in page["events"]:
+            uri = (f"rtsp://{RECORDER_IP}/Streaming/tracks/{channel}01/"
+                   f"?starttime={ev['ts']}&name=00010000123&size=4096")
+            ev["device_event_id"] = uri
+            ev["segment"] = {"start": ev["segment"]["start"], "end": ev["segment"]["end"],
+                             "playback_uri": uri}
+        return page
+
+
+class RecordedSegmentsAreNotEvents(unittest.TestCase):
+    def _segments(self):
+        return DeepRecoveryRun._segments(self)
+
+    def test_backfill_does_not_replay_recording_segments_as_events(self):
+        got = []
+        res = backfill.backfill_events(HikvisionShapedArchive(self._segments()), "1",
+                                       T0, T0 + timedelta(hours=3), on_event=got.append)
+        self.assertEqual(res["status"], backfill.SUPPORTED)
+        self.assertEqual((res["recovered"], got), (0, []))
+
+    def test_no_recorder_uri_or_address_reaches_events_or_the_checkpoint(self):
+        cloud = FakeCloud([interval()])
+        events = []
+        runner = recovery.RecoveryRunner(cloud, "agent", "key",
+                                         HikvisionShapedArchive(self._segments()), events.append,
+                                         chunk_seconds=3600, detector=_FakeDetector(),
+                                         frame_provider=lambda d, c, ts: b"JPEGFRAME",
+                                         log=lambda *a: None)
+        out = runner.run_once(limit=1)
+        self.assertEqual(out[0]["status"], "recovered")
+        self.assertEqual(len(events), 3, "the visual timeline is still recovered")
+        self.assertFalse([e for e in events if e["event_type"] == "recorded_segment"])
+        sent = json.dumps({"events": events, "completes": cloud.completes})
+        self.assertNotIn("rtsp://", sent)
+        self.assertNotIn(RECORDER_IP, sent)
+
+    def test_hashed_segment_ids_still_deduplicate_across_claims(self):
+        seen = set()
+        cloud = FakeCloud([interval()])
+        first = []
+        recovery.RecoveryRunner(cloud, "agent", "key", HikvisionShapedArchive(self._segments()),
+                                first.append, chunk_seconds=3600,
+                                frame_provider=lambda d, c, ts: b"J",
+                                log=lambda *a: None).run_once()
+        seen.update(cloud.completes[-1]["p_checkpoint"]["seen_keys"])
+        again = []
+        cloud2 = FakeCloud([interval(checkpoint={"seen_keys": sorted(seen)})])
+        recovery.RecoveryRunner(cloud2, "agent", "key", HikvisionShapedArchive(self._segments()),
+                                again.append, chunk_seconds=3600,
+                                frame_provider=lambda d, c, ts: b"J",
+                                log=lambda *a: None).run_once()
+        self.assertEqual(len(first), 3)
+        self.assertEqual(again, [])
 
 
 if __name__ == "__main__":
