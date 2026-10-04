@@ -433,9 +433,11 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                                segment_start=segment_start)
     seen = seen if seen is not None else set()
     recovered = activity = snapshots = frames = no_frame = duplicates = attempted = 0
+    unplaced = 0                     # windows whose segments all lie outside the window
 
     for w_start, w_end in backfill._windows(start, end, window_seconds):
         cursor = None
+        rows = placed = 0
         while True:
             res = driver.enumerate_historical_events(
                 channel, w_start, w_end, cursor=cursor, limit=page_limit) or {}
@@ -452,8 +454,11 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                 base_id = _segment_ref(raw, channel, fallback_ts)
                 # Only the footage window travels with the event, never the recorder URI/path.
                 seg_window = {"start": seg.get("start"), "end": seg.get("end")}
-                for sample_ts in _segment_sample_times(
-                        seg, fallback_ts, snapshot_interval_seconds, w_start, w_end):
+                samples = _segment_sample_times(
+                    seg, fallback_ts, snapshot_interval_seconds, w_start, w_end)
+                rows += 1
+                placed += len(samples)
+                for sample_ts in samples:
                     sample_iso = _iso(sample_ts)
                     key = f"ai:{base_id}:{sample_iso}"
                     if key in seen:
@@ -490,12 +495,19 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
             cursor = res.get("next_cursor")
             if not cursor:
                 break
+        if rows and not placed:
+            unplaced += 1
 
     final_status = SUPPORTED
     reason = None
     if attempted > 0 and frames == 0:
         final_status = UNKNOWN
         reason = "recorded segments were found but no historical frame could be decoded"
+    elif unplaced:
+        # The archive answered with segments that do not overlap the window (e.g. stamped in
+        # another clock), so no footage of the window was examined: never a recovered window.
+        final_status = UNKNOWN
+        reason = "recorded segments were found but none lies inside the recovery window"
     return {"status": final_status, "recovered": recovered, "activity": activity,
             "snapshots": snapshots, "frames": frames, "no_frame": no_frame,
             "attempted": attempted, "duplicates": duplicates,

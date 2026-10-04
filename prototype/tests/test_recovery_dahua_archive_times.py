@@ -5,6 +5,9 @@ dahua_archive.enumerate_historical_events passes mediaFileFind StartTime/EndTime
 wall-clock strings ("2026-06-01 10:00:00"). Clipping samples to the recovery window compared them
 with the zone-aware window bounds and raised TypeError on every chunk, so a Dahua interval ended
 partial/archive_error with no frame recovered. A bare time is read as UTC, as before the clipping.
+
+A recorder whose local time is read as UTC (MNVR-019) returns segments that do not overlap the
+window at all. No footage of the gap was examined then, so the window must not count as recovered.
 """
 from __future__ import annotations
 
@@ -168,6 +171,26 @@ class DahuaArchiveRecovery(unittest.TestCase):
         self.assertEqual([c["p_status"] for c in cloud.completes][-1], "recovered")
         self.assertEqual(sum(1 for c in cloud.completes if c["p_status"] != "in_progress"), 1)
         self.assertEqual(len(events), 4)
+        self.assertFalse([m for m in logs if "archive read failed" in m], logs)
+
+    def test_segments_outside_the_window_are_not_a_recovered_window(self):
+        # A UTC+5 recorder's local file times read as UTC land five hours after the gap.
+        driver = self._driver(offset_hours=5)
+        summary = recovery_ai.backfill_intelligence(driver, None, "1", *GAP, on_event=[].append)
+        self.assertEqual(summary["status"], recovery_ai.UNKNOWN)
+        self.assertEqual(summary["frames"], 0)
+        self.assertTrue(summary["reason"])
+        self.assertEqual(driver.s.loads, [], "nothing outside the gap is downloaded")
+
+    def test_an_interval_whose_segments_miss_the_window_is_not_recovered(self):
+        cloud, events, logs = self._claims(self._driver(offset_hours=5))
+        final = cloud.completes[-1]
+        self.assertNotEqual(final["p_status"], "recovered")
+        self.assertEqual(final["p_status"], "partial")
+        self.assertEqual(events, [])
+        # Settled on the first claim from what the archive said, not after failed reads.
+        self.assertEqual(sum(1 for c in cloud.completes if c["p_status"] != "in_progress"), 1)
+        self.assertEqual(cloud.iv["attempts"], 1)
         self.assertFalse([m for m in logs if "archive read failed" in m], logs)
 
 

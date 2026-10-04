@@ -269,6 +269,66 @@ class GapClippedSampling(unittest.TestCase):
         self.assertEqual((got, asked), ([], []))
 
 
+class _AnswersAnyWindow(SegDriver):
+    """A recorder that answers the search for the gap with segments stamped hours away from it,
+    as when its local time is read as UTC (MNVR-019): every row comes back, whatever the window."""
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+        return {"status": "supported", "next_cursor": None,
+                "events": [{"ts": seg["start"], "type": "recorded_segment",
+                            "device_event_id": seg.get("id"), "segment": seg}
+                           for seg in self._segs]}
+
+
+class SegmentsOutsideTheWindow(unittest.TestCase):
+    """Segments that do not overlap the window after clipping are not footage of the gap."""
+    GAP = GapClippedSampling.GAP
+    SHIFTED = [{"start": "2026-09-14T15:00:00+00:00", "end": "2026-09-14T16:00:00+00:00",
+                "id": "seg-local-hour"}]
+
+    def test_the_window_stays_unknown_and_nothing_is_fetched(self):
+        asked = []
+        summary = recovery_ai.backfill_intelligence(
+            _AnswersAnyWindow(self.SHIFTED), None, "1", *self.GAP, on_event=[].append,
+            frame_provider=lambda d, c, t: asked.append(t) or b"JPEG")
+        self.assertEqual(summary["status"], recovery_ai.UNKNOWN)
+        self.assertEqual((summary["frames"], asked), (0, []))
+        self.assertIn("window", summary["reason"])
+
+    def test_an_interval_with_no_footage_examined_is_not_recovered(self):
+        import recovery
+
+        class Cloud:
+            def __init__(self):
+                self.completes = []
+
+            def call(self, fn, **kw):
+                if fn == "wl_agent_claim_recovery":
+                    return [] if self.completes else [{
+                        "id": "iv-1", "started_at": GapClippedSampling.GAP[0],
+                        "ended_at": GapClippedSampling.GAP[1], "cameras": ["1"],
+                        "checkpoint": {}, "attempts": 1}]
+                self.completes.append(kw)
+                return {"ok": True}
+
+        cloud = Cloud()
+        out = recovery.RecoveryRunner(cloud, "agent", "key", _AnswersAnyWindow(self.SHIFTED),
+                                      [].append, frame_provider=lambda d, c, t: b"JPEG",
+                                      log=lambda *a: None).run_once(limit=1)
+        self.assertEqual(out[0]["status"], "partial")
+        self.assertEqual(cloud.completes[-1]["p_status"], "partial")
+
+    def test_rows_already_recovered_in_an_earlier_claim_still_count_as_inside(self):
+        seg = [{"start": "2026-09-14T10:00:00+00:00", "end": "2026-09-14T11:00:00+00:00",
+                "id": "seg-hour"}]
+        seen = set()
+        for _ in range(2):
+            summary = recovery_ai.backfill_intelligence(
+                _AnswersAnyWindow(seg), None, "1", *self.GAP, seen=seen, on_event=[].append,
+                frame_provider=lambda d, c, t: b"JPEG")
+        self.assertEqual(summary["status"], recovery_ai.SUPPORTED)
+        self.assertEqual(summary["duplicates"], 4)
+
+
 class MediaInspect(unittest.TestCase):
     def test_media_kind_by_magic(self):
         self.assertEqual(recovery_ai.media_kind(b"\xff\xd8\xff\xe0blah"), "jpeg")
