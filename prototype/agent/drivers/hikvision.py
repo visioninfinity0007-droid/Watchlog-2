@@ -109,16 +109,29 @@ class HikvisionDriver(NvrDriver):
 
     # -- helpers --------------------------------------------------------
 
+    def _send(self, method: str, url: str, **kw) -> requests.Response:
+        """One ISAPI request on the Digest session.
+
+        A few OEM firmwares only do Basic. Basic is used only when the recorder's challenge
+        offers Basic and not Digest, and only for this one retry: the session keeps Digest,
+        so a transient 401 can never leave every later request sending the password in the
+        clear (or failing on a Digest-only unit). RequestException propagates to the caller.
+        """
+        r = self.s.request(method, url, **kw)
+        if r.status_code == 401:
+            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+            if "basic" in challenge and "digest" not in challenge:
+                r.close()
+                r = self.s.request(method, url,
+                                   auth=HTTPBasicAuth(self.username, self.password), **kw)
+        return r
+
     def _get(self, path: str, **kw) -> requests.Response:
         url = self.base_url + path
         try:
-            r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
+            r = self._send("GET", url, timeout=kw.pop("timeout", self.timeout), **kw)
         except requests.RequestException as e:
             raise DriverError(f"{url}: {explain(e)}") from e
-        if r.status_code == 401:
-            # A few OEM firmwares only do Basic.
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.get(url, timeout=self.timeout, **kw)
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r
@@ -132,14 +145,10 @@ class HikvisionDriver(NvrDriver):
     def _put(self, path: str, body: str) -> requests.Response:
         url = self.base_url + path
         try:
-            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
+            r = self._send("PUT", url, data=body.encode(), timeout=self.timeout,
                            headers={"Content-Type": "application/xml"})
         except requests.RequestException as e:
             raise DriverError(f"{url}: {explain(e)}") from e
-        if r.status_code == 401:
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
-                           headers={"Content-Type": "application/xml"})
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r
@@ -436,7 +445,7 @@ class HikvisionDriver(NvrDriver):
         """
         url = self.base_url + "/ISAPI/Event/notification/alertStream"
         try:
-            r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
+            r = self._send("GET", url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
             raise DriverError(f"alertStream: {e}") from e
         if r.status_code >= 400:
