@@ -129,6 +129,119 @@ def test_hikvision_read_timeout_is_recorded_as_the_stream_error():
     assert d.last_activity_monotonic > 0
 
 
+class Sessions(Session):
+    """Answers each stream request with the next response in turn (the last one repeats)."""
+
+    def __init__(self, *resps):
+        super().__init__(None)
+        self.resps = list(resps)
+
+    def request(self, method, url, **kw):
+        return self.resps.pop(0) if len(self.resps) > 1 else self.resps[0]
+
+    def get(self, url, **kw):
+        return self.request("GET", url, **kw)
+
+
+def test_hikvision_200_then_eof_takes_its_2xx_stamp_back():
+    # The recorder accepts alertStream and closes it at once: no chunk ever arrived.
+    d = _hik(Resp(200))
+    assert list(d.stream_events(threading.Event())) == []
+    assert d.last_activity_monotonic == 0.0
+    assert d.event_stream["connected"] is False
+    assert d.event_stream["last_frame_at"] is None
+    assert d.event_stream["last_error"] == "event stream ended by the recorder"
+
+    # After a stream that did deliver a frame, a frameless reopen keeps the frame's stamp.
+    d = _hik(None)
+    d.s = Sessions(Resp(200, chunks=[KEEPALIVE]), Resp(200))
+    list(d.stream_events(threading.Event()))
+    framed = d.last_activity_monotonic
+    assert framed > 0
+    time.sleep(0.02)
+    list(d.stream_events(threading.Event()))
+    assert d.last_activity_monotonic == framed
+
+
+def test_dahua_200_then_eof_takes_its_2xx_stamp_back():
+    d = _dahua(Resp(200, lines=[]))
+    assert list(d.stream_events(threading.Event())) == []
+    assert d.last_activity_monotonic == 0.0
+    assert d.event_stream["connected"] is False
+    assert d.event_stream["last_frame_at"] is None
+
+    d = _dahua(None)
+    d.s = Sessions(Resp(200, lines=[b"Heartbeat"]), Resp(200, lines=[]))
+    list(d.stream_events(threading.Event()))
+    framed = d.last_activity_monotonic
+    assert framed > 0
+    time.sleep(0.02)
+    list(d.stream_events(threading.Event()))
+    assert d.last_activity_monotonic == framed
+
+
+class FakeClock:
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def monotonic(self):
+        return self.now
+
+
+@pytest.mark.parametrize("vendor", ["hikvision", "dahua"])
+def test_a_200_then_eof_stream_reopened_for_minutes_is_not_live(monkeypatch, tmp_path, vendor):
+    """deviceInfo answers and every stream request gets 200 headers then EOF. The collector
+    reopens it every few seconds for over 150 s (patched clock): the recorder must end not
+    live, and last_live must not move forward although every reopen answered 2xx."""
+    import drivers.dahua as dahua_mod
+    import drivers.hikvision as hik_mod
+    import recovery
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    clock = FakeClock()
+    module = hik_mod if vendor == "hikvision" else dahua_mod
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=clock.monotonic))
+
+    def open_driver(cfg):
+        d = (_hik(Resp(200)) if vendor == "hikvision" else _dahua(Resp(200, lines=[])))
+        return d, Info()
+
+    cfg = SimpleNamespace(recovery_enabled=True, last_live_path=tmp_path / "last_live.json",
+                          recovery_threshold_seconds=180)
+    seeded = datetime.now(timezone.utc) - timedelta(seconds=60)
+    recovery.persist_last_live(cfg.last_live_path, seeded)
+    holder, samples = {}, []
+
+    def wait(stop, _cfg, auth_failures, last_gen, seconds=None):
+        samples.append(analytics_agent._recorder_stream_live(holder, clock.now))
+        analytics_agent._persist_stream_last_live(cfg, holder, clock.now)
+        clock.now += core.DRIVER_RETRY_SECONDS if seconds is None else seconds
+        if clock.now - 1000.0 > 200:
+            stop.set()
+            return "stop", last_gen
+        return "timeout", last_gen
+
+    _spool, holder, _ok = run_collector(monkeypatch, open_driver, holder=holder,
+                                        reconnect_wait=wait, timeout=20.0)
+    assert clock.now - 1000.0 > 200, "the collector stopped reopening before 150 s passed"
+    assert len(samples) > 10
+    assert not any(samples), "a stream that never delivered a byte was reported live"
+    assert analytics_agent._recorder_stream_live(holder, clock.now) is False
+    assert holder["event_stream"]["connected"] is False
+    assert holder["event_stream"]["last_frame_at"] is None
+    assert recovery.read_last_live(cfg.last_live_path) == seeded
+
+
+def test_stream_seen_at_ignores_the_2xx_of_a_stream_that_has_ended():
+    frame = "2026-10-04T16:00:00+00:00"
+    later = "2026-10-04T16:05:00+00:00"
+    ended = {"connected": False, "connected_at": later, "last_frame_at": frame}
+    assert analytics_agent._stream_seen_at(ended).isoformat() == frame
+    assert analytics_agent._stream_seen_at({**ended, "last_frame_at": None}) is None
+    assert analytics_agent._stream_seen_at({**ended, "connected": True}).isoformat() == later
+
+
 def test_dahua_attach_error_stamps_no_liveness_and_heartbeats_count():
     d = _dahua(Resp(503))
     with pytest.raises(core.DriverError):

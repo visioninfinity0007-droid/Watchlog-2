@@ -103,19 +103,30 @@ class DahuaDriver(NvrDriver):
         self.last_activity_monotonic = 0.0
         self.event_stream: dict = {"connected": False, "connected_at": None,
                                    "last_frame_at": None, "last_error": None}
+        # The activity stamp before the current stream's 2xx, while that stream has not
+        # delivered a single chunk yet; None once it has (or outside a stream).
+        self._activity_before_up: float | None = None
 
     # -- event-stream liveness (MNVR-008) -------------------------------
 
     def _stream_up(self) -> None:
+        # The 2xx counts as activity only while this stream stays open: _stream_down takes
+        # it back if the stream ends before a single chunk arrives, so a recorder whose
+        # attach answers 200 and closes at once is never live, however often it is reopened.
+        self._activity_before_up = self.last_activity_monotonic
         self.last_activity_monotonic = time.monotonic()
         self.event_stream.update(connected=True, last_error=None,
                                  connected_at=datetime.now(timezone.utc).isoformat())
 
     def _stream_frame(self) -> None:
+        self._activity_before_up = None
         self.last_activity_monotonic = time.monotonic()
         self.event_stream["last_frame_at"] = datetime.now(timezone.utc).isoformat()
 
     def _stream_down(self, error: str | None) -> None:
+        if self._activity_before_up is not None:    # ended without delivering anything
+            self.last_activity_monotonic = self._activity_before_up
+            self._activity_before_up = None
         self.event_stream["connected"] = False
         if error:
             self.event_stream["last_error"] = error
