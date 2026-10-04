@@ -80,12 +80,16 @@ class RecoveryRunner:
     """Drives automatic NVR backfill for claimed recovery intervals. Live monitoring first."""
 
     def __init__(self, cloud, agent_id, agent_key, driver, on_event, *,
+                 recorder_id=None,
                  chunk_seconds: int = DEFAULT_CHUNK_SECONDS, throttle_seconds: float = 0.0,
                  live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
                  snapshot_interval_seconds=recovery_ai.DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
                  log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
-        self.driver, self.on_event = driver, on_event
+        self.driver = driver
+        self.recorder_id = str(recorder_id) if recorder_id else None
+        self._raw_on_event = on_event
+        self.on_event = self._emit_event
         self.chunk_seconds = max(60, int(chunk_seconds))
         self.throttle_seconds = max(0.0, float(throttle_seconds))
         self.live_pending = live_pending or (lambda: False)
@@ -98,24 +102,79 @@ class RecoveryRunner:
         self.snapshot_interval_seconds = max(30, int(snapshot_interval_seconds))
         self._log = log
 
+    def _emit_event(self, event):
+        """Stamp recovered events with recorder provenance at the context boundary."""
+        if self.recorder_id:
+            if isinstance(event, dict):
+                event = dict(event)
+                event["recorder_id"] = self.recorder_id
+            elif hasattr(event, "with_recorder_id"):
+                event = event.with_recorder_id(self.recorder_id)
+        if self._raw_on_event:
+            self._raw_on_event(event)
+
+    def _open_rpc(self):
+        return "wl_open_recorder_recovery_interval" if self.recorder_id else "wl_open_recovery_interval"
+
+    def _claim_rpc(self):
+        return "wl_agent_claim_recorder_recovery" if self.recorder_id else "wl_agent_claim_recovery"
+
+    def _complete_rpc(self):
+        return "wl_complete_recorder_recovery" if self.recorder_id else "wl_complete_recovery"
+
     def report_outage(self, last_live, now, cameras=None):
         """Report a detected outage as a pending recovery interval (idempotent server-side)."""
-        return self.cloud.call("wl_open_recovery_interval", p_agent_id=self.agent_id,
-                               p_agent_key=self.agent_key, p_started_at=_iso(_as_dt(last_live)),
-                               p_ended_at=_iso(_as_dt(now)), p_cameras=list(cameras or []))
+        args = dict(
+            p_agent_id=self.agent_id,
+            p_agent_key=self.agent_key,
+            p_started_at=_iso(_as_dt(last_live)),
+            p_ended_at=_iso(_as_dt(now)),
+        )
+        if self.recorder_id:
+            args["p_recorder_id"] = self.recorder_id
+            args["p_channels"] = list(cameras or [])
+        else:
+            args["p_cameras"] = list(cameras or [])
+        return self.cloud.call(self._open_rpc(), **args)
 
     def _complete(self, interval_id, status, recovered, seen, cursor):
-        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id, p_agent_key=self.agent_key,
-                        p_id=interval_id, p_status=status, p_recovered_count=recovered,
-                        p_checkpoint={"cursor": _iso(cursor) if cursor else None,
-                                      "seen_keys": sorted(seen)[:20000]})
+        args = dict(
+            p_agent_id=self.agent_id,
+            p_agent_key=self.agent_key,
+            p_id=interval_id,
+            p_status=status,
+            p_recovered_count=recovered,
+            p_checkpoint={"cursor": _iso(cursor) if cursor else None,
+                          "seen_keys": sorted(seen)[:20000]},
+        )
+        if self.recorder_id:
+            args["p_recorder_id"] = self.recorder_id
+        self.cloud.call(self._complete_rpc(), **args)
 
     def _recover_interval(self, iv) -> dict:
         seen = set((iv.get("checkpoint") or {}).get("seen_keys") or [])
         resume = _as_dt((iv.get("checkpoint") or {}).get("cursor"))
         start = resume or _as_dt(iv["started_at"])
         end = _as_dt(iv["ended_at"])
-        cams = list(iv.get("cameras") or []) or [None]     # None => driver decides / all
+        # Recorder-aware claims expose explicit archive channels. Never fall
+        # back to canonical camera UUIDs or guess channel 1 on this path.
+        # Missing channels mean the archive target is unknown, so complete the
+        # interval truthfully as unrecoverable instead of querying the wrong
+        # recorder channel. The legacy singleton path keeps its historical
+        # driver-decides/all fallback.
+        if self.recorder_id:
+            cams = list(iv.get("channels") or [])
+            if not cams:
+                self._complete(iv["id"], "unrecoverable", 0, seen, start)
+                return {
+                    "id": iv["id"],
+                    "status": "unrecoverable",
+                    "recovered": 0,
+                    "yielded": False,
+                    "reason": "missing_channels",
+                }
+        else:
+            cams = list(iv.get("cameras") or []) or [None]
         recovered, any_unsupported, any_supported = 0, False, False
 
         for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
@@ -172,8 +231,14 @@ class RecoveryRunner:
         """Claim up to `limit` pending recovery intervals and recover each. Returns per-interval outcomes."""
         if self.live_pending():
             return []                  # never start recovery while live work is pending
-        claimed = self.cloud.call("wl_agent_claim_recovery", p_agent_id=self.agent_id,
-                                  p_agent_key=self.agent_key, p_limit=limit) or []
+        args = dict(
+            p_agent_id=self.agent_id,
+            p_agent_key=self.agent_key,
+            p_limit=limit,
+        )
+        if self.recorder_id:
+            args["p_recorder_id"] = self.recorder_id
+        claimed = self.cloud.call(self._claim_rpc(), **args) or []
         return [self._recover_interval(iv) for iv in claimed]
 
 

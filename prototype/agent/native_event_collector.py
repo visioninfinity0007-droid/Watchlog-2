@@ -29,7 +29,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
     monitor so a camera drop is reflected without waiting for the next probe."""
     detector = core.vision.build(cfg, core.log)
     auth_failures = 0
-    last_gen = core.credential_store.credential_generation()
+    last_gen = core._credential_generation_for_cfg(cfg)
     while not stop.is_set():
         driver = None
         auth_error = False
@@ -55,6 +55,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                recorder_id = getattr(cfg, "recorder_cloud_id", None)
+                if recorder_id:
+                    ev = ev.with_recorder_id(recorder_id)
                 if holder is not None:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = core.now_utc()

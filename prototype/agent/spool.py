@@ -76,6 +76,52 @@ class Spool:
                 f"delete from spool where id in ({','.join('?' * len(ids))})",
                 ids)
 
+    def stamp_missing_recorder_id(self, recorder_id: str) -> int:
+        """Attach recorder identity to legacy queued events atomically.
+
+        Used exactly at multi-recorder cutover for the original/primary spool.
+        Every row is parsed before any write. If one row is malformed, nothing
+        is changed and the cutover must stop before secondary cloud recorders
+        are created.
+        """
+        rid = str(recorder_id or "").strip()
+        if not rid:
+            raise ValueError("recorder_id is required")
+
+        with self._lock:
+            rows = self.db.execute(
+                "select id,payload from spool order by id"
+            ).fetchall()
+            updates = []
+            for row_id, raw in rows:
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    raise ValueError("spool payload must be an object")
+                existing = payload.get("recorder_id")
+                if existing:
+                    if str(existing) != rid:
+                        raise ValueError("spool contains event for another recorder")
+                    continue
+                payload["recorder_id"] = rid
+                updates.append((json.dumps(payload), row_id))
+
+            if not updates:
+                return 0
+
+            try:
+                self.db.execute("begin immediate")
+                self.db.executemany(
+                    "update spool set payload=? where id=?", updates
+                )
+                self.db.execute("commit")
+            except Exception:
+                try:
+                    self.db.execute("rollback")
+                except Exception:
+                    pass
+                raise
+            return len(updates)
+
     def trim(self) -> int:
         """Bound disk usage without turning overflow into permanent data loss.
 
