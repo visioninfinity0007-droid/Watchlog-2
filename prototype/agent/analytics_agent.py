@@ -805,6 +805,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         ]
     except Exception as error:
         if recorder_registry.registry_path().exists():
+            if once:   # a one-shot run is not relaunched: report and stop
+                raise SystemExit(
+                    "FATAL: the recorder configuration on this PC cannot be trusted or "
+                    "read; monitoring stopped until WatchLog Setup repairs it."
+                ) from error
             _hold_for_registry_repair(error)
         configured_recorders = []
 

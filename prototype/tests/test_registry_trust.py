@@ -182,3 +182,13 @@ def test_malformed_registry_is_held_with_a_clear_status(monkeypatch):
         assert len(sleeps) == 2
         assert health[0]["recorder_registry"] == "needs_repair"
         assert any("recorder configuration" in line and "Setup" in line for line in logs)
+
+
+def test_one_shot_run_reports_an_unusable_registry_without_holding(monkeypatch):
+    with _Env() as env:
+        rr.registry_path().write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(analytics_agent.time, "sleep",
+                            lambda _s: (_ for _ in ()).throw(AssertionError("must not hold")))
+        with pytest.raises(SystemExit, match="cannot be trusted or read"):
+            analytics_agent.enhanced_cmd_run(_agent_cfg(env.root), {"agent_id": "a"},
+                                             _NoCloud(), once=True)
