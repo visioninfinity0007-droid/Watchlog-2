@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Iterator
@@ -84,7 +85,8 @@ EVENT_TYPE_MAP = {
 
 # Hikvision repeats an active alarm every second for as long as it lasts.
 # Collapsing a burst into one event is the difference between 5 rows and
-# 500 for a single person walking past a camera.
+# 500 for a single person walking past a camera. The window is timed on the
+# agent's monotonic receive clock, never on the recorder's dateTime.
 BURST_WINDOW_SECONDS = 30
 
 # A camera that will not produce a still must not stall the event loop.
@@ -105,9 +107,15 @@ class HikvisionDriver(NvrDriver):
         super().__init__(*a, **kw)
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
-        self._last_emitted: dict[tuple[str, str], datetime] = {}
+        self._last_emitted: dict[tuple[str, str], float] = {}
+        # (monotonic, wall) clock of the alert being parsed, stamped by stream_events
+        # when its bytes arrived; None outside the stream (parse time is used then).
+        self._received: tuple[float, datetime] | None = None
 
     # -- helpers --------------------------------------------------------
+
+    def _receive_clock(self) -> tuple[float, datetime]:
+        return self._received or (time.monotonic(), datetime.now(timezone.utc))
 
     def _send(self, method: str, url: str, **kw) -> requests.Response:
         """One ISAPI request on the Digest session.
@@ -471,6 +479,7 @@ class HikvisionDriver(NvrDriver):
                     break
                 if not chunk:
                     continue
+                self._received = (time.monotonic(), datetime.now(timezone.utc))
                 buf += chunk
                 # Documents arrive back to back; split on the closing tag.
                 while b"</EventNotificationAlert>" in buf:
@@ -522,12 +531,15 @@ class HikvisionDriver(NvrDriver):
                    or _text(root, "channelName") or "1")
         ts = _parse_ts(_text(root, "dateTime"))
 
-        # Collapse the once-per-second repeat of a continuing alarm.
+        # Collapse the once-per-second repeat of a continuing alarm on the agent's
+        # monotonic receive clock. Comparing recorder dateTimes dropped every later event
+        # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
+        received_mono, _received_at = self._receive_clock()
         key = (str(channel), etype)
         last = self._last_emitted.get(key)
-        if last and (ts - last).total_seconds() < BURST_WINDOW_SECONDS:
+        if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
-        self._last_emitted[key] = ts
+        self._last_emitted[key] = received_mono
 
         targets = []
         for node in root.iter():

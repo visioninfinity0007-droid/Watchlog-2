@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Iterator
 
@@ -84,9 +85,15 @@ class DahuaDriver(NvrDriver):
         super().__init__(*a, **kw)
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
-        self._last_emitted: dict[tuple[str, str], datetime] = {}
+        self._last_emitted: dict[tuple[str, str], float] = {}
+        # (monotonic, wall) clock of the block being parsed, stamped by stream_events
+        # when it arrived; None outside the stream (parse time is used then).
+        self._received: tuple[float, datetime] | None = None
 
     # -- helpers --------------------------------------------------------
+
+    def _receive_clock(self) -> tuple[float, datetime]:
+        return self._received or (time.monotonic(), datetime.now(timezone.utc))
 
     def _get(self, path: str, **kw) -> str:
         url = self.base_url + path
@@ -535,6 +542,7 @@ class DahuaDriver(NvrDriver):
                 line = raw_line.decode("utf-8", "replace").strip()
                 if not line.startswith("Code="):
                     continue          # boundary / Content-Length / heartbeat
+                self._received = (time.monotonic(), datetime.now(timezone.utc))
                 ev = self._parse_line(line)
                 if ev:
                     yield ev
@@ -569,12 +577,15 @@ class DahuaDriver(NvrDriver):
         except ValueError:
             channel = "1"
 
-        ts = datetime.now(timezone.utc)   # attach is live; no device clock field
+        # attach is live and carries no device clock field: the event time is when the
+        # block arrived. Repeats collapse on the monotonic receive clock, so a backward
+        # PC clock step cannot drop every later event of this type (MNVR-023).
+        received_mono, ts = self._receive_clock()
         key = (channel, etype)
         last = self._last_emitted.get(key)
-        if last and (ts - last).total_seconds() < BURST_WINDOW_SECONDS:
+        if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
-        self._last_emitted[key] = ts
+        self._last_emitted[key] = received_mono
 
         return Event(
             channel=channel,
