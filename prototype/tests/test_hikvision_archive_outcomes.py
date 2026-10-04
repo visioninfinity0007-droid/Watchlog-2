@@ -213,6 +213,85 @@ def test_no_matching_recording_is_reported_as_no_footage():
     assert "no recorded footage" in str(caught.value).lower()
 
 
+# "No recorded footage" is a claim about the recorder's archive. It is made only when the search
+# shows nothing for the window: no rows, or only rows whose readable span lies outside it. A row
+# the code could not judge leaves the outcome a retryable "not returned".
+
+def assert_no_absence_claim(error: Exception) -> None:
+    assert_failed_not_unsupported(error)
+    assert not isinstance(error, ha.ClipNoRecording)
+    assert "no recorded footage" not in str(error).lower()
+
+
+def test_readable_rows_outside_the_window_are_reported_as_no_footage():
+    old = URI.replace("080000Z", "070000Z").replace("080100Z", "070100Z")
+    s = Session(search=search_xml([("2026-09-25T07:00:00Z", "2026-09-25T07:01:00Z", old)]),
+                download=lambda method, body: Response(400, b"bad request"))
+    with pytest.raises(ha.ClipNoRecording):
+        ha.get_clip(driver(s), "1", T0, T1)
+
+
+def test_zone_less_row_times_are_not_assumed_utc_and_are_not_filtered():
+    # A recorder at UTC+5 answering in naive local time: 12:30-13:30 local covers 08:00Z.
+    local = ("rtsp://192.168.1.64/Streaming/tracks/101/"
+             "?starttime=20260925T123000&endtime=20260925T133000&name=ch01_1230&size=4096")
+    rows = search_xml([("2026-09-25T12:30:00", "2026-09-25T13:30:00", local)])
+
+    def download(method, body):
+        return Response(chunks=[CLIP]) if "name=ch01_1230" in body else Response(400, b"bad")
+    s = Session(search=rows, download=download)
+    assert ha.get_clip(driver(s), "1", T0, T1) == CLIP
+    first = s.downloads()[0][2]
+    assert "name=ch01_1230" in first and "starttime=20260925T080000Z" in first
+
+    s = Session(search=rows, download=lambda method, body: Response(400, b"bad request"))
+    with pytest.raises(DriverError) as caught:
+        ha.get_clip(driver(s), "1", T0, T1)
+    assert_no_absence_claim(caught.value)
+
+
+def test_unreadable_row_times_leave_the_outcome_unknown():
+    rows = search_xml([("25/09/2026 08:00", "25/09/2026 09:00", URI)])
+    s = Session(search=rows, download=lambda method, body: Response(400, b"bad request"))
+    with pytest.raises(DriverError) as caught:
+        ha.get_clip(driver(s), "1", T0, T1)
+    assert_no_absence_claim(caught.value)
+    assert any("name=ch01_0800" in row[2] for row in s.downloads()), \
+        "a row whose span cannot be read is not known to miss the window"
+
+
+def test_overlapping_row_without_a_playback_uri_leaves_the_outcome_unknown():
+    s = Session(search=search_xml([("2026-09-25T08:00:00Z", "2026-09-25T08:01:00Z", "")]),
+                download=lambda method, body: Response(chunks=[b""]))
+    with pytest.raises(DriverError) as caught:
+        ha.get_clip(driver(s), "1", T0, T1)
+    assert_no_absence_claim(caught.value)
+
+
+def test_row_without_times_leaves_the_outcome_unknown():
+    item = ("<searchMatchItem><trackID>101</trackID><mediaSegmentDescriptor>"
+            f"<playbackURI>{escape(URI)}</playbackURI></mediaSegmentDescriptor></searchMatchItem>")
+    rows = ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<CMSearchResult xmlns="http://www.isapi.org/ver20/XMLSchema">'
+            f"<responseStatusStrg>OK</responseStatusStrg><matchList>{item}</matchList>"
+            "</CMSearchResult>").encode()
+    s = Session(search=rows, download=lambda method, body: Response(400, b"bad request"))
+    with pytest.raises(DriverError) as caught:
+        ha.get_clip(driver(s), "1", T0, T1)
+    assert_no_absence_claim(caught.value)
+
+
+def test_more_rows_beyond_the_page_leave_the_outcome_unknown():
+    # The recorder returned only older segments but says more rows follow.
+    old = URI.replace("080000Z", "070000Z").replace("080100Z", "070100Z")
+    rows = search_xml([("2026-09-25T07:00:00Z", "2026-09-25T07:01:00Z", old)]).replace(
+        b">OK<", b">MORE<")
+    s = Session(search=rows, download=lambda method, body: Response(400, b"bad request"))
+    with pytest.raises(DriverError) as caught:
+        ha.get_clip(driver(s), "1", T0, T1)
+    assert_no_absence_claim(caught.value)
+
+
 def test_affirmative_rejection_everywhere_is_unsupported():
     def download(method, body):
         return Response(405 if method == "GET" else 501, b"")

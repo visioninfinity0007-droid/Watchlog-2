@@ -128,8 +128,14 @@ def _compact(value: datetime) -> str:
     return _utc(value).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _parse(value: str) -> datetime:
-    return _utc(datetime.fromisoformat(str(value).strip().replace("Z", "+00:00")))
+def _parse(value: str) -> datetime | None:
+    """A search row's time in UTC, or None when it is unreadable or names no zone. A zone-less
+    row time is recorder-local with an unknown offset, so it is never assumed to be UTC."""
+    try:
+        value = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return value.astimezone(timezone.utc) if value.tzinfo is not None else None
 
 
 def _track(channel: str, kind: str = "stream") -> int:
@@ -259,11 +265,13 @@ def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, en
     status = (root.findtext("responseStatusStrg") or root.findtext("responseStatus")
               or "").strip().upper()
     matches = []
+    incomplete = 0          # rows without a time span: skipped, but not proof of absence
     for item in root.findall(".//searchMatchItem"):
         playback = (item.findtext(".//playbackURI") or "").strip()
         st = (item.findtext(".//startTime") or "").strip()
         et = (item.findtext(".//endTime") or "").strip()
         if not (st and et):
+            incomplete += 1
             continue
         matches.append({
             "track_id": (item.findtext(".//trackID") or str(_track(channel))).strip(),
@@ -275,6 +283,7 @@ def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, en
     more = status == "MORE"
     next_offset = offset + len(matches) if more and matches else None
     return {"status": "supported", "matches": matches, "next_offset": next_offset,
+            "incomplete": incomplete,
             "response_status": status or ("OK" if matches else "NO MATCHES")}
 
 
@@ -461,11 +470,13 @@ def _sub_stream_uri(uri: str) -> str | None:
     return smaller if count else None
 
 
-def _overlaps(row: dict, start: datetime, end: datetime) -> bool:
-    try:
-        return _parse(row["start"]) < _utc(end) and _parse(row["end"]) > _utc(start)
-    except (KeyError, TypeError, ValueError):
-        return False        # an unreadable span cannot be shown to cover the request
+def _overlaps(row: dict, start: datetime, end: datetime) -> bool | None:
+    """Whether a search row's span overlaps the window; None when the span is unreadable or
+    zone-less and so cannot be judged either way."""
+    row_start, row_end = _parse(row.get("start")), _parse(row.get("end"))
+    if row_start is None or row_end is None:
+        return None
+    return row_start < _utc(end) and row_end > _utc(start)
 
 
 def _probe_clip(data: bytes) -> dict | None:
@@ -548,13 +559,15 @@ def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: dateti
 
     Search first and use the recorder-returned playbackURI, bounded to the requested window.
     That URI often carries firmware-specific name/size metadata required by ContentMgmt.
-    Rows that do not overlap the window are ignored. Only if no row yields footage do we try a
-    generic by-time URI. A clip is returned once the bundled FFmpeg, where available, confirms
-    it is video of about the window's length.
+    Rows whose readable span lies outside the window are ignored; a row whose span cannot be
+    judged is still tried. Only if no row yields footage do we try a generic by-time URI. A clip
+    is returned once the bundled FFmpeg, where available, confirms it is video of about the
+    window's length.
 
     Every failure raises a typed ClipError. Only an affirmative rejection is 'unsupported'; a
     spent time budget, an oversize export, a refused login, a broken transfer or an empty
-    answer stays a retryable failure.
+    answer stays a retryable failure. 'No recording' needs a complete search answer whose rows
+    all lie readably outside the window.
     """
     if end <= start:
         raise DriverError("invalid Hikvision incident footage time window")
@@ -576,14 +589,20 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
                           end: datetime, deadline: float) -> bytes:
     failures = []
     sources = []
-    searched = False
+    absent = False
     try:
         result = search_recordings(
             driver, channel, start, end, offset=0, limit=MAX_DOWNLOAD_CANDIDATES)
-        searched = True
+        # The search shows no recording only when the answer is complete (no rows without a
+        # span, no further page) and every row lies readably outside the window. A row that
+        # cannot be judged, or one without a playbackURI, leaves the absence unknown.
+        absent = not result.get("incomplete") and result.get("next_offset") is None
         for row in result.get("matches") or []:
+            if _overlaps(row, start, end) is False:
+                continue
+            absent = False
             uri = row.get("playback_uri")
-            if uri and len(sources) < MAX_DOWNLOAD_CANDIDATES and _overlaps(row, start, end):
+            if uri and len(sources) < MAX_DOWNLOAD_CANDIDATES:
                 sources.append(_window_uri(uri, start, end))
     except NvrAuthFailed as error:
         raise ClipAuthRejected(detail="search") from error
@@ -594,7 +613,6 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
         failures.append(ClipUnreachable(detail="search unreachable"))
     except DriverError:
         failures.append(ClipNotReturned(detail="search failed"))
-    matched = len(sources)
 
     # Compatibility fallback for firmware that supports download-by-time but
     # returns no usable search row. It shares the SAME total deadline.
@@ -619,7 +637,7 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
         except ClipError as error:
             failures.append(error)
 
-    raise _clip_outcome(failures, no_recording=searched and not matched)
+    raise _clip_outcome(failures, no_recording=absent)
 
 
 def get_recorded_segment(driver: HikvisionDriver, channel, start, end) -> dict:
