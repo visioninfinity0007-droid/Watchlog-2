@@ -9,7 +9,9 @@ the recorder's stamp with the time the alert arrived.
 Now a naive time is localised with the UTC offset the recorder itself states
 (/ISAPI/System/time) when that is unambiguous, otherwise the event takes the agent's
 receive time and says so (clock_source), keeping the recorder's raw text. A recorder
-stamp far from the receive time is kept but flagged (clock_skew_seconds).
+stamp far from the receive time is kept but flagged (clock_skew_seconds). The stated
+offset is read again after CLOCK_OFFSET_RETRY_SECONDS (a DST change moves it), and a bare
+POSIX zone with dstEnabled=true is not taken as the offset.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ AGENT = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(AGENT))
 
 from drivers.base import DriverError  # noqa: E402
+from drivers.hikvision import CLOCK_OFFSET_RETRY_SECONDS  # noqa: E402
 from drivers.native_recorder import NativeHikvisionDriver  # noqa: E402
 
 RECEIVED = datetime(2026, 10, 4, 16, 0, 5, tzinfo=timezone.utc)
@@ -86,6 +89,52 @@ def test_naive_time_is_localised_with_the_recorders_stated_offset():
                      received=RECEIVED + timedelta(seconds=40))
         assert ev2.device_ts == datetime(2026, 10, 4, 16, 0, 40, tzinfo=timezone.utc)
         assert d.time_reads == 1
+    finally:
+        d.close()
+
+
+def test_stated_offset_is_re_read_not_trusted_for_the_life_of_the_driver():
+    # A stream reopened on the same driver lives for weeks; the offset moves at a DST change.
+    d = Recorder(_time_doc("2026-10-04T21:00:03+05:00", "CST-5:00:00"))
+    try:
+        ev = _parse(d, _alert("2026-10-04T21:00:00"))
+        assert ev.device_ts == datetime(2026, 10, 4, 16, 0, 0, tzinfo=timezone.utc)
+        d.time_doc = _time_doc("2026-10-04T22:10:03+06:00", "CST-6:00:00")
+        later = 1000.0 + CLOCK_OFFSET_RETRY_SECONDS + 1
+        ev = _parse(d, _alert("2026-10-04T22:10:00", channel="2"), mono=later,
+                    received=RECEIVED + timedelta(seconds=CLOCK_OFFSET_RETRY_SECONDS + 1))
+        assert d.time_reads == 2
+        assert ev.device_ts == datetime(2026, 10, 4, 16, 10, 0, tzinfo=timezone.utc)
+        assert ev.payload["clock_source"] == "recorder_local"
+        assert "clock_skew_seconds" not in ev.payload
+        # A re-read that fails leaves the offset unknown, not the old value.
+        d.time_doc = None
+        ev = _parse(d, _alert("2026-10-04T22:20:00", channel="3"),
+                    mono=later + CLOCK_OFFSET_RETRY_SECONDS + 1, received=RECEIVED)
+        assert d.time_reads == 3
+        assert ev.payload["clock_source"] == "agent_receive"
+        assert ev.payload["device_time_raw"] == "2026-10-04T22:20:00"
+    finally:
+        d.close()
+
+
+def test_dst_enabled_zone_is_not_a_dst_free_offset_for_a_naive_time():
+    doc = ("<Time><timeMode>NTP</timeMode><localTime>{}</localTime>"
+           "<timeZone>CST-5:00:00</timeZone><dstEnabled>true</dstEnabled></Time>")
+    d = Recorder(doc.format("2026-10-04T21:00:03"))
+    try:
+        ev = _parse(d, _alert("2026-10-04T21:00:00"))
+        assert ev.device_ts == RECEIVED
+        assert ev.payload["clock_source"] == "agent_receive"
+        assert ev.payload["device_time_raw"] == "2026-10-04T21:00:00"
+    finally:
+        d.close()
+    # localTime with an explicit offset already includes any DST: it is still used.
+    d = Recorder(doc.format("2026-10-04T21:00:03+05:00"))
+    try:
+        ev = _parse(d, _alert("2026-10-04T21:00:00"))
+        assert ev.device_ts == datetime(2026, 10, 4, 16, 0, 0, tzinfo=timezone.utc)
+        assert ev.payload["clock_source"] == "recorder_local"
     finally:
         d.close()
 
