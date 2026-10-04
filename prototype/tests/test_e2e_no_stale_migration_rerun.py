@@ -48,6 +48,15 @@ class NoStaleMigrationRerunTests(unittest.TestCase):
                          "e2e scripts must not re-execute migration files; create legacy "
                          "state with data instead")
 
+    def test_upgrade_rehearsal_applies_through_the_runner(self):
+        text = REHEARSAL.read_text(encoding="utf-8")
+        self.assertIn("apply_migrations.py", text)
+        self.assertIn("WATCHLOG_MIGRATIONS_DIR", text)
+        self.assertIsNone(
+            re.search(r"execute\([^)]*(MIGRATIONS|migrations)", text),
+            "the rehearsal must apply migrations with apply_migrations.py, not execute them",
+        )
+
 
 if __name__ == "__main__":
     sys.exit(unittest.main())
