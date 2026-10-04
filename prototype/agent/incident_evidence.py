@@ -9,12 +9,16 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 import hashlib
+import os
 import re
+import subprocess
+import tempfile
 import threading
 from urllib.parse import urlparse
 
 import requests
 
+import recovery_ai
 import watchlog_agent as core
 from drivers import DriverError, NvrDriver
 
@@ -24,6 +28,7 @@ CHUNK_BYTES = 512 * 1024
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 STILL_POLL_SECONDS = 15
 STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
+REMUX_TIMEOUT_SECONDS = 60
 UNSUPPORTED_FOOTAGE = ("This recorder does not expose on-demand incident footage through the "
                        "validated WatchLog path.")
 # open_archive_driver keeps the ONVIF driver for these recorders only when the vendor-native
@@ -92,9 +97,67 @@ def _no_footage_outcome(driver, info) -> tuple[bool, str]:
     return True, UNSUPPORTED_FOOTAGE
 
 
+def _remux_mp4(data: bytes) -> bytes | None:
+    """Stream-copy a clip into MP4 with the bundled FFmpeg; None if that is not possible."""
+    exe = recovery_ai._ffmpeg_exe()
+    if not exe:
+        return None
+    src = out = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+            tmp.write(data)
+            src = tmp.name
+        out = src + ".mp4"
+        # Video is copied unchanged. Audio is copied too, or re-encoded to AAC when MP4
+        # cannot carry the recorder's audio codec.
+        for audio in (["-c:a", "copy"], ["-c:a", "aac"]):
+            done = subprocess.run(
+                [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", src,
+                 "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", *audio,
+                 "-movflags", "+faststart", "-f", "mp4", out],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=REMUX_TIMEOUT_SECONDS, check=False,
+                creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0),
+            )
+            if done.returncode == 0 and os.path.exists(out):
+                with open(out, "rb") as handle:
+                    return handle.read() or None
+        return None
+    except Exception:  # noqa: BLE001 — the caller reports a clip it cannot label
+        return None
+    finally:
+        for path in (src, out):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def _playable_clip(data: bytes, driver_name: str) -> tuple[bytes, str, str]:
+    """(bytes, content type, extension), labelled by the clip's container, not the driver.
+
+    The cloud accepts only MP4 and Dahua DAV (migration 0040). Any other container, such as
+    a Hikvision program-stream export, is stream-copied into MP4 without re-encoding video.
+    """
+    kind = recovery_ai.media_kind(data[:16])
+    if kind == "mp4":
+        return data, "video/mp4", "mp4"
+    if kind == "dav":
+        return data, "video/x-dav", "dav"
+    remuxed = _remux_mp4(data)
+    if remuxed and recovery_ai.media_kind(remuxed[:16]) == "mp4":
+        return remuxed, "video/mp4", "mp4"
+    if driver_name == "dahua-cgi":
+        # loadfile.cgi is Dahua's DAV export; an unrecognised header keeps that documented label.
+        return data, "video/x-dav", "dav"
+    raise DriverError("The recorder's footage could not be prepared as a playable video file.")
+
+
 def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> None:
     if not data:
         raise DriverError("recorder returned no incident footage")
+    data, content_type, extension = _playable_clip(data, driver_name)
     if len(data) > MAX_CLIP_BYTES:
         raise DriverError("incident footage exceeds the 32 MiB pilot limit")
     digest = hashlib.sha256(data).hexdigest()
@@ -108,10 +171,6 @@ def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> Non
             p_sequence_no=seq,
             p_data_b64=base64.b64encode(chunk).decode("ascii"),
         )
-    if driver_name == "dahua-cgi":
-        content_type, extension = "video/x-dav", "dav"
-    else:
-        content_type, extension = "application/octet-stream", "dav"
     cloud.call(
         "wl_agent_complete_clip",
         p_agent_id=state["agent_id"],
