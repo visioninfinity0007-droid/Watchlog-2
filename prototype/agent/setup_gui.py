@@ -1991,6 +1991,8 @@ ADMIN_REQUIRED_MESSAGE = (
     "Accept the Windows permission prompt, or right-click the WatchLog shortcut "
     "and choose Run as administrator."
 )
+# Marks the copy started through the permission prompt, so it never relaunches again.
+ELEVATED_RELAUNCH_ARG = "--elevated-relaunch"
 
 
 def _is_elevated() -> bool:
@@ -2004,12 +2006,15 @@ def _is_elevated() -> bool:
 
 
 def _relaunch_elevated() -> bool:
-    """Start this same command again through the Windows permission prompt."""
+    """Start this same command again through the Windows permission prompt, marked as
+    the relaunched copy."""
     try:
         import ctypes
         import subprocess
         argv = sys.argv[1:] if getattr(sys, "frozen", False) else [
             str(Path(sys.argv[0]).resolve()), *sys.argv[1:]]
+        if ELEVATED_RELAUNCH_ARG not in argv:
+            argv.append(ELEVATED_RELAUNCH_ARG)
         rc = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", sys.executable, subprocess.list2cmdline(argv), None, 1)
         return int(rc) > 32
@@ -2025,11 +2030,13 @@ def _show_admin_required() -> None:
         pass
 
 
-def _admin_required(*, interactive: bool) -> int:
-    """Interactive windows relaunch elevated. Installer and CI modes fail closed and
-    never detach: their caller waits on THIS process's exit code."""
+def _admin_required(*, interactive: bool, relaunched: bool = False) -> int:
+    """Interactive windows relaunch elevated, once: a relaunched copy that is still not
+    elevated (a standard user with UAC turned off gets no administrator token from
+    "runas") says so instead of relaunching forever. Installer and CI modes fail closed
+    and never detach: their caller waits on THIS process's exit code."""
     if interactive:
-        if _relaunch_elevated():
+        if not relaunched and _relaunch_elevated():
             return 0
         _show_admin_required()
     _emit_line("WatchLog: administrator permission is required.")
@@ -2059,6 +2066,8 @@ def main() -> int:
     parser.add_argument("--registry-rollback", metavar="LOCAL_ID", default="",
                         help="Repair/Upgrade: undo the registry staged by this repair")
     parser.add_argument("--result-json", default="")
+    parser.add_argument(ELEVATED_RELAUNCH_ARG, dest="elevated_relaunch", action="store_true",
+                        help=argparse.SUPPRESS)
     args, _unknown = parser.parse_known_args()
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
@@ -2071,7 +2080,7 @@ def main() -> int:
     if not _is_elevated():
         return _admin_required(interactive=not (
             args.migrate_only or args.registry_selftest or args.registry_migrate
-            or args.registry_rollback))
+            or args.registry_rollback), relaunched=args.elevated_relaunch)
 
     if args.registry_selftest:
         if args.existing_site:

@@ -11,6 +11,7 @@ fail closed instead, because their caller waits on this exact process's exit cod
 """
 from __future__ import annotations
 
+import ctypes
 import sys
 import types
 import unittest
@@ -73,6 +74,31 @@ class ElevationGate(unittest.TestCase):
         code, calls = self._run(["--manage-recorders"], elevated=False, relaunched=False)
         self.assertEqual(code, sg.ADMIN_REQUIRED_EXIT)
         self.assertEqual(calls["notice"], 1)
+
+    def test_relaunched_copy_still_not_elevated_fails_closed_without_relaunching(self):
+        # A standard user on a PC with UAC turned off: "runas" starts the copy without an
+        # administrator token and no prompt. Relaunching again would loop forever and never
+        # say why.
+        code, calls = self._run(["--manage-recorders", "--elevated-relaunch"], elevated=False)
+        self.assertEqual(code, sg.ADMIN_REQUIRED_EXIT)
+        self.assertEqual(calls["relaunch"], 0)
+        self.assertEqual(calls["notice"], 1)
+
+    def test_relaunch_marks_the_copy_it_starts(self):
+        started = []
+
+        def shell_execute(_hwnd, verb, exe, params, _cwd, _show):
+            started.append((verb, exe, params))
+            return 42
+
+        windll = types.SimpleNamespace(shell32=types.SimpleNamespace(ShellExecuteW=shell_execute))
+        with patch.object(sys, "argv", ["C:/WL/watchlog-setup-ui.exe", "--status",
+                                        "--config", "C:/x/watchlog.ini"]),              patch.object(sys, "frozen", True, create=True),              patch.object(sys, "executable", "C:/WL/watchlog-setup-ui.exe"),              patch.object(ctypes, "windll", windll, create=True):
+            self.assertTrue(sg._relaunch_elevated())
+        verb, exe, params = started[0]
+        self.assertEqual((verb, exe), ("runas", "C:/WL/watchlog-setup-ui.exe"))
+        self.assertEqual(params.split(), ["--status", "--config", "C:/x/watchlog.ini",
+                                          "--elevated-relaunch"])
 
     def test_installer_modes_fail_closed_and_never_detach(self):
         # NSIS ExecWaits --migrate-only; a detached elevated copy would let it read
