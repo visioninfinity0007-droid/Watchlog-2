@@ -99,6 +99,37 @@ class RecorderStampedEvents(unittest.TestCase):
                 da.get_clip(FakeDahua(rec), "1", EVENT - BEFORE, EVENT + AFTER, clock="recorder")
         self.assertEqual(rec.calls_to("loadfile.cgi"), [])
 
+    def recorder_clock_clip(self, zone, drift, files):
+        rec = FakeRecorder(PC_NOW, zone=zone, drift=drift, files=files)
+        with mock.patch.object(da, "datetime", pinned_datetime(PC_NOW)):
+            da.get_clip(FakeDahua(rec), "1", EVENT + drift - BEFORE, EVENT + drift + AFTER,
+                        clock="recorder")
+        return rec
+
+    def test_recorder_clock_is_never_given_a_zone_no_clock_uses(self):
+        # A UTC recorder 12 min fast is 3 min from "+00:15", which no civil clock uses. Taking it
+        # as the zone would put the recorder-stamped incident window 15 min off the event.
+        files = continuous_files(local("2026-10-04 07:00:00"), local("2026-10-04 09:00:00"))
+        with self.assertRaises(DriverError):
+            rec = self.recorder_clock_clip(timedelta(0), timedelta(minutes=12), files)
+            self.fail(f"downloaded {rec.loadfile_windows()} with an invented zone")
+
+    def test_recorder_clock_refusal_does_not_come_back_with_more_drift(self):
+        # UTC+5: once 6 min of drift is refused, every larger drift short of the next civil offset
+        # (+05:30, 30 min away) is refused too, instead of snapping to a "+05:15".
+        for minutes in [m for m in range(-24, 25) if abs(m) >= 6]:
+            with self.subTest(drift_minutes=minutes):
+                with self.assertRaises(DriverError):
+                    rec = self.recorder_clock_clip(timedelta(hours=5), timedelta(minutes=minutes), FILES)
+                    self.fail(f"downloaded {rec.loadfile_windows()} with an invented zone")
+
+    def test_recorder_clock_in_a_quarter_hour_zone_is_exact(self):
+        # UTC+05:45 is a civil zone: a recorder there 45 s fast still gets its own window.
+        files = continuous_files(local("2026-10-04 13:00:00"), local("2026-10-04 15:00:00"))
+        rec = self.recorder_clock_clip(timedelta(hours=5, minutes=45), timedelta(seconds=45), files)
+        self.assertEqual(rec.loadfile_windows()[-1],
+                         (local("2026-10-04 13:45:35"), local("2026-10-04 13:46:05")))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

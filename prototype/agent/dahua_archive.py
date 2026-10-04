@@ -40,8 +40,12 @@ DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed 
 CLIP_TOTAL_SECONDS = 90              # per get_clip, counted from the start of the call
 FINDER_COUNT = 100                   # files per findNextFile page
 MAX_FINDER_PAGES = 20                # hard cap on the pages one archive search may read
-ZONE_STEP_SECONDS = 15 * 60          # every civil UTC offset is a whole number of quarter hours
-MAX_ZONE_DRIFT_SECONDS = 5 * 60      # beyond this the recorder's zone cannot be told from drift
+MAX_ZONE_DRIFT_SECONDS = 5 * 60      # a clock further than this from every civil offset has no zone
+# Every UTC offset in civil use, standard and daylight time, in minutes.
+CIVIL_UTC_OFFSETS_MINUTES = (
+    -720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -150, -120, -60, 0,
+    60, 120, 180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630, 660,
+    720, 765, 780, 825, 840)
 AGENT_CLOCK, RECORDER_CLOCK = "agent", "recorder"
 
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
@@ -134,17 +138,20 @@ def _recorder_clock(driver: DahuaDriver) -> tuple[timedelta, timedelta | None]:
     ``offset`` is recorder wall time minus agent UTC, unrounded. It carries the recorder's drift,
     which is exactly what maps an instant the agent stamped onto the recorder's footage, and the
     recorder's footage times back onto the agent clock.
-    ``zone`` is that offset snapped to the nearest quarter hour: the recorder's configured UTC
-    offset without drift, for UTC times the recorder's own clock stamped. It is None when the drift
-    is too large to tell zone from drift. Both are CURRENT; footage recorded before a DST change is
-    not re-zoned.
+    ``zone`` is the civil UTC offset nearest that offset: the recorder's configured UTC offset
+    without drift, for UTC times the recorder's own clock stamped. It is None when the clock is
+    more than MAX_ZONE_DRIFT_SECONDS from every civil offset, so no zone is ever invented. A larger
+    drift can still come within that of the NEXT civil offset and be taken for a zone (from 10 min
+    of drift where civil offsets are 15 min apart, 25 min where they are 30 min apart), so ``zone``
+    is only as good as the recorder's clock. Both are CURRENT; footage recorded before a DST change
+    is not re-zoned.
     """
     device_now = _parse_device_clock(_text(driver, "/cgi-bin/global.cgi", params={"action": "getCurrentTime"}))
     offset = device_now - datetime.now(timezone.utc).replace(tzinfo=None)
     seconds = offset.total_seconds()
     if abs(seconds) > 15 * 3600:
         raise DriverError("recorder clock offset is implausible; refusing archive request")
-    zone = timedelta(seconds=round(seconds / ZONE_STEP_SECONDS) * ZONE_STEP_SECONDS)
+    zone = timedelta(minutes=min(CIVIL_UTC_OFFSETS_MINUTES, key=lambda m: abs(seconds - 60 * m)))
     if abs((offset - zone).total_seconds()) > MAX_ZONE_DRIFT_SECONDS:
         zone = None
     return offset, zone
