@@ -336,6 +336,60 @@ class LastLiveHandshake(RecoveryWorkerRpcContract):
         self.assertLess(abs((opened - lost_at).total_seconds()), 1)
 
 
+def _at(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class NoIntervalsOverLiveTime(RecoveryWorkerRpcContract):
+    """Time the worker itself saw the recorder live in is never reopened as a recovery interval,
+    with or without a heartbeat that keeps last_live.json (one recovery cycle is longer than the
+    outage threshold)."""
+
+    def _clocked(self, cloud, cycles, start, heartbeat=None):
+        clock = {"now": start}
+
+        def between():
+            if heartbeat:
+                heartbeat(clock["now"])
+            clock["now"] += timedelta(seconds=self.cfg.recovery_seconds)
+
+        with _Patch(core, now_utc=lambda: clock["now"]):
+            self._work(cloud, _Spool(), CHANNELS, cycles=cycles, between=between)
+        return clock["now"] - timedelta(seconds=self.cfg.recovery_seconds)   # the last cycle
+
+    def test_a_live_recorder_opens_only_the_restart_gap(self):
+        now = datetime.now(timezone.utc)
+        recovery.persist_last_live(self.cfg.last_live_path, now - timedelta(hours=6))
+        cloud = StrictCloud()
+        self._clocked(cloud, 6, now)
+        self.assertEqual(cloud.rejected, [])
+        self.assertEqual([(_at(iv["started_at"]), _at(iv["ended_at"])) for iv in cloud.opened],
+                         [(now - timedelta(hours=6), now)])
+
+    def test_after_a_restart_only_the_time_since_the_last_live_cycle_opens(self):
+        now = datetime.now(timezone.utc)
+        recovery.persist_last_live(self.cfg.last_live_path, now - timedelta(hours=6))
+        cloud = StrictCloud()
+        last_cycle = self._clocked(cloud, 3, now)
+        restarted = last_cycle + timedelta(minutes=10)
+        self._clocked(cloud, 3, restarted)
+        self.assertEqual([(_at(iv["started_at"]), _at(iv["ended_at"])) for iv in cloud.opened],
+                         [(now - timedelta(hours=6), now), (last_cycle, restarted)])
+
+    def test_a_gap_a_heartbeat_kept_in_last_live_still_opens(self):
+        now = datetime.now(timezone.utc)
+        cloud = StrictCloud()
+
+        def heartbeat(cycle_at):
+            # After the first cycle the heartbeat saw the recorder fresh once more, then not.
+            if cycle_at == now:
+                recovery.persist_last_live(self.cfg.last_live_path, now + timedelta(seconds=60))
+
+        self._clocked(cloud, 2, now, heartbeat)
+        self.assertEqual([(_at(iv["started_at"]), _at(iv["ended_at"])) for iv in cloud.opened],
+                         [(now + timedelta(seconds=60), now + timedelta(seconds=300))])
+
+
 class CompleteRecoveryContract(unittest.TestCase):
     def test_runner_completion_parameters_exist_in_the_rpc(self):
         sig = _latest_params("wl_complete_recovery")

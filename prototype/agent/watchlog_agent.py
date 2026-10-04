@@ -2203,13 +2203,18 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
 
     Intervals name cameras by cloud camera UUID. Until the channel->camera mapping exists nothing
     is opened or claimed: a detected gap is held, never sent with recorder channel numbers or with
-    an empty camera list."""
+    an empty camera list.
+
+    Time this worker saw the recorder live in is never reopened: one cycle is longer than the
+    outage threshold, so a gap between two of its checks is only known from a last_live a
+    heartbeat kept while the recorder was live."""
     if not cfg.recovery_enabled:
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
     camera_ids = {}                                     # {channel: camera UUID}; {} until synced
     pending_gaps = []                                   # detected gaps the cloud has not accepted yet
+    seen_live_at = None                                 # this worker's last check with the recorder live
     holder = holder if holder is not None else {}
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
@@ -2265,22 +2270,25 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                 if recorder_is_live():
                     last_live = rec.read_last_live(cfg.last_live_path)
                     now = now_utc()
+                    if seen_live_at is not None and (last_live is None or last_live <= seen_live_at):
+                        last_live = None                # nothing later than this worker's own check
                     outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
+                    seen_live_at = now
                     if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
                                           for g in pending_gaps):
                         pending_gaps = (pending_gaps + [outage])[-32:]
                     # While a gap is held only in memory, last_live must keep its start for a
                     # restart to find it again: the heartbeat may not move it on.
                     holder[LAST_LIVE_CHECKED] = not pending_gaps
-                    if pending_gaps and cams:
-                        while pending_gaps:
-                            gap = pending_gaps[0]
-                            cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
-                                       p_agent_key=state["agent_key"], p_started_at=iso(gap[0]),
-                                       p_ended_at=iso(gap[1]), p_cameras=cams)
-                            pending_gaps.pop(0)
-                            log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
-                                "opened resumable archive recovery")
+                    while pending_gaps and cams:
+                        gap = pending_gaps[0]
+                        cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
+                                   p_agent_key=state["agent_key"], p_started_at=iso(gap[0]),
+                                   p_ended_at=iso(gap[1]), p_cameras=cams)
+                        pending_gaps.pop(0)
+                        log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
+                            "opened resumable archive recovery")
+                    if not pending_gaps:
                         rec.persist_last_live(cfg.last_live_path, now)
                         holder[LAST_LIVE_CHECKED] = True
             except Exception as e:                       # noqa: BLE001
