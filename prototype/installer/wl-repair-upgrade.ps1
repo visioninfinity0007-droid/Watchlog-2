@@ -56,7 +56,6 @@ $RegisterService = Join-Path $CandidateDir "register-service.ps1"
 $PreflightResult = Join-Path $CandidateDir ("repair-preflight-" + [guid]::NewGuid().ToString("N") + ".json")
 $PreflightTask = "WatchLog Candidate Preflight " + [guid]::NewGuid().ToString("N")
 $RegistryPath = Join-Path $DataRoot "recorders.json"
-$RegistryResult = Join-Path $CandidateDir ("repair-registry-" + [guid]::NewGuid().ToString("N") + ".json")
 # Multi-recorder state reported by the candidate's registry checks.
 $script:RecorderBaseline = $null   # what must be live again for the commit gate
 $script:RecorderReport = @()       # per-recorder lines for repair-upgrade-result.ini
@@ -192,17 +191,27 @@ function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) {
   return $rc
 }
 
+function Stop-ProcessTree($Process) {
+  # The Setup UI is a one-file build: its real work runs in a child of the bootloader, so
+  # stopping the bootloader alone would leave that child probing recorders.
+  try {
+    Start-Process -FilePath (Join-Path $env:SystemRoot "System32\taskkill.exe") -ArgumentList @("/PID", [string]$Process.Id, "/T", "/F") -WindowStyle Hidden -Wait
+  } catch {}
+  try { if (-not $Process.HasExited) { $Process.Kill() } } catch {}
+}
+
 function Invoke-CandidateSetupUi([string[]]$Arguments, [string]$Label) {
   # The candidate Setup UI runs the registry checks with the candidate's own registry,
   # credential and driver code. It is a windowed exe (& would not wait), and it is
-  # bounded so an unreachable recorder cannot stall the repair.
-  Remove-Item -LiteralPath $RegistryResult -Force -ErrorAction SilentlyContinue
-  $argList = @($Arguments) + @("--config", ('"' + $ConfigPath + '"'), "--result-json", ('"' + $RegistryResult + '"'))
+  # bounded so an unreachable recorder cannot stall the repair. Every step gets its own
+  # result file: a late write from an abandoned step can never answer a later one.
+  $resultPath = Join-Path $CandidateDir ("repair-registry-" + [guid]::NewGuid().ToString("N") + ".json")
+  $argList = @($Arguments) + @("--config", ('"' + $ConfigPath + '"'), "--result-json", ('"' + $resultPath + '"'))
   try {
     $p = Start-Process -FilePath $CandidateSetupUi -ArgumentList $argList -PassThru -WindowStyle Hidden
     $null = $p.Handle
     if (-not $p.WaitForExit($RegistryStepTimeoutSec * 1000)) {
-      try { $p.Kill() } catch {}
+      Stop-ProcessTree $p
       Write-Repair "$Label timed out after $RegistryStepTimeoutSec s"
       return $null
     }
@@ -211,15 +220,17 @@ function Invoke-CandidateSetupUi([string[]]$Arguments, [string]$Label) {
     Write-Repair "$Label could not start: $($_.Exception.Message)"
     return $null
   }
-  if (-not (Test-Path -LiteralPath $RegistryResult)) {
+  if (-not (Test-Path -LiteralPath $resultPath)) {
     Write-Repair "$Label returned no structured result (exit=$rc)"
     return $null
   }
   try {
-    $obj = Get-Content -LiteralPath $RegistryResult -Raw | ConvertFrom-Json
+    $obj = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
   } catch {
     Write-Repair "$Label result parse failed: $($_.Exception.Message)"
     return $null
+  } finally {
+    Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
   }
   Write-Repair "$Label exit=$rc ok=$([bool]$obj.ok) error=$([string]$obj.error)"
   foreach ($r in @($obj.recorders | Where-Object { $null -ne $_ })) {
@@ -636,5 +647,5 @@ catch {
 }
 finally {
   try { Remove-Item -LiteralPath $PreflightResult -Force -ErrorAction SilentlyContinue } catch {}
-  try { Remove-Item -LiteralPath $RegistryResult -Force -ErrorAction SilentlyContinue } catch {}
+  try { Remove-Item -Path (Join-Path $CandidateDir "repair-registry-*.json") -Force -ErrorAction SilentlyContinue } catch {}
 }

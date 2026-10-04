@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -457,7 +458,7 @@ $DataRoot = $Work
 $LogPath = Join-Path $Work "repair-upgrade.log"
 $ResultPath = Join-Path $Work "repair-upgrade-result.ini"
 $ConfigPath = Join-Path $Work "watchlog.ini"
-$RegistryResult = Join-Path $Work "registry-result.json"
+$CandidateDir = $Work
 $RegistryStepTimeoutSec = 30
 $CandidateSetupUi = Join-Path $Work "fake-setup-ui.cmd"
 $script:RecorderReport = @()
@@ -496,6 +497,92 @@ class RepairRegistryStagingRollback(unittest.TestCase):
         self.assertIn("--registry-rollback aaaaaaaa-0000-4000-8000-000000000001", log[1])
         result = (work / "repair-upgrade-result.ini").read_text(encoding="ascii")
         self.assertIn("registry=staging removed", result)
+
+
+_SETUP_UI_STEP_HARNESS = r"""
+param([string]$Script, [string]$Work, [string]$Scenario)
+$ErrorActionPreference = "Stop"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+$DataRoot = $Work
+$LogPath = Join-Path $Work "repair-upgrade.log"
+$ConfigPath = Join-Path $Work "watchlog.ini"
+$CandidateDir = $Work
+$RegistryStepTimeoutSec = 2
+$CandidateSetupUi = Join-Path $Work "fake-setup-ui.cmd"
+if ($Scenario -eq "timeout") {
+  $r = Invoke-CandidateSetupUi @("--registry-selftest","--existing-site","--preflight-mode","passive") "slow step"
+  "RESULT=$([bool]$r)"
+} else {
+  $a = Invoke-CandidateSetupUi @("--registry-selftest") "first step"
+  $b = Invoke-CandidateSetupUi @("--registry-migrate") "second step"
+  "MODES=$($a.mode),$($b.mode)"
+}
+"""
+
+
+class CandidateSetupUiSteps(unittest.TestCase):
+    """Registry steps run the candidate watchlog-setup-ui.exe, a one-file build whose real
+    work runs in a child of its bootloader. A step that times out must leave nothing
+    running, and no step may read another step's result."""
+
+    def setUp(self):
+        if not POWERSHELL:
+            self.skipTest("Windows PowerShell is required to execute the repair steps")
+        self.work = Path(tempfile.mkdtemp(prefix="wl-repair-steps-"))
+        self.addCleanup(shutil.rmtree, self.work, True)
+
+    def run_steps(self, scenario, fake):
+        (self.work / "fake-setup-ui.cmd").write_text(fake, encoding="ascii")
+        harness = self.work / "harness.ps1"
+        harness.write_text(_SETUP_UI_STEP_HARNESS, encoding="utf-8")
+        proc = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(harness), "-Script", str(REPAIR_PS1), "-Work", str(self.work),
+             "-Scenario", scenario],
+            capture_output=True, text=True, timeout=120)
+        return proc.stdout + proc.stderr
+
+    def test_each_step_reads_its_own_result_file(self):
+        calls = self.work / "calls.log"
+        # Stand-in: answers in the result file named after --result-json, with its mode.
+        out = self.run_steps("two-steps", (
+            "@echo off\r\n"
+            "setlocal\r\n"
+            ":next\r\n"
+            'if "%~1"=="" goto done\r\n'
+            'if "%~1"=="--result-json" set "RES=%~2"\r\n'
+            'if "%~1"=="--registry-selftest" set "MODE=isolated"\r\n'
+            'if "%~1"=="--registry-migrate" set "MODE=migrate"\r\n'
+            "shift\r\n"
+            "goto next\r\n"
+            ":done\r\n"
+            f'echo %RES%>> "{calls}"\r\n'
+            'echo {"ok":true,"mode":"%MODE%"} > "%RES%"\r\n'))
+        self.assertIn("MODES=isolated,migrate", out)
+        paths = [row.strip() for row in calls.read_text(encoding="ascii").splitlines()
+                 if row.strip()]
+        self.assertEqual(len(paths), 2, out)
+        self.assertNotEqual(paths[0], paths[1])
+        for path in paths:
+            self.assertFalse(Path(path).exists(), f"{path} was left behind")
+
+    def test_a_timed_out_step_stops_the_whole_process_tree(self):
+        marker = self.work / "orphan-wrote.txt"
+        # The batch file waits on a child process, like the one-file bootloader does.
+        out = self.run_steps("timeout", (
+            "@echo off\r\n"
+            'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5; '
+            f"Set-Content -LiteralPath '{marker}' -Value orphan\"\r\n"))
+        self.assertIn("RESULT=False", out)
+        self.assertIn("slow step timed out",
+                      (self.work / "repair-upgrade.log").read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 9
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.5)
+        self.assertFalse(marker.exists(), "the timed-out step's worker kept running")
 
 
 class RepairRegistryOrchestration(unittest.TestCase):
