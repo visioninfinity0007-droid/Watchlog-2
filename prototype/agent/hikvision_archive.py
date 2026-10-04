@@ -30,6 +30,23 @@ DOWNLOAD_TIMEOUT = (5, 30)
 CLIP_TOTAL_SECONDS = 90
 MAX_DOWNLOAD_CANDIDATES = 2
 ARCHIVE_PROOF_WINDOW = 1800
+# HTTP answers that say the endpoint or method itself is absent (an affirmative rejection).
+NOT_SUPPORTED_HTTP = (404, 405, 501)
+
+
+class ArchiveRejected(DriverError):
+    """The recorder answered an archive request with a definitive refusal.
+
+    ``affirmative`` marks an answer that the operation is not supported (HTTP 404/405/501 or
+    an ISAPI notSupport status). Any other refusal says nothing about capability.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None,
+                 affirmative: bool = False, reason: str = "rejected") -> None:
+        super().__init__(message)
+        self.status = status
+        self.affirmative = affirmative
+        self.reason = reason
 
 
 def _utc(value: datetime) -> datetime:
@@ -53,6 +70,19 @@ def _track(channel: str, kind: str = "stream") -> int:
         raise DriverError("invalid Hikvision channel") from exc
     suffix = {"stream": 1, "sub_stream": 2, "picture": 3}.get(kind, 1)
     return n * 100 + suffix
+
+
+def _error_head(response) -> str:
+    """The start of an error answer, for classification and the local log."""
+    try:
+        chunk = next(iter(response.iter_content(chunk_size=2048)), b"")
+    except Exception:  # noqa: BLE001 — an unreadable error body classifies as a plain refusal
+        return ""
+    return (chunk or b"")[:2048].decode("utf-8", "replace")
+
+
+def _not_supported(text: str) -> bool:
+    return "notsupport" in (text or "").lower()
 
 
 def _post(driver: HikvisionDriver, path: str, body: str, *, stream=False, timeout=None):
@@ -84,18 +114,20 @@ def _post(driver: HikvisionDriver, path: str, body: str, *, stream=False, timeou
                     )
                 except requests.RequestException as error:
                     raise NvrUnreachable(f"{url}: {explain(error)}") from error
-        if response.status_code in (401, 403):
-            response.close()
-            raise NvrAuthFailed(
-                f"{url}: HTTP {response.status_code} — recorder rejected the username or password"
-            )
         if response.status_code >= 400:
-            try:
-                detail = response.text[:180]
-            except Exception:
-                detail = ""
+            status = response.status_code
+            detail = _error_head(response)
             response.close()
-            raise DriverError(f"{url}: HTTP {response.status_code} {detail}".strip())
+            # ISAPI answers an unsupported operation with 403 + notSupport; that is not a login fault.
+            if status in (401, 403) and not _not_supported(detail):
+                raise NvrAuthFailed(
+                    f"{url}: HTTP {status} — recorder rejected the username or password"
+                )
+            message = f"{url}: HTTP {status} {detail[:180]}".strip()
+            affirmative = status in NOT_SUPPORTED_HTTP or _not_supported(detail)
+            if not affirmative and (status >= 500 or status in (408, 429)):
+                raise DriverError(message)      # busy or failing right now: retryable
+            raise ArchiveRejected(message, status=status, affirmative=affirmative)
         driver.last_activity_monotonic = __import__("time").monotonic()
         return response
 
@@ -137,9 +169,17 @@ def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, en
     try:
         root = _strip(ET.fromstring(response.content))
     except ET.ParseError as error:
-        raise DriverError(f"Hikvision archive search returned invalid XML: {error}") from error
+        raise ArchiveRejected(f"Hikvision archive search returned invalid XML: {error}",
+                              reason="invalid_response") from error
     finally:
         response.close()
+
+    if root.tag == "ResponseStatus":
+        # Some firmware answers HTTP 200 with an ISAPI error status instead of results.
+        raise ArchiveRejected(
+            "Hikvision archive search refused: "
+            + (root.findtext("statusString") or root.findtext("subStatusCode") or "").strip(),
+            affirmative=_not_supported(root.findtext("subStatusCode") or ""))
 
     status = (root.findtext("responseStatusStrg") or root.findtext("responseStatus")
               or "").strip().upper()
@@ -175,11 +215,19 @@ def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
     """Recorded segments overlapping [start, end), for recovery's footage backfill.
 
     The rows are recording SEGMENTS (footage windows), not recorder events, so the capability
-    reports events as unsupported.
+    reports events as unsupported. A definitive refusal becomes a status ('unsupported' only
+    for an affirmative rejection); a transient failure (unreachable, recorder busy) raises so
+    the caller keeps the interval retryable.
     """
     offset = int(cursor or 0)
-    page = search_recordings(driver, str(channel), start, end, offset=offset,
-                             limit=min(SEARCH_LIMIT, max(1, int(limit))))
+    try:
+        page = search_recordings(driver, str(channel), start, end, offset=offset,
+                                 limit=min(SEARCH_LIMIT, max(1, int(limit))))
+    except NvrAuthFailed:
+        return {"status": "unknown", "events": [], "next_cursor": None, "reason": "auth"}
+    except ArchiveRejected as error:
+        return {"status": "unsupported" if error.affirmative else "unknown", "events": [],
+                "next_cursor": None, "reason": error.reason}
     events = []
     for row in page["matches"]:
         events.append({
@@ -352,14 +400,17 @@ def prove_recorder_archive(driver: HikvisionDriver, channel, *, now=None,
              "sample": [], "detail": ""}
     try:
         result = enumerate_historical_events(driver, channel, start, now, None, limit)
-    except NvrAuthFailed:
-        proof["detail"] = "The recorder archive rejected the configured login."
-        return proof
     except Exception:
         proof["detail"] = "The recorder did not answer the Hikvision archive search."
         return proof
     if result.get("status") != "supported":
-        proof["detail"] = "The recorder archive search is not supported on this firmware."
+        if result.get("reason") == "auth":
+            proof["detail"] = "The recorder archive rejected the configured login."
+        elif result.get("status") == "unsupported":
+            proof["status"] = "unsupported"
+            proof["detail"] = "The recorder archive search is not supported on this firmware."
+        else:
+            proof["detail"] = "The recorder answered the Hikvision archive search without a usable result."
         return proof
     rows = result.get("events") or []
     proof["segments_found"] = len(rows)
@@ -388,6 +439,6 @@ def install() -> None:
 
 __all__ = [
     "search_recordings", "enumerate_historical_events", "get_clip",
-    "historical_capability", "prove_recorder_archive", "install",
+    "historical_capability", "prove_recorder_archive", "install", "ArchiveRejected",
     "MAX_CLIP_BYTES", "SEARCH_LIMIT", "CLIP_TOTAL_SECONDS", "MAX_DOWNLOAD_CANDIDATES",
 ]
