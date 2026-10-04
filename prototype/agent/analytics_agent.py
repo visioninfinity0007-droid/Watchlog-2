@@ -714,7 +714,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     detector = original_build(cfg, core.log)
     core.vision.build = lambda _cfg, _log: detector
 
-    spool = Spool(cfg.spool_path)
+    spool = Spool(cfg.spool_path, cfg.spool_max_rows)   # per-deployment buffer cap, as core.cmd_run
     core.log(f"spool: {cfg.spool_path} ({spool.count()} queued)")
 
     # Shared single-authority signal: the analytics worker owns the lease and publishes its
