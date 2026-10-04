@@ -27,6 +27,7 @@ import analytics_agent                 # noqa: E402
 import incident_evidence               # noqa: E402
 import release_agent                   # noqa: E402  (module import only; main() is gated)
 import native_event_collector          # noqa: E402
+import remote_update                   # noqa: E402
 
 
 def _binds_main_call(fn):
@@ -54,17 +55,26 @@ def main() -> int:
         problems.append("packaged run dispatch wrap_cmd_run(enhanced_cmd_run) rejects "
                         f"main()'s call -> agent crash-loop on start: {err}")
 
-    # 3. enhanced_cmd_run itself must accept channels (the wrapper forwards it).
+    # 3. The actual release composition adds remote-update outside incident evidence.
+    #    Gate the exact nested shape used by release_agent.main(), not only each wrapper alone.
+    release_wrapped = remote_update.wrap_cmd_run(
+        incident_evidence.wrap_cmd_run(analytics_agent.enhanced_cmd_run))
+    ok, err = _binds_main_call(release_wrapped)
+    if not ok:
+        problems.append("full packaged release dispatch (remote-update + incident-evidence + "
+                        f"enhanced runtime) rejects main()'s call: {err}")
+
+    # 4. enhanced_cmd_run itself must accept channels (the wrappers forward it).
     ok, err = _binds_main_call(analytics_agent.enhanced_cmd_run)
     if not ok:
         problems.append(f"analytics_agent.enhanced_cmd_run rejects channels: {err}")
 
-    # 4. The --setup validation shim also sits behind the same call.
+    # 5. The --setup validation shim also sits behind the same call.
     ok, err = _binds_main_call(release_agent._setup_validation_complete)
     if not ok:
         problems.append(f"release_agent._setup_validation_complete rejects channels: {err}")
 
-    # 5. enhanced_cmd_run passes a `holder` to the packaged collector for native-fault
+    # 6. enhanced_cmd_run passes a `holder` to the packaged collector for native-fault
     #    health; the packaged collector must accept it: collector(cfg, spool, stop, holder).
     try:
         inspect.signature(native_event_collector.collector).bind(object(), object(), object(), None)
@@ -73,8 +83,9 @@ def main() -> int:
 
     if problems:
         raise SystemExit("agent run-dispatch contract FAILED:\n- " + "\n- ".join(problems))
-    print("agent run-dispatch contract: PASS (packaged dispatch binds main()'s call; "
-          "no `channels` TypeError; collector accepts the health holder)")
+    print("agent run-dispatch contract: PASS (full packaged remote-update + incident + "
+          "analytics dispatch binds main()'s call; no `channels` TypeError; collector "
+          "accepts the health holder)")
     return 0
 
 
