@@ -7,8 +7,10 @@ explicitly and installs :func:`get_clip` on ``DahuaDriver``.
 Safety / truth rules:
 * read-only CGI calls only;
 * WatchLog channel numbers are converted to Dahua's native zero-based indexes;
-* the recorder's own clock is read first so UTC cloud timestamps are converted
-  to recorder-local wall time rather than silently requesting the wrong footage;
+* the recorder's own clock is read once per call. Times the Agent stamped (UTC
+  cloud windows, Dahua CGI event receive times) move onto recorder wall time by
+  the measured offset, drift included; times the recorder's own clock stamped
+  (archive segment times, ONVIF UtcTime) move by the recorder's zone only;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
 * downloads are bounded to the same 32 MiB pilot limit as incident_evidence;
@@ -29,6 +31,9 @@ from drivers.dahua import DahuaDriver
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 DOWNLOAD_TIMEOUT = 90
 FINDER_COUNT = 100
+ZONE_STEP_SECONDS = 15 * 60          # every civil UTC offset is a whole number of quarter hours
+MAX_ZONE_DRIFT_SECONDS = 5 * 60      # beyond this the recorder's zone cannot be told from drift
+AGENT_CLOCK, RECORDER_CLOCK = "agent", "recorder"
 
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
 _TIME_FORMATS = (
@@ -107,31 +112,69 @@ def _parse_device_clock(text: str) -> datetime:
     raise DriverError("recorder current time was not parseable; refusing ambiguous archive request")
 
 
-def _localize_window(driver: DahuaDriver, start: datetime, end: datetime) -> tuple[datetime, datetime]:
+def _recorder_clock(driver: DahuaDriver) -> tuple[timedelta, timedelta | None]:
+    """Read the recorder clock once and return ``(offset, zone)`` against the agent's UTC clock.
+
+    ``offset`` is recorder wall time minus agent UTC, unrounded. It carries the recorder's drift,
+    which is exactly what maps an instant the agent stamped onto the recorder's footage.
+    ``zone`` is that offset snapped to the nearest quarter hour: the recorder's configured UTC
+    offset without drift, for times the recorder's own clock stamped. It is None when the drift
+    is too large to tell zone from drift. It is the CURRENT zone; footage recorded before a DST
+    change is not re-zoned.
+    """
+    device_now = _parse_device_clock(_text(driver, "/cgi-bin/global.cgi", params={"action": "getCurrentTime"}))
+    offset = device_now - datetime.now(timezone.utc).replace(tzinfo=None)
+    seconds = offset.total_seconds()
+    if abs(seconds) > 15 * 3600:
+        raise DriverError("recorder clock offset is implausible; refusing archive request")
+    zone = timedelta(seconds=round(seconds / ZONE_STEP_SECONDS) * ZONE_STEP_SECONDS)
+    if abs((offset - zone).total_seconds()) > MAX_ZONE_DRIFT_SECONDS:
+        zone = None
+    return offset, zone
+
+
+def _clock_shift(clock: str, offset: timedelta, zone: timedelta | None) -> timedelta:
+    """Distance from UTC times stamped by ``clock`` to recorder wall time."""
+    if clock == AGENT_CLOCK:
+        return offset
+    if clock == RECORDER_CLOCK:
+        if zone is None:
+            raise DriverError("recorder clock is too far off to tell its time zone; refusing archive request")
+        return zone
+    raise DriverError(f"unknown archive clock source: {clock}")
+
+
+def _localize_window(driver: DahuaDriver, start: datetime, end: datetime, *,
+                     clock: str = AGENT_CLOCK, recorder_clock=None) -> tuple[datetime, datetime]:
     if start.tzinfo is None or end.tzinfo is None:
         raise DriverError("archive request timestamps must be timezone-aware")
     if end <= start:
         raise DriverError("archive request end must be after start")
 
-    device_now = _parse_device_clock(_text(driver, "/cgi-bin/global.cgi", params={"action": "getCurrentTime"}))
-    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
-    offset = device_now - utc_now
-
-    # Recorder clocks may differ by a few seconds. Nearest minute preserves the
-    # timezone offset without baking transient clock skew into historical lookup.
-    offset_seconds = round(offset.total_seconds() / 60.0) * 60
-    if abs(offset_seconds) > 15 * 3600:
-        raise DriverError("recorder clock offset is implausible; refusing archive request")
-
-    local_start = start.astimezone(timezone.utc).replace(tzinfo=None)
-    local_end = end.astimezone(timezone.utc).replace(tzinfo=None)
-    from datetime import timedelta
-    delta = timedelta(seconds=offset_seconds)
-    return local_start + delta, local_end + delta
+    # The offset is used unrounded. Rounding it to the minute dropped up to 30 s of real drift
+    # for agent-stamped events and doubled it for recorder-stamped ones, either of which can push
+    # a 30 s incident window off the event.
+    shift = _clock_shift(clock, *(recorder_clock or _recorder_clock(driver)))
+    local_start = start.astimezone(timezone.utc).replace(tzinfo=None) + shift
+    local_end = end.astimezone(timezone.utc).replace(tzinfo=None) + shift
+    # The recorder takes whole seconds: widen outward so the request is never narrower.
+    if local_end.microsecond:
+        local_end = local_end.replace(microsecond=0) + timedelta(seconds=1)
+    return local_start.replace(microsecond=0), local_end
 
 
 def _fmt(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _native_channel(channel) -> int:
+    try:
+        native_channel = int(str(channel)) - 1
+    except ValueError as error:
+        raise DriverError(f"invalid camera channel: {channel}") from error
+    if native_channel < 0:
+        raise DriverError(f"invalid camera channel: {channel}")
+    return native_channel
 
 
 def _finder_id(text: str) -> str:
@@ -154,22 +197,9 @@ def _parse_items(text: str) -> list[dict]:
     return [rows[idx] for idx in sorted(rows)]
 
 
-def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: datetime,
-                    *, max_items: int = FINDER_COUNT) -> list[dict]:
-    """Search recorder archive for DAV recordings overlapping ``start..end``.
-
-    Public WatchLog channels are 1-based; Dahua CGI channel indexes are 0-based.
-    Returned metadata is recorder-native and used only to prove the requested
-    channel/time has media before download.
-    """
-    try:
-        native_channel = int(str(channel)) - 1
-    except ValueError as error:
-        raise DriverError(f"invalid camera channel: {channel}") from error
-    if native_channel < 0:
-        raise DriverError(f"invalid camera channel: {channel}")
-
-    local_start, local_end = _localize_window(driver, start, end)
+def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
+                local_end: datetime, *, max_items: int) -> list[dict]:
+    """One mediaFileFind session over an already recorder-local window."""
     finder = _finder_id(_text(
         driver,
         "/cgi-bin/mediaFileFind.cgi",
@@ -210,6 +240,19 @@ def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: dat
                 pass
 
 
+def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: datetime,
+                    *, max_items: int = FINDER_COUNT) -> list[dict]:
+    """Search recorder archive for DAV recordings overlapping ``start..end``.
+
+    Public WatchLog channels are 1-based; Dahua CGI channel indexes are 0-based.
+    Returned metadata is recorder-native and used only to prove the requested
+    channel/time has media before download.
+    """
+    native_channel = _native_channel(channel)
+    local_start, local_end = _localize_window(driver, start, end)
+    return _find_local(driver, native_channel, local_start, local_end, max_items=max_items)
+
+
 def has_recording(driver: DahuaDriver, channel: str, start: datetime, end: datetime) -> bool:
     return bool(find_recordings(driver, channel, start, end, max_items=1))
 
@@ -236,19 +279,21 @@ def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES) -> bytes:
     return data
 
 
-def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime) -> bytes | None:
-    """Retrieve a bounded recorder-native DAV clip for one requested window."""
-    try:
-        native_channel = int(str(channel)) - 1
-    except ValueError as error:
-        raise DriverError(f"invalid camera channel: {channel}") from error
-    if native_channel < 0:
-        raise DriverError(f"invalid camera channel: {channel}")
+def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, *,
+             clock: str = AGENT_CLOCK) -> bytes | None:
+    """Retrieve a bounded recorder-native DAV clip for one requested window.
 
-    local_start, local_end = _localize_window(driver, start, end)
+    ``clock`` names the clock that stamped ``start``/``end``: "agent" (the default) for times the
+    Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time;
+    "recorder" for times the recorder's own clock stamped, i.e. archive segment times from
+    :func:`enumerate_historical_events` or ONVIF UtcTime.
+    """
+    native_channel = _native_channel(channel)
+    # One clock reading serves both the search and the download, so both use the same window.
+    local_start, local_end = _localize_window(driver, start, end, clock=clock)
     # Search first. This both proves the archive has media in the requested
     # channel/window and prevents a download call for an empty period.
-    if not find_recordings(driver, channel, start, end, max_items=1):
+    if not _find_local(driver, native_channel, local_start, local_end, max_items=1):
         return None
 
     response = _request(
@@ -389,4 +434,5 @@ def install() -> None:
 
 
 __all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
-           "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install"]
+           "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install",
+           "AGENT_CLOCK", "RECORDER_CLOCK"]
