@@ -156,6 +156,28 @@ class UpgradeAndUninstallLifecycleTests(unittest.TestCase):
         self.assertIn("wl-upgrade.ps1", un)
         self.assertIn("wlbak", un)
 
+    def test_uninstall_removes_multi_recorder_state_with_the_identity(self):
+        """recorders.json names per-recorder credentials that the Secrets removal deletes.
+        Leaving it made every later reinstall fail at 'Encrypting recorder credentials'
+        until someone deleted the file by hand. Secondary recorders' spools and health
+        ledgers are identity-bound queued data, exactly like the singleton spool."""
+        un = NSI[NSI.find('Section "Uninstall"'):]
+        for target in ('Delete "${DATAROOT}\\recorders.json"',
+                       'Delete "${DATAROOT}\\recorders.json.tmp"',
+                       'RMDir /r "${DATAROOT}\\Secrets\\recorders"',
+                       'RMDir /r "${DATAROOT}\\recorders"'):
+            self.assertIn(target, un, f"uninstall must run: {target}")
+
+    def test_the_registry_is_removed_before_the_credentials_it_points_at(self):
+        """An interrupted uninstall must never leave a registry whose credentials are gone:
+        that is exactly the state every reinstall then fails on."""
+        un = NSI[NSI.find('Section "Uninstall"'):]
+        registry = un.find('Delete "${DATAROOT}\\recorders.json"')
+        secrets = un.find('RMDir /r "${DATAROOT}\\Secrets"')
+        self.assertNotEqual(-1, registry)
+        self.assertNotEqual(-1, secrets)
+        self.assertLess(registry, secrets)
+
 
 class WizardHonestyTests(unittest.TestCase):
     def test_the_ready_screen_actually_calls_the_status_lines(self):

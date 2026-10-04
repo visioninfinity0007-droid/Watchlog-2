@@ -351,6 +351,15 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
 
+  ; Multi-recorder state follows the same rule as the legacy credential. recorders.json
+  ; binds local recorder ids to this site's cloud recorder identities and names the
+  ; per-recorder credentials under Secrets\recorders. Remove it BEFORE those credentials:
+  ; a registry left without them made every later reinstall fail until someone deleted
+  ; it by hand.
+  Delete "${DATAROOT}\recorders.json"
+  Delete "${DATAROOT}\recorders.json.tmp"
+  RMDir /r "${DATAROOT}\Secrets\recorders"
+
   ; Remove the encrypted credential + agent key (the whole Secrets directory)
   ; and any legacy plaintext/blob remnants. Non-secret state and logs remain in
   ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
@@ -370,4 +379,6 @@ Section "Uninstall"
   Delete "${DATAROOT}\last_live.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
+  ; Secondary recorders keep their own spool, health ledger and last-live marker here.
+  RMDir /r "${DATAROOT}\recorders"
 SectionEnd

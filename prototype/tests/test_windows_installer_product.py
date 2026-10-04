@@ -79,6 +79,14 @@ def main():
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
         "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,
         "uninstall removes the encrypted Secrets store": "RMDir /r" in nsis and "Secrets" in nsis,
+        "uninstall removes the recorder registry and per-recorder state with the identity":
+            all(target in nsis.split('Section "Uninstall"')[-1] for target in (
+                'Delete "${DATAROOT}\\recorders.json"',
+                'Delete "${DATAROOT}\\recorders.json.tmp"',
+                'RMDir /r "${DATAROOT}\\Secrets\\recorders"',
+                'RMDir /r "${DATAROOT}\\recorders"'))
+            and nsis.index('Delete "${DATAROOT}\\recorders.json"')
+            < nsis.index('RMDir /r "${DATAROOT}\\Secrets"'),
         "setup sidebar uses customer language": "SITE CONNECTION SETUP" in gui and "SITE AGENT SETUP" not in gui,
         "setup does not expose DPAPI terminology": "Protected with Windows DPAPI" not in gui,
         "setup does not expose engineering validation labels": "field-validated driver" not in gui and "model still needs field acceptance" not in gui,
