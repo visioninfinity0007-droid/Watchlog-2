@@ -40,6 +40,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Iterator
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
@@ -204,8 +205,9 @@ class OnvifDriver(NvrDriver):
               to: str | None = None, timeout: int | None = None) -> ET.Element:
         headers_xml = _security_header(self.username, self.password)
         if to:
-            headers_xml = (f'<wsa:To s:mustUnderstand="1">{to}</wsa:To>'
-                           f'<wsa:Action s:mustUnderstand="1">{action}</wsa:Action>'
+            # A pull-point address may carry a query ("&"), so escape it.
+            headers_xml = (f'<wsa:To s:mustUnderstand="1">{escape(to)}</wsa:To>'
+                           f'<wsa:Action s:mustUnderstand="1">{escape(action or "")}</wsa:Action>'
                            + headers_xml)
         envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="{NS['s']}" xmlns:wsa="{NS['wsa']}"

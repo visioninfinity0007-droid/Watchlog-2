@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import sys
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -124,6 +125,8 @@ class FakeRecorder:
         self.pull_seconds = 0.0       # fake monotonic time each PullMessages takes
         self.subscriptions = 0
         self.sessions_closed = 0
+        # As it appears in the response XML (so "&" must be written "&amp;").
+        self.subscription_path = "/onvif/subscription/{n}"
 
     # -- wiring ---------------------------------------------------------
 
@@ -145,6 +148,12 @@ class FakeRecorder:
         m = re.search(r"<s:Body>\s*<(?:\w+:)?(\w+)", body)
         op = m.group(1) if m else "?"
         self.calls.append({"op": op, "url": url, "body": body, "timeout": timeout})
+        try:
+            ET.fromstring(body.encode("utf-8"))
+        except ET.ParseError:
+            # A device's SOAP stack rejects a request that is not XML.
+            self.calls[-1]["malformed"] = True
+            return _Resp(400, (_ENV_OPEN + _FAULT + _ENV_CLOSE).encode())
         if op in self.fail:
             return _Resp(500, (_ENV_OPEN + _FAULT + _ENV_CLOSE).encode())
         handler = getattr(self, "_op_" + op, None)
@@ -197,8 +206,9 @@ class FakeRecorder:
 
     def _op_CreatePullPointSubscription(self, _body: str) -> str:
         self.subscriptions += 1
+        path = self.subscription_path.format(n=self.subscriptions)
         return ("<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference>"
-                f"<wsa:Address>http://0.0.0.0/onvif/subscription/{self.subscriptions}</wsa:Address>"
+                f"<wsa:Address>http://0.0.0.0{path}</wsa:Address>"
                 "</tev:SubscriptionReference>" + self._times()
                 + "</tev:CreatePullPointSubscriptionResponse>")
 

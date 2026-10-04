@@ -10,6 +10,7 @@ expires; enough of them and CreatePullPointSubscription is refused.
 from __future__ import annotations
 
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,22 @@ def test_restarting_the_stream_releases_the_previous_pull_point(monkeypatch):
     assert "Unsubscribe" in ops[:second_create]
     assert rec.calls_of("Unsubscribe")[0]["url"] == "http://192.0.2.10/onvif/subscription/1"
     drv.close()
+
+
+def test_subscription_address_with_a_query_stays_valid_soap(monkeypatch):
+    # The pull-point address keeps its query when rehosted, so an "&" in it
+    # must be escaped where the address is written into the SOAP header.
+    drv, rec = _driver(monkeypatch)
+    rec.subscription_path = "/onvif/Subscription?Idx={n}&amp;Kind=pull"
+    _empty_pulls(rec, 1)
+    fx.stream(drv, rec)
+    drv.close()
+
+    assert not [c for c in rec.calls if c.get("malformed")]
+    pull, unsub = rec.calls_of("PullMessages")[0], rec.calls_of("Unsubscribe")[0]
+    assert pull["url"] == unsub["url"] == "http://192.0.2.10/onvif/Subscription?Idx=1&Kind=pull"
+    to = ET.fromstring(pull["body"]).find(".//{http://www.w3.org/2005/08/addressing}To")
+    assert to.text == "http://192.0.2.10/onvif/Subscription?Idx=1&Kind=pull"
 
 
 def test_subscription_parse_tolerates_missing_times(monkeypatch):
