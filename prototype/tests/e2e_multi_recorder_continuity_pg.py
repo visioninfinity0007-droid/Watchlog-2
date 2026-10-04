@@ -349,7 +349,7 @@ def run():
             step(enabled_b == (False, True, False),
                  "ordinary secondary recorder can be re-enabled")
 
-                        contract = as_anon(
+            contract = as_anon(
                 "select wl_multi_recorder_agent_contract(%s,%s)",
                 agent_id, key,
             )[0]
