@@ -220,11 +220,70 @@ for each row
 when (new.recorder_id is null)
 execute function public.wl_camera_assign_default_recorder();
 
+-- Site authority must not follow whichever Agent wrote last. Before 0146 the
+-- current Agent was simply the newest last_seen_at, so a superseded Agent that
+-- keeps running (an old PC left on after a replacement was enrolled) took the
+-- site back with every heartbeat or legacy ingest, and the replacement's
+-- recorder-aware RPCs failed the authority assertion below. An Agent is now
+-- skipped while a later-enrolled, non-push Agent of the same site is online
+-- (seen within 3 minutes, the fleet "online" threshold). Failover is kept: once
+-- the replacement goes offline the older Agent's own reports make it current
+-- again, and the replacement takes over as soon as it reports. last_seen_at
+-- stays truthful for every Agent. Lease authority on multi-Agent sites and the
+-- 0110 recorder-push exclusion are unchanged.
+create or replace function public.wl_current_site_agent(p_site_id uuid)
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $function$
+  with site_cfg as (
+    select coalesce(multi_agent_enabled, false) as multi_agent_enabled
+      from public.sites where id = p_site_id
+  ), live_lease as (
+    select l.holder_agent_id
+      from public.site_agent_leases l, site_cfg s
+     where s.multi_agent_enabled
+       and l.site_id = p_site_id
+       and l.holder_agent_id is not null
+       and l.lease_expires_at > now()
+     limit 1
+  ), newest as (
+    select a.id
+      from public.agents a
+     where a.site_id = p_site_id
+       and coalesce(a.device_driver, '') <> 'recorder-push'
+       and (
+         coalesce((select s.multi_agent_enabled from site_cfg s), false)
+         or not exists (
+           select 1
+             from public.agents n
+            where n.site_id = a.site_id
+              and coalesce(n.device_driver, '') <> 'recorder-push'
+              and n.enrolled_at > a.enrolled_at
+              and n.last_seen_at > now() - interval '3 minutes'
+         )
+       )
+     order by a.last_seen_at desc nulls last,
+              a.enrolled_at desc nulls last,
+              a.id desc
+     limit 1
+  )
+  select coalesce((select holder_agent_id from live_lease),
+                  (select id from newest));
+$function$;
+
+-- Preserve the 0103 ACL exactly.
+revoke execute on function public.wl_current_site_agent(uuid)
+  from public, anon, authenticated;
+grant execute on function public.wl_current_site_agent(uuid) to service_role;
+
 -- Owner-only authority assertion for NEW recorder-aware Agent paths.
 -- Legacy singleton RPCs retain their historical compatibility behavior, while
 -- any explicit recorder path must be driven by the deterministic current site
--- Agent. This prevents a stale enrolled Agent from reviving itself by writing
--- health/events and advancing last_seen_at.
+-- Agent. With wl_current_site_agent above, a stale enrolled Agent cannot revive
+-- itself by heartbeating or writing health/events and advancing last_seen_at.
 create or replace function public.wl_assert_current_agent_authority(
   p_agent_id uuid,
   p_site_id uuid

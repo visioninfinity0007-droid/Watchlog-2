@@ -6,6 +6,11 @@ Runs after 0146-0154 on disposable Postgres and rolls back.
 A valid but stale enrolled Agent must not be able to mutate recorder-aware state
 or claim recorder-routed work. This is server-enforced; runtime lease fencing is
 not treated as the security boundary.
+
+A superseded Agent that keeps running (an old PC left on after a replacement was
+enrolled) must not take site authority back with its own heartbeat while the
+replacement is online. Failover to it still works once the replacement goes
+offline, and the replacement regains authority when it reports again.
 """
 from __future__ import annotations
 
@@ -262,6 +267,56 @@ def run() -> int:
                 == str(current_agent),
                 "stale attempts cannot promote themselves by advancing last_seen_at",
             )
+
+            def current_site_agent():
+                return str(cur.execute(
+                    "select wl_current_site_agent(%s)", (site_id,)
+                ).fetchone()[0])
+
+            # The superseded Agent keeps heartbeating (5.0.x calls wl_heartbeat
+            # every minute) while the replacement last reported 30 s ago.
+            cur.execute(
+                "update agents set last_seen_at=now()-interval '30 seconds' where id=%s",
+                (current_agent,),
+            )
+            beat = as_anon(
+                "select wl_heartbeat(%s,%s,%s)", stale_agent, stale_key, "5.0.27",
+            )[0]
+            stale_seen = cur.execute(
+                "select last_seen_at=now() from agents where id=%s", (stale_agent,)
+            ).fetchone()[0]
+            step(beat.get("ok") is True and stale_seen is True,
+                 "superseded Agent heartbeat still succeeds and records its liveness")
+            step(current_site_agent() == str(current_agent),
+                 "superseded Agent heartbeat cannot take site authority from the online replacement")
+            raised, message = as_anon_raises(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                current_agent, current_key, rec_a, health,
+            )
+            step(not raised,
+                 "current Agent's recorder RPC still succeeds after the stale heartbeat",
+                 message)
+            raised, message = as_anon_raises(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                stale_agent, stale_key, rec_a, health,
+            )
+            step(raised and "current site authority" in message.lower(),
+                 "heartbeating superseded Agent is still blocked from recorder state", message)
+
+            # Failover is preserved: once the replacement is offline, the older
+            # Agent's heartbeat makes it the site authority...
+            cur.execute(
+                "update agents set last_seen_at=now()-interval '10 minutes' where id=%s",
+                (current_agent,),
+            )
+            as_anon("select wl_heartbeat(%s,%s,%s)", stale_agent, stale_key, "5.0.27")
+            step(current_site_agent() == str(stale_agent),
+                 "older Agent takes over when the replacement has gone offline")
+            # ...and the replacement takes it back as soon as it reports again.
+            as_anon("select wl_heartbeat(%s,%s,%s)", current_agent, current_key, "5.1.0")
+            as_anon("select wl_heartbeat(%s,%s,%s)", stale_agent, stale_key, "5.0.27")
+            step(current_site_agent() == str(current_agent),
+                 "replacement regains site authority when it reports again")
 
             # Current authority still uses the new path.
             ok = as_anon(
