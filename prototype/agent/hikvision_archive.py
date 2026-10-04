@@ -11,6 +11,7 @@ fabricating recovered evidence.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -162,8 +163,20 @@ def search_recordings(driver: HikvisionDriver, channel: str, start: datetime, en
             "response_status": status or ("OK" if matches else "NO MATCHES")}
 
 
+def _segment_id(channel, row: dict) -> str:
+    """Stable dedupe key for one recorded segment. The playbackURI names the recorder's LAN
+    address, so only a digest of it ever leaves this module."""
+    source = row.get("playback_uri") or f"{channel}:{row['start']}:{row['end']}"
+    return "hik:" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:32]
+
+
 def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
                                 cursor=None, limit: int = 500) -> dict:
+    """Recorded segments overlapping [start, end), for recovery's footage backfill.
+
+    The rows are recording SEGMENTS (footage windows), not recorder events, so the capability
+    reports events as unsupported.
+    """
     offset = int(cursor or 0)
     page = search_recordings(driver, str(channel), start, end, offset=offset,
                              limit=min(SEARCH_LIMIT, max(1, int(limit))))
@@ -172,15 +185,11 @@ def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
         events.append({
             "ts": row["start"],
             "type": "recorded_segment",
-            "device_event_id": (
-                row["playback_uri"] or
-                f"hik:{channel}:{row['start']}:{row['end']}"
-            ),
+            "device_event_id": _segment_id(channel, row),
             "channel": str(channel),
             "segment": {
                 "start": row["start"],
                 "end": row["end"],
-                "playback_uri": row["playback_uri"],
             },
         })
     nxt = str(page["next_offset"]) if page.get("next_offset") is not None else None
@@ -330,7 +339,9 @@ def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: dateti
     return None
 
 def historical_capability(driver: HikvisionDriver = None) -> dict:
-    return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
+    # Recorded segments are searchable; the recorder's own event log is not searched, and a
+    # recording segment is not a recorder event.
+    return {"events": "unsupported", "snapshots": "unsupported", "segments": "supported"}
 
 
 def prove_recorder_archive(driver: HikvisionDriver, channel, *, now=None,
