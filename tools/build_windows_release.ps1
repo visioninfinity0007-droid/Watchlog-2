@@ -20,10 +20,14 @@ param(
   [string]$UpdatePublicKey = "",
   [switch]$Lean,
   [switch]$Production,
+  [switch]$FieldTest,
   [string]$SignPfx = "",
   [string]$SignPassword = ""
 )
 $ErrorActionPreference = "Stop"
+if ($Production -and $FieldTest) {
+  throw "-Production and -FieldTest are mutually exclusive."
+}
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
@@ -225,6 +229,9 @@ update_channel = production
   }
   if ($updUrl -and $updKey) {
     Write-Host "Signed remote update enabled: $updUrl" -ForegroundColor Green
+  } elseif ($FieldTest -and -not $Production) {
+    Write-Host "FIELD TEST: remote self-update is not configured in this installer." -ForegroundColor Yellow
+    Write-Host "FIELD TEST: initial Setup/Agent is valid for onsite testing; do not treat Repair/Upgrade as an online-update release." -ForegroundColor Yellow
   } else {
     throw "5.0.24+ releases require WATCHLOG_UPDATE_URL and WATCHLOG_UPDATE_PUBLIC_KEY. Refusing to build a Repair/Upgrade that cannot bootstrap online updates."
   }
