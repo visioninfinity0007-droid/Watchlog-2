@@ -9,7 +9,9 @@ rejected search was replayed against the recorder forever.
 
 Now an archive failure checkpoints the interval from the first chunk that failed and backs off (the
 server re-offers it once the claim goes stale); after a few consecutive failed claims, or once
-the claim attempts run out, the interval is completed with a terminal status.
+too many claims in a row have not moved the cursor, the interval is completed with a terminal
+status. A claim that yields to live monitoring still counts its failed read, and a long interval
+that yields after every chunk is not cut short by the attempts cap.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 
+import backfill  # noqa: E402
 import hikvision_archive as ha  # noqa: E402
 import recovery  # noqa: E402
 from drivers.hikvision import HikvisionDriver  # noqa: E402
@@ -180,6 +183,107 @@ class ClaimAttemptCap(unittest.TestCase):
         _runner(ledger, _driver(lambda track: "ok")).run_once(limit=1)
         self.assertEqual(ledger.iv["status"], "partial")
         self.assertEqual(ledger.iv["detail"].get("reason"), "attempts_exhausted")
+
+
+class _YieldingLedger(_Ledger):
+    """A longer interval, and a live backlog that builds up after every chunk a claim reads and
+    drains before the next claim (``drain``)."""
+
+    def __init__(self, hours, attempts=0):
+        super().__init__(attempts)
+        self.iv["ended_at"] = (T0 + timedelta(hours=hours)).isoformat()
+        self.chunks = 0
+
+    def call(self, fn, **kw):
+        if fn == "wl_complete_recovery" and kw["p_status"] == "in_progress":
+            self.chunks += 1
+        return super().call(fn, **kw)
+
+    def drain(self):
+        self.chunks = 0
+
+    def live_backlog(self):
+        return self.chunks >= 1
+
+
+def _claim_draining(ledger, runner, claims=40):
+    for n in range(1, claims + 1):
+        ledger.drain()
+        runner.run_once(limit=1)
+        if ledger.iv["status"] not in ("pending", "in_progress"):
+            return n
+    return None
+
+
+class AttemptsCountOnlyClaimsWithoutProgress(unittest.TestCase):
+    """The attempts cap is for claims that get nowhere (stale claims, crash loops), not for a long
+    interval that yields to live monitoring after every chunk it reads."""
+
+    def test_a_long_interval_that_yields_every_chunk_is_read_to_the_end(self):
+        hours = 6
+        ledger = _YieldingLedger(hours)
+        ledger.iv["cameras"] = [CAM1]
+        events = []
+        driver = backfill.ReferenceArchiveDriver(
+            [{"ts": (T0 + timedelta(minutes=30 + 60 * h)).isoformat(), "type": "person",
+              "device_event_id": f"E{h}"} for h in range(hours)], page_size=10)
+        runner = recovery.RecoveryRunner(ledger, "agent", "key", driver, events.append,
+                                         chunk_seconds=3600, camera_channels={CAM1: "1"},
+                                         live_pending=ledger.live_backlog, max_attempts=3,
+                                         log=lambda *a: None)
+        claims = _claim_draining(ledger, runner)
+        self.assertEqual(ledger.iv["status"], "recovered", ledger.iv["detail"])
+        self.assertEqual((claims, len(events)), (hours, hours))
+
+    def test_claims_since_the_last_progress_are_still_capped(self):
+        ledger = _Ledger(attempts=10)
+        ledger.iv["checkpoint"] = {"cursor": (T0 + timedelta(minutes=30)).isoformat(),
+                                   "progress_attempt": 6}
+        driver = _driver(lambda track: "ok")
+        _runner(ledger, driver, max_attempts=4).run_once(limit=1)
+        self.assertEqual(ledger.iv["detail"].get("reason"), "attempts_exhausted")
+        self.assertEqual(driver.s.searches, [])
+
+    def test_recent_progress_keeps_an_often_claimed_interval_going(self):
+        ledger = _Ledger(attempts=10)
+        ledger.iv["checkpoint"] = {"cursor": T0.isoformat(), "progress_attempt": 8}
+        driver = _driver(lambda track: "ok")
+        _runner(ledger, driver, max_attempts=4).run_once(limit=1)
+        self.assertEqual(ledger.iv["status"], "recovered")
+        self.assertTrue(driver.s.searches)
+
+    def test_a_claim_that_moves_the_cursor_records_its_attempt(self):
+        ledger = _YieldingLedger(3, attempts=4)
+        _runner(ledger, _driver(lambda track: "ok"), live_pending=ledger.live_backlog).run_once()
+        self.assertEqual(ledger.iv["status"], "in_progress")
+        self.assertEqual(ledger.iv["checkpoint"]["cursor"], (T0 + timedelta(hours=1)).isoformat())
+        self.assertEqual(ledger.iv["checkpoint"]["progress_attempt"], 5)
+
+
+class FailedReadsCountWhenTheClaimYields(unittest.TestCase):
+    def test_a_failed_read_is_counted_even_when_the_claim_then_yields(self):
+        ledger = _YieldingLedger(2)
+        runner = _runner(ledger, _driver(lambda track: "reject" if track == 101 else "ok"),
+                         live_pending=ledger.live_backlog)
+        runner.run_once(limit=1)
+        self.assertEqual(ledger.iv["status"], "in_progress")
+        self.assertEqual(ledger.iv["checkpoint"]["cursor"], T0.isoformat())
+        self.assertEqual(ledger.iv["checkpoint"].get("errors"), 1)
+
+    def test_consecutive_failed_claims_end_the_interval_even_if_each_yields(self):
+        ledger = _YieldingLedger(2)
+        driver = _driver(lambda track: "reject" if track == 101 else "ok")
+        claims = _claim_draining(ledger, _runner(ledger, driver, live_pending=ledger.live_backlog))
+        self.assertEqual(claims, recovery.DEFAULT_MAX_ERROR_ATTEMPTS)
+        self.assertEqual(ledger.iv["status"], "partial")
+        self.assertEqual(ledger.iv["detail"].get("reason"), "archive_error")
+
+    def test_a_claim_that_reads_without_failure_resets_the_count(self):
+        ledger = _YieldingLedger(3)
+        ledger.iv["checkpoint"] = {"cursor": T0.isoformat(), "errors": 2}
+        _runner(ledger, _driver(lambda track: "ok"), live_pending=ledger.live_backlog).run_once()
+        self.assertEqual(ledger.iv["status"], "in_progress")
+        self.assertNotIn("errors", ledger.iv["checkpoint"])
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ except ImportError:                                   # pragma: no cover - path 
 
 DEFAULT_OUTAGE_THRESHOLD = 180        # seconds; below this a reconnect is not an "outage"
 DEFAULT_CHUNK_SECONDS = 3600          # recover one hour of archive per bounded chunk
-DEFAULT_MAX_ATTEMPTS = 24             # claims of one interval before it is closed unrecovered
+DEFAULT_MAX_ATTEMPTS = 24             # claims in a row that move no cursor before it is closed
 DEFAULT_MAX_ERROR_ATTEMPTS = 3        # consecutive claims ended by a failed archive read
 
 
@@ -121,10 +121,13 @@ class RecoveryRunner:
                                p_agent_key=self.agent_key, p_started_at=_iso(_as_dt(last_live)),
                                p_ended_at=_iso(_as_dt(now)), p_cameras=list(cameras or []))
 
-    def _complete(self, interval_id, status, recovered, seen, cursor, *, errors=0, detail=None):
+    def _complete(self, interval_id, status, recovered, seen, cursor, *, errors=0, progress=0,
+                  detail=None):
         checkpoint = {"cursor": _iso(cursor) if cursor else None, "seen_keys": sorted(seen)[:20000]}
         if errors:
             checkpoint["errors"] = errors     # consecutive failed claims, carried to the next claim
+        if progress:
+            checkpoint["progress_attempt"] = progress   # the claim that last moved the cursor
         params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key,
                       p_id=interval_id, p_status=status, p_recovered_count=recovered,
                       p_checkpoint=checkpoint)
@@ -160,6 +163,8 @@ class RecoveryRunner:
         seen = set(checkpoint.get("seen_keys") or [])
         resume = _as_dt(checkpoint.get("cursor"))
         errors = int(checkpoint.get("errors") or 0)
+        attempts = int(iv.get("attempts") or 0)
+        progress = int(checkpoint.get("progress_attempt") or 0)
         start = resume or _as_dt(iv["started_at"])
         end = _as_dt(iv["ended_at"])
         cams, unresolved = self._channels(iv.get("cameras") or [])
@@ -167,9 +172,9 @@ class RecoveryRunner:
             # Nothing can be read truthfully: never scan a guessed channel and never call the
             # interval (or the site) recovered.
             return self._close(iv, "unrecoverable", seen, resume, "missing_channels")
-        if self.max_attempts and int(iv.get("attempts") or 0) > self.max_attempts:
-            # Re-claimed too often (stale claims, crash loops): stop replaying it against the
-            # recorder. Earlier progress makes it partial, never recovered.
+        if self.max_attempts and attempts - progress > self.max_attempts:
+            # Re-claimed too often without the cursor moving (stale claims, crash loops): stop
+            # replaying it against the recorder. Earlier progress makes it partial, never recovered.
             return self._close(iv, "partial" if seen else "unrecoverable", seen, resume,
                                "attempts_exhausted")
         # A camera that cannot be mapped to a channel cannot be read, so the interval cannot be
@@ -177,11 +182,20 @@ class RecoveryRunner:
         recovered, any_unsupported, any_supported = 0, unresolved > 0, False
         failed, failed_at, failure = set(), None, None    # failed archive reads in this claim
 
+        def save(cursor):
+            # A failed read in this claim is counted even when the claim then yields; a claim that
+            # moved the cursor without one ends the run of failed claims and resets the attempts cap.
+            moved = cursor > start
+            self._complete(iv["id"], "in_progress", recovered, seen, cursor,
+                           errors=errors + 1 if failed_at is not None else (0 if moved else errors),
+                           progress=attempts if moved else progress)
+
         for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
             if self.live_pending():
+                if failed_at is not None and errors + 1 >= self.max_error_attempts:
+                    break                   # out of retries: settle below instead of yielding
                 # LIVE has priority — checkpoint progress and yield; a later claim resumes here.
-                self._complete(iv["id"], "in_progress", recovered, seen, failed_at or chunk_start,
-                               errors=errors)
+                save(failed_at or chunk_start)
                 return {"id": iv["id"], "status": "in_progress", "recovered": recovered, "yielded": True}
             for ch in cams:
                 if ch in failed:
@@ -225,19 +239,17 @@ class RecoveryRunner:
                     self._log(f"recovery: archive read failed on channel {ch}: {failure}")
             if len(failed) == len(cams):
                 break                       # nothing left to read in this claim
-            self._complete(iv["id"], "in_progress", recovered, seen, failed_at or chunk_end,
-                           errors=errors)   # checkpoint per chunk
+            save(failed_at or chunk_end)    # checkpoint per chunk
             if self.throttle_seconds:
                 import time
                 time.sleep(self.throttle_seconds)
 
         detail = None
         if failed_at is not None:
-            errors += 1
-            if errors < self.max_error_attempts:
+            if errors + 1 < self.max_error_attempts:
                 # Back off: stay in progress from the first chunk that failed. The server re-offers
                 # the interval once this claim goes stale, and the seen-set skips what was recovered.
-                self._complete(iv["id"], "in_progress", recovered, seen, failed_at, errors=errors)
+                save(failed_at)
                 return {"id": iv["id"], "status": "in_progress", "recovered": recovered,
                         "yielded": False, "error": failure}
             any_unsupported = True          # out of retries: what could not be read stays unrecovered
