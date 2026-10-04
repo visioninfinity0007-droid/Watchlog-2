@@ -9,10 +9,11 @@ Safety / truth rules:
 * WatchLog channel numbers are converted to Dahua's native zero-based indexes;
 * the recorder's own clock is read once per call. Times the Agent stamped (UTC
   cloud windows, Dahua CGI event receive times) move onto recorder wall time by
-  the measured offset, drift included; times the recorder's own clock stamped
-  (archive segment times, ONVIF UtcTime) move by the recorder's zone only.
-  Archive segment times go back to UTC the same way, so no naive recorder-local
-  time leaves this module to be misread as UTC;
+  the measured offset, drift included; UTC times the recorder's own clock
+  stamped (ONVIF UtcTime) move by the recorder's zone only. Archive segment
+  times go back to UTC by the same offset that built their search window, so
+  they come back on the agent clock and no naive recorder-local time leaves
+  this module to be misread as UTC;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
 * archive enumeration reads every finder page; a search too large to page ends
@@ -131,11 +132,12 @@ def _recorder_clock(driver: DahuaDriver) -> tuple[timedelta, timedelta | None]:
     """Read the recorder clock once and return ``(offset, zone)`` against the agent's UTC clock.
 
     ``offset`` is recorder wall time minus agent UTC, unrounded. It carries the recorder's drift,
-    which is exactly what maps an instant the agent stamped onto the recorder's footage.
+    which is exactly what maps an instant the agent stamped onto the recorder's footage, and the
+    recorder's footage times back onto the agent clock.
     ``zone`` is that offset snapped to the nearest quarter hour: the recorder's configured UTC
-    offset without drift, for times the recorder's own clock stamped. It is None when the drift
-    is too large to tell zone from drift. It is the CURRENT zone; footage recorded before a DST
-    change is not re-zoned.
+    offset without drift, for UTC times the recorder's own clock stamped. It is None when the drift
+    is too large to tell zone from drift. Both are CURRENT; footage recorded before a DST change is
+    not re-zoned.
     """
     device_now = _parse_device_clock(_text(driver, "/cgi-bin/global.cgi", params={"action": "getCurrentTime"}))
     offset = device_now - datetime.now(timezone.utc).replace(tzinfo=None)
@@ -182,15 +184,24 @@ def _fmt(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _segment_utc(value, zone: timedelta) -> str | None:
-    """Recorder-stamped archive time -> ISO-8601 UTC ("...Z"); None when the recorder gave none."""
+def _segment_utc(value, offset: timedelta) -> str | None:
+    """Recorder wall time of an archive segment -> ISO-8601 UTC ("...Z") on the agent clock; None
+    when the recorder gave none.
+
+    ``offset`` comes from the clock reading that built the search window, so the result is in the
+    frame of the request and replays with clock="agent" onto the same recorder wall time. A time
+    that names its own UTC offset is taken as the instant it names.
+    """
     if not value:
         return None
     parsed = _parse_time(value)
     if parsed is None:
         raise DriverError("recorder returned an unparseable archive segment time")
     if parsed.tzinfo is None:
-        parsed = (parsed - zone).replace(tzinfo=timezone.utc)
+        parsed = (parsed - offset).replace(tzinfo=timezone.utc)
+    # The offset is not whole seconds: round to the nearest second, so a replay lands on the
+    # recorder's own second rather than the one before it.
+    parsed += timedelta(milliseconds=500)
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -339,11 +350,11 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     """Retrieve a bounded recorder-native DAV clip for one requested window.
 
     ``clock`` names the clock that stamped ``start``/``end``: "agent" (the default) for times the
-    Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time;
-    "recorder" for times the recorder's own clock stamped, i.e. archive segment times from
-    :func:`enumerate_historical_events` or ONVIF UtcTime. CLIP_TOTAL_SECONDS is counted from the
-    start of the call: the clock read and search spend it too, the download starts only while some
-    is left, and the download stops once it is spent.
+    Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time,
+    and for archive segment times from :func:`enumerate_historical_events`, which come back on the
+    agent clock; "recorder" for UTC times the recorder's own clock stamped, i.e. ONVIF UtcTime.
+    CLIP_TOTAL_SECONDS is counted from the start of the call: the clock read and search spend it
+    too, the download starts only while some is left, and the download stops once it is spent.
     """
     deadline = time.monotonic() + CLIP_TOTAL_SECONDS
     native_channel = _native_channel(channel)
@@ -394,12 +405,13 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
     status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
     with empty data, and never masquerading as live). Read-only.
 
-    ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC converted with
-    the recorder's zone, because the recorder's own clock stamped them; replaying them through
-    ``get_recorded_segment`` lands on the same recorder wall time. Every finder page is read and
-    rows are ordered by recorder time, so ``cursor`` (a row offset) pages deterministically
-    however the recorder orders its answer. A search larger than MAX_FINDER_PAGES serves the rows
-    it read, then ends 'partial', never 'supported'.
+    ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC on the agent
+    clock: recorder wall time minus the offset from the same clock reading that built the search
+    window, so they are in the frame of ``start``/``end``, recorder drift alone never makes them
+    unreadable, and replaying them through ``get_recorded_segment`` lands on the same recorder
+    wall time. Every finder page is read and rows are ordered by recorder time, so ``cursor`` (a
+    row offset) pages deterministically however the recorder orders its answer. A search larger
+    than MAX_FINDER_PAGES serves the rows it read, then ends 'partial', never 'supported'.
     """
     try:
         offset = max(0, int(cursor or 0))
@@ -408,8 +420,8 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
     try:
         native_channel = _native_channel(channel)
         recorder_clock = _recorder_clock(driver)
-        # Refuse before searching if segment times could not be converted back to UTC.
-        zone = _clock_shift(RECORDER_CLOCK, *recorder_clock)
+        # The offset that maps the request onto recorder wall time maps the segments back.
+        clock_offset = recorder_clock[0]
         local_start, local_end = _localize_window(driver, start, end, recorder_clock=recorder_clock)
         rows, complete = _find_local(driver, native_channel, local_start, local_end,
                                      max_rows=MAX_FINDER_PAGES * FINDER_COUNT)
@@ -420,7 +432,7 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
         events = []
         for row in page:
             st_raw, et_raw, path = _row_fields(row)
-            st, et = _segment_utc(st_raw, zone), _segment_utc(et_raw, zone)
+            st, et = _segment_utc(st_raw, clock_offset), _segment_utc(et_raw, clock_offset)
             events.append({
                 "ts": st,
                 "type": "recorded_segment",
@@ -517,11 +529,11 @@ def install() -> None:
     DahuaDriver.enumerate_historical_events = (
         lambda self, channel, start, end, cursor=None, limit=500:
         enumerate_historical_events(self, channel, start, end, cursor, limit))
-    # Recorded-segment replay is fed segment times from enumerate_historical_events, which the
-    # recorder's own clock stamped.
+    # Recorded-segment replay is fed segment times from enumerate_historical_events, which come
+    # back on the agent clock.
     DahuaDriver.get_recorded_segment = (
         lambda self, channel, start, end: {
-            "status": "supported", "bytes": get_clip(self, channel, start, end, clock=RECORDER_CLOCK)})
+            "status": "supported", "bytes": get_clip(self, channel, start, end, clock=AGENT_CLOCK)})
     DahuaDriver.historical_capability = lambda self: historical_capability(self)
 
 

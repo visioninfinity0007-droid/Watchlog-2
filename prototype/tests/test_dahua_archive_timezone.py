@@ -27,6 +27,7 @@ import backfill  # noqa: E402
 import dahua_archive as da  # noqa: E402
 import recovery  # noqa: E402
 import recovery_ai  # noqa: E402
+import retention  # noqa: E402
 
 PC_NOW = datetime(2026, 10, 4, 20, 0, tzinfo=timezone.utc)        # the gap is 11+ hours old
 G0 = datetime(2026, 10, 4, 7, 30, tzinfo=timezone.utc)
@@ -126,8 +127,10 @@ class Utc5Recorder(unittest.TestCase):
 
 
 class DriftedRecorder(unittest.TestCase):
-    """Segment times are stamped by the recorder's own clock, so replaying them must land on the
-    same recorder wall time even when that clock drifts from the agent clock."""
+    """The search maps the agent-clock gap onto recorder wall time with the measured offset, drift
+    included. Segment times go back with that same offset, so they come back in the frame of the
+    request, replay onto the same recorder wall time, and drift alone never makes the archive
+    unreadable."""
 
     def setUp(self):
         da.install()
@@ -135,7 +138,14 @@ class DriftedRecorder(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_replay_is_exact_under_drift(self):
+    @staticmethod
+    def expected_start(path, zone, drift):
+        """Agent-clock UTC start of a fake file, from the recorder-local time in its name."""
+        recorded = datetime.strptime(path.rsplit("/", 1)[1][:14], "%Y%m%d%H%M%S")
+        return (recorded - zone - drift).replace(tzinfo=timezone.utc)
+
+    def test_segment_times_carry_the_drift_back_out(self):
+        # Recorder 25 s fast: its file stamped 13:00:00 began at 07:59:35Z on the agent clock.
         rec = FakeRecorder(PC_NOW, drift=timedelta(seconds=25), files=FILES)
         drv = FakeDahua(rec)
         res = da.enumerate_historical_events(drv, "1", G0, G1)
@@ -144,16 +154,58 @@ class DriftedRecorder(unittest.TestCase):
         find = rec.calls_to("mediaFileFind.cgi", "findFile")[0][1]
         self.assertEqual(find["condition.StartTime"], "2026-10-04 12:30:25")
         start = res["events"][1]["segment"]["start"]
-        self.assertEqual(aware(start), utc(8, 0))      # the recorder's own reading, in UTC
+        self.assertEqual(aware(start), utc(7, 59) + timedelta(seconds=35))
+        # Replayed on the agent clock it lands back on the recorder's own 13:00:00.
         self.assertEqual(recovery_ai.recovered_frame(drv, "1", start, decoder=decode), JPEG)
         self.assertEqual(rec.loadfile_windows()[-1][0], local("2026-10-04 13:00:00"))
 
-    def test_zone_cannot_be_told_from_large_drift(self):
-        # 6 minutes off: too close to a quarter-hour zone boundary to tell zone from drift.
-        rec = FakeRecorder(PC_NOW, drift=timedelta(minutes=6), files=FILES)
-        res = da.enumerate_historical_events(FakeDahua(rec), "1", G0, G1)
-        self.assertEqual(res["status"], "unknown")
-        self.assertEqual(res["events"], [])
+    def test_sub_second_offset_replays_onto_the_recorders_own_second(self):
+        # The recorder prints whole seconds: at agent 20:00:00.6 it reads 01:00:00.
+        pc_now = PC_NOW + timedelta(milliseconds=600)
+        rec = FakeRecorder(pc_now, files=FILES)
+        drv = FakeDahua(rec)
+        with mock.patch.object(da, "datetime", pinned_datetime(pc_now)):
+            res = da.enumerate_historical_events(drv, "1", G0, G1)
+            seg = next(e["segment"] for e in res["events"]
+                       if e["segment"]["path"].endswith("20261004130000.dav"))
+            self.assertEqual(recovery_ai.recovered_frame(drv, "1", seg["start"], decoder=decode), JPEG)
+        self.assertEqual(rec.loadfile_windows()[-1][0], local("2026-10-04 13:00:00"))
+
+    def test_segments_agree_with_the_request_window_at_any_drift(self):
+        # Includes drifts the recorder's zone cannot be told from (6, -6 min) and drifts that snap
+        # to a quarter hour no zone uses (12, 20 min; a UTC recorder 12 min fast is not "+00:15").
+        for zone_hours, minutes in ((5, 4), (5, 6), (5, -6), (5, 12), (5, 20), (0, 12)):
+            with self.subTest(zone_hours=zone_hours, drift_minutes=minutes):
+                zone, drift = timedelta(hours=zone_hours), timedelta(minutes=minutes)
+                files = continuous_files(local("2026-10-04 00:00:00"), local("2026-10-05 01:00:00"))
+                rec = FakeRecorder(PC_NOW, zone=zone, drift=drift, files=files)
+                res = da.enumerate_historical_events(FakeDahua(rec), "1", G0, G1)
+                self.assertEqual(res["status"], "supported")
+                self.assertEqual(len(res["events"]), 3)
+                for event in res["events"]:
+                    seg = event["segment"]
+                    start, end = aware(seg["start"]), aware(seg["end"])
+                    self.assertEqual(start, self.expected_start(seg["path"], zone, drift))
+                    self.assertEqual(end - start, timedelta(minutes=30))
+                    self.assertLess(start, G1, f"segment {seg} reported after the requested window")
+                    self.assertGreater(end, G0, f"segment {seg} reported before the requested window")
+
+    def test_archive_functions_survive_a_drifting_clock(self):
+        for minutes in (6, 12):
+            with self.subTest(drift_minutes=minutes):
+                rec = FakeRecorder(PC_NOW, drift=timedelta(minutes=minutes), files=FILES)
+                drv = FakeDahua(rec)
+                self.assertEqual(da.prove_recorder_archive(drv, "1", now=PC_NOW)["status"], "verified")
+                est = retention.estimate_retention(drv, "1", now=PC_NOW, probe_days=(1, 2))
+                self.assertEqual((est["status"], est["retention_days"]), ("measured", 1.0))
+                cloud = FakeCloud([{"id": "iv1", "started_at": G0.isoformat(),
+                                    "ended_at": G1.isoformat(), "cameras": ["1"],
+                                    "status": "pending", "checkpoint": {}}])
+                runner = recovery.RecoveryRunner(
+                    cloud, "agent", "key", drv, lambda _ev: None,
+                    frame_provider=lambda d, ch, ts: recovery_ai.recovered_frame(d, ch, ts, decoder=decode))
+                runner.run_once()
+                self.assertEqual(cloud.completes[-1]["p_status"], "recovered")
 
     def test_unparseable_segment_time_fails_closed(self):
         rec = FakeRecorder(PC_NOW, files=FILES)
