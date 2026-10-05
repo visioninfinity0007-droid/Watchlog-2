@@ -1267,6 +1267,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 ) from error
             _hold_for_registry_repair(error)
         configured_recorders = []
+    if configured_recorders:
+        # Started from the registry: a job is never served from the legacy ini recorder,
+        # even if recorders.json later stops loading (recorder_runtime.config_for_cloud_recorder).
+        cfg.recorder_registry_required = True
 
     holder_seed = {}
     recorder_bound = False

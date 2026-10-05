@@ -196,6 +196,38 @@ def _configured_rows() -> list[dict]:
     return [row for row in recorder_registry.recorders() if row.get("is_configured")]
 
 
+class RecorderRegistryUnavailable(RuntimeError):
+    """This Agent started from recorders.json, which no longer loads any configured recorder."""
+
+
+def mark_registry_required(cfg) -> bool:
+    """Record on ``cfg`` whether this Agent runs from the recorder registry.
+
+    True when recorders.json configures a recorder, or exists but cannot be read (the
+    runtime then holds for Setup). From then on a job is never served from ``cfg``'s
+    own (legacy ini) recorder and login when the registry stops loading, e.g. after
+    Setup quarantined it: config_for_cloud_recorder fails it closed instead. No
+    registry keeps the 5.0.x singleton routing unchanged."""
+    try:
+        required = bool(_configured_rows())
+    except Exception:  # noqa: BLE001 — an unreadable registry is still this site's authority
+        required = recorder_registry.registry_path().exists()
+    cfg.recorder_registry_required = required
+    return required
+
+
+def registry_unavailable(cfg) -> bool:
+    """True when ``cfg`` runs from the registry and it loads no configured recorder now.
+
+    The evidence workers do not claim work meanwhile: a claimed job could only fail."""
+    if not getattr(cfg, "recorder_registry_required", False):
+        return False
+    try:
+        return not _configured_rows()
+    except Exception:  # noqa: BLE001 — unreadable: unavailable
+        return True
+
+
 def config_for_cloud_recorder(base_cfg, recorder_id: str | None):
     """Resolve a cloud job to exactly one local recorder Config.
 
@@ -207,7 +239,9 @@ def config_for_cloud_recorder(base_cfg, recorder_id: str | None):
     one recorder, and every job the cloud gives it targets the site's single
     recorder, so the job runs on the singleton config. With a registry, a missing
     recorder_id is accepted only for a single configured recorder, and a
-    multi-recorder job never falls back to "primary".
+    multi-recorder job never falls back to "primary". An Agent that started from
+    the registry (mark_registry_required) never falls back to its legacy ini
+    recorder when the registry stops loading: the job fails closed.
     """
     wanted = str(recorder_id or "").strip() or None
     base_cloud = str(getattr(base_cfg, "recorder_cloud_id", "") or "").strip() or None
@@ -217,6 +251,11 @@ def config_for_cloud_recorder(base_cfg, recorder_id: str | None):
 
     rows = _configured_rows()
     if not rows:
+        if getattr(base_cfg, "recorder_registry_required", False):
+            raise RecorderRegistryUnavailable(
+                "the recorder configuration on this PC is not available; "
+                "the job is not run until WatchLog Setup restores it"
+            )
         return base_cfg
 
     if wanted:

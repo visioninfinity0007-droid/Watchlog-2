@@ -422,6 +422,27 @@ def _site_recorder_ids() -> set:
         return set()
 
 
+class _RegistryHold:
+    """Claim nothing while the recorder registry this Agent runs from does not load.
+
+    A job claimed then could only fail (recorder_runtime.config_for_cloud_recorder fails
+    it closed rather than run it on the legacy recorder); unclaimed, it waits in WatchLog
+    until Setup has restored the registry and the Agent has restarted on it."""
+
+    def __init__(self, label: str):
+        self._label, self._logged = label, False
+
+    def holding(self, cfg) -> bool:
+        if not recorder_runtime.registry_unavailable(cfg):
+            self._logged = False
+            return False
+        if not self._logged:
+            core.log(f"{self._label}: the recorder configuration on this PC is not "
+                     "available; no request is claimed until WatchLog Setup restores it")
+            self._logged = True
+        return True
+
+
 def _may_claim(workers: _RecorderWorkers, site_recorders: set,
                max_in_flight: int = FOOTAGE_MAX_IN_FLIGHT,
                max_claimed: int = FOOTAGE_MAX_CLAIMED) -> bool:
@@ -455,8 +476,12 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
         "incident footage")
     missing_backend_logged = False
     site_recorders, site_recorders_at = set(), None
+    held = _RegistryHold("incident footage")
     try:
         while not stop.is_set():
+            if held.holding(cfg):
+                stop.wait(POLL_SECONDS)
+                continue
             if workers.in_flight() > 0:
                 now = time.monotonic()
                 if (site_recorders_at is None
@@ -611,8 +636,12 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
         "incident stills")
     missing_backend_logged = False
     site_recorders, site_recorders_at = set(), None
+    held = _RegistryHold("incident stills")
     try:
         while not stop.is_set():
+            if held.holding(cfg):
+                stop.wait(STILL_POLL_SECONDS)
+                continue
             if workers.in_flight() > 0:
                 now = time.monotonic()
                 if (site_recorders_at is None
@@ -659,6 +688,8 @@ def wrap_cmd_run(original):
     def wrapped(cfg, state, cloud, once, device=None, channels=None):
         if once:
             return original(cfg, state, cloud, once, device, channels)
+        # Before any claim: a registry site's jobs never fall back to the legacy recorder.
+        recorder_runtime.mark_registry_required(cfg)
         stop = threading.Event()
         workers = [
             threading.Thread(target=footage_worker, args=(cfg, state, stop),

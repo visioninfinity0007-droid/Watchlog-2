@@ -443,3 +443,123 @@ def test_corrupt_sibling_credential_does_not_fail_a_healthy_recorder_clip(monkey
     # Each recorder's clips are fetched by its own worker (MNVR-034): no order between them.
     assert sorted(outcomes) == [("req-a", "wl_agent_complete_clip"),
                                 ("req-b", "wl_agent_fail_clip")]
+
+
+# --- the registry disappears while a multi-recorder Agent runs -----------------------
+
+def _two_bound_rows_then_registry_gone(monkeypatch, tmp_path):
+    """Two bound rows; the Agent starts with them, then Setup quarantines recorders.json."""
+    cloud_a = "11111111-1111-1111-1111-111111111111"
+    cloud_b = "22222222-2222-2222-2222-222222222222"
+    _isolated_registry(monkeypatch, tmp_path, [
+        {"local_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "cloud_recorder_id": cloud_a,
+         "display_name": "a", "url": "http://a", "driver": "onvif",
+         "is_primary": True, "is_configured": True},
+        {"local_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cloud_recorder_id": cloud_b,
+         "display_name": "b", "url": "http://b", "driver": "onvif",
+         "is_primary": False, "is_configured": True},
+    ])
+    # main()'s base Config: the legacy ini recorder and the legacy (continuity) login.
+    base = _cfg("legacy", None, "http://legacy")
+    base.state_path = tmp_path / "WatchLog" / "agent_state.json"
+    base.spool_path = tmp_path / "WatchLog" / "spool.sqlite"
+    base.health_store_path = tmp_path / "WatchLog" / "health.sqlite"
+    base.last_live_path = tmp_path / "WatchLog" / "last_live.json"
+    assert recorder_runtime.mark_registry_required(base) is True
+    rr.quarantine_registry()
+    assert not rr.registry_path().exists()
+    return base, cloud_b
+
+
+def test_registry_gone_job_for_a_named_recorder_fails_closed(monkeypatch, tmp_path):
+    base, cloud_b = _two_bound_rows_then_registry_gone(monkeypatch, tmp_path)
+    with pytest.raises(recorder_runtime.RecorderRegistryUnavailable):
+        recorder_runtime.config_for_cloud_recorder(base, cloud_b)
+    with pytest.raises(recorder_runtime.RecorderRegistryUnavailable):
+        recorder_runtime.config_for_cloud_recorder(base, None)
+
+
+def test_registry_gone_still_clip_and_site_control_open_no_driver(monkeypatch, tmp_path):
+    base, cloud_b = _two_bound_rows_then_registry_gone(monkeypatch, tmp_path)
+    opened, calls = [], []
+
+    def never(*_a, **_k):
+        opened.append(_a)
+        raise AssertionError("no recorder may be opened without the registry")
+
+    for name in ("open_driver", "open_archive_driver", "autodetect", "build"):
+        monkeypatch.setattr(core, name, never)
+
+    class Cloud:
+        def call(self, name, **kwargs):
+            calls.append((name, kwargs))
+            return {"ok": True}
+
+    state = {"agent_id": "agent", "agent_key": "key"}
+    incident_evidence._serve_still_request(
+        Cloud(), state, base, incident_evidence._StillRecorderGate(),
+        {"request_id": "still-b", "recorder_id": cloud_b, "channel": "1"})
+    incident_evidence._serve_clip_request(
+        Cloud(), state, base, (),
+        {"request_id": "req-b", "recorder_id": cloud_b, "channel": "1",
+         "start_at": "2026-10-02T12:00:00Z", "end_at": "2026-10-02T12:01:00Z"})
+    core._run_claimed_command(
+        base, state, Cloud(),
+        {"id": "cmd-b", "recorder_id": cloud_b, "action": "get_channels", "params": {}},
+        site_control)
+
+    assert opened == []
+    outcomes = [(name, kw.get("p_status")) for name, kw in calls]
+    assert outcomes == [("wl_agent_fail_incident_still", None),
+                        ("wl_agent_fail_clip", None),
+                        ("wl_agent_complete_command", "failed")]
+    assert calls[1][1]["p_reason"] == incident_evidence.RECORDER_UNAVAILABLE
+    # Nothing about the legacy recorder or its login leaks into any outcome.
+    assert "legacy" not in json.dumps([kw for _n, kw in calls])
+
+
+@pytest.mark.parametrize("worker,claim", [
+    (incident_evidence.footage_worker, "wl_agent_claim_clip_requests"),
+    (incident_evidence.stills_worker, "wl_agent_claim_incident_stills"),
+])
+def test_evidence_workers_do_not_claim_while_the_registry_is_gone(
+        monkeypatch, tmp_path, worker, claim):
+    base, _cloud_b = _two_bound_rows_then_registry_gone(monkeypatch, tmp_path)
+    stop = threading.Event()
+    claims, waits = [], []
+
+    class Cloud:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def call(self, name, **kwargs):
+            claims.append(name)
+            return []
+
+    real_wait = stop.wait
+
+    def wait(seconds=None):
+        waits.append(seconds)
+        if len(waits) >= 3:
+            stop.set()
+        return real_wait(0)
+
+    monkeypatch.setattr(stop, "wait", wait)
+    monkeypatch.setattr(core, "Cloud", Cloud)
+    worker(base, {"agent_id": "agent", "agent_key": "key"}, stop)
+    assert claims == []
+    assert len(waits) >= 3
+
+
+def test_registry_required_only_when_configured_rows_or_an_unreadable_registry(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path))
+    base = _cfg("legacy", None, "http://legacy")
+    # No registry: the 5.0.x singleton runtime, unchanged.
+    assert recorder_runtime.mark_registry_required(base) is False
+    assert recorder_runtime.config_for_cloud_recorder(base, "x") is base
+    # An unreadable registry is required: nothing runs on the legacy recorder meanwhile.
+    rr.registry_path().parent.mkdir(parents=True, exist_ok=True)
+    rr.registry_path().write_text("{not json", encoding="utf-8")
+    assert recorder_runtime.mark_registry_required(base) is True
+    assert recorder_runtime.registry_unavailable(base) is True
