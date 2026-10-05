@@ -455,8 +455,10 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_authority_pg.py
       - name: Multi-recorder fresh site — first recorder owns continuity, lazy legacy then adoption (0146/0154)
         run: python prototype/tests/e2e_multi_recorder_fresh_site_pg.py
-      - name: Multi-recorder push — single-recorder push works, multi-recorder push fails closed (0146)
+      - name: Multi-recorder push — recorder-scoped tokens, legacy token fails closed on multi-recorder sites, Agent/push share one dedupe identity (0146)
         run: python prototype/tests/e2e_multi_recorder_push_pg.py
+      - name: Multi-recorder reinstall — fresh local id re-adopts the continuity recorder, secondaries flagged for re-add (0154)
+        run: python prototype/tests/e2e_multi_recorder_reinstall_pg.py
       - name: Multi-recorder upgrade rehearsal — 0001..0143 + 5.0.x data, then 0146..0155 on its own database
         run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py
 
