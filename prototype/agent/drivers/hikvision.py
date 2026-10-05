@@ -30,6 +30,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
+from urllib.parse import urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
@@ -133,9 +134,29 @@ CLOCK_OFFSET_RETRY_SECONDS = 600
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 
-# Archive search/download helpers share the driver's requests.Session. Serialize
-# those bounded HTTP operations so one session is never mutated concurrently.
-HIKVISION_HTTP_LOCK = threading.RLock()
+# Archive search/download helpers share the driver's requests.Session, and one recorder
+# serves one export at a time. Serialize those bounded HTTP operations PER RECORDER: two
+# transports to the same recorder take turns, but recorder A's slow export never holds
+# recorder B's (MNVR-025). Keyed by scheme, host and port of the recorder address.
+_HTTP_LOCKS: dict[tuple, threading.RLock] = {}
+_HTTP_LOCKS_GUARD = threading.Lock()
+
+
+def recorder_http_lock(base_url: str) -> threading.RLock:
+    """The archive HTTP lock of the recorder at ``base_url``."""
+    parsed = urlparse(str(base_url or ""))
+    scheme = (parsed.scheme or "http").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    key = (scheme, (parsed.hostname or "").lower(),
+           port or (443 if scheme == "https" else 80))
+    with _HTTP_LOCKS_GUARD:
+        lock = _HTTP_LOCKS.get(key)
+        if lock is None:
+            lock = _HTTP_LOCKS[key] = threading.RLock()
+        return lock
 
 
 
