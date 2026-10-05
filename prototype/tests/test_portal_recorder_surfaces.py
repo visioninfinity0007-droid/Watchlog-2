@@ -62,6 +62,21 @@ def test_system_health_renders_through_the_recorder_rules():
     assert "recorderRootReasons" not in health
 
 
+def test_system_health_never_confirms_cameras_behind_an_unavailable_recorder():
+    # Camera health and recording behind an unreachable recorder (or one WatchLog cannot sign in to) are
+    # last known, never current: the ledger shows "Not verified" with the last known state, and the
+    # "Cameras confirmed healthy" / "Recording confirmed" counts leave those cameras out.
+    health = read("site-health/health-workspace.js")
+    assert "const stale=!online||impact.unobserved(c);" in health
+    assert 'recording:stale?{label:"Not verified"' in health
+    stats = health[health.index("const stats=useMemo("):health.index("// The conclusion:")]
+    assert "const current=cams.filter(c=>!impact.unobserved(c));" in stats
+    for state in ('"operational"', '"degraded"', '"offline"', '"recording"'):
+        line = next(l for l in stats.splitlines() if "===" + state in l)
+        assert "current.filter(" in line, line
+    assert "},[cams,impact]);" in stats
+
+
 def test_page_leads_follow_the_recorder_impact_rules():
     # A storage issue never outranks camera faults in a lead, and "affected" is the cameras the root
     # cause explains (recorderImpact), never every camera_id behind a failing recorder.

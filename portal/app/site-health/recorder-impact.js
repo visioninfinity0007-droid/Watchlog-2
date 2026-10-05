@@ -100,6 +100,10 @@ export function recorderImpact({cams=[],faults=[],recorderRows=[]}={}){
     affectedBy.set(r,ids);
   }
   const recorderIssueCameraIds=new Set([...affectedBy.values()].flatMap(ids=>[...ids]));
+  // A camera's health and recording are observed through its recorder. Behind a recorder WatchLog cannot
+  // reach or sign in to, they are last known, never current (never "Healthy" or "Recording confirmed").
+  // A storage issue does not stop observation.
+  const unobserved=cam=>{const r=issueRecorderOf(cam);return Boolean(r)&&blocking(r)};
 
   // Offline cameras a kept name-only fault could be about (a fault row is raised only for an offline
   // camera). That fault already counts them; they are not counted again or reported as fault-less.
@@ -113,6 +117,7 @@ export function recorderImpact({cams=[],faults=[],recorderRows=[]}={}){
     recorderIssueCameraIds,
     camerasAffectedBy:r=>affectedBy.get(r)?.size??0,
     recorderFor,
+    unobserved,
     cameraFaults,
     faultFor,
     unattributedCameraIds,

@@ -161,16 +161,18 @@ export default function HealthWorkspace(){
     return{start:g.start,end:g.end,cause:g.cause,seconds:Math.max(0,(end-start)/1000),ongoing:!g.end||Math.abs(generatedAt-end)<120000};
   });
 
+  // Cameras behind an unavailable recorder count as not verified, never as confirmed.
   const stats=useMemo(()=>{
-    const operational=cams.filter(c=>String(c.health_state||"").toLowerCase()==="operational").length;
-    const degraded=cams.filter(c=>String(c.health_state||"").toLowerCase()==="degraded").length;
-    const offline=cams.filter(c=>String(c.health_state||"").toLowerCase()==="offline").length;
+    const current=cams.filter(c=>!impact.unobserved(c));
+    const operational=current.filter(c=>String(c.health_state||"").toLowerCase()==="operational").length;
+    const degraded=current.filter(c=>String(c.health_state||"").toLowerCase()==="degraded").length;
+    const offline=current.filter(c=>String(c.health_state||"").toLowerCase()==="offline").length;
     const healthUnknown=cams.length-operational-degraded-offline;
-    const recording=cams.filter(c=>String(c.recording_state||"").toLowerCase()==="recording").length;
-    const recordingIssue=cams.filter(c=>["not_recording","storage_fault"].includes(String(c.recording_state||"").toLowerCase())).length;
+    const recording=current.filter(c=>String(c.recording_state||"").toLowerCase()==="recording").length;
+    const recordingIssue=current.filter(c=>["not_recording","storage_fault"].includes(String(c.recording_state||"").toLowerCase())).length;
     const recordingUnknown=cams.length-recording-recordingIssue;
     return{operational,degraded,offline,healthUnknown,recording,recordingIssue,recordingUnknown};
-  },[cams]);
+  },[cams,impact]);
 
   // The conclusion: is WatchLog currently able to observe this site?
   const issueCount=impact.issueCount;
@@ -202,13 +204,14 @@ export default function HealthWorkspace(){
   const connectionTone=online?"ok":ever?"bad":"unknown";
   const connectionWord=online?"Connected":ever?"Disconnected":"Not connected yet";
 
-  // Per-camera ledger. While the site connection is lost, earlier camera states are stale, so they are
-  // shown as not verified with the last known state - never as current green.
+  // Per-camera ledger. While the site connection is lost, or the camera's recorder is unavailable, earlier
+  // camera states are stale, so they are shown as not verified with the last known state - never as
+  // current green.
   const ledger=cams.map(c=>{
     const h=healthView(c.health_state),r=recordingView(c.recording_state);
     const fault=impact.faultFor(c),failed=impact.recorderFor(c);
     const recorder=recorderById.get(recorderByCamera.get(String(c.id)));
-    const stale=!online;
+    const stale=!online||impact.unobserved(c);
     return{
       key:c.id||c.channel,
       name:c.name||"Camera "+c.channel,

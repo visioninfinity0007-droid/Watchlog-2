@@ -47,6 +47,29 @@ t("cameras behind a failed recorder are folded into that recorder", () => {
   assert.deepEqual([...r.recorderIssueCameraIds].sort(), ["c3", "c4"]);
 });
 
+t("camera states behind an unavailable recorder are not current; storage attention keeps them current", () => {
+  // The recorder last reported these cameras healthy and recording; it can no longer be reached or signed in to.
+  const cams = [
+    cam("c1", "rec-a", "Gate", "operational"), cam("c2", "rec-b", "Yard", "operational"),
+    cam("c3", "rec-c", "Till", "operational"), cam("c4", "rec-d", "Store", "operational"),
+    { ...cam("c5", null, "Door", "operational"), recorder_id: "rec-a" },
+  ];
+  const rows = [
+    rec("rec-a", "Recorder A", "offline", ["c1"], "connection"),
+    rec("rec-b", "Recorder B", "healthy", ["c2"]),
+    rec("rec-c", "Recorder C", "attention", ["c3"], "sign_in"),
+    rec("rec-d", "Recorder D", "attention", ["c4"], "storage"),
+  ];
+  const r = H.recorderImpact({ cams, faults: [], recorderRows: rows });
+  assert.equal(r.unobserved(cams[0]), true, "behind an unavailable recorder: never current");
+  assert.equal(r.unobserved(cams[4]), true, "ownership by recorder id counts too");
+  assert.equal(r.unobserved(cams[2]), true, "behind a recorder WatchLog cannot sign in to: never current");
+  assert.equal(r.unobserved(cams[1]), false, "behind an available recorder: current");
+  assert.equal(r.unobserved(cams[3]), false, "a storage issue does not stop observation");
+  const none = H.recorderImpact({ cams, faults: [], recorderRows: [] });
+  assert.equal(none.unobserved(cams[0]), false, "no recorder rows: camera states stay as reported");
+});
+
 t("a camera fault behind a failed recorder is folded too (video loss under an unreachable recorder)", () => {
   const cams = [cam("c1", "rec-a", "Gate", "offline"), cam("c2", "rec-b", "Yard", "operational")];
   const rows = [rec("rec-a", "Recorder A", "offline", ["c1"], "connection"), rec("rec-b", "Recorder B", "healthy", ["c2"])];
