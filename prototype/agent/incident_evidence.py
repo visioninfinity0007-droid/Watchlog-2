@@ -15,21 +15,28 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from urllib.parse import urlparse
 
 import requests
 
 import recovery_ai
 import watchlog_agent as core
+import recorder_registry
 import recorder_runtime
 from drivers import DriverError, NvrDriver
 
 POLL_SECONDS = 15
 # Claimed clip requests fetched at once or waiting on this PC. Each recorder's clips are
 # fetched by that recorder's own worker, so a slow export on one recorder never delays
-# another's (MNVR-034). Claiming pauses at this limit, so few claimed requests ever wait
-# here (a claimed request is not handed back if the Agent stops).
+# another's (MNVR-034). Claiming pauses at FOOTAGE_MAX_IN_FLIGHT while every recorder of the
+# site is busy, so few claimed requests ever wait here (a claimed request is not handed back
+# if the Agent stops). Requests are claimed oldest first for the whole site, so while a
+# recorder is idle its request may sit behind another recorder's backlog: claiming then
+# continues, up to FOOTAGE_MAX_CLAIMED.
 FOOTAGE_MAX_IN_FLIGHT = 4
+FOOTAGE_MAX_CLAIMED = 12
+SITE_RECORDERS_REFRESH_SECONDS = 60
 FOOTAGE_CAPACITY_WAIT_SECONDS = 1.0
 BACKEND_MISSING_RETRY_SECONDS = 300
 CHUNK_BYTES = 512 * 1024
@@ -266,27 +273,34 @@ class _RecorderFootageWorkers:
         self._queues: dict[str, queue.Queue] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._in_flight = 0
+        self._busy: dict[str, int] = {}      # recorder key -> requests held for it
         self._closed = threading.Event()
 
     def in_flight(self) -> int:
         with self._lock:
             return self._in_flight
 
+    def busy_recorders(self) -> set:
+        """Cloud recorder ids with a clip being fetched or waiting."""
+        with self._lock:
+            return {key for key, count in self._busy.items() if count > 0}
+
     def submit(self, row: dict) -> None:
         key = str(row.get("recorder_id") or "")
         with self._lock:
             self._in_flight += 1
+            self._busy[key] = self._busy.get(key, 0) + 1
             work = self._queues.get(key)
             if work is None:
                 work = self._queues[key] = queue.Queue()
                 worker = threading.Thread(
-                    target=self._run, args=(work,), daemon=True,
+                    target=self._run, args=(work, key), daemon=True,
                     name=f"incident-footage-{key[:8] or 'site'}")
                 self._threads[key] = worker
                 worker.start()
         work.put(row)
 
-    def _run(self, work: queue.Queue) -> None:
+    def _run(self, work: queue.Queue, key: str) -> None:
         # Each worker has its own cloud session; claimed work is still finished after a
         # stop, so a request this PC claimed is not left waiting for nothing.
         cloud = core.Cloud(self._cfg.supabase_url, self._cfg.publishable_key)
@@ -304,6 +318,7 @@ class _RecorderFootageWorkers:
             finally:
                 with self._lock:
                     self._in_flight -= 1
+                    self._busy[key] = self._busy.get(key, 1) - 1
 
     def close(self) -> None:
         """Let each worker finish the requests already handed to it, then end it."""
@@ -312,21 +327,48 @@ class _RecorderFootageWorkers:
             worker.join()
 
 
+def _site_recorder_ids() -> set:
+    """Cloud ids of this site's configured recorders (empty when unknown or legacy)."""
+    try:
+        return {str(row["cloud_recorder_id"]) for row in recorder_registry.recorders()
+                if row.get("is_configured") and row.get("cloud_recorder_id")}
+    except Exception:  # noqa: BLE001 — unknown: claim as a single-recorder site would
+        return set()
+
+
+def _may_claim(workers: _RecorderFootageWorkers, site_recorders: set) -> bool:
+    held = workers.in_flight()
+    if held < FOOTAGE_MAX_IN_FLIGHT:
+        return True
+    if held >= FOOTAGE_MAX_CLAIMED:
+        return False
+    # An idle recorder's request may be queued behind another recorder's backlog.
+    return bool(site_recorders - workers.busy_recorders())
+
+
 def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
     """Claim clip requests for the site and hand each to its recorder's own worker.
 
     The claim is site-wide, but retrieval is per recorder: a slow export on recorder A
     never delays a clip on recorder B (MNVR-034). Claiming pauses while
-    FOOTAGE_MAX_IN_FLIGHT requests are being fetched or wait on this PC."""
+    FOOTAGE_MAX_IN_FLIGHT requests are being fetched or wait on this PC and every
+    recorder of the site is busy; while one is idle it continues up to FOOTAGE_MAX_CLAIMED,
+    because the oldest-first claim may hold that recorder's request behind a backlog."""
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
     hosts = _recorder_hosts(cfg)
     workers = _RecorderFootageWorkers(cfg, state, hosts, stop)
     missing_backend_logged = False
+    site_recorders, site_recorders_at = set(), None
     try:
         while not stop.is_set():
             if workers.in_flight() >= FOOTAGE_MAX_IN_FLIGHT:
-                stop.wait(FOOTAGE_CAPACITY_WAIT_SECONDS)
-                continue
+                now = time.monotonic()
+                if (site_recorders_at is None
+                        or now - site_recorders_at >= SITE_RECORDERS_REFRESH_SECONDS):
+                    site_recorders, site_recorders_at = _site_recorder_ids(), now
+                if not _may_claim(workers, site_recorders):
+                    stop.wait(FOOTAGE_CAPACITY_WAIT_SECONDS)
+                    continue
             try:
                 requests_list = cloud.call(
                     "wl_agent_claim_clip_requests",

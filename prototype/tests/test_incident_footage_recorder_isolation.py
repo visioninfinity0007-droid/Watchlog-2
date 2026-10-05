@@ -113,6 +113,7 @@ def test_claiming_pauses_while_the_in_flight_limit_is_reached(monkeypatch):
                         lambda _cfg, rid: SimpleNamespace(nvr_url="http://a.invalid"))
     monkeypatch.setattr(ie.core, "open_archive_driver", lambda cfg: (
         Recorder("a", gate=release), DeviceInfo(vendor="Dahua", model="X")))
+    monkeypatch.setattr(ie, "_site_recorder_ids", lambda: {A})
     monkeypatch.setattr(ie, "POLL_SECONDS", 0.05)
     base = SimpleNamespace(supabase_url="https://cloud.invalid", publishable_key="pk",
                            nvr_url="http://a.invalid")
