@@ -128,7 +128,9 @@ Live events and recorder liveness:
 - **MNVR-055 / MNVR-036**: a 401 is retried with Basic only when the challenge offers Basic
   and not Digest, so a wrong password or a stray 401 from a Digest recorder no longer sends the
   password in the clear or costs a second login attempt. Hikvision does this per request (its
-  ISAPI calls, stills and alertStream) and the session keeps Digest. Dahua `_get` moves that
+  ISAPI calls, stills and alertStream) and the session keeps Digest. ONVIF stills do the
+  same per request, and a refused ONVIF still raises `NvrAuthFailed` instead of returning
+  no image. Dahua `_get` moves that
   recorder's session to Basic after a Basic-only challenge and keeps it there, because
   `snapshot.cgi` and the attach stream use the same session and a Basic-only unit must keep
   serving both. The Dahua archive reader (`dahua_archive._request`) and

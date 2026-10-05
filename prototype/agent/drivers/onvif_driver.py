@@ -45,7 +45,7 @@ from xml.sax.saxutils import escape
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed, NvrDriver,
                    explain)
 
 _TAG = re.compile(r"\{.*?\}")
@@ -739,16 +739,26 @@ class OnvifDriver(NvrDriver):
         node = root.find(".//Uri")
         if node is None or not node.text:
             return None
+        url = self._rehost(node.text.strip())
         try:
-            r = self.s.get(self._rehost(node.text.strip()),
-                           auth=HTTPDigestAuth(self.username, self.password),
+            r = self.s.get(url, auth=HTTPDigestAuth(self.username, self.password),
                            timeout=SNAPSHOT_TIMEOUT)
+            # Basic only when the challenge offers Basic and not Digest (MNVR-055): a
+            # Digest refusal never resends the password in the clear or costs a second login.
             if r.status_code == 401:
-                r = self.s.get(self._rehost(node.text.strip()),
-                               auth=HTTPBasicAuth(self.username, self.password),
-                               timeout=SNAPSHOT_TIMEOUT)
+                challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+                if "basic" in challenge and "digest" not in challenge:
+                    r.close()
+                    r = self.s.get(url, auth=HTTPBasicAuth(self.username, self.password),
+                                   timeout=SNAPSHOT_TIMEOUT)
         except requests.RequestException:
             return None
+        # A refused still is an auth failure, as on Hikvision, so callers use their auth
+        # back-off instead of counting a quiet camera fault.
+        if r.status_code in (401, 403):
+            raise NvrAuthFailed(
+                f"snapshot ch{channel}: HTTP {r.status_code} — recorder rejected the "
+                "username or password")
         if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
             return r.content
         return None
