@@ -30,9 +30,9 @@ to any update channel and none is installed on any site. It requires database co
 5.0.28 (section 1B, branch `fix/agent-5.0.28`) is an Agent-only **candidate, not
 promoted**: no Windows artifact has been built from it and none is installed on any
 site. It stays unpromoted until its exact merge SHA, Windows workflow run, artifact
-IDs/hashes and physical HASCO, then Al-Khalid acceptance are recorded below. 5.0.27
-(section 1A) was never promoted either. Build 69 / 5.0.17 remains the field-proven
-discovery/connectivity baseline until that happens.
+IDs/hashes and physical site acceptance (Al-Khalid first; see section 1B) are
+recorded below. 5.0.27 (section 1A) was never promoted either. Build 69 / 5.0.17
+remains the field-proven discovery/connectivity baseline until that happens.
 
 Existing-site Repair/Upgrade implementation merge:
 
@@ -182,6 +182,36 @@ Recorded media:
   Hikvision archive takes no clock argument.
 - **U-3**: the shipped run loop honours `spool_max_rows`.
 
+Timed stills:
+
+- **NEW-L2 (periodic stills)**: the Agent produces one timed still per configured camera about
+  every 300 s, staggered across the cadence, as the deployed HASCO and Chai Wala Agents already do.
+  Each is a `visual_sample` event with `payload` exactly
+  `{"sample": true, "source": "periodic_snapshot", "vendor": <vendor>}` and the JPEG inline, the
+  contract production's still claim, visual review and restaurant reports consume. A sample with
+  no still is never sent. Local settings: `periodic_stills` (default on) and
+  `periodic_still_seconds` (default 300, clamped to 60-3600 s). An unreachable or refusing
+  recorder is backed off. The still comes from the live driver, so hikvision-isapi, dahua-cgi
+  and onvif share the code. Without it an upgrade would remove those sites' only timed stills.
+  Not yet seen on any site.
+
+Repair/Upgrade downgrade guard:
+
+- `wl-repair-upgrade.ps1` reads `%ProgramData%\WatchLog\recorders.json` (written only by
+  5.1.0+) first, before the candidate runs or the installed Agent is paused. It refuses with
+  exit 24 and "This site uses more than one recorder; WatchLog 5.0.28 cannot manage it. Disable
+  the extra recorders in Manage Recorders first, or install 5.1.0 or later." when more than one
+  recorder is configured (a row without `is_configured` counts as configured, as in 5.1). It
+  refuses with exit 25 when the file exists but is not readable JSON, has another schema or a
+  malformed row, because the count cannot be proven. A missing file (a 5.0.x site), an empty
+  list or one configured recorder is not blocked. Reason: 5.0.28 ignores the registry and runs
+  only the legacy recorder, and a multi-recorder site refuses its legacy calls while the
+  heartbeat still looks online. Covered by `test_repair_multi_recorder_guard.py` (static checks,
+  the reader under PowerShell, and the whole orchestrator on Windows against a sandbox
+  ProgramData). It guards Repair/Upgrade only (the full installer sends a complete existing site
+  to Repair/Upgrade). A remote update to 5.0.28 does not run this script and is not covered by
+  it.
+
 Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
 (`test_ci_runs_every_test.py` fails on a test no step runs), and no test writes to the real
 `%ProgramData%\WatchLog` (`conftest.py`, `programdata_sandbox.py`,
@@ -193,16 +223,15 @@ Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
   hardware-free fakes, run by the backend job ("Agent 5.0.27 repair gates", "Agent 5.0.28
   live-site gates") and, for ingest and recovery payloads, by the integration job on a
   disposable Postgres. They prove the Agent's logic against the documented protocol shapes.
-  Status at this commit (the backend and integration jobs run locally on 2026-10-05, again after
-  the review fixes; GitHub CI has not run it): the integration job passes, including the
-  recorder-scoped ingest and recovery-payload e2e steps. The backend job fails three Agent steps
-  on tests from the merged recovery, Hikvision-media and Dahua-media work that disagree with each
-  other: "Agent 5.0.27 repair gates" (13 tests in `test_dahua_archive_paging`,
-  `test_dahua_archive_timezone`, `test_hikvision_archive_recovery_status`,
-  `test_recovery_dahua_archive_times`, `test_recovery_ai`), "Agent 5.0.28
-  live-site gates" (6 in `test_recovery_hikvision_terminal`; its ONVIF, incident, event-stream,
-  Hikvision and Dahua lines pass) and "Automatic outage recovery" (1 in `test_recovery_ai`).
-  Nothing in this section is CI-proven until those pass on GitHub.
+  Status at this commit: **GitHub Actions has not run any job for this head**, because the
+  account's Actions billing is failing, so no CI result exists for it. The backend and
+  integration jobs were reproduced locally on 2026-10-06 (`wl-ci-local.py`, integration on a
+  disposable local Postgres 16). Every Agent step passes there, including "Agent 5.0.27 repair
+  gates", "Agent 5.0.28 live-site gates" and "Automatic outage recovery", and every integration
+  step passes. The one backend step that fails, "Reports preview truth contract", fails on
+  `main` too: an archived Chai Wala report (2026-10-01) contains a banned phrase. A local
+  reproduction is not GitHub CI: it ran on Windows rather than ubuntu-latest and skips the
+  package-install steps. Nothing in this section is CI-proven until the jobs pass on GitHub.
 - **IMPLEMENTED_UNVERIFIED on hardware** (no field evidence yet): everything a recorder decides.
   DS-7608NI-Q1 (HASCO, Chai Wala): keep-alive cadence within 90 s, `dateTime` with or without an
   offset, the timezone stated in `/ISAPI/System/time`, playbackURI windowing, channel-less
@@ -231,19 +260,39 @@ Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
     fake). A Digest-capable Dahua unit that ever answers with a Basic-only challenge would stay
     on Basic until the Agent reopens the driver (not expected; not field-checked).
 
+### Known limits of 5.0.28
+
+- **Event-stream liveness is local only.** The per-recorder `event_stream` block is written to
+  the local runtime-health proof (`Secrets\runtime-health.json`) and read by Repair/Upgrade; the
+  cloud heartbeat does not carry it in 5.0.28. The cloud `nvr_health` "reachable" still comes
+  from the recorder probe, so the portal can show a recorder reachable while no events arrive,
+  as at Al-Khalid (recorder reachable and authenticated on 2026-10-04, no event since
+  2026-09-26).
+- **Chai Wala could get two sets of timed stills.** 5.0.28 advertises `config_snapshot_requests`.
+  Production strips that capability today, so the restaurant scheduler has never created a
+  request. Once the 0156 hotfix lets it through, a 5.0.28 Agent at Chai Wala would receive both
+  the restaurant scheduler's requested stills and its own periodic stills for the same cameras.
+  Which source should feed Chai Wala's reports is an owner decision, still pending.
+- **Multi-recorder sites are refused**, not managed: see the Repair/Upgrade downgrade guard
+  above (exit 24 or 25).
+
+### First field site
+
+Al-Khalid is the recommended first 5.0.28 site. Its recorder is reachable and authenticated,
+but it has produced no events or stills since 2026-09-26 on the ONVIF transport, which is the
+defect class 5.0.28 fixes. HASCO's recorder has been unreachable since 2026-09-30 11:25Z (its
+last successful contact; the first failed probe was at 11:31Z), so HASCO cannot be the first
+acceptance site until that is resolved on site. Chai Wala goes last: the source of its 5.0.17
+Agent is unknown and its stills feed live restaurant reports.
+
 ### Per-site field acceptance gates (in this order)
 
 Promotion needs one exact Windows artifact built from the merged source, recorded here with its
-merge SHA, workflow run, artifact ID and executable hashes, then:
+merge SHA, workflow run, artifact ID and executable hashes. On every site, in addition to the
+site gates below: `visual_sample` rows with `payload.source='periodic_snapshot'` appear from the
+5.0.28 Agent, one per configured camera about every 300 s. Then:
 
-1. **HASCO first** (Hikvision DS-7608NI-Q1). Before installing, confirm the recorder is reachable
-   again (the audit recorded it unreachable since 2026-09-26) and read the installed
-   `--version` / BUILD_SHA (the exact 5.0.26 source deployed there is unknown). Then the 1A
-   gates 1-10, plus: `event_stream.connected` true with `last_frame_at` advancing on a quiet
-   site (keep-alives); a stream drop reopened within seconds; a controlled restart gap opening
-   exactly one recovery interval with camera UUIDs; a channel-less or disk alert stored with no
-   camera; one bounded incident clip whose window contains the event.
-2. **Al-Khalid second** (Dahua DH-XVR1B08-I, persisted live driver `onvif`). First retrieve that
+1. **Al-Khalid first** (Dahua DH-XVR1B08-I, persisted live driver `onvif`). First retrieve that
    install's `setup.log` to learn why `onvif` was persisted, and read `--version` / BUILD_SHA.
    FIELD-AKSS-001 covers dahua-cgi at Agent 0.4.1 only and does not carry over to ONVIF. Then
    the 1A gates 1-10, plus: events attributed to the right camera (walk-tests on at least two
@@ -251,9 +300,18 @@ merge SHA, workflow run, artifact ID and executable hashes, then:
    `event_stream.last_clock_skew_s` read and the XVR clock checked; ONVIF stills for a camera
    other than 1; an incident clip through the mapped dahua-cgi archive whose window contains
    the event; recovery of a controlled gap with RECOVERED provenance.
-3. **Chai Wala**: its 5.0.17 (Build 69) code is UNKNOWN (source 811d378 is in neither object
-   store). Capture its support bundle and `--version` / BUILD_SHA before planning any upgrade;
-   Site Control is enabled there while its executor is unknown.
+2. **HASCO second** (Hikvision DS-7608NI-Q1). Before installing, confirm the recorder is
+   reachable again (unreachable since 2026-09-30 11:25Z; the Agent itself has been offline since
+   2026-10-03) and read the installed `--version` / BUILD_SHA (the exact 5.0.26 source deployed
+   there is unknown). Then the 1A gates 1-10, plus: `event_stream.connected` true with
+   `last_frame_at` advancing on a quiet site (keep-alives); a stream drop reopened within
+   seconds; a controlled restart gap opening exactly one recovery interval with camera UUIDs; a
+   channel-less or disk alert stored with no camera; one bounded incident clip whose window
+   contains the event.
+3. **Chai Wala last**: its 5.0.17 (Build 69) code is UNKNOWN (source 811d378 is in neither
+   object store). Capture its support bundle and `--version` / BUILD_SHA before planning any
+   upgrade; Site Control is enabled there while its executor is unknown. Settle the timed-still
+   source (see Known limits) before upgrading, because its stills feed live restaurant reports.
 
 Any failed gate keeps 5.0.28 unpromoted and preserves rollback to the installed version.
 
