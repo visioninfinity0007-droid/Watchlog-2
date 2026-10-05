@@ -600,7 +600,7 @@ const routes = [
   { slug: "saved-video", path: `/archive/?site=${SITE_ID}`, ready: "Find earlier activity at Harbour Branch" },
   { slug: "setup", path: `/setup/?site=${SITE_ID}`, ready: "Set up Harbour Branch with WatchLog" },
   { slug: "settings", path: `/settings/?site=${SITE_ID}`, ready: "Account and sites" },
-  { slug: "health", path: `/site-health/?site=${SITE_ID}`, ready: "Can WatchLog observe this site?" },
+  { slug: "health", path: `/site-health/?site=${SITE_ID}`, ready: "Can WatchLog observe this site?", expect: ["1 item need checking"], expectDesktop: ["Recording confirmed"] },
   { slug: "incidents", path: `/incidents/?site=${SITE_ID}`, ready: "Security review for" },
   { slug: "delivery", path: `/reports/delivery/?site=${SITE_ID}`, ready: "Report delivery" },
   { slug: "team", path: `/team/?site=${SITE_ID}`, ready: "Who has access" },
@@ -635,7 +635,15 @@ const fullyVerifiedRoutes = [
 const multiRecorderOverrides = {
   wl_ai_context: {
     ...context,
-    facts_version: "watchlog-ai-context-v6",
+    facts_version: "watchlog-ai-context-v7",
+    // What wl_ai_context serves on a multi-recorder site: no site-wide recorder identity or profile.
+    recorder: null,
+    capabilities: {},
+    capability_known: false,
+    recorders: [
+      { id: "rec-a", name: "Main building recorder", state: "healthy", issue: null, checked_at: "2026-10-01T07:58:00Z", camera_count: 2, camera_ids: ["c1","c2"] },
+      { id: "rec-b", name: "Loading area recorder", state: "offline", issue: "connection", checked_at: "2026-10-01T07:57:00Z", camera_count: 2, camera_ids: ["c3","c4"] },
+    ],
     cameras: [
       { id: "c1", recorder_id: "rec-a", channel: 1, name: "Main entrance", monitor: true, health_state: "operational", recording_state: "recording", purpose: "entrance" },
       { id: "c2", recorder_id: "rec-a", channel: 2, name: "Service area", monitor: true, health_state: "operational", recording_state: "recording", purpose: "queue" },
@@ -658,10 +666,53 @@ const multiRecorderOverrides = {
       { id: "rec-b", name: "Loading area recorder", state: "offline", issue: "connection", checked_at: "2026-10-01T07:57:00Z", camera_count: 2, camera_ids: ["c3","c4"] },
     ],
   },
+  // Site Control: the recorder-aware diagnosis (0155). Mixed recorders, both with a Channel 1, no
+  // site-wide recorder profile. Recorder B is unidentified.
+  wl_my_site_diagnosis: {
+    site_control_enabled: true, role: "owner", tiers: { read: true, recommend: true, approve: true },
+    recorder_count: 2, multi_recorder: true, recorder: null, capabilities: null, capability_known: false,
+    connectivity: { agent_online: true, last_seen: "2026-10-01T07:58:00Z" },
+    recorders: [
+      { recorder_id: "rec-a", display_name: "Main building recorder", is_primary: true, vendor: "Hikvision", model: "NVR", firmware: null, identified: true, capability_known: true, camera_count: 2,
+        cameras: [
+          { camera_id: "c1", channel: "1", name: "Main entrance", purpose: "entrance", health_state: "operational", video_loss: false, recording_state: "recording" },
+          { camera_id: "c2", channel: "2", name: "Service area", purpose: "queue", health_state: "operational", video_loss: false, recording_state: "recording" },
+        ] },
+      { recorder_id: "rec-b", display_name: "Loading area recorder", is_primary: false, vendor: null, model: null, firmware: null, identified: false, capability_known: false, camera_count: 2,
+        cameras: [
+          { camera_id: "c3", channel: "1", name: "Rear access", purpose: "rear_access", health_state: "offline", video_loss: false, recording_state: "unknown" },
+          { camera_id: "c4", channel: "2", name: "Storage corridor", purpose: "storage", health_state: "unknown", video_loss: false, recording_state: "unknown" },
+        ] },
+    ],
+    cameras: [
+      { camera_id: "c1", recorder_id: "rec-a", recorder_name: "Main building recorder", channel: "1", name: "Main entrance", purpose: "entrance" },
+      { camera_id: "c2", recorder_id: "rec-a", recorder_name: "Main building recorder", channel: "2", name: "Service area", purpose: "queue" },
+      { camera_id: "c3", recorder_id: "rec-b", recorder_name: "Loading area recorder", channel: "1", name: "Rear access", purpose: "rear_access" },
+      { camera_id: "c4", recorder_id: "rec-b", recorder_name: "Loading area recorder", channel: "2", name: "Storage corridor", purpose: "storage" },
+    ],
+    faults: [{ camera_id: "c3", recorder_id: "rec-b", camera: "Rear access", reason: "nvr_unreachable" }],
+  },
+  // Watch AI: a saved recorder card exactly as the multi-recorder guided answer used to write it
+  // (no capability_known), which rendered "WatchLog support: Checked".
+  wl_ai_messages: [
+    { id: "m1", role: "user", content: "Check my recorders", payload: {} },
+    { id: "m2", role: "assistant", content: "This site has 2 configured recorders.", payload: { cards: [{ type: "recorder", title: "Recorders", data: { recorders: [
+      { id: "rec-a", name: "Main building recorder", state: "healthy", issue: null, camera_count: 2 },
+      { id: "rec-b", name: "Loading area recorder", state: "offline", issue: "connection", camera_count: 2 },
+    ] } }] } },
+  ],
 };
+const RAW_PROFILE = /MediaProfile|legacy-profile/i;
 const multiRecorderRoutes = [
-  { slug: "health-multi-recorder", path: `/site-health/?site=${SITE_ID}`, ready: "Loading area recorder" },
+  { slug: "health-multi-recorder", path: `/site-health/?site=${SITE_ID}`, ready: "Loading area recorder",
+    expect: ["1 recorder needs attention", "Check that the recorder is powered"], expectDesktop: ["Recording confirmed"],
+    forbid: ["Check the camera's power and cable"] },
   { slug: "cameras-multi-recorder", path: `/control-room/?site=${SITE_ID}`, ready: "Main building recorder" },
+  { slug: "camera-settings-multi-recorder", path: `/site-control/?site=${SITE_ID}`, ready: "Loading area recorder",
+    expect: ["Main building recorder", "Rear access", "Storage corridor"],
+    forbid: [RAW_PROFILE, "Verified on your camera system", "Configurable"] },
+  { slug: "ask-multi-recorder", path: `/ai/?site=${SITE_ID}&conversation=conv-1`, ready: "Loading area recorder",
+    expect: ["Not yet confirmed"], forbid: ["Checked"] },
 ];
 // Phase 28: each business site type renders its own operating story from the same governed day.
 const siteTypeRoutes = (type, home, dayNoun, week = "A period comparison is not available for this site yet.") => [
@@ -721,6 +772,12 @@ try {
       if (/No unverified period today/i.test(bodyText) && unverifiedAmount.test(bodyText)) {
         pageErrors.push("contradictory coverage: 'No unverified period today' shown alongside unverified time");
       }
+      // Scenario truth guards: wording that must (expect) or must never (forbid) be on the page. The
+      // side rail is hidden on narrow screens, so rail-only wording is expected on desktop only.
+      const has = needle => needle instanceof RegExp ? needle.test(bodyText) : bodyText.includes(needle);
+      const expected = [...(route.expect || []), ...(viewport.name === "desktop" ? route.expectDesktop || [] : [])];
+      for (const needle of expected) if (!has(needle)) pageErrors.push(`missing expected text: ${needle}`);
+      for (const needle of route.forbid || []) if (has(needle)) pageErrors.push(`forbidden text shown: ${needle}`);
       const filename = `${route.slug}-${viewport.name}.png`;
       await page.screenshot({ path: path.join(OUT, filename), fullPage: true });
       manifest.push({

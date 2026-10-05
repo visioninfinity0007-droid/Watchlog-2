@@ -1,11 +1,32 @@
 #!/usr/bin/env python3
 """Static portal contract for customer-safe multi-recorder grouping."""
+import re
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
 HEALTH=(ROOT/"portal/app/site-health/health-workspace.js").read_text(encoding="utf-8")
 CAMERAS=(ROOT/"portal/app/control-room/customer-workspace.js").read_text(encoding="utf-8")
 MIG=(ROOT/"prototype/supabase/migrations/0152_multi_recorder_owner_read_model.sql").read_text(encoding="utf-8")
+VISUAL_QA=(ROOT/"portal/tests/visual-qa.mjs").read_text(encoding="utf-8")
+# Context v7 is the first owner/AI context with recorder provenance (recorder rows, camera and
+# event recorder_id, multi-recorder masking). Later additive versions must keep those guards.
+RECORDER_PROVENANCE_CONTEXT=7
+
+
+def latest_definition(function):
+    """Body of the last migration that (re)defines public.<function>, i.e. what the DB runs."""
+    marker=f"create or replace function public.{function}("
+    body=None
+    for path in sorted((ROOT/"prototype/supabase/migrations").glob("*.sql")):
+        text=path.read_text(encoding="utf-8")
+        start=text.rfind(marker)
+        if start<0:
+            continue
+        end=text.find("$function$;",start)
+        body=text[start:end if end>0 else len(text)]
+    if body is None:
+        raise AssertionError(f"no migration defines public.{function}")
+    return body
 
 
 def require(text,needle,message):
@@ -56,10 +77,33 @@ def main():
 
     # Existing context stays additive but gains canonical provenance required to
     # prevent overlapping-channel evidence mixups.
-    require(MIG,"'facts_version','watchlog-ai-context-v6'","context version must reflect recorder provenance")
-    require(MIG,"e.camera_id","recent events must expose canonical camera identity")
-    require(MIG,"e.recorder_id","recent events must expose recorder identity")
-    require(MIG,"'recorder_id',c.recorder_id","camera rows must expose recorder identity")
+    # Assert the version floor and the provenance/masking behaviour of the context the DB actually
+    # serves (the latest wl_ai_context), not one version literal (MNVR-052).
+    ctx=latest_definition("wl_ai_context")
+    flat=re.sub(r"\s+"," ",ctx)
+    versions=re.findall(r"'facts_version',\s*'watchlog-ai-context-v(\d+)'",ctx)
+    if len(versions)!=1:
+        raise AssertionError(f"wl_ai_context must emit exactly one facts_version, found {versions}")
+    if int(versions[0])<RECORDER_PROVENANCE_CONTEXT:
+        raise AssertionError("context version must reflect recorder provenance (v7 or later)")
+    require(ctx,"e.camera_id","recent events must expose canonical camera identity")
+    require(ctx,"e.recorder_id","recent events must expose recorder identity")
+    require(ctx,"'recorder_id',c.recorder_id","camera rows must expose recorder identity")
+    require(ctx,"public.wl_my_site_recorders(p_site_id)","context recorders must come from the owner recorder read model")
+    for guard,message in (
+        (r"'recorder',case when v_recorder_count<=1 then v_diag->'recorder' else null end",
+         "a multi-recorder site must not get a site-wide recorder identity"),
+        (r"'capabilities',case when v_recorder_count<=1 then v_diag->'capabilities' else '\{\}'::jsonb end",
+         "a multi-recorder site must not get a site-wide capability profile"),
+        (r"'capability_known',case when v_recorder_count<=1 then coalesce\(\(v_diag->>'capability_known'\)::boolean,false\) else false end",
+         "capability_known must be false on a multi-recorder site"),
+    ):
+        if not re.search(guard.replace(" ",r"\s*"),flat):
+            raise AssertionError(message)
+    # The visual-QA fixture must model the context version the DB serves.
+    fixture=re.findall(r'facts_version:\s*"watchlog-ai-context-v(\d+)"',VISUAL_QA)
+    if fixture and set(fixture)!={versions[0]}:
+        raise AssertionError(f"visual-qa fixture context version {sorted(set(fixture))} != DB v{versions[0]}")
 
     print("Multi-recorder portal contract: PASS")
     return 0
