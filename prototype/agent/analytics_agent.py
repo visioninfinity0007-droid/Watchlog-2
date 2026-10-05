@@ -1032,6 +1032,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 detector=detector,
                 analytics_worker=analytics_worker,
                 archive_worker=archive_worker,
+                last_live_writer=_persist_stream_last_live,
             )
 
         channels, holder_seed = _adopt_single_recorder(cfg, prepared[0])
