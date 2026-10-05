@@ -123,8 +123,15 @@ Live events and recorder liveness:
   are not occurrences; pull points are renewed from the granted lifetime and unsubscribed on
   close and before resubscribing.
 - **MNVR-054**: Hikvision targetType split on whitespace, not the letter "s".
-- **MNVR-055 / MNVR-036**: Hikvision and Dahua retry a 401 with Basic only when the challenge
-  offers Basic and not Digest, for that one request; the session keeps Digest.
+- **MNVR-055 / MNVR-036**: a 401 is retried with Basic only when the challenge offers Basic
+  and not Digest, so a wrong password or a stray 401 from a Digest recorder no longer sends the
+  password in the clear or costs a second login attempt. Hikvision does this per request (its
+  ISAPI calls, stills and alertStream) and the session keeps Digest. Dahua `_get` moves that
+  recorder's session to Basic after a Basic-only challenge and keeps it there, because
+  `snapshot.cgi` and the attach stream use the same session and a Basic-only unit must keep
+  serving both. Not yet changed: the Dahua archive reader (`dahua_archive._request`) and
+  `NativeDahuaDriver.get_clip` still switch the session to Basic on any 401, and the Hikvision
+  archive reader still keeps Basic after a Basic-only challenge.
 
 Recovery:
 
@@ -193,8 +200,13 @@ Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
   - ONVIF `device_ts` follows the recorder's UtcTime while it is within 300 s of the PC; a
     recorder clock further off gives receive time plus `clock_skew_s`.
   - ONVIF `Initialized` states at subscribe time are no longer emitted as new occurrences.
-  - A recorder that answers a 401 offering Digest but accepts only Basic would now fail login
+  - A recorder that answers a 401 offering Digest but accepts only Basic, or a 401 with no
+    `WWW-Authenticate` challenge, would now fail login instead of being retried with Basic
     (not expected; not field-checked).
+  - A Dahua-derived unit that offers Basic only keeps working for probe, stills and the attach
+    stream (the session stays on Basic after the first Basic-only challenge; CI-covered with a
+    fake). A Digest-capable Dahua unit that ever answers with a Basic-only challenge would stay
+    on Basic until the Agent reopens the driver (not expected; not field-checked).
 
 ### Per-site field acceptance gates (in this order)
 

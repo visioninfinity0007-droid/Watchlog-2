@@ -143,17 +143,19 @@ class DahuaDriver(NvrDriver):
             r = self.s.get(url, timeout=timeout, **kw)
         except requests.RequestException as e:
             raise NvrUnreachable(f"{url}: {explain(e)}") from e
-        # Digest is the norm; some Dahua-derived units only do Basic. Basic is used only when
-        # the recorder's challenge offers Basic and not Digest, and only for this one retry:
-        # the session keeps Digest, so a 401 can never leave every later request sending the
-        # password in the clear (or failing on a Digest-only unit). Same rule as Hikvision.
-        if r.status_code == 401:
+        # Digest is the norm; some Dahua-derived units only do Basic. The session moves to
+        # Basic only when the recorder's challenge offers Basic and not Digest: a wrong
+        # password or a stray 401 from a Digest unit never sends the password in the clear,
+        # costs no second login attempt and leaves the session on Digest. The switch is kept
+        # for this recorder because snapshot.cgi and the attach stream use the same session
+        # (a Basic-only unit would otherwise fail every still and every attach).
+        if r.status_code == 401 and not isinstance(self.s.auth, HTTPBasicAuth):
             challenge = (r.headers.get("WWW-Authenticate") or "").lower()
             if "basic" in challenge and "digest" not in challenge:
                 r.close()
+                self.s.auth = HTTPBasicAuth(self.username, self.password)
                 try:
-                    r = self.s.get(url, timeout=timeout,
-                                   auth=HTTPBasicAuth(self.username, self.password), **kw)
+                    r = self.s.get(url, timeout=timeout, **kw)
                 except requests.RequestException as e:
                     raise NvrUnreachable(f"{url}: {explain(e)}") from e
         # Reachable but the recorder rejected the login: a credentials fault, not "offline".
