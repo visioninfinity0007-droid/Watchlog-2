@@ -238,7 +238,8 @@ class RecoveryRunner:
         # be fully recovered.
         examined = bool(checkpoint.get("examined"))
         incomplete = unresolved > 0 or bool(checkpoint.get("incomplete"))
-        if resume is not None and resume > _as_dt(iv["started_at"])                 and "examined" not in checkpoint and "incomplete" not in checkpoint:
+        if (resume is not None and resume > _as_dt(iv["started_at"])
+                and "examined" not in checkpoint and "incomplete" not in checkpoint):
             # Written by an earlier Agent, which did not carry the verdict for the time behind its
             # cursor: events it recovered there were sent, so the interval is not unrecoverable,
             # but that time cannot be called examined to the end (its seen-set also held samples
