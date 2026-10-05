@@ -8,6 +8,7 @@ The recorder rules live in React-free modules so they can be checked in plain no
   portal/app/control-room/camera-events.js     latest camera event per camera, by camera identity
 The static checks below make sure each surface really renders through those modules.
 """
+import re
 import shutil
 import subprocess
 import sys
@@ -66,7 +67,7 @@ def test_page_leads_follow_the_recorder_impact_rules():
     # cause explains (recorderImpact), never every camera_id behind a failing recorder.
     cameras = read("control-room/customer-workspace.js")
     health = read("site-health/health-workspace.js")
-    assert 'recorderImpact } from "../site-health/recorder-impact";' in cameras
+    assert re.search(r'import \{[^}]*\brecorderImpact\b[^}]*\} from "\.\./site-health/recorder-impact";', cameras)
     assert "recorderImpact({ cams: cameras, faults, recorderRows })" in cameras
     assert "} else if (impact.blockingIssues.length) {" in cameras
     assert "impact.blockingIssues.length||" in health
@@ -85,6 +86,15 @@ def test_recorder_state_is_not_current_while_the_site_is_disconnected():
     assert "currentRecorderRows(recorderSummary?.recorders || [], Boolean(ctx?.connectivity?.agent_online))" in cameras
     for page in (cameras, health):
         assert "recorderSummary?.recorders" in page and page.count("recorderSummary?.recorders") == 1,             "recorder rows are read once, through currentRecorderRows"
+
+
+def test_a_failed_recorder_call_falls_back_to_the_context():
+    cameras = read("control-room/customer-workspace.js")
+    health = read("site-health/health-workspace.js")
+    assert "setRecorderSummary(prev=>recorderSummaryFrom(recorders,r.data,prev))" in health
+    assert "setRecorderSummary(recorderSummaryFrom(recorderResult, contextResult.data))" in cameras
+    assert "recorders.error?null" not in health
+    assert "!recorderResult.error ? recorderResult.data || null : null" not in cameras
 
 
 def test_site_control_renders_through_the_recorder_rules():

@@ -28,6 +28,15 @@ export function currentRecorderRows(rows=[],online=false){
   return online?list:list.map(r=>({...r,state:"unknown",issue:null,last_known_state:r?.state??null,last_known_issue:r?.issue??null}));
 }
 
+// Recorder rows for a page: wl_my_site_recorders when that call succeeds, else the same rows the owner
+// context already carries (wl_ai_context v7 builds ctx.recorders with wl_my_site_recorders), else the
+// last rows the page had. One failed call never drops the recorder root cause.
+export function recorderSummaryFrom(result,ctx,prev=null){
+  if(result&&!result.error)return result.data||null;
+  if(Array.isArray(ctx?.recorders))return{recorders:ctx.recorders};
+  return prev??null;
+}
+
 function needsAttention(cam){
   return ["offline","degraded"].includes(low(cam.health_state))||["not_recording","storage_fault"].includes(low(cam.recording_state));
 }

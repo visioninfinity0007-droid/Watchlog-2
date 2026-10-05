@@ -23,7 +23,7 @@ import {
 } from "../owner/ui";
 import styles from "./cameras.module.css";
 import { atMostOneRecorder, latestEventFor, latestEventIndex } from "./camera-events";
-import { currentRecorderRows, recorderImpact } from "../site-health/recorder-impact";
+import { currentRecorderRows, recorderImpact, recorderSummaryFrom } from "../site-health/recorder-impact";
 
 function human(v) {
   return String(v || "Not verified")
@@ -195,9 +195,7 @@ export default function CustomerCameraView() {
         return;
       }
       setCtx(contextResult.data || null);
-      setRecorderSummary(
-        !recorderResult.error ? recorderResult.data || null : null,
-      );
+      setRecorderSummary(recorderSummaryFrom(recorderResult, contextResult.data));
       setRestaurantConfig(
         !restaurantResult.error && restaurantResult.data?.enabled === true
           ? restaurantResult.data

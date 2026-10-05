@@ -5,7 +5,7 @@ import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
 import {coverageTruth,OwnerPage,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Empty,Loading,Notice,AskLinks,ratioPct} from "../owner/ui";
-import {currentRecorderRows,recorderImpact} from "./recorder-impact";
+import {currentRecorderRows,recorderImpact,recorderSummaryFrom} from "./recorder-impact";
 
 function human(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
 function ago(ts){
@@ -114,7 +114,7 @@ export default function HealthWorkspace(){
     setLoading(false);
     if(r.error){setError(say(r.error));return}
     setCtx(r.data||null);
-    setRecorderSummary(recorders.error?null:(recorders.data||null));
+    setRecorderSummary(prev=>recorderSummaryFrom(recorders,r.data,prev));
     setError("");
   },[]);
 

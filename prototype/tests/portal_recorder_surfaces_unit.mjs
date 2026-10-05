@@ -289,6 +289,23 @@ t("a disconnected site shows no recorder as currently available or failing", () 
   assert.deepEqual(H.currentRecorderRows(undefined, false), []);
 });
 
+// A failed wl_my_site_recorders call never drops the recorder root cause the context already carries.
+t("recorder rows fall back to the owner context, then to the last rows, when the recorder call fails", () => {
+  const rows = [rec("rec-b", "Recorder B", "offline", ["c3", "c4"], "connection")];
+  const ok = { data: { recorders: rows }, error: null };
+  const failed = { data: null, error: { message: "upstream timeout" } };
+  assert.deepEqual(H.recorderSummaryFrom(ok, { recorders: [] }, null), { recorders: rows });
+  assert.deepEqual(H.recorderSummaryFrom(failed, { recorders: rows }, null), { recorders: rows });
+  const prev = { recorders: rows };
+  assert.equal(H.recorderSummaryFrom(failed, { facts_version: "watchlog-ai-context-v6" }, prev), prev);
+  assert.equal(H.recorderSummaryFrom(failed, null, null), null);
+  // The root cause survives the failed poll.
+  const cams = [cam("c3", "rec-b", "Rear access", "offline", "unknown")];
+  const r = H.recorderImpact({ cams, faults: [], recorderRows: H.recorderSummaryFrom(failed, { recorders: rows }, null).recorders });
+  assert.equal(r.recorderIssues.length, 1);
+  assert.equal(r.recorderFor(cams[0])?.id, "rec-b");
+});
+
 // --- Site Control labels (MNVR-049) ------------------------------------------------------------
 const VERIFIED_HERE = /verified on (your|this)/i;
 t("model-level verified evidence is never shown as verified on the customer's system", () => {
