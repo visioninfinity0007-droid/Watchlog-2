@@ -46,6 +46,8 @@ jobs:
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
       - name: Multi-recorder Agent with the 5.0.28 live-site fixes (worker survival, last_live, stream liveness, recovery claims, redaction, singleton worker survival, recovery RPC contract)
         run: python -m pytest prototype/tests/test_fanout_stream_last_live.py prototype/tests/test_health_worker_survival.py prototype/tests/test_recorder_recovery_rules.py prototype/tests/test_incident_routed_recorder_redaction.py prototype/tests/test_fanout_recovery_worker_survival.py prototype/tests/test_fanout_quiet_stream_liveness.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py -q
+      - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write)
+        run: python -m pytest prototype/tests/test_multi_recorder_spool_stamp_bounded.py prototype/tests/test_incident_footage_recorder_isolation.py prototype/tests/test_analytics_sampler_backoff.py prototype/tests/test_recording_current_multi_recorder.py prototype/tests/test_worker_credential_reload.py prototype/tests/test_analytics_sampler_channel_isolation.py prototype/tests/test_incident_footage_claim_backlog.py prototype/tests/test_multi_recorder_identity_write_race.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
       - name: Health Foundation schema/authz contract (Phase A)

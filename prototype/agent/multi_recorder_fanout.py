@@ -27,6 +27,10 @@ import requests
 import watchlog_agent as core
 from spool import Spool
 
+# A recorder whose login cannot be read on this PC is held, never contacted with an
+# empty login; its credential file is re-checked this often for a repair by Setup.
+CREDENTIAL_RECHECK_SECONDS = 30.0
+
 
 class LockedDetector:
     """Serialize access to one packaged detector shared across recorder workers."""
@@ -58,6 +62,10 @@ class RecorderWorkers:
     collector: threading.Thread
     health: threading.Thread
     recovery: threading.Thread | None
+    # Set only for a recorder held for its login (MNVR-009): its workers wait on
+    # credential_ready, which credential_watch sets once Setup has repaired it.
+    credential_ready: threading.Event | None = None
+    credential_watch: threading.Thread | None = None
 
 
 def _channel_rows(prepared) -> list[dict]:
@@ -89,11 +97,84 @@ def _fresh(holder: dict, clock: float | None = None) -> bool:
     )
 
 
+def _seed_inventory(holder: dict, item, cfg) -> list[dict]:
+    """Seed a recorder's holder with the camera inventory its preflight synced."""
+    import camera_health
+
+    channels = _channel_rows(item)
+    mon_channels = [str(c["channel"]) for c in channels if c.get("channel")]
+    holder["camera_mapping"] = (
+        {str(k): str(v) for k, v in item.camera_mapping.items()}
+        if isinstance(item.camera_mapping, dict) else {}
+    )
+    holder["synced_channels"] = list(channels) if holder["camera_mapping"] else []
+    holder["camera_sync_signature"] = (
+        tuple(sorted(str(c["channel"]) for c in channels if c.get("channel")))
+        if holder["camera_mapping"] else None
+    )
+    if holder.get("monitor") is None:
+        holder["monitor"] = (
+            camera_health.CameraHealthMonitor(
+                mon_channels,
+                batch_size=cfg.health_batch,
+                concurrency=cfg.health_concurrency,
+            )
+            if mon_channels else None
+        )
+    return channels
+
+
+def _adopt_late_probe(item, holder: dict, cfg) -> None:
+    """A preflight probe that finished after the workers started (MNVR-021).
+
+    The health cycle may already have synced this recorder's cameras after a
+    reconnect; that newer inventory is kept."""
+    if holder.get("camera_mapping") or not isinstance(item.camera_mapping, dict):
+        return
+    _seed_inventory(holder, item, cfg)
+    core.log(f"multi-recorder: {getattr(cfg, 'recorder_display_name', 'recorder')} "
+             "preflight finished; camera inventory ready")
+
+
+def _gated(target, ready: threading.Event, stop: threading.Event):
+    """Run ``target`` only once the recorder's login is readable."""
+    def run(*args):
+        while not ready.wait(1.0):
+            if stop.is_set():
+                return
+        if not stop.is_set():
+            target(*args)
+    return run
+
+
+def _watch_credential(cfg, holder: dict, ready: threading.Event,
+                      stop: threading.Event) -> None:
+    """Hold one recorder until Setup repairs its unreadable login, then release it.
+
+    The recorder stays UNVERIFIED meanwhile: nothing connects to it and nothing is
+    reported for it. Only a changed credential file is decrypted again."""
+    seen = getattr(cfg, "credential_generation_seen", None)
+    while not stop.wait(CREDENTIAL_RECHECK_SECONDS):
+        try:
+            generation = core._credential_generation_for_cfg(cfg)
+            if generation == seen:
+                continue
+            seen = generation
+            core._reload_credential_for_cfg(cfg)
+        except Exception:  # noqa: BLE001 — still unreadable; keep holding
+            continue
+        cfg.credential_generation_seen = generation
+        cfg.credential_error = None
+        holder.pop("credential_unavailable", None)
+        core.log(f"multi-recorder: {getattr(cfg, 'recorder_display_name', 'recorder')} "
+                 "login is readable again; monitoring it now")
+        ready.set()
+        return
+
+
 def build_worker_sets(prepared_recorders, state: dict, cloud,
                       stop: threading.Event) -> list[RecorderWorkers]:
     """Build but do not start one recorder-scoped worker set per recorder."""
-    import camera_health
-
     out = []
     cloud_ids = []
     for item in prepared_recorders:
@@ -107,38 +188,42 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
         Path(cfg.health_store_path).parent.mkdir(parents=True, exist_ok=True)
         Path(cfg.last_live_path).parent.mkdir(parents=True, exist_ok=True)
 
-        channels = _channel_rows(item)
-        mon_channels = [str(c["channel"]) for c in channels if c.get("channel")]
         holder = item.context.holder
         holder["recorder_cloud_id"] = recorder_id
-        holder["camera_mapping"] = (
-            {str(k): str(v) for k, v in item.camera_mapping.items()}
-            if isinstance(item.camera_mapping, dict) else {}
-        )
-        holder["synced_channels"] = list(channels) if holder["camera_mapping"] else []
-        holder["camera_sync_signature"] = (
-            tuple(sorted(str(c["channel"]) for c in channels if c.get("channel")))
-            if holder["camera_mapping"] else None
-        )
-        holder["monitor"] = (
-            camera_health.CameraHealthMonitor(
-                mon_channels,
-                batch_size=cfg.health_batch,
-                concurrency=cfg.health_concurrency,
+        holder["monitor"] = None
+        channels = _seed_inventory(holder, item, cfg)
+        if getattr(item, "pending", False) and callable(getattr(item, "on_ready", None)):
+            # Its preflight probe is still running in its own thread (MNVR-021).
+            item.on_ready(lambda done, h=holder, c=cfg: _adopt_late_probe(done, h, c))
+
+        # A recorder whose login is unreadable is bound but held (MNVR-009).
+        credential_ready = credential_watch = None
+        collector_target = core.collector
+        health_target = core.health_worker
+        recovery_target = core.recovery_worker
+        if getattr(cfg, "credential_error", None):
+            holder["credential_unavailable"] = True
+            credential_ready = threading.Event()
+            credential_watch = threading.Thread(
+                target=_watch_credential,
+                args=(cfg, holder, credential_ready, stop),
+                daemon=True,
+                name=f"credential-{recorder_id[:8]}",
             )
-            if mon_channels else None
-        )
+            collector_target = _gated(collector_target, credential_ready, stop)
+            health_target = _gated(health_target, credential_ready, stop)
+            recovery_target = _gated(recovery_target, credential_ready, stop)
 
         spool = Spool(cfg.spool_path, cfg.spool_max_rows)
         resume_evt = threading.Event()
         collector = threading.Thread(
-            target=core.collector,
+            target=collector_target,
             args=(cfg, spool, stop, holder),
             daemon=True,
             name=f"collector-{recorder_id[:8]}",
         )
         health = threading.Thread(
-            target=core.health_worker,
+            target=health_target,
             args=(cfg, state, cloud, holder, stop, resume_evt),
             daemon=True,
             name=f"health-{recorder_id[:8]}",
@@ -148,7 +233,7 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
         # synced channel set. If preflight saw zero cameras, recovery waits
         # fail-closed until health_cycle later syncs inventory after reconnect.
         recovery = threading.Thread(
-            target=core.recovery_worker,
+            target=recovery_target,
             args=(
                 cfg, state, cloud, stop, spool,
                 (lambda h=holder: h.get("synced_channels") or []),
@@ -167,6 +252,8 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
             collector=collector,
             health=health,
             recovery=recovery,
+            credential_ready=credential_ready,
+            credential_watch=credential_watch,
         ))
 
     if len(cloud_ids) != len(set(cloud_ids)):
@@ -181,6 +268,43 @@ def _primary_device(units):
         if getattr(unit.prepared.context, "is_primary", False):
             return unit.prepared.device
     return units[0].prepared.device if units else None
+
+
+def _recorder_live_state(units, clock: float, stamp: str) -> tuple[int, list[dict]]:
+    """(live count, per-recorder rows) for the protected runtime-health proof (MNVR-040).
+
+    ``last_live_at`` is the last heartbeat at which that recorder's event stream was live,
+    the same rule as the site's recorder_seen_at. Rows carry identity only: no address,
+    login or display name."""
+    live_count, rows = 0, []
+    for unit in units:
+        live = _fresh(unit.holder, clock)
+        if live:
+            live_count += 1
+            unit.holder["live_seen_at"] = stamp
+        ctx = unit.prepared.context
+        row = {
+            "local_id": (getattr(ctx, "local_id", None)
+                         or getattr(unit.cfg, "recorder_local_id", None)),
+            "recorder_id": str(unit.cfg.recorder_cloud_id),
+            "continuity_owner": bool(getattr(ctx, "continuity_owner", False)),
+            "live": live,
+            "last_live_at": unit.holder.get("live_seen_at"),
+        }
+        if unit.holder.get("credential_unavailable"):
+            row["credential"] = "unavailable"
+        rows.append(row)
+    return live_count, rows
+
+
+def _write_live_marker(unit) -> None:
+    """Per-recorder last_live marker while recovery is off (MNVR-040).
+
+    With recovery on, the outage-aware writer keeps it. With recovery off nothing opens
+    outage intervals from it, so it is simply the recorder's latest live time: the
+    Repair/Upgrade gate reads it as that recorder's proof."""
+    import recovery
+    recovery.persist_last_live(unit.cfg.last_live_path, core.now_utc())
 
 
 def _close(units) -> None:
@@ -204,11 +328,17 @@ def _stream_last_live_writer():
 
 
 def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
-        detector, analytics_worker, archive_worker, last_live_writer=None) -> None:
+        detector, analytics_worker, archive_worker, last_live_writer=None,
+        recorder_check=None) -> None:
     """Run the site with independent recorder workers under one site authority.
 
     ``last_live_writer(cfg, holder, clock)`` keeps one recorder's last_live.json; it defaults
-    to the single-recorder loop's event-stream rule."""
+    to the single-recorder loop's event-stream rule.
+
+    ``recorder_check(stop, restart)`` finishes in the background a recorder binding startup
+    could not complete (the site started from its saved bindings while WatchLog was
+    unreachable, MNVR-009). Setting ``restart["reason"]`` ends the run loop for a clean
+    start, which fails closed."""
     import monitoring_coverage as coverage
 
     if len(prepared_recorders) < 2:
@@ -242,11 +372,20 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
         name="sitecontrol-site",
     )
 
-    primary_device = _primary_device(units)
+    restart = {}
+    checker = (threading.Thread(target=recorder_check, args=(stop, restart),
+                                daemon=True, name="recorder-check")
+               if recorder_check is not None and not once else None)
 
     try:
         for unit in units:
             unit.collector.start()
+            if unit.credential_watch is not None:
+                unit.credential_watch.start()
+                core.log(
+                    f"multi-recorder: {unit.cfg.recorder_display_name} login cannot be "
+                    "read on this PC; it stays unverified until WatchLog Setup repairs it"
+                )
         analytic.start()
 
         if once:
@@ -267,16 +406,19 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                         f"ERROR: recorder {str(unit.cfg.recorder_cloud_id)[:8]} "
                         f"upload failed: {error}"
                     )
-                core.health_cycle(cloud, state, unit.cfg, unit.holder)
-            live_count = sum(1 for unit in units if _fresh(unit.holder))
+                if unit.credential_ready is None or unit.credential_ready.is_set():
+                    core.health_cycle(cloud, state, unit.cfg, unit.holder)
+            live_count, recorder_rows = _recorder_live_state(
+                units, time.monotonic(), core.iso(core.now_utc()))
             core.heartbeat(
-                cloud, state, primary_device,
+                cloud, state, _primary_device(units),
                 recorder_live=(live_count == len(units)),
             )
             core.update_runtime_health(
                 recorders_total=len(units),
                 recorders_live=live_count,
                 multi_recorder=True,
+                recorders=recorder_rows,
             )
             return
 
@@ -291,6 +433,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
 
         archive.start()
         sitectl.start()
+        if checker is not None:
+            checker.start()
 
         cov = coverage.CoverageMonitor(loop_period=1.0)
         core.log(
@@ -301,6 +445,9 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
         last_wall = time.time()
 
         while True:
+            if restart.get("reason"):
+                core.log(f"recorder: {restart['reason']}")
+                raise SystemExit(restart["reason"])
             clock = time.monotonic()
             now_wall = time.time()
             gap = cov.tick(last_wall, now_wall)
@@ -334,31 +481,39 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
 
             if clock >= next_heartbeat:
                 next_heartbeat = clock + base_cfg.heartbeat_seconds
-                live_count = sum(1 for unit in units if _fresh(unit.holder, clock))
+                live_count, recorder_rows = _recorder_live_state(
+                    units, clock, core.iso(core.now_utc()))
                 try:
                     # recorder_seen_at in the legacy local runtime-health document
                     # advances only when the complete configured recorder set is live.
                     core.heartbeat(
-                        cloud, state, primary_device,
+                        cloud, state, _primary_device(units),
                         recorder_live=(live_count == len(units)),
-                    )
-                    core.update_runtime_health(
-                        recorders_total=len(units),
-                        recorders_live=live_count,
-                        multi_recorder=True,
                     )
                 except (RuntimeError, requests.RequestException) as error:
                     core.log(
                         "ERROR: heartbeat failed, will retry: "
                         + str(error).splitlines()[0][:200]
                     )
+                # Each recorder's live state goes into the protected runtime-health proof
+                # at every heartbeat, cloud reachable or not (MNVR-040).
+                core.update_runtime_health(
+                    recorders_total=len(units),
+                    recorders_live=live_count,
+                    multi_recorder=True,
+                    recorders=recorder_rows,
+                )
 
                 # Per-recorder outage clocks. A failed B never freezes A. Each moves only
                 # with that recorder's event-stream activity (never a probe), to the time of
                 # that activity, and never over an outage its recovery has not opened yet.
-                for unit in units:
+                # With recovery off the marker is still kept, as that recorder's live proof.
+                for unit, row in zip(units, recorder_rows):
                     try:
-                        persist_last_live(unit.cfg, unit.holder, clock)
+                        if getattr(unit.cfg, "recovery_enabled", False):
+                            persist_last_live(unit.cfg, unit.holder, clock)
+                        elif row["live"]:
+                            _write_live_marker(unit)
                     except Exception:
                         pass
 
@@ -376,6 +531,10 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 unit.health.join(timeout=5)
             if unit.recovery.is_alive():
                 unit.recovery.join(timeout=5)
+            if unit.credential_watch is not None and unit.credential_watch.is_alive():
+                unit.credential_watch.join(timeout=5)
+        if checker is not None and checker.is_alive():
+            checker.join(timeout=5)
         if analytic.is_alive():
             analytic.join(timeout=5)
         if archive.is_alive():

@@ -894,6 +894,33 @@ def _reload_credential_for_cfg(cfg) -> None:
     cfg.load_recorder_credential()
 
 
+def _reload_credential_if_changed(cfg) -> bool:
+    """Reload this recorder's login if Setup rewrote it since this config last loaded it.
+
+    The health and recovery workers call this every cycle, so a repaired password reaches
+    them without an Agent restart (MNVR-012). Only a changed credential file is decrypted
+    again; an unreadable new one keeps the current login and is retried next cycle."""
+    try:
+        generation = _credential_generation_for_cfg(cfg)
+    except Exception:                                   # noqa: BLE001
+        return False
+    seen = getattr(cfg, "credential_generation_seen", None)
+    if seen is None:
+        cfg.credential_generation_seen = generation     # baseline: the login loaded at start
+        return False
+    if generation == seen:
+        return False
+    try:
+        _reload_credential_for_cfg(cfg)
+    except (Exception, SystemExit) as e:                # noqa: BLE001 — keep the current login
+        # (a legacy config's load_recorder_credential exits on an unreadable store)
+        log(f"recorder credential changed in Setup but could not be read yet: {type(e).__name__}")
+        return False
+    cfg.credential_generation_seen = generation
+    log("recorder credential changed in Setup; health and recovery now use it")
+    return True
+
+
 def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
                     last_gen: str, seconds: float | None = None) -> tuple[str, str]:
     """Interruptible backoff between driver reconnects. Returns (outcome, gen).
@@ -1397,6 +1424,7 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     import nvr_health
     driver = None
     try:
+        _reload_credential_if_changed(cfg)
         try:
             if cfg.nvr_driver in ("auto", ""):
                 driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
@@ -2689,6 +2717,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
 
     while not stop.is_set():
         try:
+            _reload_credential_if_changed(cfg)
             recorder_id = getattr(cfg, "recorder_cloud_id", None)
             if recorder_id:
                 cams, camera_channels = _synced_inventory()

@@ -203,7 +203,7 @@ def hikvision(download) -> HikvisionDriver:
 
 @pytest.fixture
 def private_lock(monkeypatch):
-    monkeypatch.setattr(ha, "HIKVISION_HTTP_LOCK", threading.RLock())
+    monkeypatch.setattr(sys.modules["drivers.hikvision"], "_HTTP_LOCKS", {})
     monkeypatch.setattr(ha, "_probe_clip", lambda data: None, raising=False)
 
 
@@ -229,7 +229,7 @@ def test_hikvision_lock_contention_does_not_end_unsupported(monkeypatch, private
     held = threading.Event()
 
     def holder():
-        with ha.HIKVISION_HTTP_LOCK:
+        with ha.recorder_http_lock("http://192.168.1.64"):
             held.set()
             threading.Event().wait(1.5)
 

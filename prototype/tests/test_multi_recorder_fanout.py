@@ -290,3 +290,214 @@ def test_single_recorder_cannot_enter_multi_fanout(tmp_path):
             analytics_worker=lambda *_args: None,
             archive_worker=lambda *_args: None,
         )
+
+
+# --- failure isolation in the fan-out (MNVR-009, MNVR-021) -------------------------
+
+def _patch_once(monkeypatch, started, health, runtime_health):
+    def fake_collector(cfg, spool, stop, holder):
+        started.append(cfg.recorder_cloud_id)
+        holder["recorder_live_at"] = time.monotonic()
+        stop.wait()
+
+    monkeypatch.setattr(core, "collector", fake_collector)
+    monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.1)
+    monkeypatch.setattr(core, "upload_once", lambda *_a, **_k: 0)
+    monkeypatch.setattr(core, "health_cycle",
+                        lambda _c, _s, cfg, _h: health.append(cfg.recorder_cloud_id))
+    monkeypatch.setattr(core, "heartbeat", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "update_runtime_health",
+                        lambda **kwargs: runtime_health.append(kwargs))
+
+
+def test_degraded_recorder_is_held_while_its_sibling_runs(tmp_path, monkeypatch):
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True,
+                  channels=[{"channel": "1"}], mapping={"1": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})
+    b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222",
+                  error="recorder login unavailable on this PC (SecretError)")
+    b.context.config.credential_error = "SecretError"
+    started, health, runtime_health = [], [], []
+    _patch_once(monkeypatch, started, health, runtime_health)
+
+    fanout.run(SimpleNamespace(recovery_enabled=True), {"agent_id": "agent", "agent_key": "key"},
+               object(), once=True, prepared_recorders=[a, b], detector=None,
+               analytics_worker=lambda *_a: None, archive_worker=lambda *_a: None)
+
+    assert started == [a.context.cloud_recorder_id], "B is never contacted without its login"
+    assert health == [a.context.cloud_recorder_id], "no health report from an empty login"
+    assert runtime_health[-1]["recorders_live"] == 1
+    assert runtime_health[-1]["recorders_total"] == 2
+
+
+def test_credential_watch_releases_a_degraded_recorder(monkeypatch):
+    cfg = SimpleNamespace(recorder_display_name="B", credential_error="SecretError",
+                          credential_generation_seen="absent", nvr_password="")
+    holder = {"credential_unavailable": True}
+    generations = iter(["absent", "1:2:abc", "1:2:abc"])
+    reloaded = []
+    monkeypatch.setattr(fanout, "CREDENTIAL_RECHECK_SECONDS", 0.01)
+    monkeypatch.setattr(core, "_credential_generation_for_cfg", lambda _cfg: next(generations))
+    monkeypatch.setattr(core, "_reload_credential_for_cfg",
+                        lambda c: reloaded.append(c) or setattr(c, "nvr_password", "pw"))
+    monkeypatch.setattr(core, "log", lambda _m: None)
+    ready, stop = threading.Event(), threading.Event()
+
+    fanout._watch_credential(cfg, holder, ready, stop)
+
+    assert ready.is_set() and reloaded == [cfg]
+    assert cfg.credential_error is None and cfg.nvr_password == "pw"
+    assert cfg.credential_generation_seen == "1:2:abc"
+    assert "credential_unavailable" not in holder
+
+
+def test_gated_worker_waits_for_the_login_and_stops_cleanly():
+    ran = []
+    ready, stop = threading.Event(), threading.Event()
+    worker = threading.Thread(target=fanout._gated(lambda *a: ran.append(a), ready, stop),
+                              args=("x",))
+    worker.start()
+    time.sleep(0.2)
+    assert ran == []
+    ready.set()
+    worker.join(3)
+    assert ran == [("x",)]
+
+    ran.clear()
+    ready, stop = threading.Event(), threading.Event()
+    worker = threading.Thread(target=fanout._gated(lambda *a: ran.append(a), ready, stop))
+    worker.start()
+    stop.set()
+    worker.join(3)
+    assert not worker.is_alive() and ran == []
+
+
+def test_late_probe_result_seeds_the_recorder_inventory(tmp_path):
+    import multi_recorder_orchestrator as mro
+
+    base = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
+    slot = mro.PreparedRecorder(context=base.context, device=None, channels=[],
+                                capabilities=None, camera_mapping=None,
+                                pending=True, ready=threading.Event())
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
+    units = fanout.build_worker_sets([a, slot], {"agent_id": "agent"}, object(),
+                                     threading.Event())
+    try:
+        holder = units[1].holder
+        assert holder["synced_channels"] == [] and holder["monitor"] is None
+        slot._resolve(mro.PreparedRecorder(
+            context=base.context, device=SimpleNamespace(vendor="B", model="X", driver="x"),
+            channels=[{"channel": "1", "name": "Gate"}], capabilities=None,
+            camera_mapping={"1": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}))
+        assert holder["camera_mapping"] == {"1": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}
+        assert holder["synced_channels"][0]["camera_id"].startswith("bbbbbbbb")
+        assert holder["camera_sync_signature"] == ("1",)
+        assert holder["monitor"] is not None
+    finally:
+        fanout._close(units)
+
+
+def test_run_loop_restarts_cleanly_when_the_background_check_asks(tmp_path, monkeypatch):
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
+    b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
+
+    def idle(*_a, **_k):
+        return None
+
+    for name in ("collector", "recovery_worker", "health_worker", "command_worker"):
+        monkeypatch.setattr(core, name, idle)
+    monkeypatch.setattr(core, "heartbeat", idle)
+    monkeypatch.setattr(core, "update_runtime_health", idle)
+    real_sleep = time.sleep
+    monkeypatch.setattr(fanout.time, "sleep", lambda _s: real_sleep(0.01))
+
+    def refuse(stop, restart):
+        restart["reason"] = "recorder check refused the saved recorder identity; restarting"
+
+    base = SimpleNamespace(recovery_enabled=False, upload_seconds=60, heartbeat_seconds=60)
+    with pytest.raises(SystemExit, match="restarting"):
+        fanout.run(base, {"agent_id": "agent", "agent_key": "key"}, object(), once=False,
+                   prepared_recorders=[a, b], detector=None, analytics_worker=idle,
+                   archive_worker=idle, recorder_check=refuse)
+
+
+# --- per-recorder live state for Repair/Upgrade (MNVR-040, Agent side) -------------
+
+def _live_only_a(a_rid):
+    def fake_collector(cfg, spool, stop, holder):
+        if cfg.recorder_cloud_id == a_rid:
+            holder["recorder_live_at"] = time.monotonic()
+        stop.wait()
+    return fake_collector
+
+
+def test_once_mode_publishes_each_recorders_live_state(tmp_path, monkeypatch):
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
+    a.context.local_id, a.context.continuity_owner = "local-a", True
+    b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
+    b.context.local_id, b.context.continuity_owner = "local-b", False
+    runtime_health = []
+    monkeypatch.setattr(core, "collector", _live_only_a(a.context.cloud_recorder_id))
+    monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.1)
+    monkeypatch.setattr(core, "upload_once", lambda *_a, **_k: 0)
+    monkeypatch.setattr(core, "health_cycle", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "heartbeat", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "update_runtime_health", lambda **kw: runtime_health.append(kw))
+
+    fanout.run(SimpleNamespace(recovery_enabled=False), {"agent_id": "agent", "agent_key": "key"},
+               object(), once=True, prepared_recorders=[a, b], detector=None,
+               analytics_worker=lambda *_a: None, archive_worker=lambda *_a: None)
+
+    rows = {row["local_id"]: row for row in runtime_health[-1]["recorders"]}
+    assert rows["local-a"]["live"] is True and rows["local-a"]["last_live_at"]
+    assert rows["local-a"]["continuity_owner"] is True
+    assert rows["local-a"]["recorder_id"] == a.context.cloud_recorder_id
+    assert rows["local-b"]["live"] is False and rows["local-b"]["last_live_at"] is None
+    assert rows["local-b"]["continuity_owner"] is False
+    text = repr(runtime_health[-1])
+    assert "192.0.2" not in text and "nvr_url" not in text
+
+
+def test_heartbeat_publishes_live_state_and_markers_with_recovery_off(tmp_path, monkeypatch):
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
+    a.context.local_id, a.context.continuity_owner = "local-a", True
+    b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
+    b.context.local_id, b.context.continuity_owner = "local-b", False
+    for item in (a, b):
+        item.context.config.recovery_enabled = False
+    runtime_health = []
+
+    def idle(*_a, **_k):
+        return None
+
+    def cloud_down(*_a, **_k):
+        raise RuntimeError("cloud unreachable")
+
+    monkeypatch.setattr(core, "collector", _live_only_a(a.context.cloud_recorder_id))
+    for name in ("recovery_worker", "health_worker", "command_worker"):
+        monkeypatch.setattr(core, name, idle)
+    monkeypatch.setattr(core, "heartbeat", cloud_down)
+    monkeypatch.setattr(core, "upload_once", idle)
+    monkeypatch.setattr(core, "update_runtime_health", lambda **kw: runtime_health.append(kw))
+    real_sleep, ticks = time.sleep, []
+
+    def sleep(_seconds):
+        ticks.append(1)
+        if len(ticks) > 3:
+            raise KeyboardInterrupt
+        real_sleep(0.05)
+
+    monkeypatch.setattr(fanout.time, "sleep", sleep)
+    base = SimpleNamespace(recovery_enabled=False, upload_seconds=60, heartbeat_seconds=0.01)
+    fanout.run(base, {"agent_id": "agent", "agent_key": "key"}, object(), once=False,
+               prepared_recorders=[a, b], detector=None, analytics_worker=idle,
+               archive_worker=idle)
+
+    published = [kw for kw in runtime_health if "recorders" in kw]
+    assert published, "per-recorder live state is published even while the cloud is down"
+    rows = {row["local_id"]: row for row in published[-1]["recorders"]}
+    assert rows["local-a"]["live"] is True and rows["local-b"]["live"] is False
+    assert published[-1]["recorders_live"] == 1 and published[-1]["recorders_total"] == 2
+    # Per-recorder last_live markers are written even with recovery disabled.
+    import recovery
+    assert recovery.read_last_live(a.context.config.last_live_path) is not None
+    assert recovery.read_last_live(b.context.config.last_live_path) is None

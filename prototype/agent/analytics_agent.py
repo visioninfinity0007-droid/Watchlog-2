@@ -25,6 +25,7 @@ from PIL import Image
 
 import analytics
 import analytics_setup
+import credential_store
 import watchlog_agent as core
 import recorder_runtime
 import recorder_registry
@@ -34,18 +35,29 @@ import multi_recorder_fanout
 from action_runtime import ActionRuntime
 from archive_runtime import ArchiveRuntime
 from drivers import DriverError
+from drivers.base import NvrAuthFailed
 from lease_client import LeaseClient
 from runtime import AgentRuntime
 from spool import Spool
 
 from wl_version import VERSION as AGENT_VERSION  # single source of truth (was a stale 0.3.0 that overrode core)
 ANALYTICS_UPLOAD_BATCH = 500
+# Per-recorder sampler backoff after a recorder could not be opened or a sample failed
+# (MNVR-037); the last value repeats. A refused login uses the Agent's auth breaker.
+SAMPLER_RETRY_SECONDS = (15, 30, 60, 120, 300)
+# Consecutive failed samples on one recorder, with no success in between, that back the
+# whole recorder off (two different channels failing in a row also do).
+SAMPLER_RECORDER_FAILURE_STREAK = 3
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
 ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, retry rarely
 REGISTRY_RECHECK_SECONDS = 60                     # held on an unusable recorders.json
 RECORDER_RECHECK_SECONDS = (30, 60, 120, 300)     # background recorder check; last repeats
+# How long a multi-recorder start waits for the recorder probes before its workers start.
+# Each probe keeps running in its own thread and hands its result over when it finishes,
+# so an offline recorder's connect timeouts never hold back another recorder (MNVR-021).
+MULTI_RECORDER_PROBE_WAIT_SECONDS = 0.0
 # What THIS runtime can execute. Advertised to the server (0059) so it never treats a feature as
 # usable before a compatible agent reports it. This is runtime capability, NOT field-proven hardware.
 RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
@@ -275,6 +287,209 @@ def _open_analytics_driver(cfg):
     return driver
 
 
+def _is_auth_rejection(error: Exception) -> bool:
+    return isinstance(error, NvrAuthFailed) or core._is_auth_failure(error)
+
+
+def _sampler_credential_generation(cfg, recorder_id):
+    """Generation token of the login the sampler uses for ``recorder_id`` (None if unknown)."""
+    try:
+        if recorder_id:
+            for row in recorder_registry.recorders():
+                if str(row.get("cloud_recorder_id") or "") == str(recorder_id):
+                    return credential_store.recorder_credential_generation(row["local_id"])
+            return None
+        return core._credential_generation_for_cfg(cfg)
+    except Exception:  # noqa: BLE001 — an unknown generation never wakes the breaker
+        return None
+
+
+class _SamplerDrivers:
+    """The analytics sampler's recorder transports, one per recorder (MNVR-037).
+
+    A recorder is opened on its own short-lived thread, never on the caller's: the caller
+    is the thread that refreshes the site's single-authority lease, and one recorder's
+    connect timeouts must not let that lease lapse. While a recorder is opening or backing
+    off, get() returns None and that sample is skipped. A failed open closes the transport
+    and backs that recorder off (SAMPLER_RETRY_SECONDS); a refused login opens the auth
+    breaker (5, 15, 30 min) until the credential file changes. A failed sample backs off
+    only that channel (sample_failed); the recorder backs off when failures span two
+    channels, or run SAMPLER_RECORDER_FAILURE_STREAK long, with no success in between.
+    Other recorders, and healthy channels on the same recorder, are unaffected."""
+
+    def __init__(self, opener, generation, clock=time.monotonic, log=None):
+        self._opener = opener            # recorder_id -> open transport (may block)
+        self._generation = generation    # recorder_id -> credential generation token
+        self._clock = clock
+        self._log = log or (lambda _msg: None)
+        self._lock = threading.Lock()
+        self._drivers: dict = {}
+        self._opening: set = set()
+        self._failures: dict = {}
+        self._auth_failures: dict = {}
+        self._auth_generation: dict = {}
+        self._retry_at: dict = {}
+        self._channel_failures: dict = {}   # (key, channel) -> consecutive failed samples
+        self._channel_retry_at: dict = {}   # (key, channel) -> monotonic retry time
+        self._streak: dict = {}             # key -> [failures, {channels}] since a success
+        self._epoch = 0                  # bumped by close_all(); a stale open is discarded
+
+    def opening(self, key) -> bool:
+        with self._lock:
+            return key in self._opening
+
+    def retry_at(self, key):
+        with self._lock:
+            return self._retry_at.get(key)
+
+    def _safe_generation(self, recorder_id):
+        try:
+            return self._generation(recorder_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def get(self, key, recorder_id):
+        """The open transport for this recorder, or None (opening or backing off)."""
+        with self._lock:
+            if key in self._drivers or key in self._opening:
+                return self._drivers.get(key)
+            refused_under = self._auth_generation.get(key, False)
+        repaired = False
+        if refused_under is not False:
+            current = self._safe_generation(recorder_id)
+            repaired = current is not None and current != refused_under
+        with self._lock:
+            if key in self._drivers or key in self._opening:
+                return self._drivers.get(key)
+            if repaired:
+                # Setup replaced the refused login: reset the breaker and retry at once.
+                self._auth_generation.pop(key, None)
+                self._auth_failures.pop(key, None)
+                self._retry_at.pop(key, None)
+            retry = self._retry_at.get(key)
+            if retry is not None and self._clock() < retry:
+                return None
+            self._opening.add(key)
+            epoch = self._epoch
+        threading.Thread(target=self._open, args=(key, recorder_id, epoch), daemon=True,
+                         name=f"sampler-open-{str(key)[:8]}").start()
+        return None
+
+    def _open(self, key, recorder_id, epoch) -> None:
+        driver = error = None
+        try:
+            driver = self._opener(recorder_id)
+        except BaseException as exc:  # noqa: BLE001 — recorder-local; backed off below
+            error = exc               # (open_driver exits on missing config)
+        stale = False
+        with self._lock:
+            self._opening.discard(key)
+            stale = epoch != self._epoch
+            if driver is not None and not stale:
+                self._drivers[key] = driver
+                self._retry_at.pop(key, None)
+        if driver is not None and stale:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if error is not None:
+            delay = self.failed(key, error, recorder_id)
+            self._log(f"analytics: sampler recorder={recorder_id or 'legacy'} unavailable: "
+                      f"{type(error).__name__}: {str(error)[:140]}; next try in {int(delay)}s")
+
+    def failed(self, key, error, recorder_id=None) -> float:
+        """Close this recorder's transport and back it off. Returns the delay in seconds."""
+        auth = _is_auth_rejection(error)
+        refused_under = self._safe_generation(recorder_id) if auth else None
+        with self._lock:
+            driver = self._drivers.pop(key, None)
+            if auth:
+                count = self._auth_failures.get(key, 0) + 1
+                self._auth_failures[key] = count
+                self._auth_generation[key] = refused_under
+                schedule = core._AUTH_BACKOFF_SECONDS
+            else:
+                count = self._failures.get(key, 0) + 1
+                self._failures[key] = count
+                schedule = SAMPLER_RETRY_SECONDS
+            delay = float(schedule[min(count - 1, len(schedule) - 1)])
+            self._retry_at[key] = self._clock() + delay
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return delay
+
+    def channel_waiting(self, key, channel) -> bool:
+        """True while this one channel is backing off after its own failed sample."""
+        with self._lock:
+            retry = self._channel_retry_at.get((key, channel))
+            return retry is not None and self._clock() < retry
+
+    def sample_failed(self, key, channel, error, recorder_id=None):
+        """One channel's sample failed. Back off that channel; back off the whole recorder
+        (failed()) only when failures span two channels or run on with no success.
+        Returns (delay seconds, recorder_wide)."""
+        with self._lock:
+            ck = (key, channel)
+            count = self._channel_failures.get(ck, 0) + 1
+            self._channel_failures[ck] = count
+            delay = float(SAMPLER_RETRY_SECONDS[min(count - 1, len(SAMPLER_RETRY_SECONDS) - 1)])
+            self._channel_retry_at[ck] = self._clock() + delay
+            streak = self._streak.setdefault(key, [0, set()])
+            streak[0] += 1
+            streak[1].add(channel)
+            recorder_wide = (len(streak[1]) >= 2
+                             or streak[0] >= SAMPLER_RECORDER_FAILURE_STREAK)
+            if recorder_wide:
+                # The recorder is the fault: its own backoff covers these channels.
+                for failed_channel in streak[1]:
+                    self._channel_failures.pop((key, failed_channel), None)
+                    self._channel_retry_at.pop((key, failed_channel), None)
+                self._streak.pop(key, None)
+        if recorder_wide:
+            return self.failed(key, error, recorder_id), True
+        return delay, False
+
+    def succeeded(self, key, channel=None) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+            self._auth_failures.pop(key, None)
+            self._auth_generation.pop(key, None)
+            self._streak.pop(key, None)
+            if channel is not None:
+                self._channel_failures.pop((key, channel), None)
+                self._channel_retry_at.pop((key, channel), None)
+
+    def close_all(self) -> None:
+        """Close every transport; an open still running is discarded when it finishes."""
+        with self._lock:
+            self._epoch += 1
+            drivers = list(self._drivers.values())
+            self._drivers.clear()
+            # Config changed: cameras may have moved, so channel backoffs start fresh.
+            self._channel_failures.clear()
+            self._channel_retry_at.clear()
+            self._streak.clear()
+        for driver in drivers:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _snapshot_requests_worker(cfg, state, requests_list) -> None:
+    """Serve configuration stills off the lease thread (they open recorders, MNVR-037)."""
+    try:
+        _service_snapshot_requests(core.Cloud(cfg.supabase_url, cfg.publishable_key),
+                                   state, cfg, None, requests_list)
+    except Exception as error:  # noqa: BLE001 — never kill the thread silently
+        core.log(f"analytics: configuration stills failed: {type(error).__name__}: "
+                 f"{str(error)[:140]}")
+
+
 def _send_bootstrap_once(cloud, state, cfg):
     """Send site/camera classifications captured by setup exactly once."""
     if cfg.analytics_bootstrap_marker.exists():
@@ -409,7 +624,12 @@ def analytics_worker(cfg: Config, state: dict, detector,
     if cached.get("config"):
         core.log(f"analytics: loaded cached config v{version}")
 
-    drivers = {}
+    drivers = _SamplerDrivers(
+        lambda recorder_id: _open_analytics_driver(
+            recorder_runtime.config_for_cloud_recorder(cfg, recorder_id)),
+        generation=lambda recorder_id: _sampler_credential_generation(cfg, recorder_id),
+        log=core.log)
+    snapshot_thread = None
     next_config = 0.0
     next_upload = 0.0
     next_status = 0.0
@@ -455,20 +675,20 @@ def analytics_worker(cfg: Config, state: dict, detector,
                         sampler.reset()
                         # Config changes may add/move cameras across recorders. Close
                         # cached transports so every next sample resolves fresh identity.
-                        for _drv in list(drivers.values()):
-                            try:
-                                _drv.close()
-                            except Exception:
-                                pass
-                        drivers.clear()
+                        drivers.close_all()
                         core.log(f"analytics: config updated to v{version}; "
                                  f"{mux.camera_count} camera(s) active")
                     snapshot_requests = payload.get("snapshot_requests") or []
-                    if snapshot_requests:
+                    if snapshot_requests and (snapshot_thread is None
+                                              or not snapshot_thread.is_alive()):
                         # Each request resolves its own recorder. A dead primary
-                        # recorder must not block a healthy secondary-recorder snapshot.
-                        _service_snapshot_requests(
-                            cloud, state, cfg, None, snapshot_requests)
+                        # recorder must not block a healthy secondary-recorder snapshot,
+                        # and opening recorders never delays this lease thread.
+                        snapshot_thread = threading.Thread(
+                            target=_snapshot_requests_worker,
+                            args=(cfg, state, list(snapshot_requests)),
+                            daemon=True, name="analytics-config-stills")
+                        snapshot_thread.start()
                 except (RuntimeError, requests.RequestException, DriverError) as error:
                     core.log("analytics: config poll failed; cached rules remain active: "
                              + str(error).splitlines()[0][:180])
@@ -501,14 +721,13 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     recorder_id, channel = mux.resolve_target(target)
                     driver_key = recorder_id or "__legacy__"
                     try:
-                        driver = drivers.get(driver_key)
-                        if driver is None:
-                            job_cfg = recorder_runtime.config_for_cloud_recorder(
-                                cfg, recorder_id
-                            )
-                            driver = _open_analytics_driver(job_cfg)
-                            drivers[driver_key] = driver
-                        raw = driver.get_snapshot(channel)
+                        # None while this channel or its recorder is opening or backing
+                        # off: skip it.
+                        driver = (None if drivers.channel_waiting(driver_key, channel)
+                                  else drivers.get(driver_key, recorder_id))
+                        raw = driver.get_snapshot(channel) if driver is not None else None
+                        if driver is not None:
+                            drivers.succeeded(driver_key, channel)
                         if raw:
                             found = detector.detect(raw)
                             if found is not None:
@@ -528,14 +747,12 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                 counters["last_sample_at"] = core.iso(when)
                     except (DriverError, requests.RequestException) as error:
                         counters["sample_errors"] += 1
+                        delay, recorder_wide = drivers.sample_failed(
+                            driver_key, channel, error, recorder_id)
                         core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
-                                 f"ch{channel} failed: {str(error)[:140]}")
-                        driver = drivers.pop(driver_key, None)
-                        if driver is not None:
-                            try:
-                                driver.close()
-                            except Exception:
-                                pass
+                                 f"ch{channel} failed: {str(error)[:140]}; next try "
+                                 f"{'for the recorder' if recorder_wide else 'on this channel'}"
+                                 f" in {int(delay)}s")
                     except Exception as error:
                         counters["sample_errors"] += 1
                         core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
@@ -574,12 +791,7 @@ def analytics_worker(cfg: Config, state: dict, detector,
 
             stop.wait(0.1)
     finally:
-        for driver in list(drivers.values()):
-            try:
-                driver.close()
-            except Exception:
-                pass
-        drivers.clear()
+        drivers.close_all()
         try:
             stopped = _status_payload(version, sampler, mux.sample_plan(),
                                       spool, counters, detector)
@@ -605,19 +817,31 @@ def _archive_dt(value):
 
 
 def _archive_scan_handlers(cfg: Config, detector, stop: threading.Event):
-    """Build bounded recorder-frame retrieval + the same local analytics used live."""
+    """Build bounded recorder-frame retrieval + the same local analytics used live.
+
+    The camera config is re-read whenever its version changes (MNVR-038): the archive
+    thread starts before a fresh install has any analytics config, and cameras added later
+    must be scannable without an Agent restart."""
     import recovery_ai
 
-    cached = analytics.load_config(cfg.analytics_config_path)
-    config = cached.get("config") or {}
-    camera_rows = {
-        str(row.get("id")): row
-        for row in (config.get("cameras") or [])
-        if row.get("id") and row.get("channel")
-    }
+    current = {"version": None, "config": {}, "cameras": {}}
     engines = {}
 
+    def _camera_config():
+        cached = analytics.load_config(cfg.analytics_config_path)
+        version = cached.get("version")
+        if version != current["version"] or not current["cameras"]:
+            config = cached.get("config") or {}
+            current.update(version=version, config=config, cameras={
+                str(row.get("id")): row
+                for row in (config.get("cameras") or [])
+                if row.get("id") and row.get("channel")
+            })
+            engines.clear()          # rules may have changed with the version
+        return current["config"], current["cameras"]
+
     def retrieve_frames(camera_id, from_ts, to_ts):
+        _config, camera_rows = _camera_config()
         camera = camera_rows.get(str(camera_id))
         if camera is None:
             core.log(f"analytics: archive camera {str(camera_id)[:8]} not present in local config")
@@ -675,6 +899,7 @@ def _archive_scan_handlers(cfg: Config, detector, stop: threading.Event):
     def analyze_frame(camera_id, jpeg, ts, rule_ids):
         if detector is None:
             return []
+        config, camera_rows = _camera_config()
         camera = camera_rows.get(str(camera_id))
         if camera is None:
             return []
@@ -785,6 +1010,9 @@ def _adopt_single_recorder(cfg, prepared) -> tuple[list[dict], dict]:
     bound = prepared.context.config
     for name in _BOUND_RECORDER_FIELDS:
         setattr(cfg, name, getattr(bound, name))
+    # The generation that login was loaded at, so health and recovery reload a login
+    # rewritten after it (MNVR-012); None makes them take a baseline on first use.
+    cfg.credential_generation_seen = getattr(bound, "credential_generation_seen", None)
     channels = multi_recorder_fanout._channel_rows(prepared)
     mapping = (
         {str(k): str(v) for k, v in prepared.camera_mapping.items()}
@@ -839,18 +1067,26 @@ def _preflight_transient(error: Exception) -> bool:
 
 
 def _prepared_from_saved_identity(cfg):
-    """The one configured recorder as already bound in recorders.json, or None when it
-    has no saved cloud identity (or cannot be loaded). No cloud call is made."""
+    """Every configured recorder as already bound in recorders.json, or None when any of
+    them has no saved cloud identity (or the registry cannot be loaded, or holds a
+    duplicate identity). No cloud call is made and no recorder is probed: cameras are
+    bound later by each recorder's health cycle. A recorder whose login cannot be read
+    comes back degraded, as from a full preflight (MNVR-009)."""
     try:
-        contexts = recorder_runtime.load_contexts(cfg)
+        contexts = recorder_runtime.load_contexts(cfg, degrade_credential_errors=True)
     except Exception:  # noqa: BLE001 — startup then fails closed
         return None
-    if len(contexts) != 1 or not contexts[0].cloud_recorder_id:
+    if not contexts or any(not ctx.cloud_recorder_id for ctx in contexts):
         return None
-    return multi_recorder_orchestrator.PreparedRecorder(
-        context=contexts[0], device=None, channels=[], capabilities=None,
-        camera_mapping=None,
-    )
+    return [
+        multi_recorder_orchestrator.PreparedRecorder(
+            context=ctx, device=None, channels=[], capabilities=None,
+            camera_mapping=None,
+            error=(f"recorder login unavailable on this PC ({ctx.credential_error})"
+                   if ctx.credential_error else None),
+        )
+        for ctx in contexts
+    ]
 
 
 def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
@@ -871,8 +1107,11 @@ def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
         try:
             multi_recorder_orchestrator.require_cloud_contract(cloud, state)
             if mode == "bind":
+                # Identity is non-secret: a recorder whose login is unreadable is still
+                # confirmed, and stays held until Setup repairs it (MNVR-009).
                 multi_recorder_orchestrator.bind_cloud_identities(
-                    cloud, state, recorder_runtime.load_contexts(cfg))
+                    cloud, state,
+                    recorder_runtime.load_contexts(cfg, degrade_credential_errors=True))
         except Exception as error:  # noqa: BLE001
             if mode == "contract" or _preflight_transient(error):
                 continue
@@ -938,6 +1177,35 @@ def _hold_for_registry_repair(error: Exception) -> None:
         raise SystemExit("recorder configuration is valid again; restarting WatchLog")
 
 
+def _hold_for_recorder_credential(ctx, once: bool) -> None:
+    """The site's only recorder has no readable login on this PC: hold, never crash-loop.
+
+    Connecting with an empty login would be a failed sign-in on the recorder and a false
+    "wrong password". As for an unusable registry, monitor nothing (no recorder connection
+    and no heartbeat, so nothing is reported as watched), publish a clear local status and
+    re-check the credential file; once Setup has repaired it, exit so the launcher starts
+    one clean runtime."""
+    message = ("the recorder login on this PC cannot be read; monitoring is stopped "
+               "until WatchLog Setup repairs it")
+    if once:
+        raise SystemExit(f"FATAL: {message}.")
+    core.log(f"ERROR: {message} ({ctx.credential_error})")
+    core.update_runtime_health(recorder_credential="unavailable")
+    seen = getattr(ctx.config, "credential_generation_seen", None)
+    while True:
+        time.sleep(REGISTRY_RECHECK_SECONDS)
+        try:
+            generation = ctx.credential_generation()
+            if generation == seen:
+                continue
+            seen = generation
+            ctx.reload_credential()
+        except Exception:  # noqa: BLE001 — still unreadable; keep holding
+            continue
+        core.update_runtime_health(recorder_credential="ok")
+        raise SystemExit("recorder login is readable again; restarting WatchLog")
+
+
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None, channels=None) -> None:
     """Core event loop plus analytics worker.
@@ -953,7 +1221,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     recorders at all, which runs on the legacy recorder-less RPCs. A single recorder
     whose cloud identity is already saved keeps monitoring under it when the cloud
     cannot be reached (or this PC is a standby) and finishes the check in the
-    background; an unbound row or a definitive refusal still fails closed.
+    background; an unbound row or a definitive refusal still fails closed. The same
+    holds for several recorders when every one of them is already bound (MNVR-009).
+    A recorder whose login cannot be read on this PC is held UNVERIFIED while the
+    others run; a site whose only recorder has no readable login holds until Setup
+    repairs it.
     """
     try:
         configured_recorders = [
@@ -977,7 +1249,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     if configured_recorders:
         try:
             prepared = multi_recorder_orchestrator.prepare_recorders(
-                cfg, state, cloud, core.open_driver
+                cfg, state, cloud, core.open_driver,
+                probe_wait=(MULTI_RECORDER_PROBE_WAIT_SECONDS
+                            if len(configured_recorders) > 1 else None),
             )
         except Exception as error:
             if len(configured_recorders) == 1 and _recorder_contract_absent(error):
@@ -989,11 +1263,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                          "single-recorder runtime without recorder identity")
             else:
                 # Network not ready at boot, an outage or a standby PC says nothing
-                # about the recorder: a single recorder already bound in
-                # recorders.json keeps monitoring under that saved identity.
-                if len(configured_recorders) == 1 and _preflight_transient(error):
-                    saved = _prepared_from_saved_identity(cfg)
-                    prepared = [saved] if saved is not None else None
+                # about the recorders: when every configured recorder is already bound
+                # in recorders.json, monitoring starts under those saved identities.
+                if _preflight_transient(error):
+                    prepared = _prepared_from_saved_identity(cfg)
                 if prepared is None:
                     raise SystemExit(
                         "FATAL: recorder preflight did not complete; monitoring "
@@ -1003,7 +1276,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 recheck = "bind"
                 core.log("recorder: WatchLog did not answer the recorder check "
                          f"({type(error).__name__}); monitoring under the saved recorder "
-                         "identity and retrying in the background")
+                         "identities and retrying in the background")
 
     if prepared is not None:
         if len(prepared) != len(configured_recorders):
@@ -1022,6 +1295,12 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                     f"unavailable ({item.error}); its live/health workers will retry "
                     "independently"
                 )
+            elif getattr(item, "pending", False):
+                core.log(
+                    f"multi-recorder: {item.context.display_name} preflight probe still "
+                    "running; its workers start now and take its camera inventory when "
+                    "it finishes"
+                )
         _report_retained_queues(cfg)
 
         if len(prepared) > 1:
@@ -1033,7 +1312,14 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 analytics_worker=analytics_worker,
                 archive_worker=archive_worker,
                 last_live_writer=_persist_stream_last_live,
+                recorder_check=(
+                    (lambda stop, restart: _retry_recorder_preflight(
+                        cfg, state, cloud, stop, restart, "bind"))
+                    if recheck == "bind" else None),
             )
+
+        if getattr(prepared[0].context, "credential_error", None):
+            _hold_for_recorder_credential(prepared[0].context, once)
 
         channels, holder_seed = _adopt_single_recorder(cfg, prepared[0])
         device = prepared[0].device or device

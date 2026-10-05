@@ -111,7 +111,7 @@ def driver(session) -> HikvisionDriver:
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
-    monkeypatch.setattr(ha, "HIKVISION_HTTP_LOCK", threading.RLock())
+    monkeypatch.setattr(sys.modules["drivers.hikvision"], "_HTTP_LOCKS", {})
     monkeypatch.setattr(ha, "_probe_clip", lambda data: None, raising=False)
 
 

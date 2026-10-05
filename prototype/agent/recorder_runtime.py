@@ -42,6 +42,9 @@ class RecorderContext:
     is_primary: bool = False
     continuity_owner: bool = False
     holder: dict = field(default_factory=dict)
+    # Set when this recorder's login could not be read on this PC: the context
+    # is bound but degraded (UNVERIFIED) until Setup repairs the credential.
+    credential_error: str | None = None
 
     def cloud_descriptor(self) -> dict:
         """Non-secret identity payload for wl_sync_recorders."""
@@ -64,6 +67,7 @@ class RecorderContext:
         cred = credential_store.load_recorder_credential(self.local_id)
         self.config.nvr_username = cred.get("username") or ""
         self.config.nvr_password = cred.get("password") or ""
+        self.config.credential_error = self.credential_error = None
 
 
 def recorder_state_dir(state_parent, local_id: str) -> Path:
@@ -71,10 +75,25 @@ def recorder_state_dir(state_parent, local_id: str) -> Path:
     return Path(state_parent) / "recorders" / str(local_id)
 
 
-def _bound_config(base_cfg, row: dict):
-    """Copy the common Agent config, then override recorder-local fields only."""
+def _bound_config(base_cfg, row: dict, *, degrade_credential_errors: bool = False):
+    """Copy the common Agent config, then override recorder-local fields only.
+
+    With ``degrade_credential_errors`` an unreadable credential leaves the login
+    empty and names the failure in ``credential_error`` instead of raising, so
+    one recorder's broken credential degrades only that recorder (MNVR-009)."""
     bound = copy.copy(base_cfg)
-    cred = credential_store.load_recorder_credential(row["local_id"])
+    # Read before decrypting: a credential replaced after this point shows up as
+    # a newer generation and is reloaded by the workers (MNVR-012).
+    generation = credential_store.recorder_credential_generation(row["local_id"])
+    try:
+        cred = credential_store.load_recorder_credential(row["local_id"])
+        credential_error = None
+    except Exception as exc:  # noqa: BLE001 — classified, never the secret itself
+        if not degrade_credential_errors:
+            raise
+        cred, credential_error = {}, type(exc).__name__
+    bound.credential_generation_seen = generation
+    bound.credential_error = credential_error
     bound.nvr_url = str(row.get("url") or "").rstrip("/")
     bound.nvr_driver = str(row.get("driver") or "auto").strip().lower() or "auto"
     bound.nvr_username = cred.get("username") or ""
@@ -105,13 +124,16 @@ def _bound_config(base_cfg, row: dict):
     return bound
 
 
-def load_contexts(base_cfg) -> list[RecorderContext]:
+def load_contexts(base_cfg, *, degrade_credential_errors: bool = False) -> list[RecorderContext]:
     """Load all configured recorders from recorders.json.
 
     The registry must already have been staged by Setup/upgrade code. Missing or
     corrupt per-recorder credentials fail closed; this function never falls back
     to the old singleton credential for one recorder while using the registry for
-    another.
+    another. The runtime preflight passes ``degrade_credential_errors``: such a
+    recorder then loads with an empty login and ``credential_error`` set, so it
+    is held UNVERIFIED while its siblings run (MNVR-009). Registry structure
+    (duplicate identities, primaries) still fails closed.
     """
     rows = [
         row for row in recorder_registry.recorders()
@@ -129,7 +151,8 @@ def load_contexts(base_cfg) -> list[RecorderContext]:
                 raise ValueError("duplicate cloud recorder id in local registry")
             seen_cloud.add(cloud_id)
 
-        bound = _bound_config(base_cfg, row)
+        bound = _bound_config(base_cfg, row,
+                              degrade_credential_errors=degrade_credential_errors)
         contexts.append(RecorderContext(
             local_id=row["local_id"],
             cloud_recorder_id=cloud_id,
@@ -148,6 +171,7 @@ def load_contexts(base_cfg) -> list[RecorderContext]:
                 "recorder_cloud_id": cloud_id,
                 "recorder_display_name": row["display_name"],
             },
+            credential_error=bound.credential_error,
         ))
 
     primaries = [ctx for ctx in contexts if ctx.is_primary]

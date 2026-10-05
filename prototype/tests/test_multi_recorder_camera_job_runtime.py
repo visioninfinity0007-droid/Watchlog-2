@@ -440,4 +440,6 @@ def test_corrupt_sibling_credential_does_not_fail_a_healthy_recorder_clip(monkey
     incident_evidence.footage_worker(base, {"agent_id": "agent", "agent_key": "key"}, stop)
 
     assert opened == ["http://a"]
-    assert outcomes == [("req-a", "wl_agent_complete_clip"), ("req-b", "wl_agent_fail_clip")]
+    # Each recorder's clips are fetched by its own worker (MNVR-034): no order between them.
+    assert sorted(outcomes) == [("req-a", "wl_agent_complete_clip"),
+                                ("req-b", "wl_agent_fail_clip")]

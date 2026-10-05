@@ -166,7 +166,8 @@ def test_all_cloud_identities_bind_before_per_recorder_probe():
         assert len(prepared) == 2
         assert [x.context.local_id for x in prepared] == [a, b]
         assert all(x.error is None for x in prepared)
-        assert probe_calls == [a, b]
+        # Probes run side by side (MNVR-021); each recorder is probed exactly once.
+        assert sorted(probe_calls) == sorted([a, b])
 
         # Multi-recorder cutover binds primary first, stamps legacy backlog,
         # then syncs the complete set before any probe.
@@ -558,3 +559,324 @@ def test_conflicting_primary_health_identity_aborts_before_secondary_cloud_sync(
             ]
         finally:
             store.close()
+
+
+# --- failure isolation at startup (MNVR-009, MNVR-021) ----------------------------
+
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+import requests  # noqa: E402
+
+STATE = {"agent_id": "agent", "agent_key": "key", "site_id": "site", "tenant_id": "tenant"}
+MAPPING_IDS = (
+    "aaaaaaaa-0000-4000-8000-000000000001",
+    "bbbbbbbb-0000-4000-8000-000000000002",
+)
+
+
+def _bound_two(root):
+    a, b, base = seed_two(root)
+    rr.apply_cloud_mapping({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+    return a, b, base
+
+
+def test_one_corrupt_recorder_credential_does_not_block_sibling():
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        cs.recorder_credential_path(b).write_text("CORRUPT", encoding="utf-8")
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+        probed = []
+
+        def open_driver(cfg):
+            probed.append(cfg.recorder_local_id)
+            return Driver("A"), info("Hikvision", "A", "SER-A")
+
+        prepared = mro.prepare_recorders(base, STATE, cloud, open_driver)
+
+        by_local = {x.context.local_id: x for x in prepared}
+        assert probed == [a], "a recorder without a usable login is never contacted"
+        assert by_local[a].error is None and by_local[a].camera_mapping
+        assert by_local[b].error and "login" in by_local[b].error
+        assert by_local[b].context.credential_error
+        assert by_local[b].context.config.nvr_password == ""
+        # Identity is non-secret: both recorders are still bound to WatchLog.
+        assert rr.recorder(a)["cloud_recorder_id"] == MAPPING_IDS[0]
+        assert rr.recorder(b)["cloud_recorder_id"] == MAPPING_IDS[1]
+
+
+def test_offline_recorder_probe_does_not_delay_its_sibling():
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+        release = threading.Event()
+        started = {}
+        t0 = time.monotonic()
+
+        def open_driver(cfg):
+            started[cfg.recorder_local_id] = time.monotonic() - t0
+            if cfg.recorder_local_id == a:
+                release.wait(5)           # A's connect hangs (offline recorder)
+                raise RuntimeError("recorder unreachable")
+            return Driver("B"), info("Dahua", "B", "SER-B")
+
+        threading.Timer(1.5, release.set).start()
+        prepared = mro.prepare_recorders(base, STATE, cloud, open_driver)
+
+        assert started[b] < 0.5, f"B's probe waited {started[b]:.2f}s behind A"
+        by_local = {x.context.local_id: x for x in prepared}
+        assert by_local[b].error is None
+        assert "unreachable" in (by_local[a].error or "")
+
+
+def test_probe_wait_returns_promptly_and_late_results_are_delivered():
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+        release = threading.Event()
+
+        def open_driver(cfg):
+            if cfg.recorder_local_id == a:
+                release.wait(5)
+            return Driver("X"), info("Hikvision", "X", "SER-X")
+
+        t0 = time.monotonic()
+        prepared = mro.prepare_recorders(base, STATE, cloud, open_driver, probe_wait=0)
+        assert time.monotonic() - t0 < 0.5
+        late = {x.context.local_id: x for x in prepared}[a]
+        assert late.pending and late.camera_mapping is None
+        seen = []
+        late.on_ready(lambda item: seen.append(item.camera_mapping))
+        release.set()
+        assert late.ready.wait(5)
+        assert not late.pending and late.error is None
+        assert seen and seen[0] == {"1": f"camera-{MAPPING_IDS[0]}-1"}
+
+
+def _offline_cfg(base):
+    base.analytics_enabled = False
+    base.supabase_url = "https://cloud.invalid"
+    base.publishable_key = "pk"
+    base.health_batch = 4
+    base.health_concurrency = 1
+    base.health_seconds = 300
+    base.upload_seconds = 15
+    base.recovery_seconds = 300
+    base.snapshots = False
+    return base
+
+
+class _Offline:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, name, **kw):
+        self.calls.append((name, kw))
+        raise requests.ConnectionError("network not ready")
+
+
+def _run_offline_boot(monkeypatch, base, cloud):
+    import analytics_agent
+    import multi_recorder_fanout as fanout
+    import watchlog_agent as core
+
+    def fake_collector(cfg, spool, stop, holder):
+        holder["recorder_live_at"] = time.monotonic()
+        spool.add({"recorder_id": cfg.recorder_cloud_id, "channel": "1",
+                   "event_type": "motion", "device_ts": "2026-10-05T09:00:00Z",
+                   "agent_ts": "2026-10-05T09:00:00Z", "payload": {}})
+        stop.wait()
+
+    captured = {}
+    real_run = fanout.run
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(core, "collector", fake_collector)
+    monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.2)
+    monkeypatch.setattr(core, "health_cycle", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "heartbeat", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "upload_once", lambda *_a, **_k: (_ for _ in ()).throw(
+        RuntimeError("cloud unreachable")))
+    monkeypatch.setattr(core, "update_runtime_health", lambda **_k: None)
+    monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
+    monkeypatch.setattr(fanout, "run", capture)
+    analytics_agent.enhanced_cmd_run(base, STATE, cloud, once=True)
+    return captured
+
+
+def test_cloud_unreachable_at_boot_starts_bound_recorders(monkeypatch):
+    with Env() as env:
+        a, b, base = _bound_two(env.root)
+        cloud = _Offline()
+
+        captured = _run_offline_boot(monkeypatch, _offline_cfg(base), cloud)
+
+        prepared = captured["prepared_recorders"]
+        assert {p.context.cloud_recorder_id for p in prepared} == set(MAPPING_IDS)
+        assert callable(captured.get("recorder_check")), "binding is retried in the background"
+        queued = {}
+        for item in prepared:
+            spool = Spool(item.context.config.spool_path, 1000)
+            try:
+                queued[item.context.cloud_recorder_id] = [
+                    row["recorder_id"] for row in spool.take(10)[1]]
+            finally:
+                spool.close()
+        assert queued == {MAPPING_IDS[0]: [MAPPING_IDS[0]], MAPPING_IDS[1]: [MAPPING_IDS[1]]}
+        assert rr.recorder(a)["cloud_recorder_id"] == MAPPING_IDS[0]
+
+
+def test_offline_boot_with_an_unbound_recorder_still_fails_closed(monkeypatch):
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        rr.apply_cloud_mapping({a: MAPPING_IDS[0]})          # B was never bound
+        with pytest.raises(SystemExit, match="preflight did not complete"):
+            _run_offline_boot(monkeypatch, _offline_cfg(base), _Offline())
+
+
+def test_definitive_refusal_still_fails_closed_with_saved_bindings(monkeypatch):
+    import watchlog_agent as core
+
+    class Refused(_Offline):
+        def call(self, name, **kw):
+            self.calls.append((name, kw))
+            raise core.CloudError(name, 400, "P0001", "recorder registry refused")
+
+    with Env() as env:
+        _a, _b, base = _bound_two(env.root)
+        with pytest.raises(SystemExit, match="preflight did not complete"):
+            _run_offline_boot(monkeypatch, _offline_cfg(base), Refused())
+
+
+def test_background_bind_tolerates_a_corrupt_sibling_credential(monkeypatch):
+    import analytics_agent
+    with Env() as env:
+        a, b, base = _bound_two(env.root)
+        cs.recorder_credential_path(b).write_text("CORRUPT", encoding="utf-8")
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+        restart = {}
+        analytics_agent._retry_recorder_preflight(base, STATE, cloud, threading.Event(),
+                                                  restart, "bind")
+        assert restart == {}
+        assert "wl_sync_recorders" in [name for name, _ in cloud.calls]
+
+
+def test_offline_recorder_does_not_hold_back_its_siblings_collector(monkeypatch):
+    """WP-8 acceptance: with B unreachable at start, A's collector starts within 0.5 s."""
+    import multi_recorder_fanout as fanout
+    import watchlog_agent as core
+
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        base = _offline_cfg(base)
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+        release = threading.Event()
+
+        def open_driver(cfg):
+            if cfg.recorder_local_id == b:
+                release.wait(5)           # B's connect hangs
+                raise RuntimeError("recorder unreachable")
+            return Driver("A"), info("Hikvision", "A", "SER-A")
+
+        started = {}
+        t0 = time.monotonic()
+
+        def fake_collector(cfg, spool, stop, holder):
+            started[cfg.recorder_local_id] = time.monotonic() - t0
+            stop.wait()
+
+        monkeypatch.setattr(core, "collector", fake_collector)
+        monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.1)
+        monkeypatch.setattr(core, "upload_once", lambda *_a, **_k: 0)
+        monkeypatch.setattr(core, "health_cycle", lambda *_a, **_k: None)
+        monkeypatch.setattr(core, "heartbeat", lambda *_a, **_k: None)
+        monkeypatch.setattr(core, "update_runtime_health", lambda **_k: None)
+        try:
+            import analytics_agent
+            prepared = mro.prepare_recorders(
+                base, STATE, cloud, open_driver,
+                probe_wait=analytics_agent.MULTI_RECORDER_PROBE_WAIT_SECONDS)
+            fanout.run(base, STATE, cloud, once=True, prepared_recorders=prepared,
+                       detector=None, analytics_worker=lambda *_a: None,
+                       archive_worker=lambda *_a: None)
+        finally:
+            release.set()
+        assert started[a] < 0.5, f"A's collector waited {started[a]:.2f}s behind B"
+        assert b in started
+
+
+def test_only_recorder_without_a_readable_login_holds_instead_of_crash_looping(monkeypatch):
+    import analytics_agent
+    import watchlog_agent as core
+
+    with Env() as env:
+        a = str(uuid.uuid4())
+        cs.save_recorder_credential(a, "a-user", "a-pw")
+        rr.save_registry({"schema": rr.REGISTRY_SCHEMA, "recorders": [{
+            "local_id": a, "display_name": "Recorder A", "url": "http://192.0.2.10",
+            "driver": "onvif", "is_primary": True, "is_configured": True,
+        }]})
+        cs.recorder_credential_path(a).write_text("CORRUPT", encoding="utf-8")
+        base = _offline_cfg(SimpleNamespace(
+            state_path=env.root / "agent_state.json", spool_path=env.root / "spool.sqlite",
+            health_store_path=env.root / "health.sqlite",
+            last_live_path=env.root / "last_live.json", spool_max_rows=1000,
+            nvr_url="legacy", nvr_driver="auto", nvr_username="legacy",
+            nvr_password="legacy", heartbeat_seconds=60, recovery_enabled=False))
+        cloud = FakeCloud({a: MAPPING_IDS[0]})
+        opened = []
+        monkeypatch.setattr(core, "open_driver", lambda cfg: opened.append(cfg) or (
+            Driver("A"), info("Hikvision", "A", "SER-A")))
+
+        with pytest.raises(SystemExit, match="login on this PC cannot be read"):
+            analytics_agent.enhanced_cmd_run(base, STATE, cloud, once=True)
+        assert opened == [], "an empty login is never tried against the recorder"
+        assert rr.recorder(a)["cloud_recorder_id"] == MAPPING_IDS[0]
+
+        # Run mode holds and re-checks; once Setup repairs the login it restarts cleanly.
+        health = []
+        monkeypatch.setattr(core, "update_runtime_health", lambda **kw: health.append(kw))
+        monkeypatch.setattr(analytics_agent, "REGISTRY_RECHECK_SECONDS", 0)
+        checks = []
+
+        def sleep(_seconds):
+            checks.append(1)
+            if len(checks) == 2:
+                cs.save_recorder_credential(a, "a-user", "a-pw2")
+            if len(checks) > 5:
+                raise AssertionError("never released")
+
+        monkeypatch.setattr(analytics_agent.time, "sleep", sleep)
+        with pytest.raises(SystemExit, match="restarting"):
+            analytics_agent.enhanced_cmd_run(base, STATE, cloud, once=False)
+        assert health[0] == {"recorder_credential": "unavailable"}
+        assert health[-1] == {"recorder_credential": "ok"}
+        assert opened == []
+
+
+def test_a_probe_that_exits_still_resolves_its_recorder():
+    """open_driver raises SystemExit on a missing recorder config; in a probe thread that
+    must become that recorder's error, never a startup that waits forever."""
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+
+        def open_driver(cfg):
+            if cfg.recorder_local_id == b:
+                raise SystemExit("recorder address not configured")
+            return Driver("A"), info("Hikvision", "A", "SER-A")
+
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "prepared", mro.prepare_recorders(base, STATE, cloud, open_driver)), daemon=True)
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive(), "startup waited forever on an exited probe"
+        by_local = {x.context.local_id: x for x in result["prepared"]}
+        assert by_local[a].error is None
+        assert "SystemExit" in by_local[b].error
