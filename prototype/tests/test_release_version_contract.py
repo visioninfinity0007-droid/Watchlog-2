@@ -4,8 +4,9 @@
 One version everywhere a build reads it, and no version without its release record:
 
   * prototype/agent/wl_version.py VERSION is the single source (runtime, heartbeat, setup);
-  * the NSIS fallback APPVERSION in watchlog.nsi equals it (the release build passes
-    /DAPPVERSION from wl_version, but a direct makensis compile uses the fallback);
+  * the NSIS fallback APPVERSION in watchlog.nsi and watchlog-repair.nsi equals it (the
+    release build passes /DAPPVERSION from wl_version, but a direct makensis compile uses the
+    fallback, and Repair then refuses the candidate when the staged version differs);
   * docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md names that version as the source line
     under validation and has a section for it, which states its promotion status.
 
@@ -32,10 +33,19 @@ def test_version_is_a_plain_release_number():
     assert re.fullmatch(r"\d+\.\d+\.\d+", _version())
 
 
+def _nsis_fallback(path: str) -> str:
+    nsis = _read(path)
+    return re.search(r'!ifndef APPVERSION\s+!define APPVERSION "([^"]+)"', nsis).group(1)
+
+
 def test_nsis_fallback_matches_wl_version():
-    nsis = _read("prototype/installer/nsis/watchlog.nsi")
-    fallback = re.search(r'!ifndef APPVERSION\s+!define APPVERSION "([^"]+)"', nsis).group(1)
-    assert fallback == _version()
+    assert _nsis_fallback("prototype/installer/nsis/watchlog.nsi") == _version()
+
+
+def test_repair_nsis_fallback_matches_wl_version():
+    # wl-repair-upgrade.ps1 compares the staged agent version with -ExpectedVersion, which is
+    # this APPVERSION; a stale fallback makes a direct makensis Repair build fail that check.
+    assert _nsis_fallback("prototype/installer/nsis/watchlog-repair.nsi") == _version()
 
 
 def test_source_of_truth_records_the_version():
