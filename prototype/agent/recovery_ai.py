@@ -51,8 +51,8 @@ KEY_FRAME_SLACK_SECONDS = 10
 
 def _as_dt(v) -> datetime:
     """A zone-aware datetime, so archive times compare with the recovery window. A time without a
-    zone (Dahua mediaFileFind answers bare wall-clock strings) is read as UTC; turning recorder
-    local time into UTC is the archive driver's job."""
+    zone is read as UTC; turning recorder local time into UTC is the archive driver's job (the
+    Dahua archive returns its segment times as UTC on the agent clock)."""
     if not isinstance(v, datetime):
         v = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
@@ -423,7 +423,9 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
     Enumerates recorded segments (bounded, cursored, deduped via ``seen``), retrieves a representative
     historical frame per new segment, runs the detector, and emits recovered-intelligence events via
     ``on_event``. Returns a truthful summary. Never blocks or fabricates; unsupported archive =>
-    status is reported verbatim and nothing is recovered.
+    status is reported verbatim and nothing is recovered. A pass that the frame budget or a
+    cut-short search stopped before the end of the window is 'partial', with what it recovered
+    counted.
     """
     cap = (driver.historical_capability() or {}).get("segments", UNKNOWN)
     if cap != SUPPORTED:
