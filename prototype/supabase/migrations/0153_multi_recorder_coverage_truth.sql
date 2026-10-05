@@ -925,9 +925,13 @@ as $function$
          )
 $function$;
 
+-- This body has no tenant check (the base report it wraps has none either),
+-- so it stays service_role-only, as 0103 left it. Browser roles get it back
+-- only in 0155, which adds wl_assert_my_site (MNVR-065): a deploy that stops
+-- after this file must not expose other tenants' coverage.
 revoke all on function public.wl_site_coverage_report_classes(
   uuid,timestamptz,timestamptz
-) from public,anon;
+) from public,anon,authenticated;
 grant execute on function public.wl_site_coverage_report_classes(
   uuid,timestamptz,timestamptz
-) to authenticated,service_role;
+) to service_role;
