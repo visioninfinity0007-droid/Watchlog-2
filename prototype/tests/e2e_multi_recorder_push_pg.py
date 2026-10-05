@@ -441,10 +441,24 @@ def run() -> int:
             push_agent = (cur.execute(
                 "select agent_id from push_sources where token=%s", (tok_a,)).fetchone()
                 or [None])[0]
-            _, state, msg = as_anon_try(
-                "select wl_agent_issue_push_token(%s,'x',%s)", push_agent, rec4_a)
-            step(state in ("28000", "42501"),
-                 "a recorder-push virtual agent cannot mint push tokens", msg)
+            # Give the virtual agent a known key so authentication passes and the
+            # device_driver guard itself is what refuses (a random md5 hash would
+            # fail authentication first, 28000, whether the guard exists or not).
+            push_agent_key = "push-virtual-agent-known-key"
+            cur.execute(
+                """update agents set agent_key_hash=encode(sha256(convert_to(%s,'UTF8')),'hex')
+                    where id=%s and device_driver='recorder-push'""",
+                (push_agent_key, push_agent),
+            )
+            _, state, msg = issue(push_agent, push_agent_key, rec4_a)
+            _, state2, msg2 = issue(push_agent, push_agent_key)
+            step(push_agent is not None
+                 and state == "42501"
+                 and "recorder-push agent cannot issue push tokens" in msg.lower()
+                 and state2 == "42501"
+                 and "recorder-push agent cannot issue push tokens" in msg2.lower(),
+                 "a recorder-push virtual agent cannot mint push tokens (recorder and site forms)",
+                 f"{state} {msg} | {state2} {msg2}")
 
             # MNVR-026: one alarm seen by the Agent and by push is one event row.
             t_par = ts + timedelta(minutes=5)
