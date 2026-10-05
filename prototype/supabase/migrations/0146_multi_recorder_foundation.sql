@@ -1594,12 +1594,29 @@ security definer
 set search_path = public
 as $function$
 declare
-  v_tenant      uuid := public.wl_require_role(array['owner', 'admin']);
+  v_tenant      uuid := public.wl_my_tenant();
+  v_role        text;
   v_site        public.sites;
   v_recorder_id uuid;
   v_agent       uuid;
   v_token       text;
 begin
+  -- A push token is a live ingest credential. The role is the one held in
+  -- THIS account: wl_require_role pairs wl_my_tenant() with the account-blind
+  -- wl_my_role(), which may return a role the caller holds in another account.
+  if v_tenant is null then
+    raise exception 'not a member of any account';
+  end if;
+  select m.role into v_role
+    from public.memberships m
+   where m.user_id = auth.uid()
+     and m.tenant_id = v_tenant;
+  if v_role is null or not (v_role = any(array['owner', 'admin'])) then
+    raise exception 'this needs the owner or admin role; you are %',
+      coalesce(v_role, 'not a member')
+      using errcode = '42501';
+  end if;
+
   select * into v_site from public.sites where id = p_site_id and tenant_id = v_tenant;
   if v_site.id is null then
     raise exception 'that site does not belong to your account';
@@ -1646,11 +1663,28 @@ security definer
 set search_path = public
 as $function$
 declare
-  v_tenant uuid := public.wl_require_role(array['owner', 'admin']);
+  v_tenant uuid := public.wl_my_tenant();
+  v_role   text;
   v_site   public.sites;
   v_agent  uuid;
   v_token  text;
 begin
+  -- A push token is a live ingest credential. The role is the one held in
+  -- THIS account: wl_require_role pairs wl_my_tenant() with the account-blind
+  -- wl_my_role(), which may return a role the caller holds in another account.
+  if v_tenant is null then
+    raise exception 'not a member of any account';
+  end if;
+  select m.role into v_role
+    from public.memberships m
+   where m.user_id = auth.uid()
+     and m.tenant_id = v_tenant;
+  if v_role is null or not (v_role = any(array['owner', 'admin'])) then
+    raise exception 'this needs the owner or admin role; you are %',
+      coalesce(v_role, 'not a member')
+      using errcode = '42501';
+  end if;
+
   select * into v_site from public.sites where id = p_site_id and tenant_id = v_tenant;
   if v_site.id is null then
     raise exception 'that site does not belong to your account';
