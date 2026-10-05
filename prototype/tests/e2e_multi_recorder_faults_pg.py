@@ -17,7 +17,8 @@ channel 1. Proves:
 - camera-less recorder disk events (payload.recorder_scoped /
   payload.recorder_scope, or no camera) never become camera_fault
   activities or presence episodes; a recent one is storage evidence for its
-  own recorder, superseded by newer storage proof;
+  own recorder, superseded only by newer conclusive storage proof (a newer
+  'unknown' proof keeps its fault open);
 - exact EXECUTE ACLs of the current-proof RPCs.
 """
 from __future__ import annotations
@@ -483,6 +484,82 @@ def run() -> int:
             step(f"nvr:{rec_e1}:storage" not in faults and f"nvr:{rec_e2}:storage" not in faults,
                  "newer storage proof supersedes a disk event; an archive replay is not current",
                  str(faults))
+
+            # Only a conclusive proof (ok/degraded/fault) supersedes a disk event.
+            # A recorder whose storage cannot be read sends storage 'unknown' on
+            # every cycle (ONVIF, or Hikvision without storageDetection); that
+            # proof must not cancel the event, which is the only storage evidence
+            # such a recorder has.
+            def storage_fault_rows(site, key):
+                return one("""select count(*) filter (where state<>'resolved'),
+                                     count(*) filter (where state='resolved')
+                                from operational_faults
+                               where site_id=%s and dedupe_key=%s""", site, key)
+
+            ts_e = one("select to_char((now()-interval '20 seconds') at time zone 'utc',"
+                       "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")[0]
+            fresh_e, msg = as_anon(
+                "select wl_ingest_events(%s,%s,%s::jsonb)", agent_e, key_e,
+                json.dumps([{"recorder_id": str(rec_e1), "channel": None,
+                             "event_type": "disk_error", "device_ts": ts_e, "agent_ts": ts_e,
+                             "payload": {"recorder_scope": True}}]))
+            assert fresh_e and fresh_e[0]["inserted"] == 1, msg or fresh_e
+            cur.execute("""update events set received_at=now()-interval '20 seconds'
+                            where site_id=%s and recorder_id=%s and device_ts=%s::timestamptz""",
+                        (se, rec_e1, ts_e))
+            as_anon("select wl_report_recorder_recording_storage_current(%s,%s,%s,%s::jsonb)",
+                    agent_e, key_e, rec_e1, proof("unknown", "unknown", "unknown", []))
+            faults = open_faults(se)
+            step(faults.get(f"nvr:{rec_e1}:storage") == ("disk_error", str(agent_e), None),
+                 "multi-recorder: a newer 'unknown' storage proof keeps a disk event's "
+                 "recorder storage fault open", str(faults))
+
+            # One-recorder ONVIF site on the deployed (5.0.x) Agent: legacy health,
+            # a legacy recorder_scope disk event, then the routine legacy proof with
+            # storage 'unknown' (which reconciles the site itself).
+            uf, tf, sf = bootstrap("faults-f@watchlog.test", "Faults F", "Depot F")
+            key_f = "faults-agent-f"
+            agent_f = add_agent(tf, sf, key_f, "f")
+            recs_f, msg = as_anon("select wl_sync_recorders(%s,%s,%s::jsonb)", agent_f, key_f,
+                                  json.dumps([{"local_key": "rec-f",
+                                               "display_name": "Recorder F",
+                                               "is_primary": True, "is_configured": True}]))
+            assert recs_f, msg
+            sync_camera(agent_f, key_f, recs_f[0]["rec-f"], "1")
+            row, msg = as_anon(
+                "select wl_report_health(%s,%s,%s::jsonb)", agent_f, key_f,
+                json.dumps({"nvr": {"reachable": True, "auth_ok": True, "reason": "ok"},
+                            "channels": {"enumerated": True,
+                                         "reported": [{"channel": "1", "enabled": True}]}}))
+            assert row, msg
+            ts_f = one("select to_char((now()-interval '30 seconds') at time zone 'utc',"
+                       "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")[0]
+            fresh_f, msg = as_anon(
+                "select wl_ingest_events(%s,%s,%s::jsonb)", agent_f, key_f,
+                json.dumps([{"channel": None, "event_type": "disk_error",
+                             "device_ts": ts_f, "agent_ts": ts_f,
+                             "payload": {"recorder_scope": True}}]))
+            assert fresh_f and fresh_f[0]["inserted"] == 1, msg or fresh_f
+            cur.execute("update events set received_at=now()-interval '30 seconds' "
+                        "where site_id=%s", (sf,))
+            f_key = f"nvr:{agent_f}:storage"
+            reconcile(sf)
+            opened_f = open_faults(sf).get(f_key)
+            as_anon("select wl_report_recording_storage_current(%s,%s,%s::jsonb)",
+                    agent_f, key_f, proof("unknown", "unknown", "unknown", []))
+            faults = open_faults(sf)
+            step(opened_f == ("disk_error", str(agent_f), None)
+                 and faults.get(f_key) == ("disk_error", str(agent_f), None),
+                 "one-recorder legacy Agent: a newer 'unknown' storage proof keeps the disk "
+                 "event's storage fault open", str((opened_f, faults)))
+
+            before_f = storage_fault_rows(sf, f_key)
+            as_anon("select wl_report_recording_storage_current(%s,%s,%s::jsonb)",
+                    agent_f, key_f, proof("unknown", "ok", "ok", []))
+            after_f = storage_fault_rows(sf, f_key)
+            step(before_f[0] == 1 and after_f == (0, before_f[1] + 1),
+                 "one-recorder legacy Agent: a newer 'ok' storage proof resolves that fault",
+                 str((before_f, after_f)))
 
             # ---------------- exact EXECUTE ACLs ----------------
             def execute_grantees(sig):

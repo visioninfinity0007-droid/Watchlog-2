@@ -972,7 +972,10 @@ revoke all on function public.wl_event_is_recorder_scoped_disk(text,uuid,jsonb)
 --     one-recorder site), fresh within 15 minutes, as in 0089. A recorder-
 --     scoped disk event from the current Agent is storage evidence for its
 --     own recorder while both its device and receive times are inside that
---     window (an archive replay never counts); newer proof supersedes it.
+--     window (an archive replay never counts). Only a newer conclusive
+--     proof (ok/degraded/fault) supersedes it: a recorder whose storage
+--     cannot be read sends 'unknown' proof every cycle, and that must not
+--     cancel the only storage evidence it has.
 -- UNKNOWN never opens a fault; MISSING/DISABLED cameras stay inventory.
 -- ---------------------------------------------------------------------
 create or replace function public.wl_reconcile_site_faults(p_site_id uuid)
@@ -1051,28 +1054,48 @@ begin
       from legacy l
      where v_configured = 0
   ), obs as (
-    select b.recorder_id, b.key_prefix, b.nvr_reachable, b.nvr_auth_ok,
-           ev.storage_state, ev.storage_reason, ev.storage_observed_at
-      from base b
-      left join lateral (
-        select x.storage_state, x.storage_reason, x.storage_observed_at
-          from (
-            select b.rh_storage_state as storage_state,
-                   case when b.rh_storage_state = 'fault'
-                        then 'storage_fault' else 'disk_full' end as storage_reason,
-                   b.rh_storage_at as storage_observed_at,
-                   0 as source_rank
-             where b.rh_storage_at is not null
-            union all
-            select l.sto_current_state,
-                   case when l.sto_current_state = 'fault'
-                        then 'storage_fault' else 'disk_full' end,
-                   l.sto_current_at, 0
-              from legacy l
-             where l.sto_current_at is not null
-            union all
-            select case when e.event_type = 'disk_error' then 'fault' else 'degraded' end,
-                   e.event_type, e.received_at, 1
+    select s.recorder_id, s.key_prefix, s.nvr_reachable, s.nvr_auth_ok,
+           case when s.use_event then s.ev_state else s.pr_state end as storage_state,
+           case when s.use_event then s.ev_reason else s.pr_reason end as storage_reason,
+           case when s.use_event then s.ev_at else s.pr_at end as storage_observed_at
+      from (
+        select b.recorder_id, b.key_prefix, b.nvr_reachable, b.nvr_auth_ok,
+               pr.storage_state as pr_state, pr.storage_reason as pr_reason,
+               pr.storage_observed_at as pr_at,
+               ev.storage_state as ev_state, ev.storage_reason as ev_reason,
+               ev.storage_observed_at as ev_at,
+               -- A fresh disk event stands unless a newer (or same-time)
+               -- conclusive proof supersedes it; 'unknown' proof never does.
+               (ev.storage_observed_at is not null
+                and (pr.storage_observed_at is null
+                     or coalesce(pr.storage_state,'unknown') not in ('ok','degraded','fault')
+                     or pr.storage_observed_at < ev.storage_observed_at)) as use_event
+          from base b
+          left join lateral (
+            select x.storage_state, x.storage_reason, x.storage_observed_at
+              from (
+                select b.rh_storage_state as storage_state,
+                       case when b.rh_storage_state = 'fault'
+                            then 'storage_fault' else 'disk_full' end as storage_reason,
+                       b.rh_storage_at as storage_observed_at
+                 where b.rh_storage_at is not null
+                union all
+                select l.sto_current_state,
+                       case when l.sto_current_state = 'fault'
+                            then 'storage_fault' else 'disk_full' end,
+                       l.sto_current_at
+                  from legacy l
+                 where l.sto_current_at is not null
+              ) x
+             order by x.storage_observed_at desc,
+                      case when x.storage_state = 'fault' then 0 else 1 end
+             limit 1
+          ) pr on true
+          left join lateral (
+            select case when e.event_type = 'disk_error'
+                        then 'fault' else 'degraded' end as storage_state,
+                   e.event_type as storage_reason,
+                   e.received_at as storage_observed_at
               from public.events e
              where b.recorder_id is not null
                and e.recorder_id = b.recorder_id
@@ -1081,12 +1104,11 @@ begin
                and e.device_ts >= v_fresh_cut
                and e.received_at >= v_fresh_cut
                and public.wl_event_is_recorder_scoped_disk(e.event_type, e.camera_id, e.payload)
-          ) x
-         order by x.storage_observed_at desc,
-                  x.source_rank,
-                  case when x.storage_state = 'fault' then 0 else 1 end
-         limit 1
-      ) ev on true
+             order by e.received_at desc,
+                      case when e.event_type = 'disk_error' then 0 else 1 end
+             limit 1
+          ) ev on true
+      ) s
   ), desired as (
     select 'agent:' || a.agent_id::text || ':unreachable' as dedupe_key,
            'agent' as fault_domain, 'agent_unreachable' as fault_type,
