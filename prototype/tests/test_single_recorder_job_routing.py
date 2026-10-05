@@ -116,7 +116,8 @@ class _Driver:
         self.closed = False
 
     def get_clip(self, channel, start, end):
-        return b"clip-bytes"
+        # An MP4 container header: clips are labelled by their container, not the driver.
+        return b"\x00\x00\x00\x18ftypmp42clip-bytes"
 
     def get_snapshot(self, channel):
         return b"\xff\xd8jpeg"

@@ -46,6 +46,7 @@ class FakeSession:
     def __init__(self, stream_resp):
         self.auth = None
         self.stream_resp = stream_resp
+        self.served = False
 
     def get(self, url, params=None, timeout=None, stream=False):
         params = params or {}
@@ -58,8 +59,13 @@ class FakeSession:
             if action == "factory.create":
                 return FakeResponse(text="result=finder1")
             if action == "findFile":
+                self.served = False
                 return FakeResponse(text="OK")
             if action == "findNextFile":
+                # Like a real finder: the one file once, then an empty page.
+                if self.served:
+                    return FakeResponse(text="found=0\r\n")
+                self.served = True
                 return FakeResponse(text="items[0].Channel=0\r\nitems[0].StartTime=2026-06-01 09:59:00")
             return FakeResponse(text="OK")            # close/destroy
         if "loadfile.cgi" in url:

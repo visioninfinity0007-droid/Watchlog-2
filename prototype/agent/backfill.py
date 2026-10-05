@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 SUPPORTED, UNSUPPORTED, UNKNOWN = "supported", "unsupported", "unknown"
 RECOVERED_SOURCE = "recorder_archive"
+RECORDED_SEGMENT = "recorded_segment"     # a recording file/segment row, not a recorder event
 PROVENANCE_LINE = "Recovered from recorder archive"
 
 
@@ -76,6 +77,11 @@ def backfill_events(driver, channel, start, end, *, window_seconds=3600, page_li
                         "provenance": RECOVERED_SOURCE, "reason": "driver changed status mid-scan"}
             pages += 1
             for raw in res.get("events", []) or []:
+                if raw.get("type") == RECORDED_SEGMENT:
+                    # A recording segment is footage, not something the recorder detected. The
+                    # visual pass (recovery_ai) samples it; replaying it here would store the
+                    # recorder's playback URI, with its LAN address, as an event.
+                    continue
                 key = _dedupe_key(channel, raw)
                 if key in seen:
                     duplicates += 1
@@ -139,4 +145,4 @@ class ReferenceArchiveDriver:
 
 
 __all__ = ["backfill_events", "ReferenceArchiveDriver", "SUPPORTED", "UNSUPPORTED", "UNKNOWN",
-           "RECOVERED_SOURCE", "PROVENANCE_LINE"]
+           "RECOVERED_SOURCE", "PROVENANCE_LINE", "RECORDED_SEGMENT"]

@@ -20,12 +20,23 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 
 import credential_store            # noqa: E402
 import watchlog_agent as core      # noqa: E402
 import setup_backend as sb         # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _private_data_root(tmp_path, monkeypatch):
+    """establish_identity heartbeats (runtime health is published under the data root) and
+    appends setup.log there: keep both in a temporary directory, never the real ProgramData."""
+    monkeypatch.setattr(core, "default_state_dir", lambda: tmp_path / "WatchLog")
+    monkeypatch.setattr(sb, "programdata_dir", lambda: tmp_path / "WatchLog")
+
 
 DEVICE = types.SimpleNamespace(vendor="Dahua", model="NVR", driver="dahua")
 EIGHT = [{"channel": str(i), "name": f"Channel{i}"} for i in range(1, 9)]

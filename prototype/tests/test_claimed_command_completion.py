@@ -126,13 +126,13 @@ def test_routing_failure_completes_the_claimed_command_as_failed(monkeypatch):
 def test_driver_build_failure_completes_the_claimed_command_as_failed(monkeypatch):
     stop = threading.Event()
     monkeypatch.setattr(core, "update_runtime_health", lambda **_k: None)
-    cfg = _cfg(nvr_driver="auto")
+    cfg = _cfg(nvr_driver="not-a-driver")
     monkeypatch.setattr(recorder_runtime, "config_for_cloud_recorder", lambda c, _rid: c)
 
-    def build_auto(name, *_a, **_k):
-        raise KeyError(name)  # build('auto') is not a registered driver
+    def build_unknown(name, *_a, **_k):
+        raise KeyError(name)  # an unregistered driver name ('auto' is resolved by autodetect)
 
-    monkeypatch.setattr(core, "build", build_auto)
+    monkeypatch.setattr(core, "build", build_unknown)
     cloud = _CommandCloud(stop, [_command("cmd-auto")])
     _run_command_worker(cfg, cloud, stop)
 
@@ -186,9 +186,17 @@ def test_recovery_worker_survives_repeated_failures(monkeypatch):
         def count(self):
             return 0
 
+    class Cloud:
+        # The recorder-less contract opens and reads intervals by camera UUID, so the
+        # worker reaches the archive only once the camera mapping exists.
+        def call(self, name, **_kwargs):
+            if name == "wl_sync_cameras":
+                return {"1": "11111111-1111-4111-8111-111111111111"}
+            return []
+
     worker = threading.Thread(
         target=core.recovery_worker,
-        args=(_cfg(), {"agent_id": "agent", "agent_key": "key"}, object(), stop,
+        args=(_cfg(), {"agent_id": "agent", "agent_key": "key"}, Cloud(), stop,
               Spool(), [{"channel": "1"}], {}),
         daemon=True,
     )

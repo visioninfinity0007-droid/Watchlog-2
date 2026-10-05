@@ -197,13 +197,23 @@ def _close(units) -> None:
                 pass
 
 
+def _stream_last_live_writer():
+    """The shipped loop's last_live rule (analytics_agent._persist_stream_last_live)."""
+    import analytics_agent
+    return analytics_agent._persist_stream_last_live
+
+
 def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
-        detector, analytics_worker, archive_worker) -> None:
-    """Run the site with independent recorder workers under one site authority."""
+        detector, analytics_worker, archive_worker, last_live_writer=None) -> None:
+    """Run the site with independent recorder workers under one site authority.
+
+    ``last_live_writer(cfg, holder, clock)`` keeps one recorder's last_live.json; it defaults
+    to the single-recorder loop's event-stream rule."""
     import monitoring_coverage as coverage
 
     if len(prepared_recorders) < 2:
         raise RuntimeError("multi-recorder fan-out requires at least two prepared recorders")
+    persist_last_live = last_live_writer or _stream_last_live_writer()
 
     stop = threading.Event()
     units = build_worker_sets(prepared_recorders, state, cloud, stop)
@@ -343,18 +353,14 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                         + str(error).splitlines()[0][:200]
                     )
 
-                # Per-recorder outage clocks. A failed B never freezes A.
-                if base_cfg.recovery_enabled:
-                    for unit in units:
-                        if not _fresh(unit.holder, clock):
-                            continue
-                        try:
-                            import recovery as recovery_mod
-                            recovery_mod.persist_last_live(
-                                unit.cfg.last_live_path, core.now_utc()
-                            )
-                        except Exception:
-                            pass
+                # Per-recorder outage clocks. A failed B never freezes A. Each moves only
+                # with that recorder's event-stream activity (never a probe), to the time of
+                # that activity, and never over an outage its recovery has not opened yet.
+                for unit in units:
+                    try:
+                        persist_last_live(unit.cfg, unit.holder, clock)
+                    except Exception:
+                        pass
 
             time.sleep(1)
 

@@ -7,30 +7,51 @@ explicitly and installs :func:`get_clip` on ``DahuaDriver``.
 Safety / truth rules:
 * read-only CGI calls only;
 * WatchLog channel numbers are converted to Dahua's native zero-based indexes;
-* the recorder's own clock is read first so UTC cloud timestamps are converted
-  to recorder-local wall time rather than silently requesting the wrong footage;
+* the recorder's own clock is read once per call. Times the Agent stamped (UTC
+  cloud windows, Dahua CGI event receive times) move onto recorder wall time by
+  the measured offset, drift included; UTC times the recorder's own clock
+  stamped (ONVIF UtcTime) move by the recorder's zone only. Archive segment
+  times go back to UTC by the same offset that built their search window, so
+  they come back on the agent clock and no naive recorder-local time leaves
+  this module to be misread as UTC;
 * mediaFileFind must prove a recording exists in the requested window before
   loadfile is allowed to transfer bytes;
-* downloads are bounded to the same 32 MiB pilot limit as incident_evidence;
+* archive enumeration reads finder pages until the recorder returns an empty
+  one; a search too large to page ends 'partial', never 'supported';
+* downloads are bounded to the same 32 MiB pilot limit as incident_evidence and
+  to a total time budget;
 * ambiguous clock/search/download responses fail closed with DriverError.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import re
+import time
 from typing import Iterable
 
 import requests
 from requests.auth import HTTPBasicAuth
+from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
 from drivers.dahua import DahuaDriver
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
-DOWNLOAD_TIMEOUT = 90
-FINDER_COUNT = 100
+DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
+CLIP_TOTAL_SECONDS = 90              # per get_clip, counted from the start of the call
+READ_SIZE = 64 * 1024                # most bytes one download read asks for
+FINDER_COUNT = 100                   # files per findNextFile page
+MAX_FINDER_PAGES = 20                # hard cap on the pages one archive search may read
+MAX_ZONE_DRIFT_SECONDS = 5 * 60      # a clock further than this from every civil offset has no zone
+# Every UTC offset in civil use, standard and daylight time, in minutes.
+CIVIL_UTC_OFFSETS_MINUTES = (
+    -720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -150, -120, -60, 0,
+    60, 120, 180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630, 660,
+    720, 765, 780, 825, 840)
+AGENT_CLOCK, RECORDER_CLOCK = "agent", "recorder"
 
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
+_FOUND_RE = re.compile(r"^\s*found\s*=\s*(\d+)", re.IGNORECASE | re.MULTILINE)
 _TIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
@@ -81,6 +102,16 @@ def _text(driver: DahuaDriver, path: str, *, params=None, timeout=None) -> str:
     return _request(driver, path, params=params, timeout=timeout).text
 
 
+def _parse_time(value: str) -> datetime | None:
+    normalized = str(value).strip().replace("Z", "+0000")
+    for fmt in _TIME_FORMATS:
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_device_clock(text: str) -> datetime:
     """Return recorder wall clock as a naive datetime.
 
@@ -95,43 +126,102 @@ def _parse_device_clock(text: str) -> datetime:
         if value:
             candidates.append(value)
     for value in candidates:
-        normalized = value.replace("Z", "+0000")
-        for fmt in _TIME_FORMATS:
-            try:
-                parsed = datetime.strptime(normalized, fmt)
-                if parsed.tzinfo is not None:
-                    parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-                return parsed
-            except ValueError:
-                continue
+        parsed = _parse_time(value)
+        if parsed is not None:
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
     raise DriverError("recorder current time was not parseable; refusing ambiguous archive request")
 
 
-def _localize_window(driver: DahuaDriver, start: datetime, end: datetime) -> tuple[datetime, datetime]:
+def _recorder_clock(driver: DahuaDriver) -> tuple[timedelta, timedelta | None]:
+    """Read the recorder clock once and return ``(offset, zone)`` against the agent's UTC clock.
+
+    ``offset`` is recorder wall time minus agent UTC, unrounded. It carries the recorder's drift,
+    which is exactly what maps an instant the agent stamped onto the recorder's footage, and the
+    recorder's footage times back onto the agent clock.
+    ``zone`` is the civil UTC offset nearest that offset: the recorder's configured UTC offset
+    without drift, for UTC times the recorder's own clock stamped. It is None when the clock is
+    more than MAX_ZONE_DRIFT_SECONDS from every civil offset, so no zone is ever invented. A larger
+    drift can still come within that of the NEXT civil offset and be taken for a zone (from 10 min
+    of drift where civil offsets are 15 min apart, 25 min where they are 30 min apart), so ``zone``
+    is only as good as the recorder's clock. Both are CURRENT; footage recorded before a DST change
+    is not re-zoned.
+    """
+    device_now = _parse_device_clock(_text(driver, "/cgi-bin/global.cgi", params={"action": "getCurrentTime"}))
+    offset = device_now - datetime.now(timezone.utc).replace(tzinfo=None)
+    seconds = offset.total_seconds()
+    if abs(seconds) > 15 * 3600:
+        raise DriverError("recorder clock offset is implausible; refusing archive request")
+    zone = timedelta(minutes=min(CIVIL_UTC_OFFSETS_MINUTES, key=lambda m: abs(seconds - 60 * m)))
+    if abs((offset - zone).total_seconds()) > MAX_ZONE_DRIFT_SECONDS:
+        zone = None
+    return offset, zone
+
+
+def _clock_shift(clock: str, offset: timedelta, zone: timedelta | None) -> timedelta:
+    """Distance from UTC times stamped by ``clock`` to recorder wall time."""
+    if clock == AGENT_CLOCK:
+        return offset
+    if clock == RECORDER_CLOCK:
+        if zone is None:
+            raise DriverError("recorder clock is too far off to tell its time zone; refusing archive request")
+        return zone
+    raise DriverError(f"unknown archive clock source: {clock}")
+
+
+def _localize_window(driver: DahuaDriver, start: datetime, end: datetime, *,
+                     clock: str = AGENT_CLOCK, recorder_clock=None) -> tuple[datetime, datetime]:
     if start.tzinfo is None or end.tzinfo is None:
         raise DriverError("archive request timestamps must be timezone-aware")
     if end <= start:
         raise DriverError("archive request end must be after start")
 
-    device_now = _parse_device_clock(_text(driver, "/cgi-bin/global.cgi", params={"action": "getCurrentTime"}))
-    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
-    offset = device_now - utc_now
-
-    # Recorder clocks may differ by a few seconds. Nearest minute preserves the
-    # timezone offset without baking transient clock skew into historical lookup.
-    offset_seconds = round(offset.total_seconds() / 60.0) * 60
-    if abs(offset_seconds) > 15 * 3600:
-        raise DriverError("recorder clock offset is implausible; refusing archive request")
-
-    local_start = start.astimezone(timezone.utc).replace(tzinfo=None)
-    local_end = end.astimezone(timezone.utc).replace(tzinfo=None)
-    from datetime import timedelta
-    delta = timedelta(seconds=offset_seconds)
-    return local_start + delta, local_end + delta
+    # The offset is used unrounded. Rounding it to the minute dropped up to 30 s of real drift
+    # for agent-stamped events and doubled it for recorder-stamped ones, either of which can push
+    # a 30 s incident window off the event.
+    shift = _clock_shift(clock, *(recorder_clock or _recorder_clock(driver)))
+    local_start = start.astimezone(timezone.utc).replace(tzinfo=None) + shift
+    local_end = end.astimezone(timezone.utc).replace(tzinfo=None) + shift
+    # The recorder takes whole seconds: widen outward so the request is never narrower.
+    if local_end.microsecond:
+        local_end = local_end.replace(microsecond=0) + timedelta(seconds=1)
+    return local_start.replace(microsecond=0), local_end
 
 
 def _fmt(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _segment_utc(value, offset: timedelta) -> str | None:
+    """Recorder wall time of an archive segment -> ISO-8601 UTC ("...Z") on the agent clock; None
+    when the recorder gave none.
+
+    ``offset`` comes from the clock reading that built the search window, so the result is in the
+    frame of the request and replays with clock="agent" onto the same recorder wall time. A time
+    that names its own UTC offset is taken as the instant it names.
+    """
+    if not value:
+        return None
+    parsed = _parse_time(value)
+    if parsed is None:
+        raise DriverError("recorder returned an unparseable archive segment time")
+    if parsed.tzinfo is None:
+        parsed = (parsed - offset).replace(tzinfo=timezone.utc)
+    # The offset is not whole seconds: round to the nearest second, so a replay lands on the
+    # recorder's own second rather than the one before it.
+    parsed += timedelta(milliseconds=500)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _native_channel(channel) -> int:
+    try:
+        native_channel = int(str(channel)) - 1
+    except ValueError as error:
+        raise DriverError(f"invalid camera channel: {channel}") from error
+    if native_channel < 0:
+        raise DriverError(f"invalid camera channel: {channel}")
+    return native_channel
 
 
 def _finder_id(text: str) -> str:
@@ -154,22 +244,21 @@ def _parse_items(text: str) -> list[dict]:
     return [rows[idx] for idx in sorted(rows)]
 
 
-def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: datetime,
-                    *, max_items: int = FINDER_COUNT) -> list[dict]:
-    """Search recorder archive for DAV recordings overlapping ``start..end``.
+def _row_fields(row: dict) -> tuple:
+    return (row.get("StartTime") or row.get("BeginTime") or row.get("startTime"),
+            row.get("EndTime") or row.get("endTime"),
+            row.get("FilePath") or row.get("filepath"))
 
-    Public WatchLog channels are 1-based; Dahua CGI channel indexes are 0-based.
-    Returned metadata is recorder-native and used only to prove the requested
-    channel/time has media before download.
+
+def _find_local(driver: DahuaDriver, native_channel: int, local_start: datetime,
+                local_end: datetime, *, max_rows: int) -> tuple[list[dict], bool]:
+    """One mediaFileFind session over a recorder-local window: ``(rows, complete)``.
+
+    findNextFile hands out at most FINDER_COUNT files per call, and firmware may hand out fewer,
+    so the session pages until a call returns no files (complete), ``max_rows`` rows are read, or
+    MAX_FINDER_PAGES calls were made. Neither of those two stops proves there is nothing more, so
+    they report complete=False.
     """
-    try:
-        native_channel = int(str(channel)) - 1
-    except ValueError as error:
-        raise DriverError(f"invalid camera channel: {channel}") from error
-    if native_channel < 0:
-        raise DriverError(f"invalid camera channel: {channel}")
-
-    local_start, local_end = _localize_window(driver, start, end)
     finder = _finder_id(_text(
         driver,
         "/cgi-bin/mediaFileFind.cgi",
@@ -191,14 +280,28 @@ def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: dat
         if str(started).strip().upper() != "OK":
             raise DriverError("recorder rejected the archive-search window")
 
-        result = _text(
-            driver,
-            "/cgi-bin/mediaFileFind.cgi",
-            params={"action": "findNextFile", "object": finder,
-                    "count": min(max(1, int(max_items)), FINDER_COUNT)},
-            timeout=max(driver.timeout, 30),
-        )
-        return _parse_items(result)
+        rows: list[dict] = []
+        for _page in range(MAX_FINDER_PAGES):
+            count = min(FINDER_COUNT, max_rows - len(rows))
+            result = _text(
+                driver,
+                "/cgi-bin/mediaFileFind.cgi",
+                params={"action": "findNextFile", "object": finder, "count": count},
+                timeout=max(driver.timeout, 30),
+            )
+            page = _parse_items(result)
+            found = _FOUND_RE.search(result)
+            found = int(found.group(1)) if found else len(page)
+            if found and not page:
+                raise DriverError("recorder archive search returned files that could not be read")
+            if not page:
+                # Only an empty page proves the archive is exhausted: a short one may just be the
+                # most this firmware hands out per call.
+                return rows, True
+            rows.extend(page)
+            if len(rows) >= max_rows:
+                return rows[:max_rows], False
+        return rows, False
     finally:
         # Best effort cleanup: finder handles are recorder resources. A cleanup
         # failure must not mask a successful/meaningful search result.
@@ -210,14 +313,49 @@ def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: dat
                 pass
 
 
+def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: datetime,
+                    *, max_items: int = FINDER_COUNT) -> list[dict]:
+    """Search recorder archive for DAV recordings overlapping ``start..end``.
+
+    Public WatchLog channels are 1-based; Dahua CGI channel indexes are 0-based.
+    Returned metadata is recorder-native and used only to prove the requested
+    channel/time has media before download.
+    """
+    native_channel = _native_channel(channel)
+    local_start, local_end = _localize_window(driver, start, end)
+    return _find_local(driver, native_channel, local_start, local_end,
+                       max_rows=max(1, int(max_items)))[0]
+
+
 def has_recording(driver: DahuaDriver, channel: str, start: datetime, end: datetime) -> bool:
     return bool(find_recordings(driver, channel, start, end, max_items=1))
 
 
-def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES) -> bytes:
+def _body_reads(response) -> Iterable[bytes]:
+    """Yield a streamed body one read at a time, each read returning whatever has arrived.
+
+    requests' iter_content blocks until a whole chunk has arrived, so a slow stream would reach the
+    deadline check only once per chunk. urllib3's read1 returns after at most one socket read, and
+    a socket read waits at most the read timeout. A urllib3 without read1 gets READ_SIZE chunks.
+    """
+    read1 = getattr(getattr(response, "raw", None), "read1", None)
+    if not callable(read1):
+        yield from response.iter_content(chunk_size=READ_SIZE)
+        return
+    while True:
+        chunk = read1(READ_SIZE, decode_content=True)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES, *, deadline=None) -> bytes:
     chunks: list[bytes] = []
     total = 0
-    for chunk in response.iter_content(chunk_size=256 * 1024):
+    for chunk in _body_reads(response):
+        # A read timeout alone never ends a download that keeps trickling data.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DriverError("recorder did not export this footage window in time")
         if not chunk:
             continue
         total += len(chunk)
@@ -236,21 +374,31 @@ def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES) -> bytes:
     return data
 
 
-def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime) -> bytes | None:
-    """Retrieve a bounded recorder-native DAV clip for one requested window."""
-    try:
-        native_channel = int(str(channel)) - 1
-    except ValueError as error:
-        raise DriverError(f"invalid camera channel: {channel}") from error
-    if native_channel < 0:
-        raise DriverError(f"invalid camera channel: {channel}")
+def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, *,
+             clock: str = AGENT_CLOCK) -> bytes | None:
+    """Retrieve a bounded recorder-native DAV clip for one requested window.
 
-    local_start, local_end = _localize_window(driver, start, end)
+    ``clock`` names the clock that stamped ``start``/``end``: "agent" (the default) for times the
+    Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time,
+    and for archive segment times from :func:`enumerate_historical_events`, which come back on the
+    agent clock; "recorder" for UTC times the recorder's own clock stamped, i.e. ONVIF UtcTime.
+    CLIP_TOTAL_SECONDS is counted from the start of the call: the clock read and search spend it
+    too, the download starts only while some is left, and the download stops at the first read
+    that returns after it is spent. A read returns whatever has arrived and waits at most the read
+    timeout, so a stalled download overruns the budget by at most one read timeout.
+    """
+    deadline = time.monotonic() + CLIP_TOTAL_SECONDS
+    native_channel = _native_channel(channel)
+    # One clock reading serves both the search and the download, so both use the same window.
+    local_start, local_end = _localize_window(driver, start, end, clock=clock)
     # Search first. This both proves the archive has media in the requested
     # channel/window and prevents a download call for an empty period.
-    if not find_recordings(driver, channel, start, end, max_items=1):
+    if not _find_local(driver, native_channel, local_start, local_end, max_rows=1)[0]:
         return None
 
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise DriverError("recorder did not export this footage window in time")
     response = _request(
         driver,
         "/cgi-bin/loadfile.cgi",
@@ -262,14 +410,20 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime) 
             "subtype": 0,
         },
         stream=True,
-        timeout=max(driver.timeout, DOWNLOAD_TIMEOUT),
+        # (connect, read): no single read may wait longer than was left when the download started.
+        timeout=(DOWNLOAD_TIMEOUT[0], max(1.0, min(DOWNLOAD_TIMEOUT[1], remaining))),
     )
     # A streamed response holds the underlying connection open until it is fully
     # consumed OR explicitly closed. _read_bounded may raise (empty / oversized /
     # error-body) or return early, so the response is ALWAYS closed here — a leaked
     # streamed connection would eventually exhaust the recorder's session pool.
     try:
-        return _read_bounded(response)
+        return _read_bounded(response, deadline=deadline)
+    except (requests.RequestException, Urllib3Error) as error:
+        # A stalled or reset download. requests' and urllib3's own text names the recorder's LAN
+        # host, which must not reach cloud-visible failure text. read1 reads below requests, so
+        # urllib3's errors arrive unwrapped.
+        raise DriverError("recorder stopped sending this footage window") from error
     finally:
         try:
             response.close()
@@ -281,28 +435,52 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
     """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end) become
     recoverable intelligence (each recorded segment is a recovered evidence window). Honest
     status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
-    with empty data, and never masquerading as live). Read-only; bounded by FINDER_COUNT.
+    with empty data, and never masquerading as live). Read-only.
+
+    ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC on the agent
+    clock: recorder wall time minus the offset from the same clock reading that built the search
+    window, so they are in the frame of ``start``/``end``, recorder drift alone never makes them
+    unreadable, and replaying them through ``get_recorded_segment`` lands on the same recorder
+    wall time. Every finder page is read and rows are ordered by recorder time, so ``cursor`` (a
+    row offset) pages deterministically however the recorder orders its answer. A search larger
+    than MAX_FINDER_PAGES serves the rows it read, then ends 'partial', never 'supported'.
     """
     try:
-        recs = find_recordings(driver, channel, start, end, max_items=min(max(1, int(limit)), FINDER_COUNT))
+        offset = max(0, int(cursor or 0))
+    except (TypeError, ValueError):
+        return {"status": "unknown", "events": [], "next_cursor": None}
+    try:
+        native_channel = _native_channel(channel)
+        recorder_clock = _recorder_clock(driver)
+        # The offset that maps the request onto recorder wall time maps the segments back.
+        clock_offset = recorder_clock[0]
+        local_start, local_end = _localize_window(driver, start, end, recorder_clock=recorder_clock)
+        rows, complete = _find_local(driver, native_channel, local_start, local_end,
+                                     max_rows=MAX_FINDER_PAGES * FINDER_COUNT)
+        if offset >= len(rows) and not complete:
+            return {"status": "partial", "events": [], "next_cursor": None}
+        rows.sort(key=lambda row: tuple(str(v or "") for v in _row_fields(row)))
+        page = rows[offset:offset + max(1, int(limit))]
+        events = []
+        for row in page:
+            st_raw, et_raw, path = _row_fields(row)
+            st, et = _segment_utc(st_raw, clock_offset), _segment_utc(et_raw, clock_offset)
+            events.append({
+                "ts": st,
+                "type": "recorded_segment",
+                # Identity stays recorder-native, so a zone change never re-recovers a file.
+                "device_event_id": path or f"{channel}:{st_raw}:{et_raw}",
+                "channel": str(channel),
+                "segment": {"start": st, "end": et, "path": path},
+            })
     except (NvrUnreachable, NvrAuthFailed):
         return {"status": "unknown", "events": [], "next_cursor": None}
     except DriverError:
         # An ambiguous clock/search response failed closed upstream — unknown, not unsupported.
         return {"status": "unknown", "events": [], "next_cursor": None}
-    events = []
-    for r in recs:
-        st = r.get("StartTime") or r.get("BeginTime") or r.get("startTime")
-        et = r.get("EndTime") or r.get("endTime")
-        path = r.get("FilePath") or r.get("filepath")
-        events.append({
-            "ts": st,
-            "type": "recorded_segment",
-            "device_event_id": path or f"{channel}:{st}:{et}",
-            "channel": str(channel),
-            "segment": {"start": st, "end": et, "path": path},
-        })
-    return {"status": "supported", "events": events, "next_cursor": None}
+    more = not complete or offset + len(page) < len(rows)
+    return {"status": "supported", "events": events,
+            "next_cursor": str(offset + len(page)) if more else None}
 
 
 def historical_capability(driver: DahuaDriver = None) -> dict:
@@ -383,10 +561,14 @@ def install() -> None:
     DahuaDriver.enumerate_historical_events = (
         lambda self, channel, start, end, cursor=None, limit=500:
         enumerate_historical_events(self, channel, start, end, cursor, limit))
+    # Recorded-segment replay is fed segment times from enumerate_historical_events, which come
+    # back on the agent clock.
     DahuaDriver.get_recorded_segment = (
-        lambda self, channel, start, end: {"status": "supported", "bytes": get_clip(self, channel, start, end)})
+        lambda self, channel, start, end: {
+            "status": "supported", "bytes": get_clip(self, channel, start, end, clock=AGENT_CLOCK)})
     DahuaDriver.historical_capability = lambda self: historical_capability(self)
 
 
 __all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
-           "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install"]
+           "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install",
+           "AGENT_CLOCK", "RECORDER_CLOCK"]

@@ -20,6 +20,9 @@ import watchlog_agent as core  # noqa: E402
 
 T0 = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
 RID = "11111111-1111-1111-1111-111111111111"
+# The recorder-less contract names cameras by cloud camera UUID (p_cameras uuid[]).
+CAM1 = "c1c1c1c1-0000-4000-8000-000000000001"
+CAM3 = "c3c3c3c3-0000-4000-8000-000000000003"
 
 
 class FakeStore:
@@ -225,11 +228,11 @@ def test_legacy_recovery_rpc_contract_is_unchanged():
         lambda _e: None,
         log=lambda *a: None,
     )
-    runner.report_outage(T0, T0 + timedelta(minutes=30), cameras=["1", "3"])
+    runner.report_outage(T0, T0 + timedelta(minutes=30), cameras=[CAM1, CAM3])
     runner.run_once(limit=1)
 
     assert cloud.calls[0][0] == "wl_open_recovery_interval"
-    assert cloud.calls[0][1]["p_cameras"] == ["1", "3"]
+    assert cloud.calls[0][1]["p_cameras"] == [CAM1, CAM3]
     assert "p_channels" not in cloud.calls[0][1]
     assert cloud.calls[1][0] == "wl_agent_claim_recovery"
 
@@ -253,10 +256,11 @@ def test_watchlog_recovery_open_helper_selects_contract_by_context():
 
     core._open_recovery_interval_for_cfg(
         C(), state, SimpleNamespace(),
-        T0.isoformat(), (T0 + timedelta(minutes=5)).isoformat(), ["1"],
+        T0.isoformat(), (T0 + timedelta(minutes=5)).isoformat(), [CAM1],
     )
     assert calls[-1][0] == "wl_open_recovery_interval"
-    assert calls[-1][1]["p_cameras"] == ["1"]
+    assert calls[-1][1]["p_cameras"] == [CAM1]
+    assert "p_channels" not in calls[-1][1]
 
 
 def test_recorder_rejection_categories_fail_closed_locally():
