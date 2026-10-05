@@ -646,8 +646,9 @@ class _MappedArchiveDriver:
                   for ev in (page.get("events") or [])]
         return {**page, "events": events}
 
-    def get_clip(self, channel, start, end):
-        return self._native.get_clip(self.native_channel(channel), start, end)
+    def get_clip(self, channel, start, end, **kw):
+        # kw carries dahua-cgi's clock argument through (incident_evidence._get_clip).
+        return self._native.get_clip(self.native_channel(channel), start, end, **kw)
 
     def get_recorded_segment(self, channel, start, end) -> dict:
         native = self.channel_map.get(str(channel))
@@ -941,7 +942,10 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
                 # camera that hangs, refuses auth or returns junk must
                 # cost us the picture, never the incident record.
                 raw = None
-                if cfg.snapshots and ev.event_type not in NO_SNAPSHOT_EVENTS:
+                # A recorder-scoped or channel-less event (channel None) has no camera
+                # to take a still from.
+                if (cfg.snapshots and ev.channel is not None
+                        and ev.event_type not in NO_SNAPSHOT_EVENTS):
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
                         last_shot[ev.channel] = clock
@@ -981,7 +985,8 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
                 # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to
                 # the health monitor straight from the event stream (best-effort; never let a
                 # health-side error disturb ingestion).
-                if holder is not None and ev.event_type in NATIVE_FAULT_TYPES:
+                if (holder is not None and ev.channel is not None
+                        and ev.event_type in NATIVE_FAULT_TYPES):
                     mon = holder.get("monitor")
                     if mon is not None:
                         try:
@@ -1057,15 +1062,22 @@ def _event_stream_health(stream: dict | None) -> dict | None:
     """The recorder's event-stream state for the local health proof:
     {connected, connected_at, last_frame_at, last_error}. connected is None when the
     driver cannot report its stream. The error text is redacted (no URL, credential or
-    recorder address); this file stays non-secret."""
+    recorder address); this file stays non-secret. An ONVIF stream adds dropped_unmapped
+    (events whose camera token matched no camera) and last_clock_skew_s (recorder clock
+    minus this PC's, in seconds) when it has measured them: integers only."""
     if not stream:
         return None
     import nvr_health
     error = stream.get("last_error")
-    return {"connected": stream.get("connected"),
-            "connected_at": stream.get("connected_at"),
-            "last_frame_at": stream.get("last_frame_at"),
-            "last_error": nvr_health.redact(error) if error else None}
+    out = {"connected": stream.get("connected"),
+           "connected_at": stream.get("connected_at"),
+           "last_frame_at": stream.get("last_frame_at"),
+           "last_error": nvr_health.redact(error) if error else None}
+    for key in ("dropped_unmapped", "last_clock_skew_s"):
+        value = stream.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[key] = value
+    return out
 
 
 def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None,
@@ -2393,7 +2405,9 @@ def cmd_probe(cfg: Config) -> None:
     try:
         for ev in driver.stream_events(stop):
             seen += 1
-            print(f"    {iso(ev.device_ts)}  ch{ev.channel:<4} {ev.event_type}")
+            # A recorder-scoped or channel-less event has channel None: no camera column.
+            channel = "-" if ev.channel is None else ev.channel
+            print(f"    {iso(ev.device_ts)}  ch{channel:<4} {ev.event_type}")
             if seen >= 20:
                 break
     except DriverError as e:

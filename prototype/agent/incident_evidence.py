@@ -31,6 +31,20 @@ STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
 REMUX_TIMEOUT_SECONDS = 60
 UNSUPPORTED_FOOTAGE = ("This recorder does not expose on-demand incident footage through the "
                        "validated WatchLog path.")
+# Customer-visible still outcomes. Driver and library text (endpoints, HTTP codes, exception
+# names) is not customer language, so a failed still is always one of these; the detail goes
+# to the agent log.
+STILL_FAILED = "Recorder could not provide a still for this camera."
+UNSUPPORTED_STILL = ("This recorder does not provide incident stills through the validated "
+                     "WatchLog path.")
+# dahua_archive refuses a recorder-clock window with this text when the recorder clock is more
+# than 5 minutes from every civil UTC offset (its MAX_ZONE_DRIFT_SECONDS).
+_ZONE_REFUSAL = "too far off to tell its time zone"
+# Customer-visible reason when a recorder-stamped window cannot be placed on the recorder now.
+CLOCK_UNREADABLE = ("The recorder's clock is too far off to find this footage window. Check the "
+                    "recorder's date and time, then request it again.")
+# payload.clock_source values that name the recorder's own clock (Hikvision uses recorder_local).
+_RECORDER_CLOCK_SOURCES = ("recorder", "recorder_local")
 # open_archive_driver keeps the ONVIF driver for these recorders only when the vendor-native
 # archive attempt failed (timeout, refused login), so their missing footage is not a verdict.
 NATIVE_ARCHIVE_VENDORS = ("dahua", "hikvision")
@@ -95,6 +109,58 @@ def _no_footage_outcome(driver, info) -> tuple[bool, str]:
     if any(name in vendor for name in NATIVE_ARCHIVE_VENDORS):
         return False, "The recorder's footage service could not be opened. Request it again."
     return True, UNSUPPORTED_FOOTAGE
+
+
+def _onvif_mapped_dahua(driver) -> bool:
+    """True when this archive reader is the dahua-cgi reader of an ONVIF-live recorder.
+
+    open_archive_driver returns a reader addressed by ONVIF camera channels (channel_map) only
+    when the live transport is ONVIF, and since 5.0.28 an ONVIF event's device_ts is the
+    recorder's own UtcTime while the recorder clock is within 5 minutes of the PC. Only
+    dahua-cgi's get_clip takes a clock; the Hikvision archive searches the recorder in UTC on its
+    own clock and has no such argument. A Dahua-live site's events carry receive time, which is
+    dahua_archive's default agent clock.
+    """
+    return (getattr(driver, "name", "") == "dahua-cgi"
+            and getattr(driver, "channel_map", None) is not None)
+
+
+def _get_clip(driver, row: dict, channel: str, start: datetime, end: datetime):
+    """The clip for [start, end), in the clock that stamped the claimed row's window.
+
+    - No event_id: an operations / rule clip, whose window is the Agent's analytics time or the
+      server's clock: agent clock.
+    - The row names the event's clock_source (a server that passes payload.clock_source): the
+      recorder clock for a recorder stamp, otherwise (receive time, a recovered event's archive
+      time, an event from an Agent before 5.0.28, no value) the agent clock. A recorder-stamped
+      window is not guessed when the recorder clock can no longer be placed in a zone.
+    - An event row without clock_source (the clip claim today): the recorder clock, as for a
+      live ONVIF event, and the agent clock when dahua_archive refuses because the recorder clock
+      is more than 5 minutes from every civil offset. This is a best guess, not provenance: a
+      recovered or pre-5.0.28 event lands off by the recorder's drift, and a receive-stamped
+      event whose recorder clock comes within 5 minutes of another civil offset lands off by up
+      to 5 minutes.
+    """
+    if not _onvif_mapped_dahua(driver):
+        return driver.get_clip(channel, start, end)
+    import dahua_archive
+    if not row.get("event_id"):
+        return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+    if "clock_source" in row:
+        if row.get("clock_source") not in _RECORDER_CLOCK_SOURCES:
+            return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+        try:
+            return driver.get_clip(channel, start, end, clock=dahua_archive.RECORDER_CLOCK)
+        except DriverError as error:
+            if _ZONE_REFUSAL not in str(error):
+                raise
+            raise DriverError(CLOCK_UNREADABLE) from error
+    try:
+        return driver.get_clip(channel, start, end, clock=dahua_archive.RECORDER_CLOCK)
+    except DriverError as error:
+        if _ZONE_REFUSAL not in str(error):
+            raise
+        return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
 
 
 def _remux_mp4(data: bytes) -> bytes | None:
@@ -229,7 +295,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     f"incident footage: retrieving {int((end-start).total_seconds())}s "
                     f"from ch{channel} via {driver.name}"
                 )
-                data = driver.get_clip(channel, start, end)
+                data = _get_clip(driver, row, channel, start, end)
                 if not data:
                     unsupported, reason = _no_footage_outcome(driver, info)
                     cloud.call(
@@ -291,7 +357,6 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
     those come from the claimed task. Idle when 0058 is not deployed; truthful unsupported/failure.
     """
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
-    hosts = _recorder_hosts(cfg)
     missing_backend_logged = False
     while not stop.is_set():
         try:
@@ -333,8 +398,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                     cloud.call("wl_agent_fail_incident_still",
                                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
                                p_request_id=request_id,
-                               p_reason=("This recorder does not provide incident stills through "
-                                         "the validated WatchLog path." if unsupported else
+                               p_reason=(UNSUPPORTED_STILL if unsupported else
                                          "This recorder returned no still for the incident window."),
                                p_unsupported=unsupported)
                     core.log(f"incident stills: {info.vendor} ch{channel} returned no image via "
@@ -355,13 +419,13 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                            p_captured_at=core.iso(core.now_utc()))
                 core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
             except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error, hosts,
-                                      redacted="Recorder could not provide a still for this camera.")
+                unsupported = _is_unsupported(error)
                 try:
                     cloud.call("wl_agent_fail_incident_still",
                                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_request_id=request_id, p_reason=reason,
-                               p_unsupported=_is_unsupported(error))
+                               p_request_id=request_id,
+                               p_reason=UNSUPPORTED_STILL if unsupported else STILL_FAILED,
+                               p_unsupported=unsupported)
                 except Exception:  # noqa: BLE001
                     pass
                 core.log(f"incident stills: request {request_id[:8]} failed: "

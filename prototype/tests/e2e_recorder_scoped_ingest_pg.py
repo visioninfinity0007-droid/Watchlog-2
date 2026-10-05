@@ -9,7 +9,9 @@ Postgres and lands correctly:
   * the recorder-scoped events are stored with camera_id NULL, never camera 1;
   * a camera event in the same batch still resolves to its camera;
   * the recorder_scoped flag survives in the stored payload;
-  * re-ingesting the same batch is idempotent.
+  * re-ingesting the same batch is idempotent;
+  * Event.to_json itself (the serialiser every spool path uses) writes the same JSON null, and
+    an ONVIF storage fault serialised that way also lands with no camera.
 
     python prototype/tests/e2e_recorder_scoped_ingest_pg.py
 """
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import xml.etree.ElementTree as ET
 import re
 import sys
 from datetime import datetime, timezone
@@ -26,6 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 import native_event_collector  # noqa: E402
 from drivers.native_recorder import NativeDahuaDriver, NativeHikvisionDriver  # noqa: E402
+from drivers.onvif_driver import OnvifDriver  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+import onvif_fake_recorder as onvif_fx  # noqa: E402
 
 ENV = {}
 for line in ((ROOT.parent / ".env").read_text(errors="ignore").splitlines()
@@ -64,7 +70,25 @@ def _events():
         hik.close()
     events = [disk, alarm, motion, hik_disk]
     assert all(e is not None for e in events)
-    return [native_event_collector.spool_row(e, received) for e in events]
+    return events, received
+
+
+def _onvif_storage_fault():
+    """An ONVIF StorageFailure as the live ONVIF driver yields it (channel None)."""
+    received = datetime(2026, 10, 4, 16, 0, 5, tzinfo=timezone.utc)
+    onvif = OnvifDriver("http://127.0.0.1", "admin", "x", timeout=1)
+    try:
+        msg = onvif_fx.notification("tns1:Device/HardwareFailure/StorageFailure",
+                                    "2026-10-04T16:00:05Z", {"Token": "HDD_1"},
+                                    {"Failed": "true"})
+        root = ET.fromstring(onvif_fx._ENV_OPEN + msg + onvif_fx._ENV_CLOSE)
+        for elem in root.iter():
+            elem.tag = elem.tag.split("}", 1)[-1]
+        ev = onvif._parse_notification(root.find(".//NotificationMessage"), received)
+    finally:
+        onvif.close()
+    assert ev is not None and ev.channel is None, ev
+    return ev, received
 
 
 def run() -> int:
@@ -72,10 +96,18 @@ def run() -> int:
                user=ENV["SUPABASE_DB_USER"], password=ENV["SUPABASE_DB_PASSWORD"],
                dbname=ENV.get("SUPABASE_DB_NAME", "postgres"), connect_timeout=30, autocommit=False)
     key = "recorder-scope-e2e-key"
-    rows = _events()
+    events, received = _events()
+    rows = [native_event_collector.spool_row(e, received) for e in events]
     step([r["channel"] for r in rows] == [None, None, "1", None],
          "spooled rows carry a JSON null channel for recorder-scoped events",
          str([r["channel"] for r in rows]))
+    step([e.to_json(received) for e in events] == rows,
+         "Event.to_json alone writes the same rows (JSON null, never the string 'None')",
+         str([e.to_json(received)["channel"] for e in events]))
+    onvif_event, onvif_received = _onvif_storage_fault()
+    onvif_rows = [onvif_event.to_json(onvif_received)]
+    step(onvif_rows[0]["channel"] is None,
+         "an ONVIF storage fault serialises with a JSON null channel", str(onvif_rows[0]["channel"]))
 
     with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
         try:
@@ -108,6 +140,21 @@ def run() -> int:
             r2 = cur.execute("select wl_ingest_events(%s,%s,%s::jsonb)",
                              (agent, key, json.dumps(rows))).fetchone()[0]
             step(r2.get("inserted") == 0, "re-ingesting the same batch is idempotent", str(r2))
+
+            r3 = cur.execute("select wl_ingest_events(%s,%s,%s::jsonb)",
+                             (agent, key, json.dumps(onvif_rows))).fetchone()[0]
+            step(r3.get("inserted") == 1, "the ONVIF storage fault is accepted", str(r3))
+            onvif_stored = cur.execute("""select camera_id, payload->>'recorder_scoped',
+                                                  payload->>'clock_source' from events
+                                           where site_id=%s and payload->>'vendor'='onvif'""",
+                                       (sid,)).fetchall()
+            step(onvif_stored == [(None, "true", "recorder")],
+                 "the ONVIF storage fault has no camera (not camera 1) and keeps the same "
+                 "recorder_scoped flag and clock provenance as the other drivers",
+                 str(onvif_stored))
+            none_rows = cur.execute("select count(*) from events where site_id=%s and "
+                                    "dedupe_key like %s", (sid, "%:None:%")).fetchone()[0]
+            step(none_rows == 0, "no stored dedupe key names a channel 'None'", str(none_rows))
         finally:
             conn.rollback()
     ok = sum(1 for x in STEPS if x)
