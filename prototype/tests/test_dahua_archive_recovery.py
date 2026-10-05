@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import programdata_sandbox  # noqa: E402,F401  (keeps Agent state out of the real ProgramData)
 
 from dahua_fake_recorder import (  # noqa: E402
     FMT, JPEG, FakeCloud, FakeDahua, FakeRecorder, FakeResponse, continuous_files, local,

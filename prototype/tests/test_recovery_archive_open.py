@@ -24,6 +24,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 sys.path.insert(0, str(ROOT / "tests"))
+import programdata_sandbox  # noqa: E402,F401  (keeps Agent state out of the real ProgramData)
 
 import backfill  # noqa: E402
 import recovery  # noqa: E402
