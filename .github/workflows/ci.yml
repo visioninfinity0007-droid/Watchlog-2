@@ -52,6 +52,7 @@ jobs:
           python -m pytest prototype/tests/test_event_stream_liveness.py prototype/tests/test_shipped_last_live.py prototype/tests/test_native_collector_reconnect.py prototype/tests/test_shipped_spool_cap.py prototype/tests/test_collector_recorder_scope.py prototype/tests/test_event_json_channel.py prototype/tests/test_probe_recorder_scoped_event.py -q
           python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
           python -m pytest prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_hikvision_terminal.py -q
+          python -m pytest prototype/tests/test_periodic_stills.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
       - name: Health Foundation schema/authz contract (Phase A)
@@ -429,6 +430,8 @@ jobs:
         run: python prototype/tests/e2e_recorder_scoped_ingest_pg.py
       - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
         run: python prototype/tests/e2e_recovery_ingest_pg.py
+      - name: Agent periodic stills reach ingest and the visual-review consumer (0125/0126) — production contract
+        run: python prototype/tests/e2e_periodic_stills_pg.py
       - name: Camera config — wl_sync_cameras honors setup Monitor/Ignore (is_configured), re-sync safe (0100)
         run: python prototype/tests/e2e_camera_config_pg.py
       - name: AI providers — owner-gated config + Vault-guarded keys + service-role-only key resolver (0105)
