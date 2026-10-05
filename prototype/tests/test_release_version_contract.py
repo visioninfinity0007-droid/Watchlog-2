@@ -80,6 +80,20 @@ def test_a_multi_recorder_release_carries_the_field_acceptance_list():
     assert "15. report coverage remains truthful." in body
 
 
+def test_a_multi_recorder_release_documents_the_deliberate_downgrade():
+    if not _multi_recorder():
+        return
+    body = _section(_version()).group(1)
+    heading = "Deliberate downgrade from 5.1.0 to 5.0.x"
+    assert "docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md" in body and heading in body
+    runbook = _read("docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md")
+    section = runbook[runbook.index(f"## {heading}"):]
+    section = section[:section.index("\n## ", 1)]
+    assert "exactly one configured recorder" in section
+    assert "disable every extra recorder in Manage Recorders" in section
+    assert "42501" in section and "Health ledger keys" in section
+
+
 def test_the_5028_live_site_section_is_kept():
     section = _section("5.0.28")
     assert section, "the 5.0.28 section left the installer source of truth"

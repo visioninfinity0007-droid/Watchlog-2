@@ -365,6 +365,17 @@ Prove, on one exact recorded artifact:
 Until these pass in the field, 5.1.0 is implementation, not field proof, and stays unpromoted.
 The 1B per-site gates still apply to every single-recorder site upgraded to 5.1.0.
 
+### Deliberate downgrade to 5.0.x
+
+A 5.1.0 site may go back to 5.0.x only when its recorder registry has exactly one configured
+recorder (the continuity recorder). With more than one, disable the extra recorders in Manage
+Recorders first: otherwise database contract v4 refuses the 5.0.x legacy calls with `42501`
+while the 5.0.x heartbeat still looks online. Procedure, health-ledger behaviour and checks:
+`docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+"Deliberate downgrade from 5.1.0 to 5.0.x". The 5.0.28 Repair/Upgrade guard that refuses
+multi-recorder registries is being added on the 5.0.28 branch separately; until it ships, the
+check is manual.
+
 ---
 
 ## 2. Field-proven baseline — Build 69
