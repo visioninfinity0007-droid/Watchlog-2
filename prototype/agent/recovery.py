@@ -122,12 +122,18 @@ class RecoveryRunner:
                                p_ended_at=_iso(_as_dt(now)), p_cameras=list(cameras or []))
 
     def _complete(self, interval_id, status, recovered, seen, cursor, *, errors=0, progress=0,
-                  detail=None):
+                  detail=None, examined=False, incomplete=False):
         checkpoint = {"cursor": _iso(cursor) if cursor else None, "seen_keys": sorted(seen)[:20000]}
         if errors:
             checkpoint["errors"] = errors     # consecutive failed claims, carried to the next claim
         if progress:
             checkpoint["progress_attempt"] = progress   # the claim that last moved the cursor
+        # The verdict so far, carried to the next claim: some of the interval was recovered / some
+        # of it could not be. Time behind the cursor is not read again, so it is not forgotten.
+        if examined:
+            checkpoint["examined"] = True
+        if incomplete:
+            checkpoint["incomplete"] = True
         params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key,
                       p_id=interval_id, p_status=status, p_recovered_count=recovered,
                       p_checkpoint=checkpoint)
@@ -139,6 +145,13 @@ class RecoveryRunner:
         """Complete an interval that will not be read (further), saying why."""
         self._complete(iv["id"], status, 0, seen, cursor, detail={"reason": reason})
         return {"id": iv["id"], "status": status, "recovered": 0, "yielded": False, "reason": reason}
+
+    def _segments_capability(self):
+        """Whether the recorder offers searchable recorded footage; None when it cannot be told."""
+        try:
+            return (self.driver.historical_capability() or {}).get("segments")
+        except Exception:                   # noqa: BLE001 — an unknown capability earns no carve-out
+            return None
 
     def _channels(self, cameras):
         """(recorder channels to read, cameras that could not be resolved) for an interval.
@@ -175,20 +188,39 @@ class RecoveryRunner:
         if self.max_attempts and attempts - progress > self.max_attempts:
             # Re-claimed too often without the cursor moving (stale claims, crash loops): stop
             # replaying it against the recorder. Earlier progress makes it partial, never recovered.
-            return self._close(iv, "partial" if seen else "unrecoverable", seen, resume,
-                               "attempts_exhausted")
-        # A camera that cannot be mapped to a channel cannot be read, so the interval cannot be
-        # fully recovered.
-        recovered, any_unsupported, any_supported = 0, unresolved > 0, False
+            return self._close(iv, "partial" if seen or checkpoint.get("examined") else
+                               "unrecoverable", seen, resume, "attempts_exhausted")
+        # The verdict: time behind the saved cursor is carried in the checkpoint; a chunk read in
+        # this claim counts once the cursor passes it (a chunk at or after a failed read is read
+        # again). A camera that cannot be mapped to a channel cannot be read, so the interval cannot
+        # be fully recovered.
+        examined = bool(checkpoint.get("examined"))
+        incomplete = unresolved > 0 or bool(checkpoint.get("incomplete"))
+        read = []                                         # [(chunk_end, examined, incomplete)]
+        recovered = 0
         failed, failed_at, failure = set(), None, None    # failed archive reads in this claim
+
+        def verdict(upto=None):
+            seen_part, missed_part = examined, incomplete
+            for chunk_end, chunk_seen, chunk_missed in read:
+                if upto is None or chunk_end <= upto:
+                    seen_part, missed_part = seen_part or chunk_seen, missed_part or chunk_missed
+            return seen_part, missed_part
 
         def save(cursor):
             # A failed read in this claim is counted even when the claim then yields; a claim that
             # moved the cursor without one ends the run of failed claims and resets the attempts cap.
             moved = cursor > start
+            seen_part, missed_part = verdict(cursor)
             self._complete(iv["id"], "in_progress", recovered, seen, cursor,
                            errors=errors + 1 if failed_at is not None else (0 if moved else errors),
-                           progress=attempts if moved else progress)
+                           progress=attempts if moved else progress,
+                           examined=seen_part, incomplete=missed_part)
+
+        # A recorder whose recorded footage is searchable (Hikvision, Dahua) but whose own event
+        # log is not is judged by its footage: the event replay it cannot offer is not a part of
+        # the interval that went unrecovered.
+        footage = self._segments_capability()
 
         for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
             if self.live_pending():
@@ -197,6 +229,7 @@ class RecoveryRunner:
                 # LIVE has priority — checkpoint progress and yield; a later claim resumes here.
                 save(failed_at or chunk_start)
                 return {"id": iv["id"], "status": "in_progress", "recovered": recovered, "yielded": True}
+            chunk_seen = chunk_missed = False
             for ch in cams:
                 if ch in failed:
                     continue                # read again from failed_at on the next claim
@@ -204,11 +237,14 @@ class RecoveryRunner:
                     # (a) recorder-native event replay (the recorder's OWN recorded events)
                     res = backfill.backfill_events(self.driver, ch, chunk_start, chunk_end,
                                                    seen=seen, on_event=self.on_event)
-                    if res.get("status") == backfill.SUPPORTED:
-                        any_supported = True
-                        recovered += res.get("recovered", 0)
-                    else:
-                        any_unsupported = True
+                    # Events already sent count, even when the scan then stopped short of the end.
+                    recovered += res.get("recovered", 0)
+                    if res.get("status") == backfill.SUPPORTED or res.get("recovered"):
+                        chunk_seen = True
+                    if res.get("status") != backfill.SUPPORTED and not (
+                            res.get("status") == backfill.UNSUPPORTED
+                            and footage == backfill.SUPPORTED):
+                        chunk_missed = True
                     # (b) visual backfill over recovered FOOTAGE. This ALWAYS runs when the
                     # archive supports segments: even with no detector, decoded historical frames
                     # are emitted as recovered_snapshot so a cloud/PC gap does not erase the visual
@@ -218,25 +254,23 @@ class RecoveryRunner:
                         on_event=self.on_event, frame_provider=self.frame_provider,
                         max_frames=self.ai_max_frames,
                         snapshot_interval_seconds=self.snapshot_interval_seconds)
-                    if ai.get("status") == backfill.SUPPORTED:
-                        any_supported = True
-                        recovered += ai.get("recovered", 0)
-                    else:
-                        # Explicit segment UNSUPPORTED means this recorder only offers
-                        # native historical events; preserve that older capability
-                        # without falsely calling it a visual-recovery failure. But if
-                        # segments ARE supported and frames could not be decoded, the
-                        # interval is partial/unknown rather than falsely recovered.
-                        try:
-                            seg_cap = (self.driver.historical_capability() or {}).get("segments")
-                        except Exception:
-                            seg_cap = None
-                        if seg_cap != backfill.UNSUPPORTED:
-                            any_unsupported = True
+                    recovered += ai.get("recovered", 0)
+                    # Only footage actually examined (frames decoded now, or in an earlier claim)
+                    # is recovered footage: a window whose archive holds no recording shows nothing.
+                    if ai.get("frames") or ai.get("duplicates"):
+                        chunk_seen = True
+                    if ai.get("status") != backfill.SUPPORTED and footage != backfill.UNSUPPORTED:
+                        # Explicit segment UNSUPPORTED means this recorder only offers native
+                        # historical events; preserve that older capability without falsely
+                        # calling it a visual-recovery failure. But if segments ARE supported and
+                        # the footage could not be read to the end of the window, the interval is
+                        # partial/unknown rather than falsely recovered.
+                        chunk_missed = True
                 except Exception as e:      # noqa: BLE001 — a failed archive read backs off, then ends
                     failed.add(ch)
                     failed_at, failure = failed_at or chunk_start, type(e).__name__
                     self._log(f"recovery: archive read failed on channel {ch}: {failure}")
+            read.append((chunk_end, chunk_seen, chunk_missed))
             if len(failed) == len(cams):
                 break                       # nothing left to read in this claim
             save(failed_at or chunk_end)    # checkpoint per chunk
@@ -245,6 +279,7 @@ class RecoveryRunner:
                 time.sleep(self.throttle_seconds)
 
         detail = None
+        any_supported, any_unsupported = verdict()
         if failed_at is not None:
             if errors + 1 < self.max_error_attempts:
                 # Back off: stay in progress from the first chunk that failed. The server re-offers

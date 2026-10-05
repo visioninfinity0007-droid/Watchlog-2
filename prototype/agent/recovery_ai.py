@@ -467,9 +467,8 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                     sample_iso = _iso(sample_ts)
                     key = f"ai:{base_id}:{sample_iso}"
                     if key in seen:
-                        duplicates += 1
+                        duplicates += 1             # recovered by an earlier pass
                         continue
-                    seen.add(key)
 
                     attempted += 1
                     frame = provider(driver, channel, sample_ts, seg.get("start"))
@@ -477,8 +476,11 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                         detector, frame, channel=channel, ts=sample_ts,
                         device_event_id=f"{base_id}:{sample_iso}", segment=seg_window)
                     if status == "no_frame":
+                        # Not examined: a later pass over this window tries the sample again
+                        # instead of taking it as already recovered.
                         no_frame += 1
                         continue
+                    seen.add(key)
 
                     frames += 1
                     recovered += 1
