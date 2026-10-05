@@ -16,6 +16,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 
+import analytics_agent  # noqa: E402
 import backfill  # noqa: E402
 import recovery  # noqa: E402
 import watchlog_agent as core  # noqa: E402
@@ -373,8 +375,13 @@ class NoIntervalsOverLiveTime(RecoveryWorkerRpcContract):
         last_cycle = self._clocked(cloud, 3, now)
         restarted = last_cycle + timedelta(minutes=10)
         self._clocked(cloud, 3, restarted)
-        self.assertEqual([(_at(iv["started_at"]), _at(iv["ended_at"])) for iv in cloud.opened],
-                         [(now - timedelta(hours=6), now), (last_cycle, restarted)])
+        opened = [(_at(iv["started_at"]), _at(iv["ended_at"])) for iv in cloud.opened]
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(opened[0], (now - timedelta(hours=6), now))
+        # The last cycle stamped the recorder's last activity (this test's monotonic clock does
+        # not advance with the faked wall clock, so it trails the cycle by the run time).
+        self.assertLess(abs((opened[1][0] - last_cycle).total_seconds()), 5)
+        self.assertEqual(opened[1][1], restarted)
 
     def test_a_gap_a_heartbeat_kept_in_last_live_still_opens(self):
         now = datetime.now(timezone.utc)
@@ -388,6 +395,62 @@ class NoIntervalsOverLiveTime(RecoveryWorkerRpcContract):
         self._clocked(cloud, 2, now, heartbeat)
         self.assertEqual([(_at(iv["started_at"]), _at(iv["ended_at"])) for iv in cloud.opened],
                          [(now + timedelta(seconds=60), now + timedelta(seconds=300))])
+
+
+class StreamDropInsideTheLiveGrace(RecoveryWorkerRpcContract):
+    """recovery_worker counts the recorder live for 150 s after its last stream activity. A cycle
+    that lands in that grace after the stream died must not stamp last_live with its own clock:
+    the heartbeat only ever writes the stream's (earlier) activity time, so the worker's stamp
+    hid the outage and no interval was opened when the recorder came back."""
+
+    def _stream_holder(self, activity_age, frame_at, connected):
+        drv = SimpleNamespace(last_activity_monotonic=time.monotonic() - activity_age)
+        return {"live_driver": drv,
+                "event_stream": {"connected": connected, "connected_at": None,
+                                 "last_frame_at": frame_at.isoformat(), "last_error": None}}
+
+    def _heartbeat(self, holder, frame_at):
+        holder["live_driver"].last_activity_monotonic = time.monotonic()
+        holder["event_stream"].update(connected=True, last_frame_at=frame_at.isoformat())
+        analytics_agent._persist_stream_last_live(self.cfg, holder, time.monotonic())
+
+    def test_an_outage_that_starts_inside_the_grace_still_opens(self):
+        now = datetime.now(timezone.utc)
+        dropped = now - timedelta(seconds=100)            # stream died 100 s before the cycle
+        recovery.persist_last_live(self.cfg.last_live_path, dropped)   # the heartbeat's last write
+        holder = self._stream_holder(100, dropped, connected=False)
+        clock = {"now": now}
+        back = now + timedelta(minutes=65)
+
+        def between():
+            if clock["now"] == now:                       # the recorder is back 65 min later
+                clock["now"] = back
+                self._heartbeat(holder, back)
+
+        cloud = StrictCloud()
+        with _Patch(core, now_utc=lambda: clock["now"]):
+            self._work(cloud, _Spool(), CHANNELS, cycles=2, holder=holder, between=between)
+        self.assertEqual(cloud.rejected, [])
+        self.assertEqual(len(cloud.opened), 1, "the outage was never opened for recovery")
+        self.assertLess(abs((_at(cloud.opened[0]["started_at"]) - dropped).total_seconds()), 2)
+        self.assertEqual(_at(cloud.opened[0]["ended_at"]), back)
+
+    def test_a_stream_kept_live_by_the_heartbeat_opens_nothing(self):
+        now = datetime.now(timezone.utc)
+        recovery.persist_last_live(self.cfg.last_live_path, now - timedelta(seconds=30))
+        holder = self._stream_holder(1, now - timedelta(seconds=1), connected=True)
+        clock = {"now": now}
+
+        def between():
+            start = clock["now"]
+            for minute in range(1, 6):                    # a heartbeat a minute, stream live
+                self._heartbeat(holder, start + timedelta(seconds=60 * minute - 1))
+            clock["now"] = start + timedelta(seconds=self.cfg.recovery_seconds)
+
+        cloud = StrictCloud()
+        with _Patch(core, now_utc=lambda: clock["now"]):
+            self._work(cloud, _Spool(), CHANNELS, cycles=4, holder=holder, between=between)
+        self.assertEqual(cloud.opened, [])
 
 
 class CompleteRecoveryContract(unittest.TestCase):

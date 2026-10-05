@@ -51,7 +51,7 @@ import random
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -2469,7 +2469,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
 
     Time this worker saw the recorder live in is never reopened: one cycle is longer than the
     outage threshold, so a gap between two of its checks is only known from a last_live a
-    heartbeat kept while the recorder was live."""
+    heartbeat kept while the recorder was live. "Saw live" is the recorder's last activity, not
+    the check's own clock: the recorder counts as live for a grace after its stream died, and a
+    stamp from inside that grace would hide the outage that follows."""
     if not cfg.recovery_enabled:
         return
     import recovery as rec
@@ -2496,6 +2498,21 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             return True
         seen = float(holder.get("recorder_live_at") or 0.0)
         return bool(seen and time.monotonic() - seen < 150.0)
+
+    def recorder_live_until(now):
+        """Wall time of the latest recorder activity recorder_is_live() counted (at most now)."""
+        drv = holder.get("live_driver")
+        latest = max(float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0),
+                     float(holder.get("recorder_live_at") or 0.0))
+        if not latest:
+            return now
+        return now - timedelta(seconds=max(0.0, time.monotonic() - latest))
+
+    def heartbeat_keeps_last_live() -> bool:
+        # A driver that reports its event stream has last_live kept at its stream activity by
+        # the heartbeat (analytics_agent._persist_stream_last_live); one that cannot report it
+        # (connected None, or no stream state) has nothing but this worker's own checks.
+        return (holder.get("event_stream") or {}).get("connected") is not None
 
     while not stop.is_set():
         try:
@@ -2532,10 +2549,14 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                 if recorder_is_live():
                     last_live = rec.read_last_live(cfg.last_live_path)
                     now = now_utc()
-                    if seen_live_at is not None and (last_live is None or last_live <= seen_live_at):
+                    live_until = recorder_live_until(now)
+                    if (seen_live_at is not None and not heartbeat_keeps_last_live()
+                            and (last_live is None or last_live <= seen_live_at)):
                         last_live = None                # nothing later than this worker's own check
+                    # With a heartbeat keeping last_live, a value it did not move past this
+                    # worker's last check is the recorder's last activity before an outage.
                     outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
-                    seen_live_at = now
+                    seen_live_at = live_until
                     if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
                                           for g in pending_gaps):
                         pending_gaps = (pending_gaps + [outage])[-32:]
@@ -2551,7 +2572,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                         log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
                             "opened resumable archive recovery")
                     if not pending_gaps:
-                        rec.persist_last_live(cfg.last_live_path, now)
+                        rec.persist_last_live(cfg.last_live_path, live_until)
                         holder[LAST_LIVE_CHECKED] = True
             except Exception as e:                       # noqa: BLE001
                 log(f"recovery: gap detector skipped: {type(e).__name__}")
