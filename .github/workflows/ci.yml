@@ -44,6 +44,12 @@ jobs:
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
+      - name: Stale incident clip recovery contract (0142, applied in production)
+        run: python -m pytest prototype/tests/test_incident_clip_stale_recovery.py -q
+      - name: Production-only migrations contract (0144/0145, recovered from the production ledger)
+        run: python -m pytest prototype/tests/test_production_only_migrations.py -q
+      - name: Production ledger reconciliation contract (32 already-live files, runner sha256)
+        run: python -m pytest prototype/tests/test_ledger_reconciliation.py -q
       - name: Health Foundation schema/authz contract (Phase A)
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)
@@ -345,6 +351,14 @@ jobs:
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f prototype/supabase/ci_prelude.sql
       - name: Apply migrations 0001..0048 to the disposable Postgres
         run: python prototype/supabase/apply_migrations.py
+      - name: Production-only migrations 0144/0145 — applied bodies and grants match production
+        run: python prototype/tests/test_production_only_migrations.py --pg
+      - name: Production ledger reconciliation SQL — guards, insert, then only intended files PENDING
+        run: python prototype/tests/test_ledger_reconciliation.py --pg
+      - name: Production-truth hotfix 0156 — capability truth, semver triplet, snapshot request expiry
+        run: python prototype/tests/e2e_production_hotfix_0156_pg.py
+      - name: 0156 visual-review claims include periodic stills of cameras without a restaurant profile
+        run: python prototype/tests/e2e_vision_claim_periodic_no_profile_pg.py
       - name: Health foundation integration — real RPC execution (0042-0048)
         run: python prototype/tests/e2e_health_pg.py
       - name: Incident footage integration — real RPC execution + authz (0040/0041)

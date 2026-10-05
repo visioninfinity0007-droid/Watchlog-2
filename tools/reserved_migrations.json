@@ -1,12 +1,26 @@
 {
   "_comment": "Migration numbers intentionally absent on some branches may be listed under reserved. Exact legacy duplicate filename sets may be listed under historical_duplicates; any other gap or duplicate still fails migration lint.",
   "reserved": {
-    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main."
+    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main.",
+    "0146": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0147": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0148": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0149": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0150": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0151": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0152": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0153": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0154": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges.",
+    "0155": "Reserved for the in-flight multi-recorder chain on mr/db-contracts (0146_multi_recorder_foundation .. 0155_multi_recorder_reporting_coverage). The standalone production hotfix 0156 sits after them; reserving these keeps migration lint (a release gate) green. Remove each number when its file merges."
   },
   "historical_duplicates": {
     "0115": [
       "0115_context_aware_visual_review.sql",
       "0115_recorder_push_status.sql"
+    ],
+    "0142": [
+      "0142_private_vision_worker_throughput.sql",
+      "0142_stale_incident_clip_recovery.sql"
     ]
   }
 }
