@@ -20,7 +20,8 @@
 --   * Agent recorder sync may update is_primary/is_configured but never continuity_owner;
 --   * a same-site reinstall (fresh local id) re-adopts the continuity recorder and
 --     flags the previous installation's secondaries as needing re-add, instead of
---     creating duplicate recorders (wl_sync_recorders below).
+--     creating duplicate recorders; a recorder's known serial is never
+--     overwritten (wl_sync_recorders below).
 
 alter table public.recorders
   add column if not exists continuity_owner boolean not null default false;
@@ -200,14 +201,17 @@ revoke all on function public.wl_recorder_fingerprint_norm(text)
 -- recorder of the site, the primary's and the continuity recorder's serials are
 -- both known and differ, or another new row carries the continuity recorder's
 -- fingerprint), or when the caller is an earlier installation than the one
--- that last bound the continuity recorder. So re-adoption never overwrites the
--- continuity recorder's recorded serial with a different one: it only fills an
--- unknown serial or restates the same one. Remaining presumption: when either
+-- that last bound the continuity recorder. Remaining presumption: when either
 -- serial is unknown (the primary reported none, or the continuity recorder
--- never did), nothing can disprove identity, so the re-staged primary is
--- presumed to be the continuity recorder. Setup should therefore stage the
--- continuity recorder as the first primary after a reinstall and send its
--- serial whenever the recorder reports one. Configured secondaries the payload
+-- never did), nothing can disprove identity at re-adoption, so the re-staged
+-- primary is presumed to be the continuity recorder. Setup should therefore
+-- stage the continuity recorder as the first primary after a reinstall and send
+-- its serial whenever the recorder reports one. A later sync that proves the
+-- presumption wrong cannot rewrite history: for every recorder, a configured
+-- item whose known identity fingerprint differs from the recorder's recorded
+-- one fails closed (42501, nothing changes), and a recorded fingerprint is only
+-- ever filled, never replaced. Disabling such a recorder still works.
+-- Configured secondaries the payload
 -- does not name are flagged readd_required_at after a re-adoption, or whenever
 -- an earlier-enrolled Agent bound them. A new local id whose identity
 -- fingerprint matches exactly one recorder of the site that the payload does
@@ -438,8 +442,8 @@ begin
              driver=coalesce(nullif(btrim(v_item->>'driver'),''),driver),
              firmware=coalesce(nullif(btrim(v_item->>'firmware'),''),firmware),
              identity_fingerprint=coalesce(
-               nullif(btrim(v_item->>'identity_fingerprint'),''),
-               identity_fingerprint
+               identity_fingerprint,
+               nullif(btrim(v_item->>'identity_fingerprint'),'')
              ),
              is_primary=v_primary,
              is_configured=v_configured,
@@ -487,6 +491,21 @@ begin
       end if;
     end if;
 
+    -- A recorder's known identity never changes. A configured item whose known
+    -- identity fingerprint differs from the recorder's recorded one is another
+    -- physical recorder: refuse rather than graft it onto this recorder's
+    -- UUID, cameras and history. Disabling such a recorder stays possible
+    -- (nothing is grafted); its recorded fingerprint is kept either way.
+    if v_recorder.id is not null
+       and v_configured
+       and v_fingerprint is not null
+       and public.wl_recorder_fingerprint_norm(v_recorder.identity_fingerprint) is not null
+       and public.wl_recorder_fingerprint_norm(v_recorder.identity_fingerprint)<>v_fingerprint
+    then
+      raise exception 'this recorder''s serial number differs from the one registered for it; add it as a new recorder'
+        using errcode='42501';
+    end if;
+
     if v_recorder.id is null then
       -- continuity_owner is left to trg_recorder_assign_continuity_owner: true
       -- only when this is the site's first configured recorder.
@@ -513,8 +532,8 @@ begin
              driver=coalesce(nullif(btrim(v_item->>'driver'),''),driver),
              firmware=coalesce(nullif(btrim(v_item->>'firmware'),''),firmware),
              identity_fingerprint=coalesce(
-               nullif(btrim(v_item->>'identity_fingerprint'),''),
-               identity_fingerprint
+               identity_fingerprint,
+               nullif(btrim(v_item->>'identity_fingerprint'),'')
              ),
              is_primary=v_primary,
              is_configured=v_configured,

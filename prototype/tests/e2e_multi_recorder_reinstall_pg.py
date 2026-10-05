@@ -20,6 +20,9 @@ rolls back. Proves:
   or whose primary's known serial differs from the continuity recorder's own
   known serial, or a superseded earlier installation, fails closed (42501) and
   changes nothing; a re-run is idempotent;
+- a recorder's known serial is never overwritten by a different one: a later
+  sync proving the presumed re-adoption wrong is refused (42501), while
+  disabling such a recorder still works;
 - the same Agent losing its registry re-adopts deterministically too;
 - a single-recorder site reinstalled the same way keeps one recorder and its
   legacy 5.0.x camera sync keeps working.
@@ -408,6 +411,57 @@ def run() -> int:
             step(state is None
                  and str((again_legacy or [{}])[0].get("1")) == str(legacy["1"]),
                  "its legacy camera sync still returns the same camera UUID", msg)
+
+            # ----------------------------------------------------------------
+            # The presumption is later disproven: a re-adopted continuity
+            # recorder's known serial is never overwritten by a different one.
+            # ----------------------------------------------------------------
+            tenant5, site5 = bootstrap("reinstall-serial@watchlog.test", "Reinstall Serial",
+                                       "Serial Store")
+            key_t = "reinstall-serial-old-agent"
+            agent_t = add_agent(tenant5, site5, key_t, "serial-old-install", "30 days")
+            old5, _, _ = sync(agent_t, key_t, [
+                row("a-old", True, "AAA111", name="Recorder A"),
+                row("b-old", False, "BBB222", name="Recorder B"),
+            ])
+            rec_a5, rec_b5 = (str((old5 or [{}])[0].get(k)) for k in ("a-old", "b-old"))
+            seen(agent_t, "1 hour")
+            key_u = "reinstall-serial-new-agent"
+            agent_u = add_agent(tenant5, site5, key_u, "serial-new-install", "0 seconds")
+            got, state, msg = sync(agent_u, key_u, [row("c-new", True, name="Recorder")])
+            step(state is None and str((got or [{}])[0].get("c-new")) == rec_a5,
+                 "a fresh primary that reported no serial is presumed to be A (documented "
+                 "presumption)", msg)
+            snapshot5, fp5 = recorders(site5), fingerprints(site5)
+            _, state, msg = sync(agent_u, key_u, [row("c-new", True, "CCC333", name="Recorder")])
+            step(state == "42501" and recorders(site5) == snapshot5 and fingerprints(site5) == fp5
+                 and fp5.get(rec_a5) == "serial:AAA111",
+                 "the next sync reporting a different serial is refused: A's recorded serial is "
+                 "not overwritten, nothing changes", msg)
+            cur.execute("savepoint secondary_serial_sp")
+            got, state, msg = sync(agent_u, key_u, [
+                row("c-new", True, name="Recorder"),
+                row("b-new", False, "BBB222", name="Recorder B"),
+            ])
+            snapshot5 = recorders(site5)
+            _, state2, msg2 = sync(agent_u, key_u, [
+                row("c-new", True, name="Recorder"),
+                row("b-new", False, "ZZZ999", name="Recorder B"),
+            ])
+            step(state is None and str((got or [{}])[0].get("b-new")) == rec_b5
+                 and state2 == "42501" and recorders(site5) == snapshot5
+                 and fingerprints(site5).get(rec_b5) == "serial:BBB222",
+                 "a configured recorder whose known serial changes is refused for any recorder",
+                 msg or msg2)
+            _, state, msg = sync(agent_u, key_u, [
+                row("c-new", True, name="Recorder"),
+                row("b-new", False, "ZZZ999", configured=False, name="Recorder B"),
+            ])
+            recs5 = recorders(site5)
+            step(state is None and recs5[rec_b5]["configured"] is False
+                 and fingerprints(site5).get(rec_b5) == "serial:BBB222",
+                 "disabling that recorder still works and keeps its recorded serial", msg)
+            cur.execute("rollback to savepoint secondary_serial_sp")
 
             acl = cur.execute(
                 """select coalesce(has_function_privilege('anon',
