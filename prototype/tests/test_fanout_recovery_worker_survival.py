@@ -13,6 +13,11 @@ This builds the fan-out's real worker sets (multi_recorder_fanout.build_worker_s
 their recovery threads, with the archive transport and the cloud faked. Since 5.0.28 the archive
 is opened only for a claimed interval, so the fake cloud hands each claim an interval; an archive
 that cannot be opened hands it back as pending on the same recorder's RPC.
+
+That lazy open catches an open_archive_driver fault (SystemExit included) inside the runner, so a
+fault injected there never reaches the worker's last-resort handler. The tests that inject it cover
+the hand-back; the last-resort worker_fault handler and its redaction are exercised by a fault that
+escapes the runner: a claim RPC that raises SystemExit carrying the recorder's address.
 """
 from __future__ import annotations
 
@@ -86,8 +91,9 @@ def _prepared(root: Path, name: str, rid: str, host: str):
 
 
 class _Cloud:
-    def __init__(self, intervals_for=(REC_A, REC_B)):
+    def __init__(self, intervals_for=(REC_A, REC_B), claim_exits=None):
         self.claims = []
+        self.claim_exits = dict(claim_exits or {})     # {recorder_id: SystemExit message}
         self.completes = []
         self.intervals_for = set(intervals_for)
         self._lock = threading.Lock()
@@ -97,6 +103,9 @@ class _Cloud:
             rid = params.get("p_recorder_id")
             with self._lock:
                 self.claims.append(rid)
+            exit_message = self.claim_exits.get(rid)
+            if exit_message:
+                raise SystemExit(exit_message)
             if rid not in self.intervals_for:
                 return []
             return [{"id": f"iv-{rid[:8]}", "started_at": "2026-10-04T10:00:00Z",
@@ -143,7 +152,10 @@ class FanoutRecoveryThreadsSurvive(unittest.TestCase):
                 fanout._close(units)
 
     def test_a_recorder_config_exit_does_not_end_its_recovery_thread(self):
-        """open_driver -> cfg.require_nvr raises SystemExit, which is not an Exception."""
+        """open_driver -> cfg.require_nvr raises SystemExit, which is not an Exception.
+
+        The runner's lazy archive open catches it and hands the claim back; the next cycle retries.
+        """
         opens = {REC_A: 0, REC_B: 0}
 
         def no_recorder(cfg):
@@ -178,7 +190,8 @@ class FanoutRecoveryThreadsSurvive(unittest.TestCase):
         self._run(outage, broken_log, check)
 
     def test_one_recorders_fault_leaves_the_others_recovery_claiming(self):
-        """A keeps failing; B keeps claiming its own intervals through the recorder RPC."""
+        """A's archive keeps failing to open; B keeps claiming its own intervals through the
+        recorder RPC, and A's claims go back as pending on A's own recorder RPC."""
         cloud = _Cloud(intervals_for=(REC_A,))
         opens = {REC_A: 0, REC_B: 0}
         lines = []
@@ -202,10 +215,36 @@ class FanoutRecoveryThreadsSurvive(unittest.TestCase):
                                 for fn, p in released), released[:3])
 
         self._run(a_broken, lines.append, check, cloud)
-        # The last-resort line names the fault, never the recorder's address.
+        # The runner's hand-back line names only the fault type, never the recorder's address.
         faults = [line for line in lines if "SystemExit" in line]
         self.assertTrue(faults, lines[:5])
-        self.assertFalse(any("192.0.2.10" in line for line in faults), faults[:3])
+        self.assertTrue(all(line.startswith("recovery: recorder archive could not be opened: "
+                                            "SystemExit;") for line in faults), faults[:3])
+        self.assertFalse(any("192.0.2.10" in line for line in lines), lines[:5])
+
+    def test_a_fault_escaping_the_runner_reaches_the_last_resort_handler(self):
+        """A's claim RPC raises SystemExit carrying A's address. Nothing below the worker loop
+        catches it, so only the last-resort worker_fault keeps A's recovery thread alive; its
+        line names the fault and redacts the address. B keeps claiming throughout."""
+        cloud = _Cloud(intervals_for=(), claim_exits={
+            REC_A: "FATAL: http://local-user@192.0.2.10/ISAPI refused; recorder 192.0.2.10"})
+        lines = []
+
+        def no_open(cfg):
+            raise AssertionError(f"archive opened without a claimed interval: {cfg.recorder_cloud_id}")
+
+        def check(units, cloud):
+            self.assertTrue(_wait_for(lambda: cloud.claims_for(REC_A) >= 3
+                                      and cloud.claims_for(REC_B) >= 3),
+                            f"claims A={cloud.claims_for(REC_A)} B={cloud.claims_for(REC_B)}")
+            self.assertTrue(all(unit.recovery.is_alive() for unit in units))
+
+        self._run(no_open, lines.append, check, cloud)
+        last_resort = [line for line in lines if line.startswith("recovery: SystemExit: ")]
+        self.assertGreaterEqual(len(last_resort), 3, lines[:5])
+        self.assertTrue(all("[url]" in line for line in last_resort), last_resort[:3])
+        self.assertFalse(any("192.0.2.10" in line or "local-user" in line for line in lines),
+                         lines[:5])
 
 
 if __name__ == "__main__":
