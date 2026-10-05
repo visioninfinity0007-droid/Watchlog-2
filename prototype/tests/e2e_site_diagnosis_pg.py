@@ -104,12 +104,67 @@ def run() -> int:
                  and dc["recorder"]["identified"] is True,
                  "MNVR-048: identity is the current recorder, not max() over historical Agent rows",
                  json.dumps(dc["recorder"]))
-            expected_known = cur.execute(
-                "select jsonb_array_length(wl_recorder_profile('Dahua','DH-XVR1B08-I'))>0").fetchone()[0]
-            step(dc["capability_known"] is expected_known
-                 and dc["capabilities"] == cur.execute(
-                     "select wl_recorder_profile('Dahua','DH-XVR1B08-I')").fetchone()[0],
+            model_profile = cur.execute(
+                "select wl_recorder_profile('Dahua','DH-XVR1B08-I')").fetchone()[0]
+            step(dc["capability_known"] is (len(model_profile) > 0)
+                 and [c["capability"] for c in dc["capabilities"]]
+                     == [c["capability"] for c in model_profile]
+                 and [c["verdict"] for c in dc["capabilities"]]
+                     == [c["verdict"] for c in model_profile],
                  "MNVR-048: the capability profile belongs to that recorder's own model")
+            # MNVR-049: identity reported only by the Agent has no recorder-scoped field
+            # evidence, so the model's FIELD_VERIFIED grade (one field test on another
+            # unit) is capped exactly as wl_recorder_capability_for_recorder caps it.
+            step(any(c["evidence_class"] == "FIELD_VERIFIED" for c in model_profile)
+                 and not any(c["evidence_class"] == "FIELD_VERIFIED" for c in dc["capabilities"])
+                 and all(c.get("evidence_scope") == "model" for c in dc["capabilities"]),
+                 "MNVR-049: an Agent-reported identity never shows another unit's FIELD_VERIFIED",
+                 json.dumps([[c["capability"], c["evidence_class"]] for c in dc["capabilities"]])[:300])
+
+            # MNVR-049: a configured recorder of the field-tested model with no evidence
+            # of its own. The diagnosis (and the AI context built from it) must show the
+            # recorder-scoped grade, never the model's FIELD_VERIFIED.
+            ud, td, sd = bootstrap("diag-d@watchlog.test", "Diag D", "Site D")
+            kd = "diag-d-key"
+            agent_d = cur.execute("""insert into agents (tenant_id,site_id,agent_key_hash,last_seen_at,enrolled_at)
+                                     values (%s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),now(),now()-interval '1 day')
+                                     returning id""", (td, sd, kd)).fetchone()[0]
+            rec_d = cur.execute("select wl_sync_recorders(%s,%s,%s::jsonb)", (agent_d, kd, json.dumps([{
+                "local_key": "rec-d", "display_name": "Recorder D", "vendor": "Dahua",
+                "model": "DH-XVR1B08-I", "firmware": "X", "identity_fingerprint": "serial:OTHERUNIT123",
+                "is_primary": True, "is_configured": True}]))).fetchone()[0]["rec-d"]
+            dd = as_ok(ud, "select wl_my_site_diagnosis(%s)", sd)[0]
+            scoped = {c: cur.execute("select wl_recorder_capability_for_recorder(%s,%s)->>'evidence_class'",
+                                     (rec_d, c)).fetchone()[0]
+                      for c in ("channel_title", "time_ntp_config")}
+            caps_d = {c["capability"]: c for c in dd["capabilities"] or []}
+            step(scoped["channel_title"] != "FIELD_VERIFIED"
+                 and all(caps_d.get(c, {}).get("evidence_class") == scoped[c] for c in scoped)
+                 and not any(c["evidence_class"] == "FIELD_VERIFIED" for c in dd["capabilities"]),
+                 "MNVR-049: diagnosis shows the recorder-scoped grade, not another unit's FIELD_VERIFIED",
+                 json.dumps({c: caps_d.get(c, {}).get("evidence_class") for c in scoped}) + " scoped=" + json.dumps(scoped))
+            step(dd["capability_known"] is True and dd["recorders"][0]["capability_known"] is True,
+                 "MNVR-049: the knowledge base still lists that model's capabilities (capability_known)")
+            ai_d = as_ok(ud, "select wl_ai_context(%s)", sd)[0]
+            step(not any(c.get("evidence_class") == "FIELD_VERIFIED" for c in ai_d.get("capabilities") or []),
+                 "MNVR-049: the AI context never receives another unit's FIELD_VERIFIED")
+            # The recorder's own read-back-verified evidence does make it FIELD_VERIFIED.
+            cur.execute("""insert into recorder_field_evidence(
+                             id,site_id,recorder_id,identity_fingerprint,vendor,model,
+                             firmware,capability,operation,result,evidence_class,
+                             test_date,read_back_verified
+                           ) values ('TEST-DIAG-TIME',%s,%s,'serial:OTHERUNIT123','Dahua','DH-XVR1B08-I',
+                             'X','time_ntp_config','read_write','write applied and read back',
+                             'FIELD_VERIFIED',current_date,true)""", (sd, rec_d))
+            dd2 = as_ok(ud, "select wl_my_site_diagnosis(%s)", sd)[0]
+            caps_d2 = {c["capability"]: c["evidence_class"] for c in dd2["capabilities"]}
+            step(caps_d2.get("time_ntp_config") == "FIELD_VERIFIED"
+                 and caps_d2.get("channel_title") != "FIELD_VERIFIED",
+                 "MNVR-049: only this recorder's own evidence shows as FIELD_VERIFIED", json.dumps(caps_d2)[:300])
+            acl = cur.execute(
+                """select has_function_privilege(r,'public.wl_recorder_profile_model_scoped(text,text)','execute')
+                     from unnest(array['anon','authenticated','service_role']) r""").fetchall()
+            step(not any(x[0] for x in acl), "MNVR-049: the capped model-profile helper is owner-only")
             names = [c["name"] for c in dc["cameras"]]
             raw = json.dumps(dc)
             step(len(dc["cameras"]) == 8 and names == [f"Camera {n}" for n in range(1, 9)]

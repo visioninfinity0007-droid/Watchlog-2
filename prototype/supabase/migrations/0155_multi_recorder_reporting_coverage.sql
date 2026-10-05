@@ -301,6 +301,49 @@ revoke all on function public.wl_daily_intelligence(uuid,date,boolean) from publ
 grant execute on function public.wl_daily_intelligence(uuid,date,boolean) to service_role;
 
 
+-- Model-keyed capability profile with recorder scoping applied (MNVR-049).
+-- Same row shape as wl_recorder_profile_for_recorder. Used when a recorder's
+-- identity is known only from the Agent's report (no recorder row carries it),
+-- so no recorder-scoped field evidence can match: a model-only FIELD_VERIFIED
+-- grade (one field test on another unit) is capped exactly as
+-- wl_recorder_capability_for_recorder caps it.
+create or replace function public.wl_recorder_profile_model_scoped(
+  p_vendor text,
+  p_model text
+) returns jsonb
+language sql
+stable
+set search_path = public
+as $function$
+  select coalesce(jsonb_agg(
+           x.cap||jsonb_build_object(
+             'evidence_class',case
+               when x.cap->>'evidence_class'<>'FIELD_VERIFIED'
+                 then x.cap->>'evidence_class'
+               when exists (
+                 select 1
+                   from jsonb_array_elements_text(
+                          coalesce(x.cap->'source_ids','[]'::jsonb)
+                        ) s(id)
+                   join public.recorder_capability_sources src
+                     on src.id=s.id
+                    and src.source_type='official'
+               ) then 'OFFICIAL_DOCUMENTED'
+               else 'IMPLEMENTED_UNVERIFIED'
+             end,
+             'evidence_scope','model'
+           )
+           order by x.ord
+         ),'[]'::jsonb)
+    from jsonb_array_elements(
+           coalesce(public.wl_recorder_profile(p_vendor,p_model),'[]'::jsonb)
+         ) with ordinality x(cap,ord)
+$function$;
+
+revoke all on function public.wl_recorder_profile_model_scoped(text,text)
+  from public,anon,authenticated,service_role;
+
+
 -- Owner context previously used wl_site_coverage_report() directly, bypassing
 -- the 3-class/effective coverage layer. Re-point it to the same governed source
 -- used by daily intelligence so Home, Health, Cameras and Ask cannot disagree.
@@ -318,9 +361,13 @@ grant execute on function public.wl_daily_intelligence(uuid,date,boolean) to ser
 --                     current site Agent's reported device, always both values
 --                     from ONE row (never max() across historical Agent rows).
 --                     null on a multi-recorder site.
---   capabilities      [wl_recorder_profile rows] | null
---                     The singleton recorder's model profile; [] when its
---                     identity is unknown; null on a multi-recorder site.
+--   capabilities      [wl_recorder_profile_for_recorder rows] | null
+--                     The singleton recorder's recorder-scoped profile
+--                     (MNVR-049): FIELD_VERIFIED only from that recorder's own
+--                     evidence. When identity is only Agent-reported, the
+--                     model profile with FIELD_VERIFIED capped
+--                     (wl_recorder_profile_model_scoped). [] when identity is
+--                     unknown; null on a multi-recorder site.
 --   capability_known  bool   false on a multi-recorder site
 --   recorders         [{recorder_id, display_name, is_primary, vendor, model,
 --                       firmware, identified, capability_known, camera_count,
@@ -437,8 +484,21 @@ begin
     end if;
 
     v_identified := v_vendor is not null and v_model is not null;
-    if v_identified then
-      v_profile := coalesce(public.wl_recorder_profile(v_vendor,v_model),'[]'::jsonb);
+    -- MNVR-049: never show another unit's field evidence as this recorder's
+    -- capability truth. The recorder row's identity gets the recorder-scoped
+    -- profile; an Agent-reported identity gets the capped model profile.
+    if v_identified
+       and v_single.id is not null
+       and v_vendor is not distinct from v_single.vendor
+       and v_model is not distinct from v_single.model
+    then
+      v_profile := coalesce(
+        public.wl_recorder_profile_for_recorder(v_single.id),'[]'::jsonb
+      );
+    elsif v_identified then
+      v_profile := coalesce(
+        public.wl_recorder_profile_model_scoped(v_vendor,v_model),'[]'::jsonb
+      );
     else
       v_profile := '[]'::jsonb;
     end if;
@@ -539,7 +599,7 @@ begin
         'capability_known',case
           when v_recorder_count=1 then jsonb_array_length(v_profile)>0
           when r.vendor is not null and r.model is not null then jsonb_array_length(
-            coalesce(public.wl_recorder_profile(r.vendor,r.model),'[]'::jsonb)
+            coalesce(public.wl_recorder_profile_for_recorder(r.id),'[]'::jsonb)
           )>0
           else false
         end,

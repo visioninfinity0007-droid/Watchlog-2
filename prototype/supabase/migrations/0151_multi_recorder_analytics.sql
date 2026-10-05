@@ -14,6 +14,8 @@
 --   * accepts missing recorder_id only while the site is a true singleton;
 --   * resolves camera/rule by recorder + channel;
 --   * carries recorder_id into promoted events;
+--   * scopes the installer analytics bootstrap (camera name/purpose/analytics)
+--     by recorder + channel, failing closed on an ambiguous legacy call;
 --   * advances the authenticated multi-recorder Agent contract to v3.
 
 alter table public.analytic_events
@@ -260,6 +262,111 @@ $function$;
 revoke all on function public.wl_ingest_analytic_events(uuid,text,jsonb)
   from public,anon,authenticated,service_role;
 grant execute on function public.wl_ingest_analytic_events(uuid,text,jsonb)
+  to anon,authenticated;
+
+-- The installer analytics bootstrap (0025) matched cameras by site+channel.
+-- After 0146 a channel number is only unique per recorder, so one profile item
+-- renamed and re-purposed every recorder's camera with that channel. A profile
+-- item now names its camera by recorder + channel: an explicit recorder_id must
+-- be a configured recorder of the Agent's own site and requires current Agent
+-- authority (as wl_ingest_analytic_events); an item without one is accepted only
+-- while the site is a true singleton (wl_legacy_recorder_for_agent fails closed
+-- on a multi-recorder site).
+create or replace function public.wl_agent_bootstrap_analytics(
+  p_agent_id uuid,
+  p_agent_key text,
+  p_site_type text,
+  p_camera_profiles jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+  v_changed int := 0;
+  v_profile jsonb;
+  v_purpose text;
+  v_version bigint;
+  v_profiles jsonb := coalesce(p_camera_profiles,'[]'::jsonb);
+  v_legacy_recorder_id uuid := null;
+begin
+  v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent not recognised' using errcode='28000';
+  end if;
+
+  if jsonb_typeof(v_profiles)<>'array' then
+    raise exception 'camera profiles must be a JSON array' using errcode='22023';
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(v_profiles) e
+     where nullif(e->>'recorder_id','') is not null
+  ) then
+    perform public.wl_assert_current_agent_authority(
+      v_agent.id,v_agent.site_id
+    );
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(v_profiles) e
+     where nullif(e->>'recorder_id','') is null
+  ) then
+    v_legacy_recorder_id := public.wl_legacy_recorder_for_agent(v_agent.id);
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(v_profiles) e
+     where nullif(e->>'recorder_id','') is not null
+       and (
+         public.wl_try_uuid(e->>'recorder_id') is null
+         or not exists (
+           select 1 from public.recorders r
+            where r.id=public.wl_try_uuid(e->>'recorder_id')
+              and r.tenant_id=v_agent.tenant_id
+              and r.site_id=v_agent.site_id
+              and r.is_configured
+         )
+       )
+  ) then
+    raise exception 'analytics profile recorder not configured for this agent site'
+      using errcode='42501';
+  end if;
+
+  if public.wl_analytics_valid_site_type(coalesce(p_site_type,'custom')) then
+    update public.sites set site_type=coalesce(p_site_type,'custom') where id=v_agent.site_id;
+  end if;
+
+  for v_profile in select * from jsonb_array_elements(v_profiles)
+  loop
+    v_purpose := coalesce(nullif(v_profile->>'purpose',''),'custom');
+    if not public.wl_analytics_valid_purpose(v_purpose) then
+      v_purpose := 'custom';
+    end if;
+    update public.cameras
+       set name=coalesce(nullif(trim(v_profile->>'name'),''),name),
+           purpose=v_purpose,
+           analytics_enabled=coalesce((v_profile->>'analytics_enabled')::boolean,true)
+     where tenant_id=v_agent.tenant_id
+       and site_id=v_agent.site_id
+       and recorder_id=coalesce(
+             public.wl_try_uuid(v_profile->>'recorder_id'),
+             v_legacy_recorder_id
+           )
+       and channel=v_profile->>'channel';
+    if found then v_changed := v_changed + 1; end if;
+  end loop;
+
+  v_version := public.wl_analytics_bump_site(v_agent.site_id);
+  return jsonb_build_object('ok',true,'updated_cameras',v_changed,'version',v_version);
+end
+$function$;
+
+-- Preserve the 0025 Agent RPC ACL.
+revoke all on function public.wl_agent_bootstrap_analytics(uuid,text,text,jsonb)
+  from public;
+grant execute on function public.wl_agent_bootstrap_analytics(uuid,text,text,jsonb)
   to anon,authenticated;
 
 -- Contract v3 is the first backend contract safe for actual worker fan-out:

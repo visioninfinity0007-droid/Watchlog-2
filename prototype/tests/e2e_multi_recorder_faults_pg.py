@@ -303,6 +303,42 @@ def run() -> int:
                  "Recorder A sign-in failure raises A's auth fault and withholds only A's cameras",
                  str(sorted(faults)))
 
+            # One recorder context hangs while the Agent and Recorder A keep
+            # reporting: B's recorder_health stops at its last value. Older than
+            # the 15-minute cut it is unknown, so it neither keeps B's camera
+            # faults alive on a frozen 'reachable' nor B's outage open on a
+            # frozen 'unreachable'; one not-verified warning says so instead.
+            report_health(agent_a, key_a, rec_a, True, True, "ok")
+            b_stale = f"nvr:{rec_b}:not_verified"
+            cur.execute("""update recorder_health set updated_at=now()-interval '2 hours'
+                            where recorder_id=%s and agent_id=%s""", (rec_b, agent_a))
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(faults.get(b_stale) == ("unknown", str(agent_a), None)
+                 and f"camera:{cam_b}:offline" not in faults
+                 and f"camera:{cam_b}:recording" not in faults
+                 and f"nvr:{rec_b}:storage" not in faults
+                 and f"camera:{cam_a}:offline" in faults and f"nvr:{rec_a}:auth" not in faults,
+                 "a hung Recorder B (health 2 h old) is not verified; its frozen 'reachable' "
+                 "no longer drives B's faults while A's stay current",
+                 str(sorted(faults)))
+            cur.execute("""update recorder_health
+                              set nvr_reachable=false,nvr_auth_ok=null,
+                                  reason_code='nvr_unreachable',
+                                  updated_at=now()-interval '2 hours'
+                            where recorder_id=%s and agent_id=%s""", (rec_b, agent_a))
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(b_down not in faults and b_stale in faults,
+                 "a 2-hour-old 'unreachable' row does not keep Recorder B's outage open",
+                 str(sorted(faults)))
+            report_health(agent_a, key_a, rec_b, True, True, "ok")
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(b_stale not in faults and f"camera:{cam_b}:offline" in faults,
+                 "Recorder B reporting again resolves the warning and its camera faults return",
+                 str(sorted(faults)))
+
             cur.execute("""insert into agent_unreachable_intervals(
                              tenant_id,site_id,agent_id,started_at)
                            values (%s,%s,%s,now())""", (ta, sa, agent_a))

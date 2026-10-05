@@ -272,7 +272,7 @@ What it changes, and what production showed on 2026-10-05 (read-only queries E1-
 |---|---|---|
 | NEW-L1 `wl_known_capabilities()` | Body md5 `1d4e5e4acc69645dd01143cf90115b41` (= repo 0119), 9 entries, no `config_snapshot_requests`; `search_path=public`; execute for PUBLIC, anon, authenticated, service_role. `wl_agent_report_capabilities` (md5 `53bf6b70407dd58fadf2b4e6b75c9329` = repo 0119) is the only writer of `agents.capabilities` and keeps only known entries. 0 of 2 live Agents carry `config_snapshot_requests`. `watchlog-restaurant-snapshot-scheduler` ran 21,185 times (all succeeded, since 2026-09-28 02:53 UTC); 0 `restaurant_analytics` requests have ever existed; 5 restaurant camera profiles are enabled for interval sampling. | Production body plus one appended element `'config_snapshot_requests'` (new md5 `490daaf501a1b3829cd5cda615560270`). `CREATE OR REPLACE` keeps the ACL; `search_path=public` is restated. Nothing else changes. |
 | `wl_agent_semver_triplet(text)` | Body md5 `8a4f5c64381d1080dbc565c409b84a27` (single-backslash regex); returns `{5,0,27}` for `'5.0.27'`. | The production body exactly (same md5). No production change. On a fresh chain it fixes `{0,0,0}`, so a 5.0.22+ Agent keeps `site_control_runtime` / `remote_update_v1`. |
-| NEW-L6 snapshot request expiry | `camera_snapshot_requests` has no expiry column or job. 22 `manual` requests are open, oldest 2026-09-05 12:10 UTC, newest 2026-09-28 13:07 UTC, all older than 24 h, at 4 sites. Of 49 delivered requests: p50 latency 23 s, max 12.9 h, none longer than 24 h. The Agent's config poll returns open requests oldest first and the Agent services 2 per poll, so stale requests stay at the head of the queue; one open request per camera blocks a new one for that camera. | Adds `camera_snapshot_requests.expired_at` and `wl_expire_stale_snapshot_requests(manual minutes default 1440, analytics minutes default 30)` (clamped to 60-10080 and 5-1440): sets `completed_at` and `expired_at` together on open requests older than the window, `for update skip locked`. SECURITY DEFINER, `search_path=public, pg_temp`, execute for service_role only. Guarded pg_cron job `watchlog-expire-stale-snapshot-requests` every 5 minutes, in the 0142_stale style. Its first production run would expire the 22 open manual requests. |
+| NEW-L6 snapshot request expiry | `camera_snapshot_requests` has no expiry column or job. 22 `manual` requests are open, oldest 2026-09-05 12:10 UTC, newest 2026-09-28 13:07 UTC, all older than 24 h, at 4 sites. Of 49 delivered requests: p50 latency 23 s, max 12.9 h, none longer than 24 h. The Agent's config poll returns open requests oldest first and the Agent services 2 per poll, so stale requests stay at the head of the queue; one open request per camera blocks a new one for that camera. | Adds `camera_snapshot_requests.expired_at` and `wl_expire_stale_snapshot_requests(manual minutes default 60, analytics minutes default 30)` (clamped to 60-10080 and 5-1440): sets `completed_at` and `expired_at` together on open requests older than the window, `for update skip locked`. SECURITY DEFINER, `search_path=public, pg_temp`, execute for service_role only. Guarded pg_cron job `watchlog-expire-stale-snapshot-requests` every 5 minutes running `(60, 30)`, in the 0142_stale style. Its first production run would expire the 22 open manual requests. |
 
 Effects to weigh before approval:
 
@@ -292,6 +292,18 @@ Effects to weigh before approval:
   image itself lives in `camera_config_snapshots`. The 0125 scheduler uses the latest
   `completed_at` of a camera's restaurant requests only as its pacing cursor, so an
   expired restaurant request delays the next one by that camera's interval.
+- The manual window is 60 minutes (the clamp floor), not 24 h. The poll still
+  serves the two oldest open requests, and a request the Agent cannot deliver stays
+  open, so two manual requests for cameras that return no image hold both slots
+  until they expire. With a 24 h window every newer restaurant request at that
+  site would expire unserved for a day; with 60 minutes the block lasts at most
+  about 65 minutes (window plus the 5-minute cron). The portal waits 15 s for a
+  manual image, and a late upload still stores the image, so nothing a user waits
+  for is lost. The cost: a manual request delivered after more than an hour (the
+  slowest of the 49 delivered took 12.9 h) is recorded as expired. Fair ordering of
+  the poll (per source or per recorder) is not changed by 0156: it needs the poll
+  body, which 0150 redefines on `mr/db-contracts`, or Agent rotation past failed
+  requests, and stays open there.
 
 Overlap check with `mr/db-contracts` (0146-0155 at `e3ab17f`): `git grep` finds no
 definition of `wl_known_capabilities`, `wl_agent_semver_triplet`,
@@ -303,10 +315,13 @@ touch. Applying 0156 after that chain reverts nothing.
 
 Local verification (disposable postgres:16 only):
 
-- `prototype/tests/e2e_production_hotfix_0156_pg.py` (CI `integration` job): 38 steps.
+- `prototype/tests/e2e_production_hotfix_0156_pg.py` (CI `integration` job): 40 steps.
   Before 0156: 12 steps fail (capability stripped, triplet `{0,0,0}`, scheduler
-  requests 0, no expiry function or column). After: 38 pass, on this branch's chain
-  and on `mr/db-contracts` `e3ab17f` with 0156 appended.
+  requests 0, no expiry function or column). After: 40 pass on this branch's chain.
+  The first 38 also passed on `mr/db-contracts` `e3ab17f` with 0156 appended; the
+  two head-of-line steps were added later and have not been run on that chain.
+  With the earlier 24 h manual window the head-of-line step fails (both Agent slots
+  still held by 2-hour-old manual requests after the scheduled expiry run).
 - The 0144/0145 `--pg` contract and the 0059 runtime-capability integration still pass.
 
 ## Appendix: exact queries
@@ -698,3 +713,34 @@ profile `rp` is NULL, the predicate is NULL and the row is dropped, so office pe
 claimed (every HASCO Head Office periodic still was still `pending` on 2026-10-05). 0156 redefines the
 function from that exact production body with only the comparison made null-safe. Like the rest of 0156,
 it needs explicit approval before it is applied to production.
+
+The stranded rows kept their insert-time `next_attempt_at`. The claim serves the oldest
+`next_attempt_at` first, at most 4 rows per worker run (one run a minute, 0142), over one queue shared by
+every site. Released as they are, the whole backlog (bounded only by snapshot retention, 7-90 days by plan)
+would be reviewed before any fresh still from any site, including the restaurant stills 0156 sections 1 and
+3 turn on. So 0156 also retires every review row the old filter stranded at apply time: periodic stills of
+canonical cameras with no enabled restaurant profile that the claim would otherwise pick. They are set to
+`failed`, `attempts>=5`, no analysis, with `last_error` naming 0156 (the 0118 style), so they count as not
+reviewed and never as analysed. Rows under a live lease are left alone; snapshots and events are untouched.
+Periodic stills queued after the apply are claimed normally, in arrival order with every other still.
+
+Unknown: the size of the production backlog. It was not measured. Before approval, count it read-only:
+
+```sql
+select s.site_id, count(*) as stranded, min(r.captured_at) as oldest, max(r.captured_at) as newest
+from public.snapshot_visual_reviews r
+join public.snapshots s on s.event_id=r.event_id
+join public.events ev on ev.id=s.event_id
+join public.cameras c on c.id=s.camera_id
+where coalesce(c.is_canonical,true)
+  and coalesce(ev.payload->>'source','')='periodic_snapshot'
+  and not exists (select 1 from public.restaurant_camera_profiles rp where rp.camera_id=s.camera_id and rp.enabled)
+  and ((r.status='pending' and r.next_attempt_at<=now())
+    or (r.status='failed' and r.attempts<5 and r.next_attempt_at<=now())
+    or (r.status='processing' and r.lease_until<now() and r.attempts<5))
+group by s.site_id order by stranded desc;
+```
+
+`prototype/tests/e2e_vision_claim_periodic_no_profile_pg.py` re-applies 0156 over a seeded 10-day backlog
+and checks that a fresh restaurant still from another tenant is in the first worker batch. Without the
+retirement step the first batch is four backlog rows.

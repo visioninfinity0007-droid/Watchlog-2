@@ -18,6 +18,7 @@ from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
 REHEARSAL = TESTS / "e2e_multi_recorder_upgrade_rehearsal_pg.py"
+CI = TESTS.parents[1] / ".github" / "workflows" / "ci.yml"
 
 # Any reference to a numbered migration file, or to the migrations directory.
 MIGRATION_REF = re.compile(r"\d{4}_[a-z0-9_]+\.sql|[\"']migrations[\"']|migrations/")
@@ -47,6 +48,14 @@ class NoStaleMigrationRerunTests(unittest.TestCase):
         self.assertEqual({}, offenders,
                          "e2e scripts must not re-execute migration files; create legacy "
                          "state with data instead")
+
+    def test_ci_runs_this_guard_and_every_gated_script(self):
+        # CI lists its scripts one by one; a guard CI never runs guards nothing.
+        ci = CI.read_text(encoding="utf-8")
+        self.assertIn(f"prototype/tests/{Path(__file__).name}", ci)
+        missing = [p.name for p in gated_scripts() + [REHEARSAL]
+                   if f"prototype/tests/{p.name}" not in ci]
+        self.assertEqual([], missing, "every multi-recorder e2e gate must run in CI")
 
     def test_upgrade_rehearsal_applies_through_the_runner(self):
         text = REHEARSAL.read_text(encoding="utf-8")

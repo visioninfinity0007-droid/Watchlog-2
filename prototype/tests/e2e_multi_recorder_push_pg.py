@@ -20,7 +20,8 @@ before any channel-to-camera resolution. Proves:
   namespace; a disabled recorder's token fails closed;
 - the owner-portal wl_issue_push_token is guarded the same way: the site-level
   form refuses a multi-recorder site, the recorder form rotates only that
-  recorder's token;
+  recorder's token; both forms authorise by the role held in the site's own
+  account, never a role from another account;
 - one alarm seen by both the Agent and push (same recorder, channel, type,
   time) is one event row, in either order (MNVR-026 shared dedupe identity);
 - no event row has camera_id set with recorder_id NULL, or a camera from a
@@ -540,6 +541,55 @@ def run() -> int:
             by_recorder = {str(x.get("recorder_id")) for x in listed if x.get("enabled")}
             step(by_recorder == {str(rec4_a), str(rec4_b)},
                  "the owner's push source list names each source's recorder", str(listed)[:300])
+
+            # A push token is a live ingest credential: only the role held in
+            # the site's own account counts. wl_my_role() is account-blind, so a
+            # viewer here who owns another account must still be refused. The
+            # other account gets the lowest id and its membership is written
+            # first, so an account-blind lookup meets it first whether it scans
+            # the table or the (user_id, tenant_id) key; the site's membership
+            # is the oldest, so it is the account the user acts in.
+            owned_elsewhere = cur.execute(
+                "insert into tenants(id,name,account_status) values "
+                "('00000000-0000-0000-0000-0000000000d1','Push Owned Elsewhere','active') "
+                "returning id").fetchone()[0]
+
+            def viewer_here_owner_elsewhere(email, tenant_here):
+                uid = cur.execute(
+                    "insert into auth.users(id,email) values (gen_random_uuid(),%s) returning id",
+                    (email,),
+                ).fetchone()[0]
+                cur.execute(
+                    "insert into memberships(user_id,tenant_id,role) values (%s,%s,'owner')",
+                    (uid, owned_elsewhere),
+                )
+                cur.execute(
+                    "insert into memberships(user_id,tenant_id,role,created_at) "
+                    "values (%s,%s,'viewer',now()-interval '30 days')",
+                    (uid, tenant_here),
+                )
+                return uid
+
+            def enabled_sources(site_id):
+                return sorted(str(r[0]) for r in cur.execute(
+                    "select id from push_sources where site_id=%s and enabled", (site_id,)
+                ).fetchall())
+
+            viewer4 = viewer_here_owner_elsewhere("push-multi-viewer@watchlog.test", t4)
+            viewer1 = viewer_here_owner_elsewhere("push-single-viewer@watchlog.test", t1)
+            acting = [as_auth(u, "select wl_my_tenant()::text, wl_my_role()")
+                      for u in (viewer4, viewer1)]
+            print(f"  info  wl_my_tenant/wl_my_role: {acting}")
+            before4, before1 = enabled_sources(s4), enabled_sources(s1)
+            row, state, msg = as_auth_try(
+                viewer4, "select wl_issue_push_token(%s,%s)", s4, rec4_a)
+            step(row is None and "role" in msg.lower() and enabled_sources(s4) == before4,
+                 "a viewer here who owns another account cannot mint a recorder push token",
+                 msg or str(row)[:120])
+            row, state, msg = as_auth_try(viewer1, "select wl_issue_push_token(%s)", s1)
+            step(row is None and "role" in msg.lower() and enabled_sources(s1) == before1,
+                 "a viewer here who owns another account cannot mint a site push token",
+                 msg or str(row)[:120])
 
             # ----------------------------------------------------------------
             # Lineage invariants over every site in this test.
