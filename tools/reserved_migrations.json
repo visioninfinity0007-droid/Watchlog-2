@@ -7,6 +7,10 @@
     "0115": [
       "0115_context_aware_visual_review.sql",
       "0115_recorder_push_status.sql"
+    ],
+    "0142": [
+      "0142_private_vision_worker_throughput.sql",
+      "0142_stale_incident_clip_recovery.sql"
     ]
   }
 }
