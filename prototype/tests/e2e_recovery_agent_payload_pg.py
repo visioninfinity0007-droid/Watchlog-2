@@ -145,7 +145,8 @@ def run() -> int:
                 last_live_path=Path(tmp.name) / "last_live.json", recovery_threshold_seconds=180,
                 recovery_chunk_seconds=3600, recovery_throttle_seconds=0.0,
                 recovery_live_backlog=500, recovery_ai_max_frames=40,
-                recovery_snapshot_seconds=300))()
+                recovery_snapshot_seconds=300,
+                nvr_url="http://192.0.2.10", nvr_username="recovery-e2e"))()
 
             def cycle(open_archive, spool_gap=None, holder=None):
                 saved = core.open_archive_driver, core.log
