@@ -190,6 +190,13 @@ for each row execute function public.wl_recorder_coverage_registry_trigger();
 -- Health changes drive recorder coverage. Reachable + auth-not-failed is verified;
 -- false/unknown liveness is unverified. A recorder can therefore fail independently
 -- while the site Agent and other recorders remain LIVE.
+--
+-- Silent health is unknown (MNVR-016): when a report arrives more than the
+-- 15-minute freshness window after the recorder's previous report (from any
+-- Agent), the silent stretch from previous report + 15 minutes to this report
+-- is recorded as a closed 'health_stale' interval, unless an open interval
+-- already covers it. The read model also treats the current silent tail as
+-- unknown, so a stopped Agent or recorder thread never leaves stale LIVE.
 create or replace function public.wl_recorder_health_coverage_trigger()
 returns trigger
 language plpgsql
@@ -198,7 +205,45 @@ as $function$
 declare
   v_verified boolean;
   v_cause text;
+  v_at timestamptz := coalesce(new.updated_at,now());
+  v_prev_at timestamptz;
+  v_stale_from timestamptz;
 begin
+  select max(h.updated_at)
+    into v_prev_at
+    from public.recorder_health h
+   where h.recorder_id=new.recorder_id
+     and h.agent_id<>new.agent_id
+     and h.updated_at<v_at;
+
+  if tg_op='UPDATE' then
+    v_prev_at := greatest(v_prev_at,old.updated_at);
+  end if;
+
+  v_stale_from := v_prev_at+interval '15 minutes';
+
+  if v_stale_from<v_at
+     and exists (
+       select 1 from public.recorders r
+        where r.id=new.recorder_id
+          and r.tenant_id=new.tenant_id
+          and r.site_id=new.site_id
+          and r.is_configured
+     )
+     and not exists (
+       select 1 from public.recorder_coverage_intervals x
+        where x.recorder_id=new.recorder_id
+          and x.ended_at is null
+     )
+  then
+    insert into public.recorder_coverage_intervals(
+      tenant_id,site_id,recorder_id,started_at,ended_at,cause,source
+    ) values (
+      new.tenant_id,new.site_id,new.recorder_id,
+      v_stale_from,v_at,'health_stale','recorder_health_stale'
+    );
+  end if;
+
   v_verified := (
     new.nvr_reachable is true
     and new.nvr_auth_ok is true
@@ -212,7 +257,7 @@ begin
 
   perform public.wl_set_recorder_coverage_state(
     new.recorder_id,new.tenant_id,new.site_id,
-    v_verified,v_cause,coalesce(new.updated_at,now())
+    v_verified,v_cause,v_at
   );
   return new;
 end
@@ -280,6 +325,18 @@ $$;
 -- cameras was recovered and unverified_seconds is time when at least one was
 -- not; live + recovered + unverified = wall. Camera-time totals are kept in
 -- their own *_camera_seconds fields, and coverage_ratio is camera-time.
+--
+-- A recorder's unverified time is the union of (MNVR-016):
+--   * its own recorder_coverage_intervals (health said unreachable, auth
+--     failed or unknown; or a past silent stretch recorded by the health
+--     trigger);
+--   * every site-level gap of wl_site_coverage_report: Agent unreachable
+--     (server watchdog), Agent-reported observation gaps (PC asleep, off or
+--     restarting), link gaps and time with no authoritative Agent. The site
+--     Agent observes every recorder, so these gaps apply to all of them;
+--   * the tail after its newest recorder_health report once that report is
+--     older than the 15-minute freshness window (the same cut 0152 uses for
+--     owner recorder state): silent health is unknown, never stale LIVE.
 create or replace function public.wl_site_recorder_coverage_facts(
   p_site_id uuid,
   p_from timestamptz,
@@ -347,23 +404,74 @@ lo as (
     m.common_tracking_start
   from requested q cross join meta m
 ),
+site_gaps as (
+  select
+    tstzrange(
+      greatest((g->>'start')::timestamptz,l.a),
+      least((g->>'end')::timestamptz,l.b),
+      '[)'
+    ) r,
+    coalesce(nullif(g->>'cause',''),'unknown') cause
+  from lo l
+  cross join lateral jsonb_array_elements(
+    case
+      when l.a<l.b and l.recorder_count>0 then coalesce(
+        public.wl_site_coverage_report(p_site_id,l.a,l.b)->'gaps',
+        '[]'::jsonb
+      )
+      else '[]'::jsonb
+    end
+  ) g
+  where nullif(g->>'start','') is not null
+    and nullif(g->>'end','') is not null
+    and greatest((g->>'start')::timestamptz,l.a)
+        < least((g->>'end')::timestamptz,l.b)
+),
+health as (
+  select h.recorder_id,max(h.updated_at) latest_health_at
+  from public.recorder_health h
+  join rec r on r.recorder_id=h.recorder_id
+  where h.site_id=p_site_id
+  group by h.recorder_id
+),
+sources as (
+  select
+    x.recorder_id,
+    tstzrange(
+      greatest(x.started_at,l.a),
+      least(coalesce(x.ended_at,l.b),l.b),
+      '[)'
+    ) r,
+    x.cause
+  from public.recorder_coverage_intervals x
+  join rec r on r.recorder_id=x.recorder_id
+  cross join lo l
+  where greatest(x.started_at,l.a)
+        < least(coalesce(x.ended_at,l.b),l.b)
+  union all
+  select r.recorder_id,g.r,g.cause
+  from rec r cross join site_gaps g
+  union all
+  select
+    h.recorder_id,
+    tstzrange(
+      greatest(h.latest_health_at+interval '15 minutes',l.a),
+      l.b,
+      '[)'
+    ),
+    'health_stale'
+  from health h cross join lo l
+  where greatest(h.latest_health_at+interval '15 minutes',l.a)<l.b
+),
 sets0 as (
   select
     r.*,
     l.a,l.b,
     greatest(0,extract(epoch from (l.b-l.a)))::numeric wall_seconds,
     coalesce((
-      select range_agg(
-        tstzrange(
-          greatest(x.started_at,l.a),
-          least(coalesce(x.ended_at,l.b),l.b),
-          '[)'
-        )
-      )
-      from public.recorder_coverage_intervals x
+      select range_agg(x.r)
+      from sources x
       where x.recorder_id=r.recorder_id
-        and greatest(x.started_at,l.a)
-            < least(coalesce(x.ended_at,l.b),l.b)
     ),'{}'::tstzmultirange) gap_mr
   from rec r cross join lo l
 ),
@@ -471,6 +579,10 @@ bounds as (
   select lower(r) from unv_ranges
   union
   select upper(r) from unv_ranges
+  union
+  select lower(r) from site_gaps
+  union
+  select upper(r) from site_gaps
 ),
 segments0 as (
   select ts,lead(ts) over(order by ts) nxt
@@ -480,7 +592,14 @@ segments as (
   select
     s.ts started_at,
     s.nxt ended_at,
-    count(distinct u.camera_id)::int affected_camera_count
+    count(distinct u.camera_id)::int affected_camera_count,
+    (
+      select g.cause
+      from site_gaps g
+      where g.r && tstzrange(s.ts,s.nxt,'[)')
+      order by g.cause
+      limit 1
+    ) site_cause
   from segments0 s
   left join unv_ranges u
     on u.r && tstzrange(s.ts,s.nxt,'[)')
@@ -547,14 +666,13 @@ rec_json as (
               'end',upper(u.r),
               'cause',coalesce((
                 select x.cause
-                from public.recorder_coverage_intervals x
+                from sources x
                 where x.recorder_id=p.recorder_id
-                  and tstzrange(
-                    x.started_at,
-                    coalesce(x.ended_at,(select b from lo)),
-                    '[)'
-                  ) && u.r
-                order by x.started_at desc
+                  and x.r && u.r
+                order by
+                  upper(x.r*u.r)-lower(x.r*u.r) desc,
+                  lower(x.r) desc,
+                  x.cause
                 limit 1
               ),'unknown')
             )
@@ -577,6 +695,9 @@ impact_json as (
         'end',ended_at,
         'affected_camera_count',affected_camera_count,
         'total_camera_count',(select camera_count from lo),
+        -- Set when the whole site was unobservable (Agent/PC gap), else null:
+        -- the window is then a recorder/camera-level gap.
+        'cause',site_cause,
         'state',case
           when affected_camera_count=0 then 'verified'
           when affected_camera_count>=(select camera_count from lo)
@@ -641,7 +762,9 @@ select jsonb_build_object(
     'Recorder coverage is tracked only from tracking_started_at; earlier time is not reconstructed.',
     'A recorder gap makes only cameras assigned to that recorder unverified.',
     'Recovered time counts only for the cameras the recovery names and never upgrades other cameras.',
-    'camera_coverage_ratio is camera-time coverage, not a count of events or people.'
+    'camera_coverage_ratio is camera-time coverage, not a count of events or people.',
+    'When the site Agent or PC could not observe, every recorder''s cameras are unverified for that time.',
+    'Recorder health older than 15 minutes is unknown, never assumed live.'
   )
 )
 $function$;

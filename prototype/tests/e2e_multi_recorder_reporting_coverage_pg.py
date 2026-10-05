@@ -8,6 +8,8 @@ Proves:
 - recorder-specific recovery restores only that recorder's camera-time;
 - wall-clock impact windows retain affected-camera counts;
 - a window beginning before recorder tracking is Unknown, never legacy fallback;
+- an overnight Agent/PC outage on a two-recorder site is unverified, not LIVE,
+  and the daily dataset flags it as a monitoring gap (MNVR-016);
 - wl_my_daily_intelligence inherits the same effective coverage source;
 - wl_my_site_diagnosis / wl_ai_context inherit the same source;
 - direct coverage-classes access is tenant scoped;
@@ -107,14 +109,33 @@ def run() -> int:
                 cur.execute("update sites set timezone='UTC' where id=%s", (site,))
                 return uid, boot["tenant_id"], site
 
+            def as_service(sql, *params):
+                # A server-side job: service_role JWT claim, no tenant member.
+                cur.execute("savepoint svc_sp")
+                cur.execute(
+                    "select set_config('request.jwt.claims', %s, true)",
+                    (json.dumps({"role": "service_role"}),),
+                )
+                cur.execute("set local role service_role")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                finally:
+                    cur.execute("reset role")
+                    cur.execute("select set_config('request.jwt.claims', '', true)")
+                    cur.execute("release savepoint svc_sp")
+                return row
+
+            # Agents are enrolled before the governed test windows (from
+            # 2026-10-02): site coverage counts time before the first real
+            # Agent enrollment as unverified.
             def add_agent(tenant_id, site_id, key, suffix):
                 return cur.execute(
                     """insert into public.agents(
                          tenant_id,site_id,agent_key_hash,hostname,platform,
-                         agent_version,last_seen_at
+                         agent_version,last_seen_at,enrolled_at
                        ) values (
                          %s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),
-                         %s,'windows','5.1.0',now()
+                         %s,'windows','5.1.0',now(),'2026-09-01T00:00:00Z'
                        ) returning id""",
                     (tenant_id, site_id, key, f"agent-{suffix}"),
                 ).fetchone()[0]
@@ -247,6 +268,53 @@ def run() -> int:
                 "pre-tracking part of a multi-recorder window stays Unknown, never legacy 100%",
                 json.dumps(unknown, default=str),
             )
+
+            # MNVR-016: the site PC is off 22:00-06:00 overnight. Both
+            # recorders' last health said reachable, so no recorder interval
+            # opens; the server watchdog records the Agent as unreachable.
+            def on(day, hh, mm=0):
+                return datetime(2026, 10, day, hh, mm, tzinfo=timezone.utc)
+
+            cur.execute(
+                "update recorders set coverage_tracking_started_at=%s where site_id=%s",
+                (start, sa),
+            )
+            cur.execute("delete from recorder_coverage_intervals where site_id=%s", (sa,))
+            cur.execute("delete from recovery_intervals where site_id=%s", (sa,))
+            cur.execute(
+                """insert into agent_unreachable_intervals(
+                     tenant_id,site_id,agent_id,started_at,ended_at
+                   ) values (%s,%s,%s,%s,%s)""",
+                (ta, sa, agent_a, on(3, 22), on(4, 6)),
+            )
+            night = as_auth(
+                ua,
+                "select wl_site_coverage_report_classes(%s,%s,%s)",
+                sa, on(3, 20), on(4, 8),
+            )[0]
+            step(
+                night["known"] is True
+                and abs(float(night["coverage_ratio"]) - 0.3333) < 0.0001
+                and [(g["cause"], g["state"], g["affected_camera_count"])
+                     for g in night["gaps"]]
+                == [("agent_unreachable", "fully_unverified", 3)],
+                "MNVR-016: an overnight PC outage on a two-recorder site is unverified, not LIVE",
+                json.dumps({k: night.get(k) for k in ("coverage_ratio", "gaps")},
+                           default=str),
+            )
+            day3 = as_service(
+                "select wl_daily_intelligence(%s,%s::date,false)",
+                sa, "2026-10-03",
+            )[0]
+            step(
+                day3["coverage"]["coverage_basis"] == "camera_time"
+                and abs(float(day3["coverage"]["coverage_ratio"]) - 0.9167) < 0.0001
+                and any("Monitoring had gaps" in h for h in day3["honesty"]),
+                "MNVR-016: the daily dataset flags the PC outage as a monitoring gap",
+                json.dumps({"ratio": day3["coverage"].get("coverage_ratio"),
+                            "honesty": day3["honesty"]}, default=str),
+            )
+            cur.execute("delete from agent_unreachable_intervals where site_id=%s", (sa,))
 
             # Current owner/daily context uses the exact same source. Make the
             # current UTC day fully governed and open one Recorder B gap.

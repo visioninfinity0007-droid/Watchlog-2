@@ -67,7 +67,9 @@ begin
       jsonb_build_object(
         'start',x->'start',
         'end',x->'end',
-        'cause','recorder_unverified',
+        -- A whole-site Agent/PC gap keeps its site-level cause (0153
+        -- impact window cause); any other window is a recorder/camera gap.
+        'cause',coalesce(nullif(x->>'cause',''),'recorder_unverified'),
         'state',x->>'state',
         'affected_camera_count',
           coalesce((x->>'affected_camera_count')::integer,0),
@@ -132,7 +134,8 @@ begin
     'measurement_notes',jsonb_build_array(
       'Multi-recorder coverage is a camera-time ratio, not wall-clock uptime.',
       'An impact window means some configured cameras were unverified; it does not imply the whole site was offline.',
-      'Recorder-specific recovered time restores only cameras on that recorder.',
+      'Recovered time restores only the cameras the recovery names, on that recorder.',
+      'When the site Agent or PC could not observe, every recorder''s cameras are unverified for that time.',
       'Coverage before recorder tracking started remains Unknown and is never reconstructed from legacy site connectivity.'
     )
   );
