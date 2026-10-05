@@ -21,6 +21,11 @@ Proves:
 - U-1: a server-side job carrying the service_role JWT claim (no tenant
   member) reads multi-recorder coverage and generates the daily report; a
   session with no JWT at all and anon both fail closed;
+- U-1 (reporter): the in-repo daily reporter's own path
+  (intelligence_delivery.enqueue_site_day on a plain-credential session with
+  no JWT claims) is rejected, and that rejection predates 0155
+  (wl_office_brief, 0129); the same path with the service_role claim set on
+  the session generates the multi-recorder report and its PDF;
 - true single-recorder sites keep the legacy classes contract.
 """
 from __future__ import annotations
@@ -33,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "reporter"))
 
 ENV = {}
 env_path = ROOT.parent / ".env"
@@ -46,6 +52,7 @@ for k in ("SUPABASE_DB_HOST", "SUPABASE_DB_PORT", "SUPABASE_DB_USER",
         ENV[k] = os.environ[k]
 
 import psycopg  # noqa: E402
+import intelligence_delivery as deliv  # noqa: E402
 
 STEPS: list[bool] = []
 
@@ -500,9 +507,10 @@ def run() -> int:
             )
 
             # U-1: 0155's site check must not break server-side callers that
-            # carry no tenant JWT. A service_role job (the daily reporter's
-            # path through wl_generate_daily_report) is accepted for any site;
-            # tenant isolation for authenticated callers stays (above).
+            # carry no tenant JWT. A job carrying the service_role JWT claim is
+            # accepted for any site; tenant isolation for authenticated callers
+            # stays (above). The in-repo daily reporter does not carry that
+            # claim yet; see the reporter steps below.
             svc = as_service(
                 "select wl_site_coverage_report_classes(%s,%s,%s)",
                 sa, start, end,
@@ -556,6 +564,89 @@ def run() -> int:
                 anon_raised and "permission denied" in anon_msg.lower(),
                 "U-1: anon cannot read coverage classes",
                 anon_msg,
+            )
+
+            # U-1 (reporter): the in-repo daily reporter carries no JWT claim.
+            # daily_report.run_intelligence connects with plain database
+            # credentials and intelligence_delivery.enqueue_site_day calls
+            # wl_generate_daily_report without request.jwt.claims. Run that
+            # exact code on such a session (same DB user, no role switch).
+            def clear_claims():
+                for key in ("request.jwt.claims", "request.jwt.claim.sub",
+                            "request.jwt.claim.role"):
+                    cur.execute("select set_config(%s, '', true)", (key,))
+
+            def drop_day_snapshot():
+                # A frozen snapshot is returned without re-reading the day, so
+                # remove it to make the reporter generate the report.
+                cur.execute(
+                    "delete from report_snapshots where site_id=%s and report_date=%s::date",
+                    (sa, "2026-10-03"),
+                )
+
+            cur.execute("savepoint reporter_nojwt")
+            clear_claims()
+            drop_day_snapshot()
+            rep_raised, rep_msg = False, ""
+            try:
+                deliv.enqueue_site_day(cur, sa, ta, "2026-10-03")
+            except psycopg.Error as exc:
+                rep_raised, rep_msg = True, str(exc).splitlines()[0]
+            cur.execute("rollback to savepoint reporter_nojwt")
+            step(
+                rep_raised and "not authenticated" in rep_msg,
+                "U-1: the in-repo daily reporter's claim-less session is rejected",
+                rep_msg,
+            )
+            # Not caused by 0155: the daily dataset's office brief (0129) runs
+            # the same site check first and already rejected this session.
+            cur.execute("savepoint office_nojwt")
+            clear_claims()
+            ob_raised, ob_msg = False, ""
+            try:
+                cur.execute(
+                    "select wl_office_brief(%s,%s::date)", (sa, "2026-10-03")
+                ).fetchone()
+            except psycopg.Error as exc:
+                ob_raised, ob_msg = True, str(exc).splitlines()[0]
+            cur.execute("rollback to savepoint office_nojwt")
+            step(
+                ob_raised and "not authenticated" in ob_msg,
+                "U-1: that rejection predates 0155 (wl_office_brief, 0129)",
+                ob_msg,
+            )
+            # The reporter-side fix: set the service_role claim on the session
+            # right after connecting (session level, so it survives commits).
+            cur.execute("savepoint reporter_svc")
+            clear_claims()
+            drop_day_snapshot()
+            cur.execute(
+                "select set_config('request.jwt.claims', %s, false)",
+                (json.dumps({"role": "service_role"}),),
+            )
+            rep_ok, rep_detail = False, ""
+            try:
+                enq = deliv.enqueue_site_day(cur, sa, ta, "2026-10-03")
+                snap = cur.execute(
+                    "select wl_get_report_snapshot(%s)", (enq["report_id"],)
+                ).fetchone()[0]
+                payload = snap["payload"]
+                rep_ok = (
+                    payload["schema"] == "daily_intelligence.v4"
+                    and payload["coverage"]["coverage_basis"] == "camera_time"
+                    and enq["pdf_saved"] is True
+                )
+                rep_detail = json.dumps({
+                    "basis": payload["coverage"].get("coverage_basis"),
+                    "pdf_saved": enq["pdf_saved"],
+                })
+            except psycopg.Error as exc:
+                rep_detail = str(exc).splitlines()[0]
+            cur.execute("rollback to savepoint reporter_svc")
+            step(
+                rep_ok,
+                "U-1: with the service_role claim on its session the reporter generates the multi-recorder report",
+                rep_detail,
             )
 
             # True singleton site remains on the exact legacy 3-class contract.

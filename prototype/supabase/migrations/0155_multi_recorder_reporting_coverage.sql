@@ -153,13 +153,21 @@ revoke all on function public.wl_effective_site_coverage(
 -- Phase-28 period functions automatically receive effective recorder truth.
 --
 -- Callers (U-1): an authenticated tenant member gets only its own sites
--- (wl_assert_my_site). A server-side job without a tenant JWT, such as the
--- daily report through wl_generate_daily_report, carries the service_role JWT
--- claim, which wl_assert_my_site (0122) accepts for any existing site. A
--- database session with no JWT claims at all is neither and is rejected
--- (fail closed), exactly as wl_office_brief (0129) already rejects it inside
--- wl_daily_intelligence; such a job sets request.jwt.claims to
--- {"role":"service_role"} for its transaction.
+-- (wl_assert_my_site). A server-side job that is not a tenant member must
+-- carry the service_role JWT claim, which wl_assert_my_site (0122) accepts for
+-- any existing site. A database session with no JWT claims at all is neither
+-- and is rejected with 'not authenticated' (fail closed).
+--
+-- The in-repo daily reporter is such a claim-less session today:
+-- prototype/reporter/daily_report.py connects with plain database credentials
+-- and intelligence_delivery.enqueue_site_day calls wl_generate_daily_report
+-- without setting request.jwt.claims, so it is rejected. That is not new in
+-- 0155: wl_office_brief (0129) runs the same check first inside
+-- wl_daily_intelligence and has rejected that session since 0129. No
+-- database-side bypass is added for claim-less sessions. A server-side job
+-- must set request.jwt.claims to {"role":"service_role"} on its session right
+-- after connecting (set_config(..., false); it is undone if that transaction
+-- rolls back) or for each transaction.
 create or replace function public.wl_site_coverage_report_classes(
   p_site_id uuid,
   p_from timestamptz,
