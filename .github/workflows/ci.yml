@@ -16,15 +16,25 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    env:
+      # The real-FFmpeg tests (clip probe, PS -> MP4 remux, frame decode) fail instead of
+      # skipping when no FFmpeg is found; imageio-ffmpeg below is where the release finds it.
+      WATCHLOG_REQUIRE_FFMPEG: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml imageio-ffmpeg
       - name: Compile all Python
         run: python -m compileall -q prototype tools
+      - name: Test hygiene guards (every test file runs in CI; no test writes to the real ProgramData)
+        run: python -m pytest prototype/tests/test_ci_runs_every_test.py prototype/tests/test_programdata_isolation_guard.py -q
+      - name: Release version contract (wl_version == NSIS fallback; release recorded in the installer source of truth)
+        run: python -m pytest prototype/tests/test_release_version_contract.py -q
+      - name: Repair downgrade guard (5.0.28 Repair refuses a multi-recorder site; reader runs under pwsh)
+        run: python -m pytest prototype/tests/test_repair_multi_recorder_guard.py -q
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
@@ -42,6 +52,13 @@ jobs:
           python prototype/tests/test_agent_run_dispatch.py
           python prototype/tests/test_native_nvr_incident_evidence.py
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
+      - name: Agent 5.0.28 live-site gates (ONVIF driver, incident evidence, event streams, recovery wiring)
+        run: |
+          python -m pytest prototype/tests/test_onvif_*.py prototype/tests/test_incident_*.py -q
+          python -m pytest prototype/tests/test_event_stream_liveness.py prototype/tests/test_shipped_last_live.py prototype/tests/test_native_collector_reconnect.py prototype/tests/test_shipped_spool_cap.py prototype/tests/test_collector_recorder_scope.py prototype/tests/test_event_json_channel.py prototype/tests/test_probe_recorder_scoped_event.py -q
+          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
+          python -m pytest prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_hikvision_terminal.py -q
+          python -m pytest prototype/tests/test_periodic_stills.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
       - name: Stale incident clip recovery contract (0142, applied in production)
@@ -133,7 +150,7 @@ jobs:
       - name: 0.4.4 release-defect regressions (Dahua archive response-close, build-SHA stamping)
         run: python -m pytest prototype/tests/test_dahua_archive_close.py prototype/tests/test_build_metadata.py -q
       - name: Automatic outage recovery — detection, bounded/resumable/idempotent backfill, footage AI, wiring
-        run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py -q
+        run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_recovery_hikvision_terminal.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_legacy_checkpoint.py -q
       - name: Setup archive proof — recorder actually retains retrievable footage (verified/empty/unsupported/unknown)
         run: python -m pytest prototype/tests/test_archive_proof_setup.py -q
       - name: Post-install acceptance self-test — end-to-end site chain, hard/soft gating, no secret leak
@@ -268,6 +285,13 @@ jobs:
           if (Test-Path (Join-Path $wl "watchlog.env")) { throw "legacy watchlog.env not removed after migration" }
           Remove-Item $pd -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "DPAPI round trip + real legacy migration verified."
+      - name: Repair downgrade guard under Windows PowerShell 5.1 (whole orchestrator, sandbox ProgramData)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --quiet --disable-pip-version-check pytest
+          python -m pytest prototype/tests/test_repair_multi_recorder_guard.py -q
+          if ($LASTEXITCODE -ne 0) { throw "Repair downgrade guard tests failed ($LASTEXITCODE)" }
 
   installer-contract:
     runs-on: windows-latest
@@ -345,7 +369,7 @@ jobs:
           python-version: '3.12'
       - name: Install psycopg + PDF + psql client
         run: |
-          python -m pip install --quiet "psycopg[binary]" xhtml2pdf
+          python -m pip install --quiet "psycopg[binary]" xhtml2pdf requests
           sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
       - name: Supabase-shim prelude (roles, auth schema, auth.uid) on the disposable Postgres
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f prototype/supabase/ci_prelude.sql
@@ -427,8 +451,14 @@ jobs:
         run: python prototype/tests/e2e_delivery_outbox_pg.py
       - name: Outage recovery + three coverage classes integration — LIVE/RECOVERED/UNVERIFIED (0098)
         run: python prototype/tests/e2e_recovery_coverage_pg.py
+      - name: Recovery intervals from the Agent's real payload — camera UUIDs, not channel numbers (0098)
+        run: python prototype/tests/e2e_recovery_agent_payload_pg.py
+      - name: Recorder-scoped live events ingest with no camera — JSON null channel, flag kept
+        run: python prototype/tests/e2e_recorder_scoped_ingest_pg.py
       - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
         run: python prototype/tests/e2e_recovery_ingest_pg.py
+      - name: Agent periodic stills reach ingest and the visual-review consumer (0125/0126) — production contract
+        run: python prototype/tests/e2e_periodic_stills_pg.py
       - name: Camera config — wl_sync_cameras honors setup Monitor/Ignore (is_configured), re-sync safe (0100)
         run: python prototype/tests/e2e_camera_config_pg.py
       - name: AI providers — owner-gated config + Vault-guarded keys + service-role-only key resolver (0105)

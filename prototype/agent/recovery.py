@@ -19,6 +19,7 @@ fully testable with the reference archive driver and no hardware.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,8 @@ except ImportError:                                   # pragma: no cover - path 
 
 DEFAULT_OUTAGE_THRESHOLD = 180        # seconds; below this a reconnect is not an "outage"
 DEFAULT_CHUNK_SECONDS = 3600          # recover one hour of archive per bounded chunk
+DEFAULT_MAX_ATTEMPTS = 24             # claims in a row that move no cursor before it is closed
+DEFAULT_MAX_ERROR_ATTEMPTS = 3        # consecutive claims ended by a failed archive read
 
 
 def _iso(dt: datetime) -> str:
@@ -47,6 +50,14 @@ def _as_dt(v):
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
     return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+
+
+def _is_uuid(v) -> bool:
+    try:
+        uuid.UUID(str(v))
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 # ---- last-live persistence (durable across Agent restart / reboot) -----------
@@ -83,9 +94,19 @@ class RecoveryRunner:
                  chunk_seconds: int = DEFAULT_CHUNK_SECONDS, throttle_seconds: float = 0.0,
                  live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
                  snapshot_interval_seconds=recovery_ai.DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
-                 log=print):
+                 camera_channels=None, max_attempts=DEFAULT_MAX_ATTEMPTS,
+                 max_error_attempts=DEFAULT_MAX_ERROR_ATTEMPTS, driver_factory=None, log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
         self.driver, self.on_event = driver, on_event
+        # With no open driver, ``driver_factory()`` opens the archive the first time a claimed
+        # interval needs reading, and run_once closes it again: an idle cycle never logs in to
+        # the recorder.
+        self.driver_factory = driver_factory
+        self._opened = False
+        self._unopenable = None            # why the archive could not be opened in this run_once
+        # {cloud camera UUID: recorder channel}. Intervals name cameras by UUID
+        # (recovery_intervals.cameras is uuid[]); the archive driver reads channels.
+        self.camera_channels = {str(k): str(v) for k, v in (camera_channels or {}).items()}
         self.chunk_seconds = max(60, int(chunk_seconds))
         self.throttle_seconds = max(0.0, float(throttle_seconds))
         self.live_pending = live_pending or (lambda: False)
@@ -96,6 +117,8 @@ class RecoveryRunner:
         self.frame_provider = frame_provider
         self.ai_max_frames = ai_max_frames
         self.snapshot_interval_seconds = max(30, int(snapshot_interval_seconds))
+        self.max_attempts = max_attempts
+        self.max_error_attempts = max(1, int(max_error_attempts))
         self._log = log
 
     def report_outage(self, last_live, now, cameras=None):
@@ -104,68 +127,225 @@ class RecoveryRunner:
                                p_agent_key=self.agent_key, p_started_at=_iso(_as_dt(last_live)),
                                p_ended_at=_iso(_as_dt(now)), p_cameras=list(cameras or []))
 
-    def _complete(self, interval_id, status, recovered, seen, cursor):
-        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id, p_agent_key=self.agent_key,
-                        p_id=interval_id, p_status=status, p_recovered_count=recovered,
-                        p_checkpoint={"cursor": _iso(cursor) if cursor else None,
-                                      "seen_keys": sorted(seen)[:20000]})
+    def _complete(self, interval_id, status, recovered, seen, cursor, *, errors=0, progress=0,
+                  detail=None, examined=False, incomplete=False):
+        checkpoint = {"cursor": _iso(cursor) if cursor else None, "seen_keys": sorted(seen)[:20000]}
+        if errors:
+            checkpoint["errors"] = errors     # consecutive failed claims, carried to the next claim
+        if progress:
+            checkpoint["progress_attempt"] = progress   # the claim that last moved the cursor
+        # The verdict so far, carried to the next claim: some of the interval was recovered / some
+        # of it could not be. Time behind the cursor is not read again, so it is not forgotten.
+        # Both keys are always written on a checkpoint a later claim resumes from, so one written
+        # by an Agent that did not carry the verdict is told apart.
+        if status == "in_progress":
+            checkpoint["examined"], checkpoint["incomplete"] = bool(examined), bool(incomplete)
+        params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key,
+                      p_id=interval_id, p_status=status, p_recovered_count=recovered,
+                      p_checkpoint=checkpoint)
+        if detail:
+            params["p_detail"] = detail
+        self.cloud.call("wl_complete_recovery", **params)
+
+    def _close(self, iv, status, seen, cursor, reason) -> dict:
+        """Complete an interval that will not be read (further), saying why."""
+        self._complete(iv["id"], status, 0, seen, cursor, detail={"reason": reason})
+        return {"id": iv["id"], "status": status, "recovered": 0, "yielded": False, "reason": reason}
+
+    def _open_archive(self):
+        """Open the archive for a claimed interval; the reason it could not be, or None."""
+        if self.driver is None and self.driver_factory is not None and self._unopenable is None:
+            try:
+                self.driver = self.driver_factory()
+                self._opened = True
+            except (Exception, SystemExit) as e:    # noqa: BLE001 — offline, login refused, no config
+                self._unopenable = type(e).__name__
+                self._log(f"recovery: recorder archive could not be opened: {self._unopenable}; "
+                          "the claimed interval stays pending")
+        return self._unopenable
+
+    def _release(self, iv, checkpoint, progress, failure) -> dict:
+        """Hand a claimed interval back as pending because the archive could not be opened.
+
+        Nothing of it was examined, so this is not a failed read: the checkpoint (cursor, seen-set,
+        failed-read count, verdict so far) is kept as claimed, and the no-progress count starts one
+        claim later so this claim does not count toward the attempts cap. The interval is read once
+        the recorder answers again, as when the worker used to skip the cycle."""
+        kept = dict(checkpoint)
+        kept["progress_attempt"] = progress + 1
+        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id,
+                        p_agent_key=self.agent_key, p_id=iv["id"], p_status="pending",
+                        p_recovered_count=0, p_checkpoint=kept)
+        return {"id": iv["id"], "status": "pending", "recovered": 0, "yielded": False,
+                "error": failure}
+
+    def _close_archive(self):
+        if self._opened:
+            self._opened = False
+            driver, self.driver = self.driver, None
+            try:
+                driver.close()
+            except Exception:               # noqa: BLE001 — closing never masks the outcome
+                pass
+
+    def _segments_capability(self):
+        """Whether the recorder offers searchable recorded footage; None when it cannot be told."""
+        try:
+            return (self.driver.historical_capability() or {}).get("segments")
+        except Exception:                   # noqa: BLE001 — an unknown capability earns no carve-out
+            return None
+
+    def _channels(self, cameras):
+        """(recorder channels to read, cameras that could not be resolved) for an interval.
+
+        An empty camera list is a whole-site interval: read every camera the Agent knows. A
+        channel is never guessed, so with no known inventory nothing is read at all."""
+        if not cameras:
+            return list(dict.fromkeys(self.camera_channels.values())), 0
+        channels, unresolved = [], 0
+        for cam in cameras:
+            ch = self.camera_channels.get(str(cam))
+            if ch is None and not _is_uuid(cam):
+                ch = str(cam)                   # already a recorder channel (reference drivers)
+            if ch is None:
+                unresolved += 1                 # a camera UUID this Agent cannot map
+            elif ch not in channels:
+                channels.append(ch)
+        return channels, unresolved
 
     def _recover_interval(self, iv) -> dict:
-        seen = set((iv.get("checkpoint") or {}).get("seen_keys") or [])
-        resume = _as_dt((iv.get("checkpoint") or {}).get("cursor"))
+        checkpoint = iv.get("checkpoint") or {}
+        seen = set(checkpoint.get("seen_keys") or [])
+        resume = _as_dt(checkpoint.get("cursor"))
+        errors = int(checkpoint.get("errors") or 0)
+        attempts = int(iv.get("attempts") or 0)
+        progress = int(checkpoint.get("progress_attempt") or 0)
         start = resume or _as_dt(iv["started_at"])
         end = _as_dt(iv["ended_at"])
-        cams = list(iv.get("cameras") or []) or [None]     # None => driver decides / all
-        recovered, any_unsupported, any_supported = 0, False, False
+        cams, unresolved = self._channels(iv.get("cameras") or [])
+        if not cams:
+            # Nothing can be read truthfully: never scan a guessed channel and never call the
+            # interval (or the site) recovered.
+            return self._close(iv, "unrecoverable", seen, resume, "missing_channels")
+        if self.max_attempts and attempts - progress > self.max_attempts:
+            # Re-claimed too often without the cursor moving (stale claims, crash loops): stop
+            # replaying it against the recorder. Earlier progress makes it partial, never recovered.
+            return self._close(iv, "partial" if seen or checkpoint.get("examined") else
+                               "unrecoverable", seen, resume, "attempts_exhausted")
+        # The verdict: time behind the saved cursor is carried in the checkpoint; a chunk read in
+        # this claim counts once the cursor passes it (a chunk at or after a failed read is read
+        # again). A camera that cannot be mapped to a channel cannot be read, so the interval cannot
+        # be fully recovered.
+        examined = bool(checkpoint.get("examined"))
+        incomplete = unresolved > 0 or bool(checkpoint.get("incomplete"))
+        if (resume is not None and resume > _as_dt(iv["started_at"])
+                and "examined" not in checkpoint and "incomplete" not in checkpoint):
+            # Written by an earlier Agent, which did not carry the verdict for the time behind its
+            # cursor: events it recovered there were sent, so the interval is not unrecoverable,
+            # but that time cannot be called examined to the end (its seen-set also held samples
+            # that failed), so it is partial at best.
+            examined, incomplete = examined or bool(seen), True
+        read = []                                         # [(chunk_end, examined, incomplete)]
+        recovered = 0
+        failed, failed_at, failure = set(), None, None    # failed archive reads in this claim
+
+        def verdict(upto=None):
+            seen_part, missed_part = examined, incomplete
+            for chunk_end, chunk_seen, chunk_missed in read:
+                if upto is None or chunk_end <= upto:
+                    seen_part, missed_part = seen_part or chunk_seen, missed_part or chunk_missed
+            return seen_part, missed_part
+
+        def save(cursor):
+            # A failed read in this claim is counted even when the claim then yields; a claim that
+            # moved the cursor without one ends the run of failed claims and resets the attempts cap.
+            moved = cursor > start
+            seen_part, missed_part = verdict(cursor)
+            self._complete(iv["id"], "in_progress", recovered, seen, cursor,
+                           errors=errors + 1 if failed_at is not None else (0 if moved else errors),
+                           progress=attempts if moved else progress,
+                           examined=seen_part, incomplete=missed_part)
+
+        unopenable = self._open_archive()
+        if unopenable is not None:
+            return self._release(iv, checkpoint, progress, unopenable)
+        # A recorder whose recorded footage is searchable (Hikvision, Dahua) but whose own event
+        # log is not is judged by its footage: the event replay it cannot offer is not a part of
+        # the interval that went unrecovered.
+        footage = self._segments_capability()
 
         for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
             if self.live_pending():
+                if failed_at is not None and errors + 1 >= self.max_error_attempts:
+                    break                   # out of retries: settle below instead of yielding
                 # LIVE has priority — checkpoint progress and yield; a later claim resumes here.
-                self._complete(iv["id"], "in_progress", recovered, seen, chunk_start)
+                save(failed_at or chunk_start)
                 return {"id": iv["id"], "status": "in_progress", "recovered": recovered, "yielded": True}
-            for cam in cams:
-                ch = cam if cam is not None else "1"
-                # (a) recorder-native event replay (the recorder's OWN recorded events)
-                res = backfill.backfill_events(self.driver, ch, chunk_start, chunk_end,
-                                               seen=seen, on_event=self.on_event)
-                if res.get("status") == backfill.SUPPORTED:
-                    any_supported = True
+            chunk_seen = chunk_missed = False
+            for ch in cams:
+                if ch in failed:
+                    continue                # read again from failed_at on the next claim
+                try:
+                    # (a) recorder-native event replay (the recorder's OWN recorded events)
+                    res = backfill.backfill_events(self.driver, ch, chunk_start, chunk_end,
+                                                   seen=seen, on_event=self.on_event)
+                    # Events already sent count, even when the scan then stopped short of the end.
                     recovered += res.get("recovered", 0)
-                else:
-                    any_unsupported = True
-                # (b) visual backfill over recovered FOOTAGE. This ALWAYS runs when the
-                # archive supports segments: even with no detector, decoded historical frames
-                # are emitted as recovered_snapshot so a cloud/PC gap does not erase the visual
-                # timeline. When the detector is present, activity is classified on the same frames.
-                ai = recovery_ai.backfill_intelligence(
-                    self.driver, self.detector, ch, chunk_start, chunk_end, seen=seen,
-                    on_event=self.on_event, frame_provider=self.frame_provider,
-                    max_frames=self.ai_max_frames,
-                    snapshot_interval_seconds=self.snapshot_interval_seconds)
-                if ai.get("status") == backfill.SUPPORTED:
-                    any_supported = True
+                    if res.get("status") == backfill.SUPPORTED or res.get("recovered"):
+                        chunk_seen = True
+                    if res.get("status") != backfill.SUPPORTED and not (
+                            res.get("status") == backfill.UNSUPPORTED
+                            and footage == backfill.SUPPORTED):
+                        chunk_missed = True
+                    # (b) visual backfill over recovered FOOTAGE. This ALWAYS runs when the
+                    # archive supports segments: even with no detector, decoded historical frames
+                    # are emitted as recovered_snapshot so a cloud/PC gap does not erase the visual
+                    # timeline. When the detector is present, activity is classified on the same frames.
+                    ai = recovery_ai.backfill_intelligence(
+                        self.driver, self.detector, ch, chunk_start, chunk_end, seen=seen,
+                        on_event=self.on_event, frame_provider=self.frame_provider,
+                        max_frames=self.ai_max_frames,
+                        snapshot_interval_seconds=self.snapshot_interval_seconds)
                     recovered += ai.get("recovered", 0)
-                else:
-                    # Explicit segment UNSUPPORTED means this recorder only offers
-                    # native historical events; preserve that older capability
-                    # without falsely calling it a visual-recovery failure. But if
-                    # segments ARE supported and frames could not be decoded, the
-                    # interval is partial/unknown rather than falsely recovered.
-                    try:
-                        seg_cap = (self.driver.historical_capability() or {}).get("segments")
-                    except Exception:
-                        seg_cap = None
-                    if seg_cap != backfill.UNSUPPORTED:
-                        any_unsupported = True
-            self._complete(iv["id"], "in_progress", recovered, seen, chunk_end)   # checkpoint per chunk
+                    # Only footage actually examined (frames decoded now, or in an earlier claim)
+                    # is recovered footage: a window whose archive holds no recording shows nothing.
+                    if ai.get("frames") or ai.get("duplicates"):
+                        chunk_seen = True
+                    if ai.get("status") != backfill.SUPPORTED and footage != backfill.UNSUPPORTED:
+                        # Explicit segment UNSUPPORTED means this recorder only offers native
+                        # historical events; preserve that older capability without falsely
+                        # calling it a visual-recovery failure. But if segments ARE supported and
+                        # the footage could not be read to the end of the window, the interval is
+                        # partial/unknown rather than falsely recovered.
+                        chunk_missed = True
+                except Exception as e:      # noqa: BLE001 — a failed archive read backs off, then ends
+                    failed.add(ch)
+                    failed_at, failure = failed_at or chunk_start, type(e).__name__
+                    self._log(f"recovery: archive read failed on channel {ch}: {failure}")
+            read.append((chunk_end, chunk_seen, chunk_missed))
+            if len(failed) == len(cams):
+                break                       # nothing left to read in this claim
+            save(failed_at or chunk_end)    # checkpoint per chunk
             if self.throttle_seconds:
                 import time
                 time.sleep(self.throttle_seconds)
 
+        detail = None
+        any_supported, any_unsupported = verdict()
+        if failed_at is not None:
+            if errors + 1 < self.max_error_attempts:
+                # Back off: stay in progress from the first chunk that failed. The server re-offers
+                # the interval once this claim goes stale, and the seen-set skips what was recovered.
+                save(failed_at)
+                return {"id": iv["id"], "status": "in_progress", "recovered": recovered,
+                        "yielded": False, "error": failure}
+            any_unsupported = True          # out of retries: what could not be read stays unrecovered
+            detail = {"reason": "archive_error", "error": failure}
+
         # Truthful terminal status: fully supported -> recovered; mixed -> partial; none -> unrecoverable.
         status = "recovered" if (any_supported and not any_unsupported) else \
                  ("partial" if any_supported else "unrecoverable")
-        self._complete(iv["id"], status, recovered, seen, end)
+        self._complete(iv["id"], status, recovered, seen, end, detail=detail)
         return {"id": iv["id"], "status": status, "recovered": recovered, "yielded": False}
 
     def run_once(self, limit: int = 1) -> list[dict]:
@@ -174,8 +354,13 @@ class RecoveryRunner:
             return []                  # never start recovery while live work is pending
         claimed = self.cloud.call("wl_agent_claim_recovery", p_agent_id=self.agent_id,
                                   p_agent_key=self.agent_key, p_limit=limit) or []
-        return [self._recover_interval(iv) for iv in claimed]
+        self._unopenable = None
+        try:
+            return [self._recover_interval(iv) for iv in claimed]
+        finally:
+            self._close_archive()
 
 
 __all__ = ["detect_outage", "persist_last_live", "read_last_live", "RecoveryRunner",
-           "DEFAULT_OUTAGE_THRESHOLD", "DEFAULT_CHUNK_SECONDS"]
+           "DEFAULT_OUTAGE_THRESHOLD", "DEFAULT_CHUNK_SECONDS", "DEFAULT_MAX_ATTEMPTS",
+           "DEFAULT_MAX_ERROR_ATTEMPTS"]

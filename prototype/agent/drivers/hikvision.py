@@ -26,15 +26,16 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
-                   explain)
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
+                   NvrDriver, NvrUnreachable, explain)
 
 # ISAPI namespaces vary by firmware; strip them rather than guess.
 _TAG = re.compile(r"\{.*?\}")
@@ -53,15 +54,43 @@ def _text(node: ET.Element | None, path: str) -> str | None:
     return found.text.strip() if found is not None and found.text else None
 
 
-def _parse_ts(raw: str | None) -> datetime:
-    """ISAPI emits ISO 8601, sometimes with a local offset, sometimes naive."""
+def _parse_ts(raw: str | None) -> datetime | None:
+    """ISAPI emits ISO 8601, sometimes with a local offset, sometimes naive.
+
+    Returned as sent: aware with an offset, naive without one, None when absent or
+    unparseable. A naive value is recorder-local time and is never assumed to be UTC.
+    """
     if not raw:
-        return datetime.now(timezone.utc)
+        return None
     try:
-        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        return datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
     except ValueError:
-        return datetime.now(timezone.utc)
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return None
+
+
+# POSIX TZ as ISAPI reports it, e.g. "CST-5:00:00" (the sign is inverted: UTC+5).
+# Anything after the offset is a DST rule, which this deliberately does not resolve.
+_POSIX_TZ = re.compile(r"[A-Za-z]{3,}([+-]?)(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?")
+
+
+def _stated_utc_offset(local_time: str | None, zone: str | None,
+                       dst_enabled: bool = False) -> timedelta | None:
+    """The recorder's own UTC offset from /ISAPI/System/time, or None when it does not
+    state one unambiguously (no offset on localTime and no DST-free POSIX zone). With DST
+    enabled a bare POSIX zone is only the standard offset, so it is not used."""
+    stamped = _parse_ts(local_time)
+    if stamped is not None and stamped.tzinfo is not None:
+        return stamped.utcoffset()
+    if dst_enabled:
+        return None
+    m = _POSIX_TZ.fullmatch((zone or "").strip())
+    if not m:
+        return None
+    offset = timedelta(hours=int(m.group(2)), minutes=int(m.group(3) or 0),
+                       seconds=int(m.group(4) or 0))
+    if offset > timedelta(hours=14):
+        return None
+    return offset if m.group(1) == "-" else -offset
 
 
 # Hikvision eventType values worth keeping, mapped to our vocabulary.
@@ -82,10 +111,24 @@ EVENT_TYPE_MAP = {
     "vehicledetection": "vehicle",
 }
 
+# Alert types that describe the recorder itself (its disks, logins, network link and
+# alarm inputs), not a camera. A channel field on these does not name a video input
+# (MNVR-028). An alert that carries inputIOPortID is an alarm input whatever its type.
+RECORDER_SCOPED_TYPES = {"diskfull", "diskerror", "illaccess", "illegalaccess",
+                         "ipconflict", "nicbroken", "io"}
+
 # Hikvision repeats an active alarm every second for as long as it lasts.
 # Collapsing a burst into one event is the difference between 5 rows and
-# 500 for a single person walking past a camera.
+# 500 for a single person walking past a camera. The window is timed on the
+# agent's monotonic receive clock, never on the recorder's dateTime.
 BURST_WINDOW_SECONDS = 30
+
+# A recorder stamp further than this from the time the alert arrived is kept but
+# flagged on the event (clock_skew_seconds) rather than trusted silently.
+CLOCK_SKEW_FLAG_SECONDS = 300
+# How long a stated UTC offset is trusted before it is read again (a DST change moves it),
+# and how long a recorder that did not state one waits before being asked again.
+CLOCK_OFFSET_RETRY_SECONDS = 600
 
 # A camera that will not produce a still must not stall the event loop.
 SNAPSHOT_TIMEOUT = 10
@@ -100,25 +143,107 @@ HIKVISION_HTTP_LOCK = threading.RLock()
 class HikvisionDriver(NvrDriver):
     name = "hikvision-isapi"
     verified_against_hardware = False
+    # Liveness comes from alertStream itself: last_activity_monotonic and event_stream are
+    # set only after the stream answers 2xx and on every received chunk, keep-alive frames
+    # included. A deviceInfo probe that answers says nothing about the event stream.
+    reports_stream_activity = True
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
-        self._last_emitted: dict[tuple[str, str], datetime] = {}
+        self._last_emitted: dict[tuple[str, str], float] = {}
+        # (monotonic, wall) clock of the alert being parsed, stamped by stream_events
+        # when its bytes arrived; None outside the stream (parse time is used then).
+        self._received: tuple[float, datetime] | None = None
+        # The recorder's stated UTC offset, for naive alert times (MNVR-024).
+        self._utc_offset: timedelta | None = None
+        self._utc_offset_asked: float | None = None
+        # The collector may replace event_stream with its per-recorder state dict.
+        self.last_activity_monotonic = 0.0
+        self.event_stream: dict = {"connected": False, "connected_at": None,
+                                   "last_frame_at": None, "last_error": None}
+        # The activity stamp before the current stream's 2xx, while that stream has not
+        # delivered a single chunk yet; None once it has (or outside a stream).
+        self._activity_before_up: float | None = None
+
+    # -- event-stream liveness (MNVR-008) -------------------------------
+
+    def _stream_up(self) -> None:
+        # The 2xx counts as activity only while this stream stays open: _stream_down takes
+        # it back if the stream ends before a single chunk arrives, so a recorder whose
+        # alertStream answers 200 and closes at once is never live, however often it is reopened.
+        self._activity_before_up = self.last_activity_monotonic
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream.update(connected=True, last_error=None,
+                                 connected_at=datetime.now(timezone.utc).isoformat())
+
+    def _stream_frame(self) -> None:
+        self._activity_before_up = None
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream["last_frame_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _stream_down(self, error: str | None) -> None:
+        if self._activity_before_up is not None:    # ended without delivering anything
+            self.last_activity_monotonic = self._activity_before_up
+            self._activity_before_up = None
+        self.event_stream["connected"] = False
+        if error:
+            self.event_stream["last_error"] = error
 
     # -- helpers --------------------------------------------------------
+
+    def _receive_clock(self) -> tuple[float, datetime]:
+        return self._received or (time.monotonic(), datetime.now(timezone.utc))
+
+    def _recorder_utc_offset(self, now: float) -> timedelta | None:
+        """UTC offset the recorder states for its local clock, read at most once per
+        CLOCK_OFFSET_RETRY_SECONDS (``now`` is the monotonic receive clock).
+
+        Only consulted for a naive alert dateTime. A stated offset is read again after the
+        window, never trusted for the life of the driver: a reopened stream keeps the same
+        driver for weeks and a DST change moves the offset. A recorder that does not state
+        one, or whose clock cannot be read, leaves it unknown and is not asked on every
+        alert."""
+        if (self._utc_offset_asked is not None
+                and now - self._utc_offset_asked < CLOCK_OFFSET_RETRY_SECONDS):
+            return self._utc_offset
+        self._utc_offset_asked = now
+        self._utc_offset = None
+        try:
+            root = self._xml("/ISAPI/System/time")
+        except DriverError:
+            return None
+        dst = (_text(root, "dstEnabled") or _text(root, "DSTEnabled") or "").strip().lower()
+        self._utc_offset = _stated_utc_offset(
+            _text(root, "localTime") or _text(root, "time") or _text(root, "currentTime"),
+            _text(root, "timeZone") or _text(root, "timezone"),
+            dst_enabled=dst in ("true", "1", "yes", "on"))
+        return self._utc_offset
+
+    def _send(self, method: str, url: str, **kw) -> requests.Response:
+        """One ISAPI request on the Digest session.
+
+        A few OEM firmwares only do Basic. Basic is used only when the recorder's challenge
+        offers Basic and not Digest, and only for this one retry: the session keeps Digest,
+        so a transient 401 can never leave every later request sending the password in the
+        clear (or failing on a Digest-only unit). RequestException propagates to the caller.
+        """
+        r = self.s.request(method, url, **kw)
+        if r.status_code == 401:
+            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+            if "basic" in challenge and "digest" not in challenge:
+                r.close()
+                r = self.s.request(method, url,
+                                   auth=HTTPBasicAuth(self.username, self.password), **kw)
+        return r
 
     def _get(self, path: str, **kw) -> requests.Response:
         url = self.base_url + path
         try:
-            r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
+            r = self._send("GET", url, timeout=kw.pop("timeout", self.timeout), **kw)
         except requests.RequestException as e:
             raise DriverError(f"{url}: {explain(e)}") from e
-        if r.status_code == 401:
-            # A few OEM firmwares only do Basic.
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.get(url, timeout=self.timeout, **kw)
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r
@@ -132,14 +257,10 @@ class HikvisionDriver(NvrDriver):
     def _put(self, path: str, body: str) -> requests.Response:
         url = self.base_url + path
         try:
-            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
+            r = self._send("PUT", url, data=body.encode(), timeout=self.timeout,
                            headers={"Content-Type": "application/xml"})
         except requests.RequestException as e:
             raise DriverError(f"{url}: {explain(e)}") from e
-        if r.status_code == 401:
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            r = self.s.put(url, data=body.encode(), timeout=self.timeout,
-                           headers={"Content-Type": "application/xml"})
         if r.status_code >= 400:
             raise DriverError(f"{url}: HTTP {r.status_code} {r.text[:200]}")
         return r
@@ -416,14 +537,27 @@ class HikvisionDriver(NvrDriver):
             ch = int(str(channel))
         except (TypeError, ValueError):
             return None
+        # None means the recorder affirmatively has no still at these paths (404 and the
+        # like, or a body that is not a JPEG). A timeout, reset, 5xx or rejected login is
+        # transient and raises, so callers retry instead of recording "unsupported".
+        transient: DriverError | None = None
         for path in (f"/ISAPI/Streaming/channels/{ch}01/picture",
                      f"/ISAPI/Streaming/channels/{ch}/picture"):
+            url = self.base_url + path
             try:
-                r = self._get(path, timeout=SNAPSHOT_TIMEOUT)
-            except DriverError:
+                r = self._send("GET", url, timeout=SNAPSHOT_TIMEOUT)
+            except requests.RequestException as e:
+                transient = NvrUnreachable(f"{url}: {explain(e)}")
                 continue
-            if r.content[:2] == JPEG_MAGIC:     # JPEG magic
+            if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:     # JPEG magic
                 return r.content
+            if r.status_code in (401, 403):
+                transient = NvrAuthFailed(
+                    f"{url}: HTTP {r.status_code} — recorder rejected the username or password")
+            elif r.status_code in (408, 429) or r.status_code >= 500:
+                transient = DriverError(f"{url}: HTTP {r.status_code}")
+        if transient is not None:
+            raise transient
         return None
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
@@ -436,19 +570,27 @@ class HikvisionDriver(NvrDriver):
         """
         url = self.base_url + "/ISAPI/Event/notification/alertStream"
         try:
-            r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
+            r = self._send("GET", url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
+            self._stream_down(explain(e))
             raise DriverError(f"alertStream: {e}") from e
         if r.status_code >= 400:
+            r.close()
+            self._stream_down(f"HTTP {r.status_code}")
             raise DriverError(f"alertStream: HTTP {r.status_code}")
+        self._stream_up()
 
         buf = b""
+        ended = "event stream ended by the recorder"
         try:
             for chunk in r.iter_content(chunk_size=1024):
                 if stop.is_set():
+                    ended = None
                     break
                 if not chunk:
                     continue
+                self._stream_frame()          # keep-alive frames count: the stream is alive
+                self._received = (time.monotonic(), datetime.now(timezone.utc))
                 buf += chunk
                 # Documents arrive back to back; split on the closing tag.
                 while b"</EventNotificationAlert>" in buf:
@@ -462,8 +604,16 @@ class HikvisionDriver(NvrDriver):
                         yield ev
                 if len(buf) > 1_000_000:      # runaway guard
                     buf = b""
+        except GeneratorExit:                 # the collector stopped reading
+            ended = None
+            raise
+        except Exception as e:
+            ended = explain(e) if isinstance(e, requests.RequestException) else type(e).__name__
+            raise
         finally:
+            self._received = None
             r.close()
+            self._stream_down(ended)
 
     # -- parsing --------------------------------------------------------
 
@@ -495,24 +645,67 @@ class HikvisionDriver(NvrDriver):
 
         etype = EVENT_TYPE_MAP.get(etype_raw.lower()) or etype_raw.lower()
 
-        channel = (_text(root, "channelID")
-                   or _text(root, "dynChannelID")
-                   or _text(root, "channelName") or "1")
-        ts = _parse_ts(_text(root, "dateTime"))
+        # A recorder-level alert, or a camera alert without a channel id, has channel
+        # None plus a flag. Never camera "1", and never the camera NAME as a channel id
+        # (it joins no camera); the name stays in the payload only.
+        scope: dict = {}
+        native_channel = _text(root, "channelID") or _text(root, "dynChannelID")
+        native_input = (_text(root, "inputIOPortID") or "").strip()
+        if etype_raw.lower() in RECORDER_SCOPED_TYPES or native_input:
+            channel = None
+            scope["recorder_scoped"] = True
+            if native_channel:
+                scope["native_channel"] = native_channel
+            if native_input:
+                scope["native_input"] = native_input
+        elif native_channel:
+            channel = native_channel
+        else:
+            channel = None
+            scope["channel_unknown"] = True
+            if _text(root, "channelName"):
+                scope["channelName"] = _text(root, "channelName")
 
-        # Collapse the once-per-second repeat of a continuing alarm.
-        key = (str(channel), etype)
+        # Collapse the once-per-second repeat of a continuing alarm on the agent's
+        # monotonic receive clock. Comparing recorder dateTimes dropped every later event
+        # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
+        received_mono, received_at = self._receive_clock()
+        key = (channel if channel is not None
+               else f"recorder:{native_channel or ''}:{native_input}", etype)
         last = self._last_emitted.get(key)
-        if last and (ts - last).total_seconds() < BURST_WINDOW_SECONDS:
+        if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
-        self._last_emitted[key] = ts
+        self._last_emitted[key] = received_mono
+
+        # Which clock stamped this event is explicit (MNVR-024). A naive dateTime is the
+        # recorder's local time: localise it with the offset the recorder states, or, when
+        # it states none, use the time the alert arrived and keep the recorder's text.
+        clock = {}
+        raw_time = _text(root, "dateTime")
+        ts = _parse_ts(raw_time)
+        clock_source = "recorder"
+        if ts is not None and ts.tzinfo is None:
+            offset = self._recorder_utc_offset(received_mono)
+            if offset is not None:
+                ts, clock_source = ts.replace(tzinfo=timezone(offset)), "recorder_local"
+            else:
+                ts = None
+        if ts is None:
+            ts, clock_source = received_at, "agent_receive"
+            if raw_time:
+                clock["device_time_raw"] = raw_time
+        else:
+            skew = (ts - received_at).total_seconds()
+            if abs(skew) > CLOCK_SKEW_FLAG_SECONDS:
+                clock["clock_skew_seconds"] = int(round(skew))
+        clock["clock_source"] = clock_source
 
         targets = []
         for node in root.iter():
             tag = node.tag.lower()
             text = (node.text or "").strip().lower()
             if "targettype" in tag or tag in ("objecttype", "targetclass"):
-                for raw_target in re.split(r"[,;|\\s]+", text):
+                for raw_target in re.split(r"[,;|\s]+", text):
                     if raw_target in ("human", "person", "pedestrian"):
                         targets.append("human")
                     elif raw_target in ("vehicle", "car", "motorvehicle"):
@@ -525,7 +718,7 @@ class HikvisionDriver(NvrDriver):
         } or bool(targets)
 
         return Event(
-            channel=str(channel),
+            channel=channel,
             event_type=etype,
             device_ts=ts,
             device_event_id=None,     # ISAPI alerts carry no stable id
@@ -534,7 +727,8 @@ class HikvisionDriver(NvrDriver):
                      "native_ai": smart_native,
                      "targets": targets,
                      "eventDescription": _text(root, "eventDescription"),
-                     "activePostCount": _text(root, "activePostCount")},
+                     "activePostCount": _text(root, "activePostCount"),
+                     **clock, **scope},
         )
 
     def close(self) -> None:

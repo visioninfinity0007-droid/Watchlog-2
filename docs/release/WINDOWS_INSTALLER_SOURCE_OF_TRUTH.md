@@ -20,12 +20,14 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.0.27**
+**5.0.28**
 
-5.0.27 is a **repair candidate, not a promoted fleet baseline** until its exact
-merge SHA, Windows workflow run, artifact IDs/hashes and physical HASCO +
-Al-Khalid acceptance are recorded below. Build 69 / 5.0.17 remains the
-field-proven discovery/connectivity baseline until that happens.
+5.0.28 (section 1B, branch `fix/agent-5.0.28`) is an Agent-only **candidate, not
+promoted**: no Windows artifact has been built from it and none is installed on any
+site. It stays unpromoted until its exact merge SHA, Windows workflow run, artifact
+IDs/hashes and physical site acceptance (Al-Khalid first; see section 1B) are
+recorded below. 5.0.27 (section 1A) was never promoted either. Build 69 / 5.0.17
+remains the field-proven discovery/connectivity baseline until that happens.
 
 Existing-site Repair/Upgrade implementation merge:
 
@@ -76,6 +78,237 @@ artifact to prove on HASCO first, then Al-Khalid:
 10. reboot/restart survival and a quantified soak.
 
 Any failed gate keeps 5.0.27 unpromoted and preserves rollback.
+
+---
+
+## 1B. 5.0.28 Agent live-site fix candidate (`fix/agent-5.0.28`)
+
+5.0.28 is an **Agent-only** candidate for the live 5.0.x sites. It carries no database
+migration, so it runs against the schema production already has, and a rollback to 5.0.27
+has no database step. It is **not promoted**: no Windows artifact has been built from it, no
+Windows workflow run, artifact ID or executable hash exists for it, and it is installed on no
+site. Build 69 / 5.0.17 stays the field-proven baseline; 5.0.27 stays unpromoted.
+
+### Changes by audit ID (multi-NVR audit, MNVR-###)
+
+Live events and recorder liveness:
+
+- **MNVR-008 / MNVR-005**: recorder liveness comes from the event stream, not from a probe that
+  answers. Hikvision alertStream and Dahua attach count only after a 2xx and on every received
+  chunk (keep-alives included); a 2xx that ends before any chunk is taken back. ONVIF counts
+  every PullMessages response that comes back (empty pulls included), never a failed pull,
+  subscribe or renew. The heartbeat writes a per-recorder `event_stream` block
+  (`connected`, `connected_at`, `last_frame_at`, redacted `last_error`) into the local
+  runtime-health proof, and `last_live.json` is persisted from stream activity in the shipped
+  run loop, so restart and outage gaps can open recovery intervals.
+- **MNVR-022**: a dropped Hikvision/Dahua/ONVIF stream is reopened on the same driver after a
+  short jittered delay instead of a 20 s wait plus a full re-probe; auth failures still take the
+  5 -> 15 -> 30 min backoff.
+- **MNVR-023**: burst collapse runs on a monotonic receive clock (Hikvision, Dahua, ONVIF), so a
+  backward clock step no longer suppresses events.
+- **MNVR-024**: event time provenance is explicit. Hikvision naive times are localised with the
+  recorder's stated offset (or receive time is used); Dahua takes receive time before still/AI
+  work; ONVIF reads the inner `tt:Message` UtcTime and trusts it within 300 s of the PC
+  (otherwise receive time, with `device_utc` and `clock_skew_s` kept). All three drivers name
+  the clock in `payload.clock_source`.
+- **MNVR-028**: recorder-level events (disks, alarm inputs, ONVIF storage faults) and camera
+  alerts without a channel carry channel `null` and `payload.recorder_scoped` (or
+  `channel_unknown`), never camera 1. `Event.to_json` serialises a JSON null channel;
+  `--probe` and the collectors no longer crash on or mis-attribute them. A Hikvision `IO`
+  alert, or any alert carrying `inputIOPortID`, is recorder-scoped with the port in
+  `payload.native_input`, even when it also carries a `channelID`.
+- **MNVR-001**: the ONVIF driver loads its profile/token maps on the driver `open_driver()`
+  returns; events resolve to the physical camera; an unknown token is dropped and counted
+  (`event_stream.dropped_unmapped`, agent log), never put on camera 1; stills use that camera's
+  profile.
+- **MNVR-027 / MNVR-056**: ONVIF `Initialized`/`Deleted` property messages and cleared states
+  are not occurrences; pull points are renewed from the granted lifetime and unsubscribed on
+  close and before resubscribing.
+- **MNVR-054**: Hikvision targetType split on whitespace, not the letter "s".
+- **MNVR-055 / MNVR-036**: a 401 is retried with Basic only when the challenge offers Basic
+  and not Digest, so a wrong password or a stray 401 from a Digest recorder no longer sends the
+  password in the clear or costs a second login attempt. Hikvision does this per request (its
+  ISAPI calls, stills and alertStream) and the session keeps Digest. ONVIF stills do the
+  same per request, and a refused ONVIF still raises `NvrAuthFailed` instead of returning
+  no image. Dahua `_get` moves that
+  recorder's session to Basic after a Basic-only challenge and keeps it there, because
+  `snapshot.cgi` and the attach stream use the same session and a Basic-only unit must keep
+  serving both. The Dahua archive reader (`dahua_archive._request`) and
+  `NativeDahuaDriver.get_clip` use the same rule (`drivers.dahua.moves_to_basic`). Not yet
+  changed: the Hikvision archive reader still keeps Basic after a Basic-only challenge.
+
+Recovery:
+
+- **MNVR-004 / U-2**: the recovery and Site Control threads survive any fault; a claimed Site
+  Control command is always completed; the `auto` driver resolves for Site Control.
+- **MNVR-006 / MNVR-007**: recovery intervals are opened and read by camera UUID, never by
+  channel number or a guessed channel "1"; an interval with no resolvable camera does not
+  complete as recovered.
+- **MNVR-059 / MNVR-032 / MNVR-058 / MNVR-031 / MNVR-061**: archive read failures back off and
+  then close the interval with a bounded number of claims; recovered samples stay inside the
+  recovery window; one clip download per sample; recovered stills carry their footage time;
+  recording segments are no longer replayed as recorder events and recorder URIs stay on site.
+
+Recorded media:
+
+- **MNVR-029 / MNVR-036 / MNVR-063**: the vendor-native archive is used for an ONVIF-live site
+  only for cameras with a label-consistent ONVIF-to-native channel map (the equivalence is
+  IMPLEMENTED_UNVERIFIED); rejected native logins back off per recorder; acceptance and status
+  prove the archive through the transport the runtime uses.
+- **MNVR-030 / MNVR-057 / MNVR-060**: footage and still failures are recorded truthfully
+  (retryable unless the recorder affirmatively refused); recorder addresses are redacted from
+  customer-visible text; still failures always read as still failures; clips are labelled by
+  their container.
+- **MNVR-031 (Hikvision)**: footage downloads are bounded to the requested window.
+- **MNVR-019 / MNVR-034 / MNVR-062 (Dahua)**: archive segment times come back on the agent
+  clock; clip downloads have a total time budget; archive search pages through all results.
+- **MNVR-035 (clip clock, ONVIF-live Dahua site through the mapped dahua-cgi archive)**: the
+  clip claim does not say which clock stamped an event's time, so the Agent chooses by request
+  source. An operations/rule clip (no event) uses the agent clock. An incident clip on an event
+  uses the recorder clock, as for a live ONVIF event stamped by the recorder, and the agent clock
+  only when the recorder clock is more than 5 minutes from every civil offset. That is a best
+  guess, not provenance. Until the claim carries the event's `payload.clock_source` (a database
+  change, not in 5.0.28) these windows are placed wrongly: a recovered event, or an event
+  uploaded by an Agent before 5.0.28, is off by the recorder's drift (up to 5 minutes); an ONVIF
+  event stamped with receive time whose recorder clock comes within 5 minutes of another civil
+  offset is off by up to 5 minutes. When a claim does carry `clock_source`, the Agent follows it
+  and fails a recorder-stamped window it can no longer place instead of guessing (CI-covered
+  with fakes; the server side is not built). Dahua-live sites keep the agent clock; the
+  Hikvision archive takes no clock argument.
+- **U-3**: the shipped run loop honours `spool_max_rows`.
+
+Timed stills:
+
+- **NEW-L2 (periodic stills)**: the Agent produces one timed still per configured camera about
+  every 300 s, staggered across the cadence, as the deployed HASCO and Chai Wala Agents already do.
+  Each is a `visual_sample` event with `payload` exactly
+  `{"sample": true, "source": "periodic_snapshot", "vendor": <vendor>}` and the JPEG inline, the
+  contract production's still claim, visual review and restaurant reports consume. A sample with
+  no still is never sent. Local settings: `periodic_stills` (default on) and
+  `periodic_still_seconds` (default 300, clamped to 60-3600 s). An unreachable or refusing
+  recorder is backed off. The still comes from the live driver, so hikvision-isapi, dahua-cgi
+  and onvif share the code. Without it an upgrade would remove those sites' only timed stills.
+  Not yet seen on any site.
+
+Repair/Upgrade downgrade guard:
+
+- `wl-repair-upgrade.ps1` reads `%ProgramData%\WatchLog\recorders.json` (written only by
+  5.1.0+) first, before the candidate runs or the installed Agent is paused. It refuses with
+  exit 24 and "This site uses more than one recorder; WatchLog 5.0.28 cannot manage it. Disable
+  the extra recorders in Manage Recorders first, or install 5.1.0 or later." when more than one
+  recorder is configured (a row without `is_configured` counts as configured, as in 5.1). It
+  refuses with exit 25 when the file exists but is not readable JSON, has another schema or a
+  malformed row, because the count cannot be proven. A missing file (a 5.0.x site), an empty
+  list or one configured recorder is not blocked. Reason: 5.0.28 ignores the registry and runs
+  only the legacy recorder, and a multi-recorder site refuses its legacy calls while the
+  heartbeat still looks online. Covered by `test_repair_multi_recorder_guard.py` (static checks,
+  the reader under PowerShell, and the whole orchestrator on Windows against a sandbox
+  ProgramData). It guards Repair/Upgrade only (the full installer sends a complete existing site
+  to Repair/Upgrade). A remote update to 5.0.28 does not run this script and is not covered by
+  it.
+
+Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
+(`test_ci_runs_every_test.py` fails on a test no step runs), and no test writes to the real
+`%ProgramData%\WatchLog` (`conftest.py`, `programdata_sandbox.py`,
+`test_programdata_isolation_guard.py`).
+
+### What is proven, and what is not
+
+- **CI-covered (fakes, no hardware)**: each change above has regression tests with
+  hardware-free fakes, run by the backend job ("Agent 5.0.27 repair gates", "Agent 5.0.28
+  live-site gates") and, for ingest and recovery payloads, by the integration job on a
+  disposable Postgres. They prove the Agent's logic against the documented protocol shapes.
+  Status at this commit: **GitHub Actions has not run any job for this head**, because the
+  account's Actions billing is failing, so no CI result exists for it. The backend and
+  integration jobs were reproduced locally on 2026-10-06 (`wl-ci-local.py`, integration on a
+  disposable local Postgres 16). Every Agent step passes there, including "Agent 5.0.27 repair
+  gates", "Agent 5.0.28 live-site gates" and "Automatic outage recovery", and every integration
+  step passes. The one backend step that fails, "Reports preview truth contract", fails on
+  `main` too: an archived Chai Wala report (2026-10-01) contains a banned phrase. A local
+  reproduction is not GitHub CI: it ran on Windows rather than ubuntu-latest and skips the
+  package-install steps. Nothing in this section is CI-proven until the jobs pass on GitHub.
+- **IMPLEMENTED_UNVERIFIED on hardware** (no field evidence yet): everything a recorder decides.
+  DS-7608NI-Q1 (HASCO, Chai Wala): keep-alive cadence within 90 s, `dateTime` with or without an
+  offset, the timezone stated in `/ISAPI/System/time`, playbackURI windowing, channel-less
+  alerts, targetType strings, Digest-only behaviour. DH-XVR1B08-I (Al-Khalid): ONVIF PullPoint
+  delivery, the Source token it sends, Initialized/StorageFailure messages, granted
+  TerminationTime, GetProfiles order, whether its ONVIF UtcTime and CGI clock agree,
+  `mediaFileFind` wall times, loadfile trimming, DHAV/H.265 decode, recorder clock drift,
+  lockout thresholds, whether any unit offers Basic only. Coverage on all three sites stays
+  UNVERIFIED for events and evidence until the gates below pass; the heartbeat is their only
+  LIVE signal today.
+- **Behaviour changes to watch in the field**:
+  - Repair/Upgrade now needs real event-stream activity (`recorder_seen_at`): a site whose
+    alertStream, attach or pull point is refused (for example a user without notification
+    rights) will no longer commit an upgrade. Check this first on each site.
+  - ONVIF `device_ts` follows the recorder's UtcTime while it is within 300 s of the PC; a
+    recorder clock further off gives receive time plus `clock_skew_s`.
+  - ONVIF `Initialized` states at subscribe time are no longer emitted as new occurrences.
+  - On an ONVIF-live Dahua site whose recorder clock drifts, incident clips on recovered or
+    pre-5.0.28 events can miss by that drift (see MNVR-035 above). Read
+    `event_stream.last_clock_skew_s` and the XVR clock before judging a clip that missed.
+  - A recorder that answers a 401 offering Digest but accepts only Basic, or a 401 with no
+    `WWW-Authenticate` challenge, would now fail login instead of being retried with Basic
+    (not expected; not field-checked).
+  - A Dahua-derived unit that offers Basic only keeps working for probe, stills and the attach
+    stream (the session stays on Basic after the first Basic-only challenge; CI-covered with a
+    fake). A Digest-capable Dahua unit that ever answers with a Basic-only challenge would stay
+    on Basic until the Agent reopens the driver (not expected; not field-checked).
+
+### Known limits of 5.0.28
+
+- **Event-stream liveness is local only.** The per-recorder `event_stream` block is written to
+  the local runtime-health proof (`Secrets\runtime-health.json`) and read by Repair/Upgrade; the
+  cloud heartbeat does not carry it in 5.0.28. The cloud `nvr_health` "reachable" still comes
+  from the recorder probe, so the portal can show a recorder reachable while no events arrive,
+  as at Al-Khalid (recorder reachable and authenticated on 2026-10-04, no event since
+  2026-09-26).
+- **Chai Wala could get two sets of timed stills.** 5.0.28 advertises `config_snapshot_requests`.
+  Production strips that capability today, so the restaurant scheduler has never created a
+  request. Once the 0156 hotfix lets it through, a 5.0.28 Agent at Chai Wala would receive both
+  the restaurant scheduler's requested stills and its own periodic stills for the same cameras.
+  Which source should feed Chai Wala's reports is an owner decision, still pending.
+- **Multi-recorder sites are refused**, not managed: see the Repair/Upgrade downgrade guard
+  above (exit 24 or 25).
+
+### First field site
+
+Al-Khalid is the recommended first 5.0.28 site. Its recorder is reachable and authenticated,
+but it has produced no events or stills since 2026-09-26 on the ONVIF transport, which is the
+defect class 5.0.28 fixes. HASCO's recorder has been unreachable since 2026-09-30 11:25Z (its
+last successful contact; the first failed probe was at 11:31Z), so HASCO cannot be the first
+acceptance site until that is resolved on site. Chai Wala goes last: the source of its 5.0.17
+Agent is unknown and its stills feed live restaurant reports.
+
+### Per-site field acceptance gates (in this order)
+
+Promotion needs one exact Windows artifact built from the merged source, recorded here with its
+merge SHA, workflow run, artifact ID and executable hashes. On every site, in addition to the
+site gates below: `visual_sample` rows with `payload.source='periodic_snapshot'` appear from the
+5.0.28 Agent, one per configured camera about every 300 s. Then:
+
+1. **Al-Khalid first** (Dahua DH-XVR1B08-I, persisted live driver `onvif`). First retrieve that
+   install's `setup.log` to learn why `onvif` was persisted, and read `--version` / BUILD_SHA.
+   FIELD-AKSS-001 covers dahua-cgi at Agent 0.4.1 only and does not carry over to ONVIF. Then
+   the 1A gates 1-10, plus: events attributed to the right camera (walk-tests on at least two
+   cameras); `event_stream.dropped_unmapped` stays 0 or the logged Source token is recorded;
+   `event_stream.last_clock_skew_s` read and the XVR clock checked; ONVIF stills for a camera
+   other than 1; an incident clip through the mapped dahua-cgi archive whose window contains
+   the event; recovery of a controlled gap with RECOVERED provenance.
+2. **HASCO second** (Hikvision DS-7608NI-Q1). Before installing, confirm the recorder is
+   reachable again (unreachable since 2026-09-30 11:25Z; the Agent itself has been offline since
+   2026-10-03) and read the installed `--version` / BUILD_SHA (the exact 5.0.26 source deployed
+   there is unknown). Then the 1A gates 1-10, plus: `event_stream.connected` true with
+   `last_frame_at` advancing on a quiet site (keep-alives); a stream drop reopened within
+   seconds; a controlled restart gap opening exactly one recovery interval with camera UUIDs; a
+   channel-less or disk alert stored with no camera; one bounded incident clip whose window
+   contains the event.
+3. **Chai Wala last**: its 5.0.17 (Build 69) code is UNKNOWN (source 811d378 is in neither
+   object store). Capture its support bundle and `--version` / BUILD_SHA before planning any
+   upgrade; Site Control is enabled there while its executor is unknown. Settle the timed-still
+   source (see Known limits) before upgrading, because its stills feed live restaurant reports.
+
+Any failed gate keeps 5.0.28 unpromoted and preserves rollback to the installed version.
 
 ---
 

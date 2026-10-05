@@ -46,6 +46,7 @@ class FakeSession:
     def __init__(self, stream_resp):
         self.auth = None
         self.stream_resp = stream_resp
+        self.served = False
 
     def get(self, url, params=None, timeout=None, stream=False):
         params = params or {}
@@ -58,8 +59,13 @@ class FakeSession:
             if action == "factory.create":
                 return FakeResponse(text="result=finder1")
             if action == "findFile":
+                self.served = False
                 return FakeResponse(text="OK")
             if action == "findNextFile":
+                # Like a real finder: the one file once, then an empty page.
+                if self.served:
+                    return FakeResponse(text="found=0\r\n")
+                self.served = True
                 return FakeResponse(text="items[0].Channel=0\r\nitems[0].StartTime=2026-06-01 09:59:00")
             return FakeResponse(text="OK")            # close/destroy
         if "loadfile.cgi" in url:
@@ -113,6 +119,26 @@ class StreamCloses(unittest.TestCase):
             da.get_clip(FakeDriver(resp), "1", START, END)
         self.assertTrue(resp.closed, "streamed response must be closed after an error body")
 
+    def test_a_login_retry_closes_the_refused_streamed_response(self):
+        # The first loadfile answer is a 401: a streamed response that is not closed before the
+        # retry holds a recorder session open.
+        refused = FakeResponse(status=401, text="Unauthorized")
+        refused.headers = {"WWW-Authenticate": 'Basic realm="Login to XVR"'}  # Basic-only unit
+        served = FakeResponse(chunks=[DHAV])
+        drv = FakeDriver(None)
+        answers = iter([refused, served])
+        original = drv.s.get
+
+        def get(url, params=None, timeout=None, stream=False):
+            if "loadfile.cgi" in url:
+                return next(answers)
+            return original(url, params=params, timeout=timeout, stream=stream)
+
+        drv.s.get = get
+        self.assertTrue(da.get_clip(drv, "1", START, END).startswith(b"DHAV"))
+        self.assertTrue(refused.closed, "the refused response must be closed before the retry")
+        self.assertTrue(served.closed)
+
     def test_source_uses_finally_close(self):
         # Guard against a future refactor dropping the finally-close.
         src = (ROOT / "agent" / "dahua_archive.py").read_text(encoding="utf-8")
@@ -134,12 +160,15 @@ class EnumerateHistorical(unittest.TestCase):
         self.assertEqual(ev["channel"], "1")
         self.assertIn("segment", ev)
 
-    def test_capability_reports_supported(self):
+    def test_capability_reports_segments_not_events(self):
+        # The rows are recording files (footage), not recorder events (MNVR-061).
         cap = da.historical_capability()
-        self.assertEqual(cap["events"], "supported")
+        self.assertEqual(cap["events"], "unsupported")
         self.assertEqual(cap["segments"], "supported")
 
-    def test_unreachable_is_unknown_not_fabricated(self):
+    def test_unreachable_raises_not_fabricated(self):
+        # Never a fake 'supported'. Unreachable is transient, so it raises (like the Hikvision
+        # archive) and recovery backs off and reads the window again later (MNVR-059).
         class Dead:
             def get(self, url, params=None, timeout=None, stream=False):
                 import requests as _r
@@ -147,9 +176,9 @@ class EnumerateHistorical(unittest.TestCase):
         class DeadDriver(FakeDriver):
             def __init__(self):
                 super().__init__(FakeResponse()); self.s = Dead()
-        res = da.enumerate_historical_events(DeadDriver(), "1", START, END)
-        self.assertEqual(res["status"], "unknown")      # honest: unknown, not a fake 'supported'
-        self.assertEqual(res["events"], [])
+        from drivers.base import NvrUnreachable
+        with self.assertRaises(NvrUnreachable):
+            da.enumerate_historical_events(DeadDriver(), "1", START, END)
 
 
 if __name__ == "__main__":

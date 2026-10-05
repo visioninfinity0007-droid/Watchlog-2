@@ -30,6 +30,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import programdata_sandbox  # noqa: E402,F401  (the heartbeat writes Secrets\runtime-health.json)
 
 import setup_backend as sb  # noqa: E402
 

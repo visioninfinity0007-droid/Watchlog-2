@@ -9,12 +9,18 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 import hashlib
+import os
+import re
+import subprocess
+import tempfile
 import threading
+from urllib.parse import urlparse
 
 import requests
 
+import recovery_ai
 import watchlog_agent as core
-from drivers import DriverError
+from drivers import DriverError, NvrDriver
 
 POLL_SECONDS = 15
 BACKEND_MISSING_RETRY_SECONDS = 300
@@ -22,6 +28,32 @@ CHUNK_BYTES = 512 * 1024
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 STILL_POLL_SECONDS = 15
 STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
+REMUX_TIMEOUT_SECONDS = 60
+UNSUPPORTED_FOOTAGE = ("This recorder does not expose on-demand incident footage through the "
+                       "validated WatchLog path.")
+# Customer-visible still outcomes. Driver and library text (endpoints, HTTP codes, exception
+# names) is not customer language, so a failed still is always one of these; the detail goes
+# to the agent log.
+STILL_FAILED = "Recorder could not provide a still for this camera."
+UNSUPPORTED_STILL = ("This recorder does not provide incident stills through the validated "
+                     "WatchLog path.")
+# dahua_archive refuses a recorder-clock window with this text when the recorder clock is more
+# than 5 minutes from every civil UTC offset (its MAX_ZONE_DRIFT_SECONDS).
+_ZONE_REFUSAL = "too far off to tell its time zone"
+# Customer-visible reason when a recorder-stamped window cannot be placed on the recorder now.
+CLOCK_UNREADABLE = ("The recorder's clock is too far off to find this footage window. Check the "
+                    "recorder's date and time, then request it again.")
+# payload.clock_source values that name the recorder's own clock (Hikvision uses recorder_local).
+_RECORDER_CLOCK_SOURCES = ("recorder", "recorder_local")
+# open_archive_driver keeps the ONVIF driver for these recorders only when the vendor-native
+# archive attempt failed (timeout, refused login), so their missing footage is not a verdict.
+NATIVE_ARCHIVE_VENDORS = ("dahua", "hikvision")
+# URLs, LAN addresses and requests' connection-pool text all name the recorder.
+_RECORDER_ADDRESS = re.compile(
+    r"[a-z][a-z0-9+.-]*://|\bhost=|connectionpool|\b\d{1,3}(?:\.\d{1,3}){3}\b"
+    r"|\[[0-9a-f]*:[0-9a-f:]*\]",
+    re.IGNORECASE,
+)
 
 
 def _parse_time(value: str) -> datetime:
@@ -35,20 +67,163 @@ def _backend_missing(error: Exception) -> bool:
     )
 
 
-def _safe_reason(error: Exception) -> str:
+def _recorder_hosts(cfg) -> tuple:
+    try:
+        host = urlparse(str(getattr(cfg, "nvr_url", "") or "")).hostname
+    except ValueError:
+        host = None
+    return (host,) if host else ()
+
+
+def _safe_reason(error: Exception, hosts=(),
+                 redacted: str = "Recorder could not export the requested footage window.") -> str:
+    lines = str(error).splitlines()
+    first = lines[0] if lines else ""
     if isinstance(error, DriverError):
-        text = str(error).splitlines()[0][:220]
+        text = first[:220]
     else:
-        text = f"{type(error).__name__}: {str(error).splitlines()[0][:180]}"
-    # Do not leak local recorder URLs in cloud-visible error text.
-    if "http://" in text or "https://" in text:
-        return "Recorder could not export the requested footage window."
+        text = f"{type(error).__name__}: {first[:180]}" if first else ""
+    # Do not leak local recorder URLs, host names or LAN addresses in cloud-visible error text.
+    low = text.lower()
+    if _RECORDER_ADDRESS.search(text) or any(host.lower() in low for host in hosts if host):
+        return redacted
     return text or "Recorder could not provide this footage."
+
+
+def _is_unsupported(error: Exception) -> bool:
+    # A capability verdict needs an affirmative rejection; any other failure stays retryable.
+    return isinstance(error, NotImplementedError) or getattr(error, "unsupported", False) is True
+
+
+def _implements(driver, method: str) -> bool:
+    """True when the driver class provides ``method`` beyond the NvrDriver stub."""
+    impl = getattr(type(driver), method, None)
+    return impl is not None and impl is not getattr(NvrDriver, method, None)
+
+
+def _no_footage_outcome(driver, info) -> tuple[bool, str]:
+    """(p_unsupported, reason) when the archive driver returned no footage and raised nothing."""
+    if _implements(driver, "get_clip"):
+        return False, "The recorder returned no footage for the requested window."
+    vendor = str(getattr(info, "vendor", "") or "").lower()
+    if any(name in vendor for name in NATIVE_ARCHIVE_VENDORS):
+        return False, "The recorder's footage service could not be opened. Request it again."
+    return True, UNSUPPORTED_FOOTAGE
+
+
+def _onvif_mapped_dahua(driver) -> bool:
+    """True when this archive reader is the dahua-cgi reader of an ONVIF-live recorder.
+
+    open_archive_driver returns a reader addressed by ONVIF camera channels (channel_map) only
+    when the live transport is ONVIF, and since 5.0.28 an ONVIF event's device_ts is the
+    recorder's own UtcTime while the recorder clock is within 5 minutes of the PC. Only
+    dahua-cgi's get_clip takes a clock; the Hikvision archive searches the recorder in UTC on its
+    own clock and has no such argument. A Dahua-live site's events carry receive time, which is
+    dahua_archive's default agent clock.
+    """
+    return (getattr(driver, "name", "") == "dahua-cgi"
+            and getattr(driver, "channel_map", None) is not None)
+
+
+def _get_clip(driver, row: dict, channel: str, start: datetime, end: datetime):
+    """The clip for [start, end), in the clock that stamped the claimed row's window.
+
+    - No event_id: an operations / rule clip, whose window is the Agent's analytics time or the
+      server's clock: agent clock.
+    - The row names the event's clock_source (a server that passes payload.clock_source): the
+      recorder clock for a recorder stamp, otherwise (receive time, a recovered event's archive
+      time, an event from an Agent before 5.0.28, no value) the agent clock. A recorder-stamped
+      window is not guessed when the recorder clock can no longer be placed in a zone.
+    - An event row without clock_source (the clip claim today): the recorder clock, as for a
+      live ONVIF event, and the agent clock when dahua_archive refuses because the recorder clock
+      is more than 5 minutes from every civil offset. This is a best guess, not provenance: a
+      recovered or pre-5.0.28 event lands off by the recorder's drift, and a receive-stamped
+      event whose recorder clock comes within 5 minutes of another civil offset lands off by up
+      to 5 minutes.
+    """
+    if not _onvif_mapped_dahua(driver):
+        return driver.get_clip(channel, start, end)
+    import dahua_archive
+    if not row.get("event_id"):
+        return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+    if "clock_source" in row:
+        if row.get("clock_source") not in _RECORDER_CLOCK_SOURCES:
+            return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+        try:
+            return driver.get_clip(channel, start, end, clock=dahua_archive.RECORDER_CLOCK)
+        except DriverError as error:
+            if _ZONE_REFUSAL not in str(error):
+                raise
+            raise DriverError(CLOCK_UNREADABLE) from error
+    try:
+        return driver.get_clip(channel, start, end, clock=dahua_archive.RECORDER_CLOCK)
+    except DriverError as error:
+        if _ZONE_REFUSAL not in str(error):
+            raise
+        return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+
+
+def _remux_mp4(data: bytes) -> bytes | None:
+    """Stream-copy a clip into MP4 with the bundled FFmpeg; None if that is not possible."""
+    exe = recovery_ai._ffmpeg_exe()
+    if not exe:
+        return None
+    src = out = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+            tmp.write(data)
+            src = tmp.name
+        out = src + ".mp4"
+        # Video is copied unchanged. Audio is copied too, or re-encoded to AAC when MP4
+        # cannot carry the recorder's audio codec.
+        for audio in (["-c:a", "copy"], ["-c:a", "aac"]):
+            done = subprocess.run(
+                [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", src,
+                 "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", *audio,
+                 "-movflags", "+faststart", "-f", "mp4", out],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=REMUX_TIMEOUT_SECONDS, check=False,
+                creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0),
+            )
+            if done.returncode == 0 and os.path.exists(out):
+                with open(out, "rb") as handle:
+                    return handle.read() or None
+        return None
+    except Exception:  # noqa: BLE001 — the caller reports a clip it cannot label
+        return None
+    finally:
+        for path in (src, out):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def _playable_clip(data: bytes, driver_name: str) -> tuple[bytes, str, str]:
+    """(bytes, content type, extension), labelled by the clip's container, not the driver.
+
+    The cloud accepts only MP4 and Dahua DAV (migration 0040). Any other container, such as
+    a Hikvision program-stream export, is stream-copied into MP4 without re-encoding video.
+    """
+    kind = recovery_ai.media_kind(data[:16])
+    if kind == "mp4":
+        return data, "video/mp4", "mp4"
+    if kind == "dav":
+        return data, "video/x-dav", "dav"
+    remuxed = _remux_mp4(data)
+    if remuxed and recovery_ai.media_kind(remuxed[:16]) == "mp4":
+        return remuxed, "video/mp4", "mp4"
+    if driver_name == "dahua-cgi":
+        # loadfile.cgi is Dahua's DAV export; an unrecognised header keeps that documented label.
+        return data, "video/x-dav", "dav"
+    raise DriverError("The recorder's footage could not be prepared as a playable video file.")
 
 
 def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> None:
     if not data:
         raise DriverError("recorder returned no incident footage")
+    data, content_type, extension = _playable_clip(data, driver_name)
     if len(data) > MAX_CLIP_BYTES:
         raise DriverError("incident footage exceeds the 32 MiB pilot limit")
     digest = hashlib.sha256(data).hexdigest()
@@ -62,10 +237,6 @@ def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> Non
             p_sequence_no=seq,
             p_data_b64=base64.b64encode(chunk).decode("ascii"),
         )
-    if driver_name == "dahua-cgi":
-        content_type, extension = "video/x-dav", "dav"
-    else:
-        content_type, extension = "application/octet-stream", "dav"
     cloud.call(
         "wl_agent_complete_clip",
         p_agent_id=state["agent_id"],
@@ -80,6 +251,7 @@ def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> Non
 
 def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
+    hosts = _recorder_hosts(cfg)
     missing_backend_logged = False
     while not stop.is_set():
         try:
@@ -123,18 +295,20 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     f"incident footage: retrieving {int((end-start).total_seconds())}s "
                     f"from ch{channel} via {driver.name}"
                 )
-                data = driver.get_clip(channel, start, end)
+                data = _get_clip(driver, row, channel, start, end)
                 if not data:
+                    unsupported, reason = _no_footage_outcome(driver, info)
                     cloud.call(
                         "wl_agent_fail_clip",
                         p_agent_id=state["agent_id"],
                         p_agent_key=state["agent_key"],
                         p_request_id=request_id,
-                        p_reason="This recorder does not expose on-demand incident footage through the validated WatchLog path.",
-                        p_unsupported=True,
+                        p_reason=reason,
+                        p_unsupported=unsupported,
                     )
                     core.log(
-                        f"incident footage: {info.vendor} {info.model or ''} returned unsupported/no footage"
+                        f"incident footage: {info.vendor} {info.model or ''} returned no footage via "
+                        f"{driver.name} ({'unsupported' if unsupported else 'failed'})"
                     )
                     continue
                 _upload(cloud, state, request_id, data, driver.name)
@@ -142,7 +316,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     f"incident footage: uploaded {len(data) // 1024} KB for request {request_id[:8]}"
                 )
             except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error)
+                reason = _safe_reason(error, hosts)
                 try:
                     cloud.call(
                         "wl_agent_fail_clip",
@@ -150,13 +324,14 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                         p_agent_key=state["agent_key"],
                         p_request_id=request_id,
                         p_reason=reason,
-                        p_unsupported=isinstance(error, NotImplementedError),
+                        p_unsupported=_is_unsupported(error),
                     )
                 except Exception:
                     pass
+                detail = getattr(error, "detail", "")
                 core.log(
                     f"incident footage: request {request_id[:8]} failed: "
-                    f"{type(error).__name__}: {str(error)[:140]}"
+                    f"{type(error).__name__}: {str(error)[:140]}" + (f" [{detail}]" if detail else "")
                 )
             finally:
                 if driver is not None:
@@ -216,12 +391,18 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                 driver, info = core.open_driver(cfg)
                 raw = driver.get_snapshot(channel)
                 if not raw:
+                    # Only a transport with no still path at all is a capability verdict. An empty
+                    # answer from a still-capable driver (a timeout it swallowed, or an ONVIF
+                    # channel it could not resolve) stays retryable under 0058's attempt budget.
+                    unsupported = not _implements(driver, "get_snapshot")
                     cloud.call("wl_agent_fail_incident_still",
                                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
                                p_request_id=request_id,
-                               p_reason="This recorder returned no still for the incident window.",
-                               p_unsupported=True)
-                    core.log(f"incident stills: {info.vendor} ch{channel} returned no image")
+                               p_reason=(UNSUPPORTED_STILL if unsupported else
+                                         "This recorder returned no still for the incident window."),
+                               p_unsupported=unsupported)
+                    core.log(f"incident stills: {info.vendor} ch{channel} returned no image via "
+                             f"{driver.name} ({'unsupported' if unsupported else 'will retry'})")
                     continue
                 if len(raw) > STILL_MAX_BYTES:
                     cloud.call("wl_agent_fail_incident_still",
@@ -238,12 +419,13 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                            p_captured_at=core.iso(core.now_utc()))
                 core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
             except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error)
+                unsupported = _is_unsupported(error)
                 try:
                     cloud.call("wl_agent_fail_incident_still",
                                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_request_id=request_id, p_reason=reason,
-                               p_unsupported=isinstance(error, NotImplementedError))
+                               p_request_id=request_id,
+                               p_reason=UNSUPPORTED_STILL if unsupported else STILL_FAILED,
+                               p_unsupported=unsupported)
                 except Exception:  # noqa: BLE001
                     pass
                 core.log(f"incident stills: request {request_id[:8]} failed: "
