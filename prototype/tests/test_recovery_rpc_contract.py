@@ -32,6 +32,7 @@ import analytics_agent  # noqa: E402
 import backfill  # noqa: E402
 import recovery  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+from drivers.base import NvrAuthFailed  # noqa: E402
 
 MIGRATIONS = ROOT / "supabase" / "migrations"
 STATE = {"agent_id": "agent-1", "agent_key": "key-1"}
@@ -451,6 +452,66 @@ class StreamDropInsideTheLiveGrace(RecoveryWorkerRpcContract):
         with _Patch(core, now_utc=lambda: clock["now"]):
             self._work(cloud, _Spool(), CHANNELS, cycles=4, holder=holder, between=between)
         self.assertEqual(cloud.opened, [])
+
+
+class _RefusedLogin(_Recorder):
+    """open_driver stand-in for a recorder that rejects the on-site credential."""
+
+    def open(self, _cfg):
+        self.opens += 1
+        raise NvrAuthFailed("HTTP 401 from the recorder")
+
+
+class RecoveryLoginBackoff(RecoveryWorkerRpcContract):
+    """The recovery thread's own recorder logins (the inventory re-enumeration while no startup
+    inventory exists, and the archive open for a claimed interval) back off on a CONFIRMED auth
+    failure like the live collector (5 -> 15 -> 30 min). Before, a wrong password at boot meant
+    a refused login every recovery cycle (12 an hour) for as long as the Agent ran, enough to
+    keep a recorder's failed-login lock engaged after Setup fixed the password."""
+
+    def setUp(self):
+        super().setUp()
+        core._NATIVE_ARCHIVE_AUTH.clear()
+
+    def tearDown(self):
+        core._NATIVE_ARCHIVE_AUTH.clear()
+        super().tearDown()
+
+    def test_a_refused_inventory_login_is_not_retried_every_cycle(self):
+        recorder = _RefusedLogin()
+        self._work(StrictCloud(), _Spool(), [], cycles=12, recorder=recorder)
+        self.assertEqual(recorder.opens, 1, "one refused login per recovery cycle")
+
+    def test_a_credential_change_lets_the_login_retry_at_once(self):
+        recorder = _RefusedLogin()
+        generation = {"n": 1}
+        with _Patch(core, _credential_generation=lambda: generation["n"]):
+            self._work(StrictCloud(), _Spool(), [], cycles=3, recorder=recorder)
+            self.assertEqual(recorder.opens, 1)
+            generation["n"] = 2                       # Setup saved a new password
+            self._work(StrictCloud(), _Spool(), [], cycles=3, recorder=recorder)
+        self.assertEqual(recorder.opens, 2)
+
+    def test_an_unreachable_recorder_is_not_backed_off_as_a_login_failure(self):
+        recorder = _Recorder(None)                    # DriverError, not an auth failure
+        self._work(StrictCloud(), _Spool(), [], cycles=3, recorder=recorder)
+        self.assertEqual(recorder.opens, 3)
+
+    def test_a_refused_archive_login_is_not_retried_every_cycle(self):
+        gap = ((T0).isoformat(), (T0 + timedelta(hours=1)).isoformat())
+        cloud, opens = StrictCloud(), []
+
+        def refused(_cfg):
+            opens.append(1)
+            raise NvrAuthFailed("HTTP 401 from the recorder")
+
+        with _Patch(core, open_archive_driver=refused, open_driver=_Recorder().open,
+                    log=lambda *_a: None):
+            core.recovery_worker(self.cfg, STATE, cloud, _Cycles(6), _Spool(gap), CHANNELS,
+                                 {"recorder_live_at": time.monotonic()})
+        self.assertEqual(len(cloud.opened), 1)
+        self.assertEqual(len(opens), 1, "one refused archive login per recovery cycle")
+        self.assertEqual(cloud.intervals[0]["status"], "pending", "the claim is handed back")
 
 
 class CompleteRecoveryContract(unittest.TestCase):

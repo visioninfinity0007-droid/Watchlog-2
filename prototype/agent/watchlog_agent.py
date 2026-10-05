@@ -664,7 +664,8 @@ class _MappedArchiveDriver:
 # camera. A vendor-native CGI/ISAPI that rejects the on-site credential must not be probed again
 # on each open (the drivers retry a 401 with Basic: two failed logins per probe). Confirmed auth
 # failures back off per recorder like the live collector (5 -> 15 -> 30 min); a credential change
-# in Setup clears the breaker at once.
+# in Setup clears the breaker at once. The recovery thread's primary logins use the same breaker
+# under their own key (_recovery_login).
 _NATIVE_ARCHIVE_AUTH: dict = {}
 _NATIVE_ARCHIVE_AUTH_LOCK = threading.Lock()
 
@@ -2426,6 +2427,29 @@ def cmd_probe(cfg: Config) -> None:
 LAST_LIVE_CHECKED = "last_live_checked"
 
 
+def _recovery_login(cfg: Config, opener):
+    """Run one of the recovery thread's recorder logins behind a confirmed-auth back-off.
+
+    The live collector backs off a refused login 5 -> 15 -> 30 min; this thread used to retry
+    every recovery cycle (12 an hour while no startup inventory exists, or an interval is
+    claimed), which can keep a recorder's failed-login lock engaged after Setup fixed the
+    password. It shares the breaker the native archive probe uses, keyed on the primary login;
+    a credential change in Setup clears it at once. Raises NvrAuthFailed while backed off."""
+    from drivers.base import NvrAuthFailed
+    key = _native_archive_key(cfg, "recorder-login")
+    wait = _native_archive_backoff(key)
+    if wait:
+        raise NvrAuthFailed(f"recorder login refused earlier; not retried for "
+                            f"{max(1, round(wait / 60))} min")
+    try:
+        result = opener()
+    except Exception as error:  # noqa: BLE001 — recorded, then raised to the caller as before
+        _note_native_archive_probe(key, error)
+        raise
+    _note_native_archive_probe(key, None)
+    return result
+
+
 def _synced_inventory(driver) -> list:
     """The recorder's cameras, listed for wl_sync_cameras. The numbering sent is pinned as the
     recorder's camera identity for this process (ONVIF numbers cameras by GetProfiles position,
@@ -2452,7 +2476,7 @@ def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> di
             name = c.get("name") if isinstance(c, dict) else getattr(c, "name", None)
             payload.append({"channel": str(ch), "name": name})
     if not payload:
-        driver, _info = open_driver(cfg)
+        driver, _info = _recovery_login(cfg, lambda: open_driver(cfg))
         try:
             payload = [{"channel": str(c.channel), "name": c.name}
                        for c in _synced_inventory(driver)]
@@ -2604,7 +2628,8 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                         detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
                         snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
                         camera_channels={cam: ch for ch, cam in camera_ids.items()},
-                        driver_factory=lambda: open_archive_driver(cfg)[0],
+                        driver_factory=lambda: _recovery_login(
+                            cfg, lambda: open_archive_driver(cfg))[0],
                         log=log)
                     runner.run_once(limit=1)
                 except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
