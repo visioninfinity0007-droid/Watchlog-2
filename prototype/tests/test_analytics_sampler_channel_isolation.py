@@ -199,5 +199,48 @@ def test_healthy_cameras_keep_their_rate_while_a_sibling_fails(tmp_path, monkeyp
         f"healthy sibling cameras were paused by one failing camera: {shots}")
 
 
+def _simulate_rotation(bad, seconds=600.0, snapshot_seconds=0.2, open_seconds=0.5):
+    """The real FairSampler (1 inference/s, 8 cameras) driving the real _SamplerDrivers
+    on a simulated clock, as the sampler loop does. Returns samples taken per camera."""
+    clock = Clock()
+    pool, _opened = _open_pool(clock)
+    sampler = aa.FairSampler(1.0)
+    plan = [(f"t{n}", 1.0) for n in range(1, 9)]
+    taken = {str(n): 0 for n in range(1, 9)}
+    end = clock.now + seconds
+    while clock.now < end:
+        choice = sampler.choose(plan, clock.now)
+        if choice:
+            channel = choice[0][1:]
+            driver = None if pool.channel_waiting(A, channel) else pool.get(A, A)
+            if driver is None and pool.opening(A):
+                assert wait_until(lambda: not pool.opening(A))
+                clock.now += open_seconds
+            elif driver is not None:
+                clock.now += snapshot_seconds
+                if channel in bad:
+                    pool.sample_failed(A, channel, NvrUnreachable("HTTP 500"), A)
+                else:
+                    pool.succeeded(A, channel)
+                    taken[channel] += 1
+        clock.now += 0.1
+    pool.close_all()
+    return taken
+
+
+@pytest.mark.parametrize("bad", [{"3", "4"}, {"1", "2"}, {"7", "8"}, {"3", "4", "5"}])
+def test_adjacent_failing_cameras_do_not_starve_the_healthy_ones(bad):
+    """Two (or three) offline cameras next to each other in the rotation fail with no
+    success between them. That may back the recorder off once; after that the known-bad
+    cameras back off on their own and every healthy camera keeps the rate it has when
+    no camera fails (one sample per 8 s pass, as in 5.0.28)."""
+    baseline = min(_simulate_rotation(set()).values())
+    taken = _simulate_rotation(bad)
+    healthy = [count for channel, count in taken.items() if channel not in bad]
+    assert min(healthy) >= baseline - 3, (
+        f"healthy cameras were paused by failing siblings {sorted(bad)}: {taken}, "
+        f"baseline {baseline}")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

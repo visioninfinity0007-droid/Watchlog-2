@@ -46,8 +46,8 @@ ANALYTICS_UPLOAD_BATCH = 500
 # Per-recorder sampler backoff after a recorder could not be opened or a sample failed
 # (MNVR-037); the last value repeats. A refused login uses the Agent's auth breaker.
 SAMPLER_RETRY_SECONDS = (15, 30, 60, 120, 300)
-# Consecutive failed samples on one recorder, with no success in between, that back the
-# whole recorder off (two different channels failing in a row also do).
+# Consecutive failed samples of one channel, with no success in between, that back the
+# whole recorder off (two different channels newly failing in a row also do).
 SAMPLER_RECORDER_FAILURE_STREAK = 3
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
@@ -316,8 +316,9 @@ class _SamplerDrivers:
     and backs that recorder off (SAMPLER_RETRY_SECONDS); a refused login opens the auth
     breaker (5, 15, 30 min) until the credential file changes. A failed sample backs off
     only that channel (sample_failed); the recorder backs off when failures span two
-    channels, or run SAMPLER_RECORDER_FAILURE_STREAK long, with no success in between.
-    Other recorders, and healthy channels on the same recorder, are unaffected."""
+    newly failing channels, or run SAMPLER_RECORDER_FAILURE_STREAK long on one, with no
+    success in between. A camera that keeps failing stays on its own backoff. Other
+    recorders, and healthy channels on the same recorder, are unaffected."""
 
     def __init__(self, opener, generation, clock=time.monotonic, log=None):
         self._opener = opener            # recorder_id -> open transport (may block)
@@ -432,7 +433,11 @@ class _SamplerDrivers:
 
     def sample_failed(self, key, channel, error, recorder_id=None):
         """One channel's sample failed. Back off that channel; back off the whole recorder
-        (failed()) only when failures span two channels or run on with no success.
+        (failed()) only when failures span two channels that were not already failing,
+        or run on for one channel, with no success in between. A channel that failed
+        before is a known-bad camera: its failure says nothing new about the recorder,
+        and it keeps its own growing backoff, so offline cameras next to each other in
+        the rotation never pause the healthy ones on every pass.
         Returns (delay seconds, recorder_wide)."""
         with self._lock:
             ck = (key, channel)
@@ -440,16 +445,15 @@ class _SamplerDrivers:
             self._channel_failures[ck] = count
             delay = float(SAMPLER_RETRY_SECONDS[min(count - 1, len(SAMPLER_RETRY_SECONDS) - 1)])
             self._channel_retry_at[ck] = self._clock() + delay
-            streak = self._streak.setdefault(key, [0, set()])
+            streak = self._streak.setdefault(key, [0, set(), set()])
             streak[0] += 1
             streak[1].add(channel)
-            recorder_wide = (len(streak[1]) >= 2
-                             or streak[0] >= SAMPLER_RECORDER_FAILURE_STREAK)
+            if count == 1:
+                streak[2].add(channel)       # newly failing since its last success
+            recorder_wide = (len(streak[2]) >= 2
+                             or (len(streak[1]) == 1
+                                 and streak[0] >= SAMPLER_RECORDER_FAILURE_STREAK))
             if recorder_wide:
-                # The recorder is the fault: its own backoff covers these channels.
-                for failed_channel in streak[1]:
-                    self._channel_failures.pop((key, failed_channel), None)
-                    self._channel_retry_at.pop((key, failed_channel), None)
                 self._streak.pop(key, None)
         if recorder_wide:
             return self.failed(key, error, recorder_id), True
