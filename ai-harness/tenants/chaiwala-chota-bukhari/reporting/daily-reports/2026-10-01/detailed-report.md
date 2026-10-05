@@ -75,7 +75,7 @@ This metric becomes useful when compared against dining demand over multiple day
 
 The current evidence can support **coarse timing ranges** for table sessions that can be followed clearly, but it cannot establish a reliable day-wide average for order-taking or order-to-food time.
 
-The key limitation is that a still image every few minutes does not prove the exact moment an order was placed. A visible staff interaction may be greeting, menu delivery, ordering, checking back or payment.
+The key limitation is that the camera coverage does not show the exact moment an order was placed. A visible staff interaction may be greeting, menu delivery, ordering, checking back or payment.
 
 ### Cleanly traceable observed session
 
