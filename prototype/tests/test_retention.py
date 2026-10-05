@@ -79,6 +79,39 @@ class Retention(unittest.TestCase):
         r = retention.estimate_retention(RetDriver(30, raise_after=2), "1", now=NOW)
         self.assertEqual(r["status"], "unknown")     # degrades, does not propagate
 
+    def test_an_archive_that_cannot_say_is_unknown_not_empty(self):
+        # The recorder is reachable for the capability read, but every search answers 'unknown'
+        # (a refused login, an ambiguous answer): that is not proof the archive holds nothing.
+        class CannotSay(RetDriver):
+            def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+                self.calls += 1
+                return {"status": "unknown", "events": [], "next_cursor": None}
+
+        r = retention.estimate_retention(CannotSay(30), "1", now=NOW)
+        self.assertEqual(r["status"], "unknown")
+        self.assertIsNone(r["retention_days"])
+
+    def test_a_probe_that_cannot_say_after_footage_is_unknown(self):
+        class StopsAnswering(RetDriver):
+            def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+                if self.calls >= 2:
+                    self.calls += 1
+                    return {"status": "unknown", "events": [], "next_cursor": None}
+                return super().enumerate_historical_events(channel, start, end, cursor, limit)
+
+        self.assertEqual(retention.estimate_retention(StopsAnswering(30), "1", now=NOW)["status"],
+                         "unknown")
+
+    def test_footage_served_by_a_search_that_stopped_short_still_counts(self):
+        # A search too large to page serves the rows it read, then says 'partial': footage exists.
+        class Partial(RetDriver):
+            def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+                page = super().enumerate_historical_events(channel, start, end, cursor, limit)
+                return {**page, "status": "partial"} if page["events"] else page
+
+        r = retention.estimate_retention(Partial(10), "1", now=NOW)
+        self.assertEqual((r["status"], r["retention_days"]), ("measured", 10.0))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
