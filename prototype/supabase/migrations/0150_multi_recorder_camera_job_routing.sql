@@ -253,11 +253,12 @@ begin
     raise exception 'P1 Site Control allows the read tier only'
       using errcode='42501';
   end if;
+  -- Exactly the Agent's site_control.READ_ACTIONS (MNVR-069). An action the
+  -- Agent cannot run would be claimed and always fail, so it is not accepted.
   if p_action not in (
     'get_recorder_identity','get_channels','get_clock_config',
     'get_video_loss_state','get_analytics_config','get_recording_status',
-    'get_storage_status','request_snapshot','inspect_recorder',
-    'get_configuration_drift','get_recorder_capabilities'
+    'get_storage_status','request_snapshot','inspect_recorder'
   ) then
     raise exception 'action % is not in the read catalog',p_action
       using errcode='42501';

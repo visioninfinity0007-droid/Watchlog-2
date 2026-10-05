@@ -150,6 +150,8 @@ jobs:
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract
         run: python prototype/tests/test_site_control_portal_contract.py
+      - name: Site Control catalog parity — database accepts only actions the Agent runs (MNVR-069)
+        run: python -m pytest prototype/tests/test_site_control_catalog_parity.py -q
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
