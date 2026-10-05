@@ -29,11 +29,13 @@ from drivers import DriverError, NvrDriver
 POLL_SECONDS = 15
 # Claimed clip requests fetched at once or waiting on this PC. Each recorder's clips are
 # fetched by that recorder's own worker, so a slow export on one recorder never delays
-# another's (MNVR-034). Claiming pauses at FOOTAGE_MAX_IN_FLIGHT while every recorder of the
-# site is busy, so few claimed requests ever wait here (a claimed request is not handed back
-# if the Agent stops). Requests are claimed oldest first for the whole site, so while a
-# recorder is idle its request may sit behind another recorder's backlog: claiming then
-# continues, up to FOOTAGE_MAX_CLAIMED.
+# another's (MNVR-034). A claimed request is 'processing' and is not handed back if the Agent
+# stops, so claiming keeps the 5.0.28 pacing for each recorder: a request is claimed only
+# while nothing is held, or while a known recorder of the site is idle and fewer than
+# FOOTAGE_MAX_IN_FLIGHT recorders are busy. A single-recorder or legacy site therefore holds
+# one request at a time. Requests are claimed oldest first for the whole site, so an idle
+# recorder's request may sit behind another recorder's backlog: claiming then continues, up
+# to FOOTAGE_MAX_CLAIMED.
 FOOTAGE_MAX_IN_FLIGHT = 4
 FOOTAGE_MAX_CLAIMED = 12
 SITE_RECORDERS_REFRESH_SECONDS = 60
@@ -404,22 +406,27 @@ def _site_recorder_ids() -> set:
 
 def _may_claim(workers: _RecorderFootageWorkers, site_recorders: set) -> bool:
     held = workers.in_flight()
-    if held < FOOTAGE_MAX_IN_FLIGHT:
+    if held == 0:
         return True
     if held >= FOOTAGE_MAX_CLAIMED:
         return False
+    busy = workers.busy_recorders()
+    if len(busy) >= FOOTAGE_MAX_IN_FLIGHT:
+        return False
+    # A busy recorder's next request waits unclaimed (pending) in WatchLog, as in 5.0.28.
     # An idle recorder's request may be queued behind another recorder's backlog.
-    return bool(site_recorders - workers.busy_recorders())
+    return bool(site_recorders - busy)
 
 
 def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
     """Claim clip requests for the site and hand each to its recorder's own worker.
 
     The claim is site-wide, but retrieval is per recorder: a slow export on recorder A
-    never delays a clip on recorder B (MNVR-034). Claiming pauses while
-    FOOTAGE_MAX_IN_FLIGHT requests are being fetched or wait on this PC and every
-    recorder of the site is busy; while one is idle it continues up to FOOTAGE_MAX_CLAIMED,
-    because the oldest-first claim may hold that recorder's request behind a backlog."""
+    never delays a clip on recorder B (MNVR-034). Claiming pauses while a request is held
+    and no known recorder of the site is idle, so a single-recorder or legacy site claims
+    one request at a time as 5.0.28 did; while one is idle it continues up to
+    FOOTAGE_MAX_CLAIMED, because the oldest-first claim may hold that recorder's request
+    behind a backlog."""
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
     hosts = _recorder_hosts(cfg)
     workers = _RecorderFootageWorkers(cfg, state, hosts, stop)
@@ -427,7 +434,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
     site_recorders, site_recorders_at = set(), None
     try:
         while not stop.is_set():
-            if workers.in_flight() >= FOOTAGE_MAX_IN_FLIGHT:
+            if workers.in_flight() > 0:
                 now = time.monotonic()
                 if (site_recorders_at is None
                         or now - site_recorders_at >= SITE_RECORDERS_REFRESH_SECONDS):

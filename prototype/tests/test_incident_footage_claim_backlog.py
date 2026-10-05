@@ -81,16 +81,56 @@ def test_claiming_stops_at_the_hard_ceiling(monkeypatch):
     assert not worker.is_alive()
 
 
-def test_claiming_pauses_at_the_limit_when_every_recorder_is_busy(monkeypatch):
+@pytest.mark.parametrize("known", [{A}, set()], ids=["single-recorder", "legacy-unbound"])
+def test_a_busy_lone_recorder_leaves_its_next_requests_pending(monkeypatch, known):
+    """A claimed request is 'processing' and is never handed back if the Agent stops (a
+    credential-change restart, a forced task stop). 5.0.28 held one request at a time;
+    5.1.0 claimed four for one recorder, so a restart stranded three in 'processing' for
+    24 h. While every known recorder is busy, the next requests stay pending in WatchLog."""
     release_a = threading.Event()
     rows = [_row(f"req-a{n}", A) for n in range(ie.FOOTAGE_MAX_IN_FLIGHT + 5)]
-    stop, cloud, worker = _start(monkeypatch, rows, {A}, release_a)
+    stop, cloud, worker = _start(monkeypatch, rows, known, release_a)
+    try:
+        time.sleep(0.8)
+        claims = [n for n, _ in cloud.calls if n == "wl_agent_claim_clip_requests"]
+        assert len(claims) == 1, "a busy recorder's backlog must stay unclaimed"
+        release_a.set()
+        deadline = time.monotonic() + 5
+        while len(cloud.completed) < len(rows) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(cloud.completed) == len(rows), "the backlog is served one by one"
+    finally:
+        release_a.set()
+        stop.set()
+        worker.join(10)
+    assert not worker.is_alive()
+
+
+def test_claiming_stops_when_the_busy_recorder_limit_is_reached(monkeypatch):
+    release = threading.Event()
+    ids = [f"{n:08d}-0000-4000-8000-000000000000" for n in range(ie.FOOTAGE_MAX_IN_FLIGHT + 2)]
+    rows = [_row(f"req-{n}", rid) for n, rid in enumerate(ids)]
+    stop = threading.Event()
+    cloud = Cloud(stop, rows)
+    monkeypatch.setattr(ie.core, "Cloud", lambda url, key: cloud)
+    monkeypatch.setattr(ie.core, "log", lambda _m: None)
+    monkeypatch.setattr(ie.recorder_runtime, "config_for_cloud_recorder",
+                        lambda _cfg, rid: SimpleNamespace(nvr_url="http://x.invalid", rid=rid))
+    monkeypatch.setattr(ie.core, "open_archive_driver", lambda cfg: (
+        Recorder("x", gate=release), DeviceInfo(vendor="Dahua", model="X")))
+    monkeypatch.setattr(ie, "_site_recorder_ids", lambda: set(ids))
+    monkeypatch.setattr(ie, "POLL_SECONDS", 0.05)
+    monkeypatch.setattr(ie, "FOOTAGE_CAPACITY_WAIT_SECONDS", 0.05)
+    base = SimpleNamespace(supabase_url="https://cloud.invalid", publishable_key="pk",
+                           nvr_url="http://x.invalid")
+    worker = threading.Thread(target=ie.footage_worker, args=(base, STATE, stop))
+    worker.start()
     try:
         time.sleep(0.8)
         claims = [n for n, _ in cloud.calls if n == "wl_agent_claim_clip_requests"]
         assert len(claims) == ie.FOOTAGE_MAX_IN_FLIGHT
     finally:
-        release_a.set()
+        release.set()
         stop.set()
         worker.join(10)
     assert not worker.is_alive()

@@ -80,7 +80,9 @@ def test_a_slow_clip_on_one_recorder_does_not_delay_another_recorders_clip(monke
     monkeypatch.setattr(ie.core, "open_archive_driver", lambda cfg: (
         Recorder(cfg.rid[:1], gate=release_a if cfg.rid == A else None),
         DeviceInfo(vendor="Dahua", model="X")))
+    monkeypatch.setattr(ie, "_site_recorder_ids", lambda: {A, B})
     monkeypatch.setattr(ie, "POLL_SECONDS", 0.05)
+    monkeypatch.setattr(ie, "FOOTAGE_CAPACITY_WAIT_SECONDS", 0.05)
     base = SimpleNamespace(supabase_url="https://cloud.invalid", publishable_key="pk",
                            nvr_url="http://a.invalid")
 
@@ -102,7 +104,7 @@ def test_a_slow_clip_on_one_recorder_does_not_delay_another_recorders_clip(monke
     assert set(cloud.completed) == {"req-a", "req-b"}, "A's clip still finished"
 
 
-def test_claiming_pauses_while_the_in_flight_limit_is_reached(monkeypatch):
+def test_claiming_pauses_while_the_only_recorder_is_busy(monkeypatch):
     stop = threading.Event()
     rows = [_row(f"req-{n}", A) for n in range(ie.FOOTAGE_MAX_IN_FLIGHT + 3)]
     cloud = Cloud(stop, rows)
@@ -122,8 +124,8 @@ def test_claiming_pauses_while_the_in_flight_limit_is_reached(monkeypatch):
     try:
         time.sleep(0.5)
         claims = [n for n, _ in cloud.calls if n == "wl_agent_claim_clip_requests"]
-        assert len(claims) == ie.FOOTAGE_MAX_IN_FLIGHT, (
-            "claimed requests wait on this PC only up to the in-flight limit")
+        assert len(claims) == 1, (
+            "a busy recorder's next requests stay pending in WatchLog, as in 5.0.28")
     finally:
         release.set()
         stop.set()
