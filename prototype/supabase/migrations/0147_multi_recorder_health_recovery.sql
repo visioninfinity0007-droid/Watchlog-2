@@ -975,7 +975,10 @@ revoke all on function public.wl_event_is_recorder_scoped_disk(text,uuid,jsonb)
 --     window (an archive replay never counts). Only a newer conclusive
 --     proof (ok/degraded/fault) supersedes it: a recorder whose storage
 --     cannot be read sends 'unknown' proof every cycle, and that must not
---     cancel the only storage evidence it has.
+--     cancel the only storage evidence it has. The event is fault evidence
+--     only: it is not written to recorder_health, so a reader of
+--     recorder_health.storage_state alone (0152 wl_my_site_recorders) does
+--     not see it and has to consult the open 'storage' fault.
 -- UNKNOWN never opens a fault; MISSING/DISABLED cameras stay inventory.
 -- ---------------------------------------------------------------------
 create or replace function public.wl_reconcile_site_faults(p_site_id uuid)
@@ -1250,10 +1253,11 @@ $function$;
 revoke all on function public.wl_sweep_faults() from public,anon,authenticated;
 
 -- ---------------------------------------------------------------------
--- Intelligence pipeline (0065): recorder-scoped disk events are recorder
--- health (above), never camera activity. 0065 turned a camera-less
--- disk_error/disk_full into a 'camera_fault' activity with no camera, and
--- wl_derive_episodes then grouped it into a 'presence' episode. Activities
+-- Intelligence pipeline (0065): recorder-scoped disk events are evidence
+-- for the recorder's storage fault (above), never camera activity. 0065
+-- turned a camera-less disk_error/disk_full into a 'camera_fault' activity
+-- with no camera, and wl_derive_episodes then grouped it into a 'presence'
+-- episode. Activities
 -- already derived from such events are skipped when episodes are rebuilt.
 -- Everything else is the 0065 body unchanged.
 -- ---------------------------------------------------------------------
