@@ -12,7 +12,9 @@ This script reproduces the real upgrade on its OWN fresh, disposable database:
            enrolled Agent, 8 configured cameras plus 8 hidden non-canonical
            ONVIF profile rows (the Al-Khalid shape), events with site:channel
            dedupe keys, snapshots, nvr_health, and recovery_intervals in
-           pending, in_progress and recovered states; plus a pre-provisioned
+           pending, in_progress and recovered states; a 5.0.x recorder push
+           token (plus an older live duplicate), which must end up scoped to
+           the site's recorder and keep working; plus a pre-provisioned
            site with no Agent or camera yet;
   stage 2  apply the rest (0146..0155) with the same runner and the real
            migrations directory, as the production deploy will;
@@ -21,9 +23,7 @@ This script reproduces the real upgrade on its OWN fresh, disposable database:
            (wl_sync_cameras, wl_ingest_events, wl_heartbeat,
            wl_open_recovery_interval with uuid[], ...) still succeed on the
            single-recorder site; pending/in-progress recovery still claimable
-           by the legacy Agent; recovered history still RECOVERED; the 5.0.x
-           recorder push token is scoped to the site's recorder and keeps
-           working.
+           by the legacy Agent; recovered history still RECOVERED.
 
 Steps marked "[gated: MNVR-015]" exercise the 0147 recovery_intervals backfill
 (MNVR-015, owned by a later work package). They are expected to FAIL until that
