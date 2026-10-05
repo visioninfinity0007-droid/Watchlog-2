@@ -27,8 +27,12 @@ IDS = ("aaaaaaaa-0000-4000-8000-000000000001", "bbbbbbbb-0000-4000-8000-00000000
 
 
 def _prepare(a, b, base, cloud):
+    # Two physical recorders, two serials: one serial is never saved on two rows.
+    def open_driver(cfg):
+        label = "A" if cfg.recorder_local_id == a else "B"
+        return Driver(label), info("Hikvision", label, f"SER-{label}")
     return {x.context.local_id: x for x in mro.prepare_recorders(
-        base, STATE, cloud, lambda cfg: (Driver("A"), info("Hikvision", "A", "SER-A")))}
+        base, STATE, cloud, open_driver)}
 
 
 def test_a_busy_registry_does_not_skip_the_camera_sync(monkeypatch):

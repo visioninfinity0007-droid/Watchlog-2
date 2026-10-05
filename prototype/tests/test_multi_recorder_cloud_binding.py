@@ -639,7 +639,8 @@ def test_probe_wait_returns_promptly_and_late_results_are_delivered():
         def open_driver(cfg):
             if cfg.recorder_local_id == a:
                 release.wait(5)
-            return Driver("X"), info("Hikvision", "X", "SER-X")
+            # Two physical recorders: two serials (one serial is never shared by two rows).
+            return Driver("X"), info("Hikvision", "X", f"SER-{cfg.recorder_local_id[:8]}")
 
         t0 = time.monotonic()
         prepared = mro.prepare_recorders(base, STATE, cloud, open_driver, probe_wait=0)
