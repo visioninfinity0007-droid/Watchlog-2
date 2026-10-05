@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import os
 import re
 import shutil
 import subprocess
@@ -187,7 +188,10 @@ def _synth_mp4(seconds: int) -> bytes:
         return out.read_bytes()
 
 
-needs_ffmpeg = pytest.mark.skipif(not _ffmpeg(), reason="no FFmpeg available")
+# CI sets WATCHLOG_REQUIRE_FFMPEG=1 and installs FFmpeg: there a missing FFmpeg fails the test
+# instead of skipping it silently.
+needs_ffmpeg = pytest.mark.skipif(not _ffmpeg() and not os.environ.get("WATCHLOG_REQUIRE_FFMPEG"),
+                                  reason="no FFmpeg available")
 
 
 @needs_ffmpeg

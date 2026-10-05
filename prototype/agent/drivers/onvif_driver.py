@@ -45,7 +45,7 @@ from xml.sax.saxutils import escape
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from .base import (Channel, DeviceInfo, DriverError, Event, NvrDriver,
+from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed, NvrDriver,
                    explain)
 
 _TAG = re.compile(r"\{.*?\}")
@@ -153,6 +153,27 @@ def _is_cleared(data: dict) -> bool:
     return any(str(v).strip().lower() == "false" for v in data.values())
 
 
+# Camera identity for the life of this process: {recorder base URL: {source key: channel}}.
+# The cloud maps channel -> camera UUID from the inventory the Agent synced at startup
+# (wl_sync_cameras), but GetProfiles is read again while the Agent runs (every reconnect, a
+# refused Renew, the stills worker's re-enumeration). Positional numbering would then move a
+# camera onto the channel of one that disappeared before it. Once pinned, a known source keeps
+# its synced channel, a gone source leaves its channel empty, and a new source is held back
+# until a restart re-syncs the inventory: never renumbered into another camera's slot.
+_PINNED_INVENTORY: dict[str, dict[str, str]] = {}
+_DRIFT_LOGGED: dict[str, tuple] = {}
+
+
+def _channel_order(channel: str):
+    return (0, int(channel)) if str(channel).isdigit() else (1, str(channel))
+
+
+def unpin_inventory() -> None:
+    """Forget every pinned inventory (tests; a new process starts empty)."""
+    _PINNED_INVENTORY.clear()
+    _DRIFT_LOGGED.clear()
+
+
 def _bind(table: dict, token: str, channel: str) -> None:
     """Map a token to a channel. A token claimed by two cameras maps to None:
     an event carrying it cannot be attributed, so it must not be guessed."""
@@ -204,6 +225,7 @@ class OnvifDriver(NvrDriver):
         self._profile_to_channel: dict[str, str | None] = {}
         self._profile_tokens: dict[str, str] = {}     # channel -> snapshot profile
         self._channels: tuple[str, ...] = ()          # physical channels loaded
+        self._source_keys: dict[str, str] = {}        # source key -> channel, last load
         # Burst filter state, in receive-time monotonic seconds: neither the
         # PC clock nor the recorder clock can step it backwards.
         self._last_emitted: dict[tuple[str | None, str], float] = {}
@@ -319,6 +341,13 @@ class OnvifDriver(NvrDriver):
     def list_channels(self) -> list[Channel]:
         return self._load_profiles() or [Channel(channel="1", name="Channel 1")]
 
+    def pin_inventory(self) -> None:
+        """Pin the numbering last loaded as this recorder's camera identity for the rest of the
+        process: the Agent calls it on the inventory it syncs to the cloud. The first pin
+        stands; only a restart (which syncs again) changes it."""
+        if self._source_keys:
+            _PINNED_INVENTORY.setdefault(self.base_url, dict(self._source_keys))
+
     def _ensure_profiles(self) -> bool:
         """Load the token maps on first use. True once a camera is mapped."""
         if not self._profile_tokens:
@@ -364,6 +393,7 @@ class OnvifDriver(NvrDriver):
             is_main = bool(re.search(r"(main[ _-]?stream|stream[ _-]?1)", name, re.I))
             if row is None:
                 row = {
+                    "key": key,
                     "source_token": source_token,
                     "profile_token": profile_token,
                     "name": name,
@@ -387,13 +417,23 @@ class OnvifDriver(NvrDriver):
                 row.update(profile_token=profile_token, name=name,
                            is_sub=is_sub, is_main=is_main)
 
+        pinned = _PINNED_INVENTORY.get(self.base_url)
         sources: dict[str, str | None] = {}
         configs: dict[str, str | None] = {}
         profiles: dict[str, str | None] = {}
         snapshot_profiles: dict[str, str] = {}
+        source_keys: dict[str, str] = {}
+        held_back = 0
         out: list[Channel] = []
         for physical_idx, row in enumerate(groups, start=1):
-            channel = str(physical_idx)
+            if pinned is None:
+                channel = str(physical_idx)
+            else:
+                channel = pinned.get(row["key"])
+                if channel is None:
+                    held_back += 1      # a source the cloud has not seen: never numbered
+                    continue
+            source_keys[row["key"]] = channel
             _bind(sources, row.get("source_token") or "", channel)
             for token in row["configs"]:
                 _bind(configs, token, channel)
@@ -407,9 +447,19 @@ class OnvifDriver(NvrDriver):
             # not customer-facing camera names. Use a neutral physical camera
             # label until the operator names it in Guided Setup.
             if re.search(r"mediaprofile[_ -]*channel\d+", raw_name, re.I):
-                raw_name = f"Camera {physical_idx}"
+                raw_name = f"Camera {channel}"
             out.append(Channel(channel=channel,
-                               name=raw_name or f"Camera {physical_idx}"))
+                               name=raw_name or f"Camera {channel}"))
+
+        if pinned is not None:
+            gone = sorted(set(pinned.values()) - set(source_keys.values()), key=_channel_order)
+            drift = (tuple(gone), held_back)
+            if drift != _DRIFT_LOGGED.get(self.base_url, ((), 0)):
+                _DRIFT_LOGGED[self.base_url] = drift
+                self.log(f"onvif: camera inventory changed since the cameras were synced: "
+                         f"channel(s) {', '.join(gone) or 'none'} gone, {held_back} new "
+                         f"source(s) held back; channels keep their synced cameras until a "
+                         f"restart re-syncs")
 
         # Swap whole maps so a reader never sees a half-built one.
         self._source_to_channel = sources
@@ -417,6 +467,7 @@ class OnvifDriver(NvrDriver):
         self._profile_to_channel = profiles
         self._profile_tokens = snapshot_profiles
         self._channels = tuple(c.channel for c in out)
+        self._source_keys = source_keys
         return out
 
     # -- events ---------------------------------------------------------
@@ -739,16 +790,26 @@ class OnvifDriver(NvrDriver):
         node = root.find(".//Uri")
         if node is None or not node.text:
             return None
+        url = self._rehost(node.text.strip())
         try:
-            r = self.s.get(self._rehost(node.text.strip()),
-                           auth=HTTPDigestAuth(self.username, self.password),
+            r = self.s.get(url, auth=HTTPDigestAuth(self.username, self.password),
                            timeout=SNAPSHOT_TIMEOUT)
+            # Basic only when the challenge offers Basic and not Digest (MNVR-055): a
+            # Digest refusal never resends the password in the clear or costs a second login.
             if r.status_code == 401:
-                r = self.s.get(self._rehost(node.text.strip()),
-                               auth=HTTPBasicAuth(self.username, self.password),
-                               timeout=SNAPSHOT_TIMEOUT)
+                challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+                if "basic" in challenge and "digest" not in challenge:
+                    r.close()
+                    r = self.s.get(url, auth=HTTPBasicAuth(self.username, self.password),
+                                   timeout=SNAPSHOT_TIMEOUT)
         except requests.RequestException:
             return None
+        # A refused still is an auth failure, as on Hikvision, so callers use their auth
+        # back-off instead of counting a quiet camera fault.
+        if r.status_code in (401, 403):
+            raise NvrAuthFailed(
+                f"snapshot ch{channel}: HTTP {r.status_code} — recorder rejected the "
+                "username or password")
         if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
             return r.content
         return None

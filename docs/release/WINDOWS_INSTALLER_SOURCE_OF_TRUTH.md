@@ -119,7 +119,9 @@ Live events and recorder liveness:
 - **MNVR-028**: recorder-level events (disks, alarm inputs, ONVIF storage faults) and camera
   alerts without a channel carry channel `null` and `payload.recorder_scoped` (or
   `channel_unknown`), never camera 1. `Event.to_json` serialises a JSON null channel;
-  `--probe` and the collectors no longer crash on or mis-attribute them.
+  `--probe` and the collectors no longer crash on or mis-attribute them. A Hikvision `IO`
+  alert, or any alert carrying `inputIOPortID`, is recorder-scoped with the port in
+  `payload.native_input`, even when it also carries a `channelID`.
 - **MNVR-001**: the ONVIF driver loads its profile/token maps on the driver `open_driver()`
   returns; events resolve to the physical camera; an unknown token is dropped and counted
   (`event_stream.dropped_unmapped`, agent log), never put on camera 1; stills use that camera's
@@ -131,12 +133,14 @@ Live events and recorder liveness:
 - **MNVR-055 / MNVR-036**: a 401 is retried with Basic only when the challenge offers Basic
   and not Digest, so a wrong password or a stray 401 from a Digest recorder no longer sends the
   password in the clear or costs a second login attempt. Hikvision does this per request (its
-  ISAPI calls, stills and alertStream) and the session keeps Digest. Dahua `_get` moves that
+  ISAPI calls, stills and alertStream) and the session keeps Digest. ONVIF stills do the
+  same per request, and a refused ONVIF still raises `NvrAuthFailed` instead of returning
+  no image. Dahua `_get` moves that
   recorder's session to Basic after a Basic-only challenge and keeps it there, because
   `snapshot.cgi` and the attach stream use the same session and a Basic-only unit must keep
-  serving both. Not yet changed: the Dahua archive reader (`dahua_archive._request`) and
-  `NativeDahuaDriver.get_clip` still switch the session to Basic on any 401, and the Hikvision
-  archive reader still keeps Basic after a Basic-only challenge.
+  serving both. The Dahua archive reader (`dahua_archive._request`) and
+  `NativeDahuaDriver.get_clip` use the same rule (`drivers.dahua.moves_to_basic`). Not yet
+  changed: the Hikvision archive reader still keeps Basic after a Basic-only challenge.
 
 Recovery:
 

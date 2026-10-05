@@ -10,6 +10,7 @@ provider and sink are injected, so nothing here needs a recorder or a video deco
 from __future__ import annotations
 
 import base64
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -75,7 +76,9 @@ class SegDriver:
 
 SEGS = [{"start": "2026-09-14T22:00:00+00:00", "end": "2026-09-14T22:05:00+00:00", "path": "/a.dav", "id": "seg-a"},
         {"start": "2026-09-14T22:05:00+00:00", "end": "2026-09-14T22:10:00+00:00", "path": "/b.dav", "id": "seg-b"}]
-WINDOW = ("2026-09-14T21:00:00+00:00", "2026-09-14T23:00:00+00:00")
+# One hour, all of it within the hourly search window that holds SEGS: an hour of the window
+# with no recording would make the pass partial (its footage was never examined).
+WINDOW = ("2026-09-14T22:00:00+00:00", "2026-09-14T23:00:00+00:00")
 
 
 class DecodeFrame(unittest.TestCase):
@@ -542,7 +545,9 @@ class RecoveredFramePosition(unittest.TestCase):
         self.assertEqual(frame, b"FRAME@" + ts.isoformat().encode())
 
 
-    @unittest.skipUnless(recovery_ai._ffmpeg_exe(), "FFmpeg not available")
+    # CI sets WATCHLOG_REQUIRE_FFMPEG=1 and installs FFmpeg: there a missing FFmpeg fails.
+    @unittest.skipUnless(recovery_ai._ffmpeg_exe() or os.environ.get("WATCHLOG_REQUIRE_FFMPEG"),
+                         "FFmpeg not available")
     def test_ffmpeg_decode_follows_the_same_rules(self):
         """The production decoder: seek inside media, nothing past its end."""
         import os

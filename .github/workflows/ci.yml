@@ -16,13 +16,17 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    env:
+      # The real-FFmpeg tests (clip probe, PS -> MP4 remux, frame decode) fail instead of
+      # skipping when no FFmpeg is found; imageio-ffmpeg below is where the release finds it.
+      WATCHLOG_REQUIRE_FFMPEG: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml imageio-ffmpeg
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Test hygiene guards (every test file runs in CI; no test writes to the real ProgramData)
@@ -60,7 +64,7 @@ jobs:
         run: |
           python -m pytest prototype/tests/test_onvif_*.py prototype/tests/test_incident_*.py -q
           python -m pytest prototype/tests/test_event_stream_liveness.py prototype/tests/test_shipped_last_live.py prototype/tests/test_native_collector_reconnect.py prototype/tests/test_shipped_spool_cap.py prototype/tests/test_collector_recorder_scope.py prototype/tests/test_event_json_channel.py prototype/tests/test_probe_recorder_scoped_event.py -q
-          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
+          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_alarm_input_scope.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
           python -m pytest prototype/tests/test_recovery_hikvision_terminal.py -q
           python -m pytest prototype/tests/test_periodic_stills.py prototype/tests/test_periodic_stills_recorder_identity.py -q
       - name: Migration lint

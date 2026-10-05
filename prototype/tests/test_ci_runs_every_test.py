@@ -80,3 +80,28 @@ def test_every_ci_path_names_an_existing_file():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+_FFMPEG_SKIP = re.compile(r"skip(?:if|Unless)\([^\n]*ffmpeg", re.I)
+
+
+def test_real_ffmpeg_tests_cannot_skip_silently_in_ci():
+    """The real-FFmpeg tests (Hikvision whole-segment rejection and probe, the MPEG-PS -> MP4
+    remux, frame decode) skip where no FFmpeg is found. The backend job installed no FFmpeg, so
+    on a runner without one on PATH they showed as 's' and the step passed: a broken remux or
+    duration check merged green. CI installs FFmpeg the way the release finds it
+    (imageio-ffmpeg) and sets WATCHLOG_REQUIRE_FFMPEG, which turns the skip into a failure."""
+    import yaml
+
+    job = yaml.safe_load(CI.read_text(encoding="utf-8"))["jobs"]["backend"]
+    installs = " ".join(step.get("run", "") for step in job["steps"]
+                        if "pip install" in step.get("run", ""))
+    assert "imageio-ffmpeg" in installs, "the backend job does not install imageio-ffmpeg"
+    assert str((job.get("env") or {}).get("WATCHLOG_REQUIRE_FFMPEG")) == "1", \
+        "the backend job does not set WATCHLOG_REQUIRE_FFMPEG=1"
+    skipping = sorted(p.name for p in TESTS.glob("test_*.py")
+                      if _FFMPEG_SKIP.search(p.read_text(encoding="utf-8")))
+    assert skipping, "no FFmpeg-gated test found: update this guard"
+    blind = [name for name in skipping
+             if "WATCHLOG_REQUIRE_FFMPEG" not in (TESTS / name).read_text(encoding="utf-8")]
+    assert not blind, f"these FFmpeg tests still skip in CI: {blind}"

@@ -9,8 +9,9 @@ part of it or one alarm becomes two rows with two different meanings (MNVR-026).
 This module is that single agreement:
 
   * one event-type map per vendor;
-  * one channel rule: a recorder-level alert (disk, login, network, alarm input) has
-    channel None plus ``recorder_scoped``; a camera alert without a channel id has
+  * one channel rule: a recorder-level alert (disk, login, network, alarm input —
+    including a Hikvision IO alert or any alert carrying inputIOPortID, whose port is
+    kept as ``native_input``) has channel None plus ``recorder_scoped``; a camera alert without a channel id has
     channel None plus ``channel_unknown``. Never camera "1", never a camera name;
   * no invented device_event_id: neither vendor's alarm carries a stable id;
   * Hikvision keep-alives are not events: inactive alerts, heartBeat, and videoloss
@@ -63,10 +64,11 @@ HIK_EVENT_TYPE_MAP = {
     "vehicledetection": "vehicle",
 }
 
-# Alert types that describe the recorder itself (its disks, logins and network link),
-# not a camera. A channel field on these does not name a video input (MNVR-028).
+# Alert types that describe the recorder itself (its disks, logins, network link and
+# alarm inputs), not a camera. A channel field on these does not name a video input
+# (MNVR-028). An alert that carries inputIOPortID is an alarm input whatever its type.
 HIK_RECORDER_SCOPED_TYPES = {"diskfull", "diskerror", "illaccess", "illegalaccess",
-                             "ipconflict", "nicbroken"}
+                             "ipconflict", "nicbroken", "io"}
 
 # Recorder-side smart analytics (as opposed to plain motion or faults).
 HIK_SMART_TYPES = {"linedetection", "fielddetection", "regionexiting", "regionentrance",
@@ -199,11 +201,14 @@ def parse_hikvision_alert(raw: bytes) -> Alarm | None:
     # (it joins no camera); the name stays in the payload only.
     scope: dict = {}
     native_channel = _child_text(root, "channelID") or _child_text(root, "dynChannelID")
-    if etype_raw.lower() in HIK_RECORDER_SCOPED_TYPES:
+    native_input = (_child_text(root, "inputIOPortID") or "").strip()
+    if etype_raw.lower() in HIK_RECORDER_SCOPED_TYPES or native_input:
         channel = None
         scope["recorder_scoped"] = True
         if native_channel:
             scope["native_channel"] = native_channel
+        if native_input:
+            scope["native_input"] = native_input
     elif native_channel:
         channel = native_channel
     else:
@@ -229,8 +234,8 @@ def parse_hikvision_alert(raw: bytes) -> Alarm | None:
         vendor="hikvision",
         channel=channel,
         event_type=etype,
-        burst_key=(channel if channel is not None else f"recorder:{native_channel or ''}",
-                   etype),
+        burst_key=(channel if channel is not None
+                   else f"recorder:{native_channel or ''}:{native_input}", etype),
         raw_time=_child_text(root, "dateTime"),
         payload={"vendor": "hikvision", "eventType": etype_raw,
                  "native_code": etype_raw,

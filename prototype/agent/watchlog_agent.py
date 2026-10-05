@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import base64
 import configparser
+import hashlib
 import json
 import os
 import platform
@@ -51,7 +52,7 @@ import random
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -701,7 +702,10 @@ class _MappedArchiveDriver:
 # camera. A vendor-native CGI/ISAPI that rejects the on-site credential must not be probed again
 # on each open (the drivers retry a 401 with Basic: two failed logins per probe). Confirmed auth
 # failures back off per recorder like the live collector (5 -> 15 -> 30 min); a credential change
-# in Setup clears the breaker at once.
+# in Setup clears the breaker at once. The recovery thread's primary logins use the same breaker
+# under their own key (_recovery_login). It is also kept beside the Agent state
+# (_auth_breaker_path): --status-json, --accept and --recheck-archive-json are fresh processes
+# and would otherwise probe the vendor-native login again on every run.
 _NATIVE_ARCHIVE_AUTH: dict = {}
 _NATIVE_ARCHIVE_AUTH_LOCK = threading.Lock()
 
@@ -719,33 +723,93 @@ def _credential_generation(cfg):
         return None
 
 
-def _native_archive_backoff(key: tuple, cfg) -> float:
-    """Seconds before a refused native archive login may be tried again (0 = probe now)."""
+def _auth_breaker_path(cfg) -> Path | None:
+    """Where the auth breaker is kept beside the Agent state, so that short-lived processes
+    (--status-json from the Site Status panel, --accept, --recheck-archive-json) and the running
+    Agent all respect a refusal any of them saw. None without an Agent state path."""
+    state_path = getattr(cfg, "state_path", None)
+    return Path(state_path).parent / "recorder_auth_backoff.json" if state_path else None
+
+
+def _auth_breaker_id(key: tuple) -> str:
+    return hashlib.sha256("|".join(str(k) for k in key).encode("utf-8")).hexdigest()[:24]
+
+
+def _read_auth_breaker(path: Path) -> dict:
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8")).get("entries")
+    except Exception:  # noqa: BLE001 — absent or unreadable: nothing persisted
+        return {}
+    return entries if isinstance(entries, dict) else {}
+
+
+def _write_auth_breaker(path: Path, entries: dict) -> None:
+    try:
+        if not path.parent.is_dir():
+            return
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"entries": entries}), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — the in-memory breaker still holds for this process
+        pass
+
+
+def _native_archive_backoff(key: tuple, cfg, path: Path | None = None) -> float:
+    """Seconds before a refused native archive login may be tried again (0 = probe now).
+    With ``path`` a refusal persisted by another process counts too (wall clock, capped at the
+    longest back-off so a clock step cannot hold the recorder back for longer)."""
     with _NATIVE_ARCHIVE_AUTH_LOCK:
+        wait = 0.0
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
-        if entry is None:
-            return 0.0
-        if entry["generation"] != _credential_generation(cfg):
-            _NATIVE_ARCHIVE_AUTH.pop(key, None)
-            return 0.0
-        return max(0.0, entry["retry_at"] - time.monotonic())
+        if entry is not None:
+            if entry["generation"] != _credential_generation(cfg):
+                _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            else:
+                wait = entry["retry_at"] - time.monotonic()
+        if path is not None:
+            entries = _read_auth_breaker(path)
+            saved = entries.get(_auth_breaker_id(key))
+            if isinstance(saved, dict):
+                if saved.get("generation") != _credential_generation(cfg):
+                    entries.pop(_auth_breaker_id(key), None)
+                    _write_auth_breaker(path, entries)
+                else:
+                    remaining = float(saved.get("retry_at") or 0) - time.time()
+                    wait = max(wait, min(remaining, float(max(_AUTH_BACKOFF_SECONDS))))
+        return max(0.0, wait)
 
 
-def _note_native_archive_probe(key: tuple, error: Exception | None, cfg) -> None:
-    """Record a native probe outcome: success clears the breaker, a rejected login escalates it."""
+def _note_native_archive_probe(key: tuple, error: Exception | None, cfg,
+                               path: Path | None = None) -> None:
+    """Record a native probe outcome: success clears the breaker, a rejected login escalates it.
+    With ``path`` the outcome is also persisted for the Agent's other processes."""
     from drivers.base import NvrAuthFailed
     with _NATIVE_ARCHIVE_AUTH_LOCK:
+        entries = _read_auth_breaker(path) if path is not None else {}
+        ident = _auth_breaker_id(key)
         if error is None:
             _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            if entries.pop(ident, None) is not None:
+                _write_auth_breaker(path, entries)
             return
         if not (isinstance(error, NvrAuthFailed) or _is_auth_failure(error)):
             return
         generation = _credential_generation(cfg)
+        prior = 0
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
-        failures = entry["failures"] + 1 if entry and entry["generation"] == generation else 1
+        if entry and entry["generation"] == generation:
+            prior = entry["failures"]
+        saved = entries.get(ident)
+        if isinstance(saved, dict) and saved.get("generation") == generation:
+            prior = max(prior, int(saved.get("failures") or 0))
+        failures = prior + 1
         wait = _AUTH_BACKOFF_SECONDS[min(failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)]
         _NATIVE_ARCHIVE_AUTH[key] = {"failures": failures, "generation": generation,
                                      "retry_at": time.monotonic() + wait}
+        if path is not None:
+            entries[ident] = {"failures": failures, "generation": generation,
+                              "retry_at": time.time() + wait}
+            _write_auth_breaker(path, entries)
 
 
 def open_archive_driver(cfg: Config, *, live=None):
@@ -787,7 +851,8 @@ def open_archive_driver(cfg: Config, *, live=None):
         return driver, info
 
     key = _native_archive_key(cfg, native_name)
-    wait = _native_archive_backoff(key, cfg)
+    breaker = _auth_breaker_path(cfg)
+    wait = _native_archive_backoff(key, cfg, breaker)
     if wait:
         log(f"archive: vendor-native {native_name} rejected the recorder login; not retrying "
             f"for {max(1, round(wait / 60))} min (keeping {driver.name})")
@@ -797,10 +862,10 @@ def open_archive_driver(cfg: Config, *, live=None):
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        _note_native_archive_probe(key, None, cfg)
+        _note_native_archive_probe(key, None, cfg, breaker)
         channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
-        _note_native_archive_probe(key, error, cfg)
+        _note_native_archive_probe(key, error, cfg, breaker)
         if candidate is not None:
             try:
                 candidate.close()
@@ -2842,6 +2907,41 @@ def _open_recovery_interval_for_cfg(cloud: Cloud, state: dict, cfg: Config,
 LAST_LIVE_CHECKED = "last_live_checked"
 
 
+def _recovery_login(cfg: Config, opener):
+    """Run one of the recovery thread's recorder logins behind a confirmed-auth back-off.
+
+    The live collector backs off a refused login 5 -> 15 -> 30 min; this thread used to retry
+    every recovery cycle (12 an hour while no startup inventory exists, or an interval is
+    claimed), which can keep a recorder's failed-login lock engaged after Setup fixed the
+    password. It shares the breaker the native archive probe uses, keyed on the primary login;
+    a credential change in Setup clears it at once. Raises NvrAuthFailed while backed off."""
+    from drivers.base import NvrAuthFailed
+    key = _native_archive_key(cfg, "recorder-login")
+    breaker = _auth_breaker_path(cfg)
+    wait = _native_archive_backoff(key, cfg, breaker)
+    if wait:
+        raise NvrAuthFailed(f"recorder login refused earlier; not retried for "
+                            f"{max(1, round(wait / 60))} min")
+    try:
+        result = opener()
+    except Exception as error:  # noqa: BLE001 — recorded, then raised to the caller as before
+        _note_native_archive_probe(key, error, cfg, breaker)
+        raise
+    _note_native_archive_probe(key, None, cfg, breaker)
+    return result
+
+
+def _synced_inventory(driver) -> list:
+    """The recorder's cameras, listed for wl_sync_cameras. The numbering sent is pinned as the
+    recorder's camera identity for this process (ONVIF numbers cameras by GetProfiles position,
+    which a camera removed on the recorder would shift while the Agent runs)."""
+    chans = list(driver.list_channels())
+    pin = getattr(driver, "pin_inventory", None)
+    if callable(pin):
+        pin()
+    return chans
+
+
 def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> dict:
     """{recorder channel: cloud camera UUID} for opening and reading recovery intervals.
 
@@ -2857,9 +2957,10 @@ def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> di
             name = c.get("name") if isinstance(c, dict) else getattr(c, "name", None)
             payload.append({"channel": str(ch), "name": name})
     if not payload:
-        driver, _info = open_driver(cfg)
+        driver, _info = _recovery_login(cfg, lambda: open_driver(cfg))
         try:
-            payload = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+            payload = [{"channel": str(c.channel), "name": c.name}
+                       for c in _synced_inventory(driver)]
         finally:
             driver.close()
     if not payload:
@@ -2886,7 +2987,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
 
     Time this worker saw the recorder live in is never reopened: one cycle is longer than the
     outage threshold, so a gap between two of its checks is only known from a last_live a
-    heartbeat kept while the recorder was live."""
+    heartbeat kept while the recorder was live. "Saw live" is the recorder's last activity, not
+    the check's own clock: the recorder counts as live for a grace after its stream died, and a
+    stamp from inside that grace would hide the outage that follows."""
     if not cfg.recovery_enabled:
         return
     import recovery as rec
@@ -2932,6 +3035,21 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             return True
         seen = float(holder.get("recorder_live_at") or 0.0)
         return bool(seen and time.monotonic() - seen < 150.0)
+
+    def recorder_live_until(now):
+        """Wall time of the latest recorder activity recorder_is_live() counted (at most now)."""
+        drv = holder.get("live_driver")
+        latest = max(float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0),
+                     float(holder.get("recorder_live_at") or 0.0))
+        if not latest:
+            return now
+        return now - timedelta(seconds=max(0.0, time.monotonic() - latest))
+
+    def heartbeat_keeps_last_live() -> bool:
+        # A driver that reports its event stream has last_live kept at its stream activity by
+        # the heartbeat (analytics_agent._persist_stream_last_live); one that cannot report it
+        # (connected None, or no stream state) has nothing but this worker's own checks.
+        return (holder.get("event_stream") or {}).get("connected") is not None
 
     while not stop.is_set():
         try:
@@ -2981,10 +3099,14 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                 if recorder_is_live():
                     last_live = rec.read_last_live(cfg.last_live_path)
                     now = now_utc()
-                    if seen_live_at is not None and (last_live is None or last_live <= seen_live_at):
+                    live_until = recorder_live_until(now)
+                    if (seen_live_at is not None and not heartbeat_keeps_last_live()
+                            and (last_live is None or last_live <= seen_live_at)):
                         last_live = None                # nothing later than this worker's own check
+                    # With a heartbeat keeping last_live, a value it did not move past this
+                    # worker's last check is the recorder's last activity before an outage.
                     outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
-                    seen_live_at = now
+                    seen_live_at = live_until
                     if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
                                           for g in pending_gaps):
                         pending_gaps = (pending_gaps + [outage])[-32:]
@@ -3000,7 +3122,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                         log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
                             "opened resumable archive recovery")
                     if not pending_gaps:
-                        rec.persist_last_live(cfg.last_live_path, now)
+                        rec.persist_last_live(cfg.last_live_path, live_until)
                         holder[LAST_LIVE_CHECKED] = True
             except Exception as e:                       # noqa: BLE001
                 log(f"recovery: gap detector skipped: {type(e).__name__}")
@@ -3022,7 +3144,8 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                         detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
                         snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
                         camera_channels=camera_channels,
-                        driver_factory=lambda: open_archive_driver(cfg)[0],
+                        driver_factory=lambda: _recovery_login(
+                            cfg, lambda: open_archive_driver(cfg))[0],
                         log=log)
                     runner.run_once(limit=1)
                 except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
@@ -3336,7 +3459,7 @@ def main() -> None:
         driver, device = open_driver(cfg)
         try:
             channels = [{"channel": c.channel, "name": c.name}
-                        for c in driver.list_channels()]
+                        for c in _synced_inventory(driver)]
             # Read analytics while the driver is open. Best-effort and
             # read-only; never changes a setting on the device.
             try:

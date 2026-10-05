@@ -186,5 +186,54 @@ def test_basic_only_recorder_serves_probe_attach_and_snapshot():
                                                   "snapshot.cgi"]
 
 
+# The archive reader (dahua_archive._request) and the native loadfile export
+# (NativeDahuaDriver.get_clip) used the same session and switched it to Basic on ANY 401.
+
+def test_archive_request_digest_only_401_never_sends_basic_and_keeps_digest():
+    import dahua_archive
+    driver, session = _driver([Resp(401, {"WWW-Authenticate": DIGEST}), Resp(200)])
+    with pytest.raises(NvrAuthFailed):
+        dahua_archive._request(driver, "/cgi-bin/global.cgi?action=getCurrentTime")
+    assert [auth for _u, auth, _t in session.sent] == ["HTTPDigestAuth"]
+    assert isinstance(session.auth, HTTPDigestAuth)
+    # The session is not left on Basic for later, non-archive calls either.
+    driver._get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
+    assert [auth for _u, auth, _t in session.sent] == ["HTTPDigestAuth", "HTTPDigestAuth"]
+
+
+def test_archive_request_basic_only_challenge_moves_to_basic_and_closes_the_refusal():
+    import dahua_archive
+    first = Resp(401, {"WWW-Authenticate": BASIC})
+    driver, session = _driver([first, Resp(200, text="result=2026-10-05 10:00:00")])
+    response = dahua_archive._request(driver, "/cgi-bin/global.cgi?action=getCurrentTime")
+    assert response.status_code == 200 and first.closed
+    assert isinstance(session.auth, HTTPBasicAuth)
+    assert [auth for _u, auth, _t in session.sent] == ["HTTPDigestAuth", "HTTPBasicAuth"]
+
+
+def test_archive_request_already_on_basic_is_one_attempt():
+    import dahua_archive
+    driver, session = _driver([Resp(401, {"WWW-Authenticate": BASIC}), Resp(401), Resp(200)])
+    session.auth = HTTPBasicAuth("admin", "secret")
+    with pytest.raises(NvrAuthFailed):
+        dahua_archive._request(driver, "/cgi-bin/global.cgi?action=getCurrentTime")
+    assert [auth for _u, auth, _t in session.sent] == ["HTTPBasicAuth"]
+
+
+def test_native_get_clip_digest_only_401_never_sends_basic():
+    from datetime import datetime, timedelta, timezone
+    from drivers.native_recorder import NativeDahuaDriver
+    driver = NativeDahuaDriver("http://192.0.2.11", "admin", "secret", timeout=3)
+    session = Session([Resp(401, {"WWW-Authenticate": DIGEST}), Resp(401), Resp(200)])
+    session.auth = driver.s.auth
+    driver.s = session
+    driver._device_clock_offset = lambda: 0
+    start = datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc)
+    with pytest.raises(DriverError):
+        driver.get_clip("1", start, start + timedelta(seconds=30))
+    assert [auth for _u, auth, _t in session.sent] == ["HTTPDigestAuth"]
+    assert isinstance(session.auth, HTTPDigestAuth)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

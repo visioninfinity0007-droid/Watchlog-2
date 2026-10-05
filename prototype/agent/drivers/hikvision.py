@@ -99,8 +99,9 @@ def _stated_utc_offset(local_time: str | None, zone: str | None,
 # push bridge, so an alarm means the same thing on both paths (MNVR-026).
 EVENT_TYPE_MAP = alarm_parsing.HIK_EVENT_TYPE_MAP
 
-# Alert types that describe the recorder itself (its disks, logins and network link),
-# not a camera. A channel field on these does not name a video input (MNVR-028).
+# Alert types that describe the recorder itself (its disks, logins, network link and
+# alarm inputs), not a camera. A channel field on these does not name a video input
+# (MNVR-028). An alert that carries inputIOPortID is an alarm input whatever its type.
 RECORDER_SCOPED_TYPES = alarm_parsing.HIK_RECORDER_SCOPED_TYPES
 
 # Hikvision repeats an active alarm every second for as long as it lasts.

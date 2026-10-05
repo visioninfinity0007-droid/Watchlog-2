@@ -123,6 +123,7 @@ class StreamCloses(unittest.TestCase):
         # The first loadfile answer is a 401: a streamed response that is not closed before the
         # retry holds a recorder session open.
         refused = FakeResponse(status=401, text="Unauthorized")
+        refused.headers = {"WWW-Authenticate": 'Basic realm="Login to XVR"'}  # Basic-only unit
         served = FakeResponse(chunks=[DHAV])
         drv = FakeDriver(None)
         answers = iter([refused, served])

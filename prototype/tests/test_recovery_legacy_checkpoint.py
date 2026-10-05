@@ -98,17 +98,24 @@ class LegacyCheckpoint(unittest.TestCase):
                                  "partial")
 
     def test_a_checkpoint_carrying_the_verdict_is_read_as_written(self):
+        # The rest of the gap holds recordings too, so it is examined to the end.
+        rest = [(T0 + timedelta(hours=h, minutes=10), T0 + timedelta(hours=h, minutes=15))
+                for h in (1, 2)]
         ledger = _Ledger({"cursor": _iso(T0 + timedelta(hours=1)), "seen_keys": [SAMPLE_KEY],
                           "progress_attempt": 1, "examined": True, "incomplete": False})
-        self.assertEqual(_runner(ledger, HOUR_ONE).run_once()[0]["status"], "recovered")
+        self.assertEqual(_runner(ledger, HOUR_ONE + rest).run_once()[0]["status"], "recovered")
+        # Read as written: a carried 'incomplete' keeps it partial.
+        ledger = _Ledger({"cursor": _iso(T0 + timedelta(hours=1)), "seen_keys": [SAMPLE_KEY],
+                          "progress_attempt": 1, "examined": True, "incomplete": True})
+        self.assertEqual(_runner(ledger, HOUR_ONE + rest).run_once()[0]["status"], "partial")
 
 
 class CheckpointCarriesTheVerdict(unittest.TestCase):
     def test_a_resumed_claim_is_not_mistaken_for_a_legacy_one(self):
-        # Hour one holds no recording, so nothing behind the cursor was examined or missed. The
-        # claim yields to live work after that hour; the next claim examines hours two and three.
+        # Every hour holds a recording. The claim yields to live work after hour one; the next
+        # claim examines hours two and three.
         later = [(T0 + timedelta(hours=h, minutes=10), T0 + timedelta(hours=h, minutes=15))
-                 for h in (1, 2)]
+                 for h in (0, 1, 2)]
         busy = iter([False, True])                     # live work arrives after the first chunk
         ledger = _Ledger({})
         first = _runner(ledger, later, live_pending=lambda: next(busy, False))
@@ -116,7 +123,7 @@ class CheckpointCarriesTheVerdict(unittest.TestCase):
         saved = ledger.iv["checkpoint"]
         self.assertEqual(ledger.iv["status"], "in_progress")
         self.assertEqual(saved["cursor"], _iso(T0 + timedelta(hours=1)))
-        self.assertEqual((saved.get("examined"), saved.get("incomplete")), (False, False))
+        self.assertEqual((saved.get("examined"), saved.get("incomplete")), (True, False))
         self.assertEqual(_runner(ledger, later).run_once()[0]["status"], "recovered")
 
 
