@@ -714,6 +714,55 @@ const multiRecorderRoutes = [
   { slug: "ask-multi-recorder", path: `/ai/?site=${SITE_ID}&conversation=conv-1`, ready: "Loading area recorder",
     expect: ["Not yet confirmed"], forbid: ["Checked"] },
 ];
+// A profile-named 5.0.x site behind one unavailable recorder, in the exact 0152 wl_ai_context shape:
+// the cameras list carries the customer name "Camera N", while each fault carries the raw camera name
+// and no camera id. The recorder is one issue; no extra camera rows and no raw profile names.
+const profileRecorderRows = [
+  { id: "rec-a", name: "Recorder", state: "offline", issue: "connection", checked_at: "2026-10-01T07:57:00Z", camera_count: 2, camera_ids: ["c1","c2"] },
+];
+const profileRecorderOverrides = {
+  wl_ai_context: {
+    ...context,
+    facts_version: "watchlog-ai-context-v7",
+    recorders: profileRecorderRows,
+    cameras: [
+      { id: "c1", recorder_id: "rec-a", channel: "1", name: "Camera 1", monitor: true, health_state: "offline", recording_state: "unknown", purpose: "entrance" },
+      { id: "c2", recorder_id: "rec-a", channel: "2", name: "Camera 2", monitor: true, health_state: "offline", recording_state: "unknown", purpose: "queue" },
+    ],
+    faults: [
+      { camera: "MediaProfile_Channel1_MainStream", reason: "nvr_unreachable" },
+      { camera: "MediaProfile_Channel2_MainStream", reason: "nvr_unreachable" },
+    ],
+  },
+  wl_my_site_recorders: { enabled: true, site_id: SITE_ID, recorders: profileRecorderRows },
+};
+const profileRecorderRoutes = [
+  { slug: "health-profile-named-recorder", path: `/site-health/?site=${SITE_ID}`, ready: "1 recorder needs attention",
+    expect: ["Check that the recorder is powered"],
+    forbid: [RAW_PROFILE, "Camera system unreachable", "Check the camera's power and cable"] },
+];
+// A recorder storage issue does not stop WatchLog observing the cameras: an independent video loss keeps
+// its camera advice, and a healthy recording camera is not marked as needing attention.
+const storageRecorderRows = [
+  { id: "rec-a", name: "Recorder", state: "attention", issue: "storage", checked_at: "2026-10-01T07:57:00Z", camera_count: 2, camera_ids: ["c1","c2"] },
+];
+const storageRecorderOverrides = {
+  wl_ai_context: {
+    ...context,
+    facts_version: "watchlog-ai-context-v7",
+    recorders: storageRecorderRows,
+    cameras: [
+      { id: "c1", recorder_id: "rec-a", channel: "1", name: "Gate", monitor: true, health_state: "offline", recording_state: "not_recording", purpose: "entrance" },
+      { id: "c2", recorder_id: "rec-a", channel: "2", name: "Yard", monitor: true, health_state: "operational", recording_state: "recording", purpose: "storage" },
+    ],
+    faults: [{ camera: "Gate", reason: "video_loss" }],
+  },
+  wl_my_site_recorders: { enabled: true, site_id: SITE_ID, recorders: storageRecorderRows },
+};
+const storageRecorderRoutes = [
+  { slug: "health-recorder-storage", path: `/site-health/?site=${SITE_ID}`, ready: "1 recorder needs attention",
+    expect: ["Check the recorder's storage drive", "Gate · Camera offline", "Check the camera's power and cable"] },
+];
 // Phase 28: each business site type renders its own operating story from the same governed day.
 const siteTypeRoutes = (type, home, dayNoun, week = "A period comparison is not available for this site yet.") => [
   { slug: `home-${type}`, path: `/home/?site=${SITE_ID}`, ready: home },
@@ -734,6 +783,8 @@ const scenarios = [
   { name: "restaurant", overrides: restaurantOverrides, routes: restaurantRoutes },
   { name: "coverage-complete", overrides: fullyVerifiedOverrides, routes: fullyVerifiedRoutes },
   { name: "multi-recorder", overrides: multiRecorderOverrides, routes: multiRecorderRoutes },
+  { name: "profile-named-recorder", overrides: profileRecorderOverrides, routes: profileRecorderRoutes },
+  { name: "recorder-storage", overrides: storageRecorderOverrides, routes: storageRecorderRoutes },
 ];
 
 const viewports = [

@@ -112,6 +112,96 @@ t("a healthy multi-recorder site has no issues", () => {
   assert.equal(r.recorderIssues.length, 0);
 });
 
+// The real 0152 wl_ai_context fault shape: no camera_id, and the raw camera name, while the cameras
+// list in the same payload carries the normalized "Camera N" (PS-R1).
+const RAW_NAME = /MediaProfile|legacy-profile|_SubStream|_MainStream/i;
+t("0152 shape: cameras behind an offline recorder are folded although faults carry raw profile names", () => {
+  const cams = [cam("c1", "rec-a", "Camera 1", "offline", "unknown"), cam("c2", "rec-a", "Camera 2", "offline", "unknown")];
+  const rows = [rec("rec-a", "Recorder", "offline", ["c1", "c2"], "connection")];
+  const faults = [{ camera: "MediaProfile_Channel1_MainStream", reason: "nvr_unreachable" }, { camera: "MediaProfile_Channel2_MainStream", reason: "nvr_unreachable" }];
+  const r = H.recorderImpact({ cams, faults, recorderRows: rows });
+  assert.deepEqual(r.cameraFaults.map(f => f.camera), [], "no extra camera rows under the recorder issue");
+  assert.equal(r.issueCount, 1);
+  assert.equal(r.recorderFor(cams[0])?.id, "rec-a");
+});
+
+t("0152 shape: a raw-named fault on a healthy recorder is one item and is shown by its customer name", () => {
+  const cams = [cam("c3", "rec-a", "Camera 3", "offline", "not_recording")];
+  const fault = { camera: "MediaProfile_Channel3_MainStream", reason: "video_loss" };
+  const r = H.recorderImpact({ cams, faults: [fault], recorderRows: [rec("rec-a", "Recorder", "healthy", ["c3"])] });
+  assert.equal(r.issueCount, 1, "one camera, one item");
+  assert.ok(r.faultFor(cams[0]), "the fault belongs to Camera 3");
+  assert.deepEqual(r.cameraFaults.map(f => f.camera), ["Camera 3"]);
+});
+
+t("0152 shape: a legacy profile name is normalized too, and the fault row never shows a raw name", () => {
+  const cams = [cam("c5", null, "Camera 5", "offline", "unknown")];
+  const r = H.recorderImpact({ cams, faults: [{ camera: "Legacy MediaProfile_Channel5_SubStream", reason: "video_loss" }], recorderRows: [] });
+  assert.equal(r.issueCount, 1);
+  for (const f of r.cameraFaults) assert.ok(!RAW_NAME.test(f.camera), f.camera);
+});
+
+t("an unmatched recorder-root fault is folded into a recorder with that issue, not shown as a camera", () => {
+  // The fault cannot be matched to a monitored camera (its profile number differs from the channel).
+  const cams = [cam("c1", "rec-a", "Camera 9", "offline", "unknown")];
+  const rows = [rec("rec-a", "Recorder", "offline", ["c1"], "connection")];
+  const r = H.recorderImpact({ cams, faults: [{ camera: "MediaProfile_Channel1_MainStream", reason: "nvr_unreachable" }], recorderRows: rows });
+  assert.equal(r.cameraFaults.length, 0);
+  assert.equal(r.issueCount, 1);
+});
+
+t("an unmatched camera fault is still kept, under its customer name", () => {
+  const cams = [cam("c1", "rec-a", "Gate", "operational")];
+  const r = H.recorderImpact({ cams, faults: [{ camera: "MediaProfile_Channel7_MainStream", reason: "video_loss" }], recorderRows: [rec("rec-a", "Recorder", "healthy", ["c1"])] });
+  assert.deepEqual(r.cameraFaults.map(f => f.camera), ["Camera 7"]);
+  assert.equal(r.issueCount, 1);
+});
+
+t("two offline cameras sharing a name: only the one on the healthy recorder is a camera item", () => {
+  const cams = [cam("c1", "rec-a", "Camera 1", "offline", "unknown"), cam("c3", "rec-b", "Camera 1", "offline", "unknown")];
+  const rows = [rec("rec-a", "Recorder A", "healthy", ["c1"]), rec("rec-b", "Recorder B", "offline", ["c3"], "connection")];
+  const faults = [{ camera: "MediaProfile_Channel1_MainStream", reason: "video_loss" }, { camera: "MediaProfile_Channel1_MainStream", reason: "nvr_unreachable" }];
+  const r = H.recorderImpact({ cams, faults, recorderRows: rows });
+  assert.equal(r.cameraFaults.length, 1);
+  assert.equal(r.cameraFaults[0].reason, "video_loss");
+  assert.equal(r.faultFor(cams[0])?.reason, "video_loss");
+  assert.equal(r.issueCount, 2, "Recorder B plus the camera on Recorder A");
+});
+
+// A recorder storage issue does not stop WatchLog observing the cameras (PS-R2).
+t("storage attention is one issue but keeps an independent video loss and its camera advice", () => {
+  const cams = [cam("c1", "rec-a", "Gate", "offline", "not_recording"), cam("c2", "rec-a", "Yard", "operational", "recording")];
+  const rows = [rec("rec-a", "Recorder", "attention", ["c1", "c2"], "storage")];
+  const fault = { camera: "Gate", reason: "video_loss" };
+  const r = H.recorderImpact({ cams, faults: [fault], recorderRows: rows });
+  assert.equal(r.recorderIssues.length, 1);
+  assert.deepEqual(r.cameraFaults, [fault], "the video loss stays a camera fault");
+  assert.equal(r.faultFor(cams[0]), fault);
+  assert.equal(r.recorderFor(cams[0]), null, "Gate keeps camera-level advice");
+  assert.equal(r.recorderFor(cams[1]), null, "a healthy recording camera is not marked as needing attention");
+  assert.ok(!r.recorderIssueCameraIds.has("c2"));
+  assert.equal(r.issueCount, 2, "the storage issue plus Gate");
+});
+
+t("storage attention folds the storage symptoms it explains", () => {
+  const cams = [cam("c1", "rec-a", "Gate", "operational", "storage_fault"), cam("c2", "rec-a", "Yard", "offline", "unknown")];
+  const rows = [rec("rec-a", "Recorder", "attention", ["c1", "c2"], "storage")];
+  const r = H.recorderImpact({ cams, faults: [{ camera: "Yard", reason: "storage_fault" }], recorderRows: rows });
+  assert.equal(r.recorderFor(cams[0])?.id, "rec-a", "a storage recording fault takes the recorder's storage advice");
+  assert.equal(r.recorderFor(cams[1])?.id, "rec-a");
+  assert.equal(r.cameraFaults.length, 0);
+  assert.equal(r.issueCount, 1);
+});
+
+t("sign-in attention still takes over its cameras and their faults", () => {
+  const cams = [cam("c1", "rec-a", "Camera 1", "offline", "unknown")];
+  const rows = [rec("rec-a", "Recorder", "attention", ["c1"], "sign_in")];
+  const r = H.recorderImpact({ cams, faults: [{ camera: "MediaProfile_Channel1_MainStream", reason: "nvr_auth_failed" }], recorderRows: rows });
+  assert.equal(r.recorderFor(cams[0])?.id, "rec-a");
+  assert.equal(r.cameraFaults.length, 0);
+  assert.equal(r.issueCount, 1);
+});
+
 // --- Site Control labels (MNVR-049) ------------------------------------------------------------
 const VERIFIED_HERE = /verified on (your|this)/i;
 t("model-level verified evidence is never shown as verified on the customer's system", () => {
