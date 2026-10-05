@@ -64,10 +64,11 @@ def test_every_test_file_is_run_by_ci():
 
 
 def test_the_unreferenced_list_only_shrinks():
-    patterns = _ci_patterns()
-    stale = sorted(name for name in UNREFERENCED_ON_MAIN
-                   if not (TESTS / name).exists() or _referenced(name, patterns))
-    assert not stale, f"remove from UNREFERENCED_ON_MAIN (gone, or now run by CI): {stale}"
+    # A listed file that CI now runs (another branch added its step) is harmless and is not a
+    # failure, so merge order between branches cannot break this guard. A listed file that no
+    # longer exists must be removed from the list.
+    gone = sorted(name for name in UNREFERENCED_ON_MAIN if not (TESTS / name).exists())
+    assert not gone, f"remove from UNREFERENCED_ON_MAIN (file no longer exists): {gone}"
 
 
 def test_every_ci_path_names_an_existing_file():

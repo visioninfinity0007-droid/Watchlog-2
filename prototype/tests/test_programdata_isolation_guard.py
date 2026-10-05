@@ -76,6 +76,15 @@ _MAIN = re.compile(r"^if __name__ == ['\"]__main__['\"]:", re.M)
 _IMPORTS_SANDBOX = re.compile(r"^import programdata_sandbox\b", re.M)
 
 
+# Agent/Setup modules that resolve or write the data root (setup.log, Secrets, Agent state).
+# A script-style test that imports none of them (SQL/text contracts, pure parsers) cannot
+# write the real ProgramData and needs no sandbox.
+_DATA_ROOT_MODULES = re.compile(
+    r"^\s*(?:import|from)\s+(?:watchlog_agent|setup_backend|setup_gui|site_status_gui|"
+    r"credential_store|windows_secret|analytics_agent|release_agent|recorder_registry|"
+    r"recorder_runtime|health_store|periodic_stills|multi_recorder_\w+)\b", re.M)
+
+
 def _runs_without_conftest(source: str) -> bool:
     """True for a test file that also runs as a plain script without pytest."""
     main = _MAIN.search(source)
@@ -108,7 +117,7 @@ def test_script_style_tests_isolate_programdata_themselves():
     for path in sorted(TESTS.glob("test_*.py")):
         source = path.read_text(encoding="utf-8")
         if (_runs_without_conftest(source) and path.name not in LEGACY_SCRIPT_TESTS
-                and not _IMPORTS_SANDBOX.search(source)):
+                and _DATA_ROOT_MODULES.search(source) and not _IMPORTS_SANDBOX.search(source)):
             missing.append(path.name)
     assert not missing, (
         "these tests run as plain scripts without conftest.py and do not import "
