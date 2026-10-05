@@ -11,6 +11,8 @@ identity fails here before it reaches the Postgres gates
 - MNVR-014: wl_reconcile_site_faults reads recorder_health, keys recorder
   faults 'nvr:'||recorder_id on multi-recorder sites, gates camera faults on
   the camera's own recorder; the sweep visits recorder_health sites.
+- Recorder-scoped disk events are skipped by the activity/episode pipeline
+  and read as recorder storage evidence by the fault reconciliation.
 """
 from __future__ import annotations
 
@@ -76,6 +78,20 @@ class RecorderAwareFaultContract(unittest.TestCase):
     def test_sweep_visits_recorder_health_sites(self):
         _, sweep = latest_body("wl_sweep_faults")
         self.assertIn("recorder_health", sweep)
+
+
+class RecorderScopedEventContract(unittest.TestCase):
+    def test_disk_events_without_camera_are_not_camera_activity(self):
+        for name in ("wl_derive_activities", "wl_derive_episodes"):
+            _, body = latest_body(name)
+            self.assertIn("wl_event_is_recorder_scoped_disk", body,
+                          f"{name} must skip recorder-scoped disk events")
+        _, rec = latest_body("wl_reconcile_site_faults")
+        self.assertIn("wl_event_is_recorder_scoped_disk", rec,
+                      "recorder-scoped disk events are recorder storage evidence")
+        _, pred = latest_body("wl_event_is_recorder_scoped_disk")
+        for flag in ("recorder_scoped", "recorder_scope", "p_camera_id is null"):
+            self.assertIn(flag, pred)
 
 
 if __name__ == "__main__":

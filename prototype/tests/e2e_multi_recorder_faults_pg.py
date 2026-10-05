@@ -14,6 +14,10 @@ channel 1. Proves:
   recorder's observability, and a missing or frozen nvr_health row neither
   suppresses nor freezes faults; a one-recorder site keeps its Agent-keyed
   fault identity; the cron sweep reaches recorder-health-only sites;
+- camera-less recorder disk events (payload.recorder_scoped /
+  payload.recorder_scope, or no camera) never become camera_fault
+  activities or presence episodes; a recent one is storage evidence for its
+  own recorder, superseded by newer storage proof;
 - exact EXECUTE ACLs of the current-proof RPCs.
 """
 from __future__ import annotations
@@ -401,6 +405,85 @@ def run() -> int:
                  "the fault sweep reaches a site that only has recorder health",
                  str(sorted(open_faults(sd))))
 
+            # ---------------- recorder-scoped disk events ----------------
+            # A disk event is about the recorder, not a camera. Dahua/Hikvision
+            # Agents flag it payload.recorder_scoped, ONVIF payload.recorder_scope,
+            # and it arrives with no channel (camera_id NULL). It must not become
+            # a camera_fault activity or a presence episode; it is recorder
+            # storage evidence instead.
+            ue, te, se = bootstrap("faults-e@watchlog.test", "Faults E", "Plant E")
+            key_e = "faults-agent-e"
+            agent_e = add_agent(te, se, key_e, "e")
+            recs_e, msg = as_anon("select wl_sync_recorders(%s,%s,%s::jsonb)", agent_e, key_e,
+                                  json.dumps([
+                                      {"local_key": "rec-e1", "display_name": "Recorder E1",
+                                       "is_primary": True, "is_configured": True},
+                                      {"local_key": "rec-e2", "display_name": "Recorder E2",
+                                       "is_primary": False, "is_configured": True},
+                                  ]))
+            assert recs_e, msg
+            rec_e1, rec_e2 = recs_e[0]["rec-e1"], recs_e[0]["rec-e2"]
+            cam_e1 = sync_camera(agent_e, key_e, rec_e1, "1")
+            sync_camera(agent_e, key_e, rec_e2, "1")
+            report_health(agent_e, key_e, rec_e1, True, True, "ok")
+            report_health(agent_e, key_e, rec_e2, True, True, "ok")
+            ts = one("select to_char(now() at time zone 'utc',"
+                     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")[0]
+            batch = [
+                {"recorder_id": str(rec_e1), "channel": None, "event_type": "disk_error",
+                 "device_ts": ts, "agent_ts": ts,
+                 "payload": {"recorder_scoped": True, "native_index": 0}},
+                {"recorder_id": str(rec_e1), "channel": None, "event_type": "disk_full",
+                 "device_ts": ts, "agent_ts": ts, "payload": {"recorder_scope": True}},
+                {"recorder_id": str(rec_e2), "channel": "9", "event_type": "disk_error",
+                 "device_ts": ts, "agent_ts": ts, "payload": {}},
+                {"recorder_id": str(rec_e1), "channel": "1", "event_type": "motion",
+                 "device_ts": ts, "agent_ts": ts, "payload": {}},
+            ]
+            ingested, msg = as_anon("select wl_ingest_events(%s,%s,%s::jsonb)",
+                                    agent_e, key_e, json.dumps(batch))
+            assert ingested and ingested[0]["inserted"] == 4, msg or ingested
+            one("select wl_derive_activities(%s,now()-interval '1 hour',now()+interval '1 hour')",
+                se)
+            one("select wl_derive_episodes(%s,now()-interval '1 hour',now()+interval '1 hour')",
+                se)
+            acts = cur.execute(
+                """select e.event_type,a.activity_type,a.camera_id
+                     from activities a join events e on e.id=a.source_event_id
+                    where a.site_id=%s order by e.event_type""", (se,)).fetchall()
+            step([(t, k, str(c) if c else None) for t, k, c in acts]
+                 == [("motion", "motion", str(cam_e1))],
+                 "camera-less disk events never become camera_fault activities; camera "
+                 "events still do", str(acts))
+            eps = cur.execute(
+                "select episode_type,camera_id from episodes where site_id=%s", (se,)).fetchall()
+            step([(k, str(c) if c else None) for k, c in eps] == [("presence", str(cam_e1))],
+                 "camera-less disk events never form a presence episode", str(eps))
+            reconcile(se)
+            faults = open_faults(se)
+            step(faults.get(f"nvr:{rec_e1}:storage") == ("disk_error", str(agent_e), None)
+                 and faults.get(f"nvr:{rec_e2}:storage") == ("disk_error", str(agent_e), None)
+                 and not any(k.startswith("camera:") for k in faults),
+                 "a recent recorder-scoped disk event raises its own recorder's storage fault",
+                 str(faults))
+
+            # Newer present-tense storage proof from the recorder supersedes the
+            # event; an event replayed from the archive (old device time) never
+            # counts as current.
+            cur.execute("""update events set received_at=now()-interval '5 minutes',
+                                             device_ts=now()-interval '5 minutes'
+                            where site_id=%s and event_type like 'disk%%'""", (se,))
+            as_anon("select wl_report_recorder_recording_storage_current(%s,%s,%s,%s::jsonb)",
+                    agent_e, key_e, rec_e1, proof("unknown", "ok", "ok", []))
+            cur.execute("""update events set device_ts=now()-interval '3 days'
+                            where site_id=%s and recorder_id=%s
+                              and event_type like 'disk%%'""", (se, rec_e2))
+            reconcile(se)
+            faults = open_faults(se)
+            step(f"nvr:{rec_e1}:storage" not in faults and f"nvr:{rec_e2}:storage" not in faults,
+                 "newer storage proof supersedes a disk event; an archive replay is not current",
+                 str(faults))
+
             # ---------------- exact EXECUTE ACLs ----------------
             def execute_grantees(sig):
                 rows = cur.execute(
@@ -423,6 +506,10 @@ def run() -> int:
                  {"anon", "authenticated"}),
                 ("public.wl_report_recorder_recording_storage_current_core("
                  "uuid,uuid,uuid,uuid,jsonb)", set()),
+                ("public.wl_event_is_recorder_scoped_disk(text,uuid,jsonb)", set()),
+                ("public.wl_derive_activities(uuid,timestamptz,timestamptz)", {"service_role"}),
+                ("public.wl_derive_episodes(uuid,timestamptz,timestamptz,integer)",
+                 {"service_role"}),
             ):
                 try:
                     cur.execute("savepoint acl_sp")

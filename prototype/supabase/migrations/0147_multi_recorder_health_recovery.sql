@@ -15,7 +15,9 @@
 --   * recorder-scoped recording/storage current proof, so one recorder's
 --     proof never lands on another recorder's same-numbered cameras;
 --   * recorder-aware operational faults, so an unplugged recorder raises a
---     fault and a missing or frozen nvr_health row hides nothing.
+--     fault and a missing or frozen nvr_health row hides nothing;
+--   * camera-less recorder disk events are recorder storage evidence, never
+--     camera activity.
 --
 -- Deliberately deferred to the next gate:
 --   * recorder-aware durable health reconciliation / storage-transition replay;
@@ -926,6 +928,33 @@ grant execute on function public.wl_report_recording_storage_current(uuid,text,j
   to anon,authenticated;
 
 -- ---------------------------------------------------------------------
+-- Recorder-scoped disk events.
+-- A disk_error/disk_full event is about the recorder's storage, not a camera.
+-- Agents mark such events payload.recorder_scoped (Dahua, Hikvision) or
+-- payload.recorder_scope (ONVIF) and send no channel, so camera_id is NULL.
+-- A disk event that resolved to no camera is recorder-scoped too.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_event_is_recorder_scoped_disk(
+  p_event_type text,
+  p_camera_id uuid,
+  p_payload jsonb
+) returns boolean
+language sql
+immutable
+set search_path = public
+as $function$
+  select coalesce(p_event_type,'') in ('disk_error','disk_full')
+     and (
+       p_camera_id is null
+       or lower(coalesce(p_payload->>'recorder_scoped','')) = 'true'
+       or lower(coalesce(p_payload->>'recorder_scope','')) = 'true'
+     )
+$function$;
+
+revoke all on function public.wl_event_is_recorder_scoped_disk(text,uuid,jsonb)
+  from public,anon,authenticated,service_role;
+
+-- ---------------------------------------------------------------------
 -- Recorder-aware operational faults (replaces the 0089 body).
 --
 -- 0089 derived every recorder fault, and the gate that lets camera faults
@@ -940,7 +969,10 @@ grant execute on function public.wl_report_recording_storage_current(uuid,text,j
 --     open faults and acknowledgements survive the deploy; recorder_health is
 --     preferred and nvr_health is only the fallback for a recorder with no row;
 --   * storage: the newest current proof (recorder_health, and nvr_health on a
---     one-recorder site), fresh within 15 minutes, as in 0089.
+--     one-recorder site), fresh within 15 minutes, as in 0089. A recorder-
+--     scoped disk event from the current Agent is storage evidence for its
+--     own recorder while both its device and receive times are inside that
+--     window (an archive replay never counts); newer proof supersedes it.
 -- UNKNOWN never opens a fault; MISSING/DISABLED cameras stay inventory.
 -- ---------------------------------------------------------------------
 create or replace function public.wl_reconcile_site_faults(p_site_id uuid)
@@ -1020,20 +1052,39 @@ begin
      where v_configured = 0
   ), obs as (
     select b.recorder_id, b.key_prefix, b.nvr_reachable, b.nvr_auth_ok,
-           ev.storage_state, ev.storage_observed_at
+           ev.storage_state, ev.storage_reason, ev.storage_observed_at
       from base b
       left join lateral (
-        select x.storage_state, x.storage_observed_at
+        select x.storage_state, x.storage_reason, x.storage_observed_at
           from (
             select b.rh_storage_state as storage_state,
-                   b.rh_storage_at as storage_observed_at
+                   case when b.rh_storage_state = 'fault'
+                        then 'storage_fault' else 'disk_full' end as storage_reason,
+                   b.rh_storage_at as storage_observed_at,
+                   0 as source_rank
              where b.rh_storage_at is not null
             union all
-            select l.sto_current_state, l.sto_current_at
+            select l.sto_current_state,
+                   case when l.sto_current_state = 'fault'
+                        then 'storage_fault' else 'disk_full' end,
+                   l.sto_current_at, 0
               from legacy l
              where l.sto_current_at is not null
+            union all
+            select case when e.event_type = 'disk_error' then 'fault' else 'degraded' end,
+                   e.event_type, e.received_at, 1
+              from public.events e
+             where b.recorder_id is not null
+               and e.recorder_id = b.recorder_id
+               and e.site_id = p_site_id
+               and e.agent_id = v_current_agent
+               and e.device_ts >= v_fresh_cut
+               and e.received_at >= v_fresh_cut
+               and public.wl_event_is_recorder_scoped_disk(e.event_type, e.camera_id, e.payload)
           ) x
-         order by x.storage_observed_at desc
+         order by x.storage_observed_at desc,
+                  x.source_rank,
+                  case when x.storage_state = 'fault' then 0 else 1 end
          limit 1
       ) ev on true
   ), desired as (
@@ -1058,7 +1109,7 @@ begin
     select o.key_prefix || ':storage', 'storage',
            case when o.storage_state = 'fault' then 'storage_fault' else 'storage_degraded' end,
            case when o.storage_state = 'fault' then 'critical' else 'warning' end,
-           case when o.storage_state = 'fault' then 'storage_fault' else 'disk_full' end,
+           o.storage_reason,
            null::uuid, a.agent_id
       from obs o cross join agent_state a
      where not a.agent_down
@@ -1175,6 +1226,86 @@ end
 $function$;
 
 revoke all on function public.wl_sweep_faults() from public,anon,authenticated;
+
+-- ---------------------------------------------------------------------
+-- Intelligence pipeline (0065): recorder-scoped disk events are recorder
+-- health (above), never camera activity. 0065 turned a camera-less
+-- disk_error/disk_full into a 'camera_fault' activity with no camera, and
+-- wl_derive_episodes then grouped it into a 'presence' episode. Activities
+-- already derived from such events are skipped when episodes are rebuilt.
+-- Everything else is the 0065 body unchanged.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_derive_activities(
+  p_site_id uuid, p_from timestamptz, p_to timestamptz
+) returns integer
+language plpgsql security definer set search_path = public as $function$
+declare v_rows integer;
+begin
+  insert into activities (tenant_id, site_id, camera_id, activity_type, object_class, semantic,
+                          occurred_at, source_event_id, metadata_json)
+  select s.tenant_id, e.site_id, e.camera_id,
+         case when e.event_type in ('video_loss','tamper','disk_error','disk_full') then 'camera_fault'
+              else e.event_type end,
+         e.event_type,
+         coalesce(nullif(c.purpose,''), 'unspecified') || ':' || e.event_type,
+         e.device_ts, e.id,
+         jsonb_build_object('camera_name', c.name, 'camera_purpose', c.purpose)
+    from events e
+    join sites s on s.id = e.site_id
+    left join cameras c on c.id = e.camera_id
+   where e.site_id = p_site_id and e.device_ts >= p_from and e.device_ts < p_to
+     and not public.wl_event_is_recorder_scoped_disk(e.event_type, e.camera_id, e.payload)
+  on conflict (source_event_id, activity_type) do nothing;
+  get diagnostics v_rows = row_count;
+  return v_rows;
+end $function$;
+revoke all on function public.wl_derive_activities(uuid,timestamptz,timestamptz) from public, anon;
+grant execute on function public.wl_derive_activities(uuid,timestamptz,timestamptz) to service_role;
+
+create or replace function public.wl_derive_episodes(
+  p_site_id uuid, p_from timestamptz, p_to timestamptz, p_gap_seconds integer default 600
+) returns integer
+language plpgsql security definer set search_path = public as $function$
+declare v_rows integer;
+begin
+  delete from episodes e
+   where e.site_id = p_site_id and e.started_at >= p_from and e.started_at < p_to;
+  with a as (
+    select ac.id, ac.tenant_id, ac.site_id, ac.camera_id, ac.object_class, ac.occurred_at,
+           case when ac.object_class in ('video_loss','tamper') then 'video_loss'
+                else 'presence' end as etype
+      from activities ac
+      left join events ev on ev.id = ac.source_event_id
+     where ac.site_id = p_site_id and ac.occurred_at >= p_from and ac.occurred_at < p_to
+       and not public.wl_event_is_recorder_scoped_disk(ac.object_class, ac.camera_id, ev.payload)
+  ),
+  marked as (
+    select *,
+           case when extract(epoch from (occurred_at - lag(occurred_at)
+                       over (partition by camera_id, etype order by occurred_at))) > p_gap_seconds
+                  or lag(occurred_at) over (partition by camera_id, etype order by occurred_at) is null
+                then 1 else 0 end as newgrp
+      from a
+  ),
+  grouped as (
+    select *, sum(newgrp) over (partition by camera_id, etype order by occurred_at
+                                rows unbounded preceding) as grp
+      from marked
+  )
+  insert into episodes (tenant_id, site_id, camera_id, episode_type, object_class,
+                        started_at, ended_at, detection_count, dwell_seconds,
+                        confidence, source_activity_ids)
+  select tenant_id, site_id, camera_id, etype, max(object_class),
+         min(occurred_at), max(occurred_at), count(*),
+         extract(epoch from (max(occurred_at) - min(occurred_at))),
+         least(1.0, 0.5 + count(*)::numeric/20), array_agg(id order by occurred_at)
+    from grouped
+   group by tenant_id, site_id, camera_id, etype, grp;
+  get diagnostics v_rows = row_count;
+  return v_rows;
+end $function$;
+revoke all on function public.wl_derive_episodes(uuid,timestamptz,timestamptz,integer) from public, anon;
+grant execute on function public.wl_derive_episodes(uuid,timestamptz,timestamptz,integer) to service_role;
 
 -- ---------------------------------------------------------------------
 -- Recorder-scoped recovery identity.
