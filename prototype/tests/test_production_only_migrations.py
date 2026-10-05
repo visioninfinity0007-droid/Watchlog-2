@@ -20,6 +20,11 @@ that ledger (statements[1]) and committed byte for byte. This test pins:
 
 The --pg mode checks the applied chain on the DISPOSABLE CI Postgres only (it
 refuses to run unless WATCHLOG_CI_PLAIN_POSTGRES=1) and never touches production.
+It looks up the nine pinned signatures exactly, so a later migration that adds a
+new overload of one of these names does not fail it. A later migration that
+deliberately redefines one of the pinned signatures does fail it (the exact-body
+check guards against silent reverts); such a change must update the pins here in
+the same change, together with a plan for applying it to production.
 """
 from __future__ import annotations
 
@@ -165,6 +170,23 @@ def test_no_grant_to_anon_or_public():
                 assert "anon" not in grantees and "public" not in grantees, (name, line)
 
 
+def _live_functions(conn) -> dict:
+    rows = conn.execute(
+        """
+        select p.oid::regprocedure::text, md5(p.prosrc), p.prosecdef,
+               array_to_string(p.proconfig, ';'),
+               has_function_privilege('anon', p.oid, 'execute'),
+               has_function_privilege('authenticated', p.oid, 'execute'),
+               p.proacl is null or p.proacl::text ~ '(^\\{|,)=X',
+               has_function_privilege('service_role', p.oid, 'execute')
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.oid::regprocedure::text = any(%s)
+        """,
+        (list(PRODUCTION_FUNCTIONS),),
+    ).fetchall()
+    return {r[0]: r[1:] for r in rows}
+
+
 def _pg_check() -> None:
     if os.environ.get("WATCHLOG_CI_PLAIN_POSTGRES") != "1" or not os.environ.get("SUPABASE_DB_HOST"):
         sys.exit("FATAL: --pg runs only against the disposable CI Postgres "
@@ -179,21 +201,20 @@ def _pg_check() -> None:
         applied = {r[0] for r in conn.execute("select filename from schema_migrations")}
         missing = set(PRODUCTION_ONLY) - applied
         assert not missing, f"not applied: {sorted(missing)}"
-        rows = conn.execute(
-            """
-            select p.oid::regprocedure::text, md5(p.prosrc), p.prosecdef,
-                   array_to_string(p.proconfig, ';'),
-                   has_function_privilege('anon', p.oid, 'execute'),
-                   has_function_privilege('authenticated', p.oid, 'execute'),
-                   p.proacl is null or p.proacl::text ~ '(^\\{|,)=X',
-                   has_function_privilege('service_role', p.oid, 'execute')
-            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-            where n.nspname = 'public' and p.proname = any(%s)
-            """,
-            ([s.split("(", 1)[0] for s in PRODUCTION_FUNCTIONS],),
-        ).fetchall()
-    live = {r[0]: r[1:] for r in rows}
+        live = _live_functions(conn)
+        # A later migration may add an overload of one of these names (for example a
+        # per-recorder variant); that is not production drift and must not fail here.
+        # Prove it inside a transaction that is always rolled back; the probe argument
+        # type is created in that transaction, so the probe signature cannot collide.
+        with conn.transaction():
+            conn.execute("create domain public.wl_overload_probe as text")
+            conn.execute("create function public.wl_owner_site_truth(p_probe public.wl_overload_probe) "
+                         "returns jsonb language sql as $$ select '{}'::jsonb $$")
+            with_overload = set(_live_functions(conn))
+            raise psycopg.Rollback()
     assert set(live) == set(PRODUCTION_FUNCTIONS), sorted(set(live) ^ set(PRODUCTION_FUNCTIONS))
+    assert with_overload == set(live), (
+        "an unrelated overload changed the pinned set", sorted(with_overload ^ set(live)))
     for sig, (_name, prosrc_md5, secdef, cfg, anon_x, auth_x, public_x) in PRODUCTION_FUNCTIONS.items():
         got = live[sig]
         assert got[:6] == (prosrc_md5, secdef, cfg, anon_x, auth_x, public_x), (sig, got)
