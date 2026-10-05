@@ -25,6 +25,15 @@
 --    poll). wl_expire_stale_snapshot_requests closes such requests after a bounded
 --    window and records expired_at, so an expired request is never read as a
 --    delivered image. Server-side only, in the same style as 0142_stale.
+--
+-- 4. wl_vision_claim_snapshots_v2: production's filter excludes periodic stills of
+--    event-sampled restaurant cameras with `not (rp.sampling_mode='event' and ...)`.
+--    For a camera with no enabled restaurant profile (every office camera) the left
+--    join leaves rp NULL, the predicate is NULL, and `not NULL` drops the row, so
+--    those periodic stills were never claimed (all of HASCO Head Office's stayed
+--    pending). The body below is production's body (prosrc md5
+--    25787ce940f1409f11c3d3ddcc3f79e6, read 2026-10-05) with only that comparison
+--    made null-safe. Signature, SECURITY DEFINER, search_path and grants unchanged.
 
 -- ---------------------------------------------------------------------------
 -- 1. Known capabilities: production body + 'config_snapshot_requests'
@@ -139,3 +148,144 @@ begin
 exception when others then
   raise notice 'stale snapshot request expiry scheduling skipped: %', sqlerrm;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- 4. Visual-review claims: periodic stills of cameras without a restaurant profile
+-- ---------------------------------------------------------------------------
+create or replace function public.wl_vision_claim_snapshots_v2(
+  p_limit integer default 2,
+  p_worker_id text default null::text,
+  p_provider_external boolean default true
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare v_out jsonb;
+begin
+  if auth.role()<>'service_role' then
+    raise exception 'service role required' using errcode='42501';
+  end if;
+
+  with picked as (
+    select r.event_id
+      from public.snapshot_visual_reviews r
+      join public.snapshots s on s.event_id=r.event_id
+      join public.events ev on ev.id=s.event_id
+      join public.cameras c on c.id=s.camera_id
+      left join public.restaurant_camera_profiles rp on rp.camera_id=s.camera_id and rp.enabled
+     where coalesce(c.is_canonical,true)
+       and (
+         (r.status='pending' and r.next_attempt_at<=now())
+         or (r.status='failed' and r.attempts<5 and r.next_attempt_at<=now())
+         or (r.status='processing' and r.lease_until<now() and r.attempts<5)
+       )
+       and (
+         not coalesce(p_provider_external,true)
+         or exists (
+           select 1 from public.ai_site_egress_policy ep
+            where ep.site_id=s.site_id and ep.external_egress_allowed=true
+         )
+       )
+       and not (
+         coalesce(rp.sampling_mode,'')='event'
+         and coalesce(ev.payload->>'source','')='periodic_snapshot'
+       )
+     order by r.next_attempt_at,r.captured_at
+     for update of r skip locked
+     limit least(greatest(coalesce(p_limit,2),1),4)
+  ),
+  claimed as (
+    update public.snapshot_visual_reviews r
+       set status='processing',
+           attempts=r.attempts+1,
+           lease_until=now()+interval '4 minutes',
+           worker_id=left(coalesce(p_worker_id,'edge-vision-worker'),120),
+           last_error=null,
+           updated_at=now()
+      from picked p
+     where r.event_id=p.event_id
+     returning r.event_id
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'event_id',s.event_id,
+      'tenant_id',s.tenant_id,
+      'site_id',s.site_id,
+      'camera_id',s.camera_id,
+      'camera',coalesce(c.name,'Camera '||coalesce(c.physical_channel,c.channel,'?')),
+      'channel',coalesce(c.physical_channel,c.channel),
+      'camera_purpose',coalesce(c.purpose,'general'),
+      'captured_at',s.captured_at,
+      'timezone',coalesce(si.timezone,'Asia/Karachi'),
+      'site_type',coalesce(b.site_type,si.site_type,'other'),
+      'business_context',jsonb_build_object(
+        'site_type',coalesce(b.site_type,si.site_type,'other'),
+        'open_time',b.open_time,
+        'close_time',b.close_time,
+        'overnight',coalesce(b.overnight,false),
+        'working_days',coalesce(to_jsonb(b.working_days),'[]'::jsonb),
+        'camera_context',coalesce(b.reporting_prefs->'camera_context','{}'::jsonb),
+        'owner_insight_priorities',coalesce(b.reporting_prefs->'owner_insight_priorities','[]'::jsonb),
+        'ai_context_note',coalesce(b.reporting_prefs->>'ai_context_note',''),
+        'restaurant_intelligence_context',coalesce(b.reporting_prefs->'restaurant_intelligence_context','{}'::jsonb),
+        'restaurant_analytics',case
+          when coalesce(b.site_type,si.site_type,'other')='restaurant' and rp.enabled then
+            jsonb_build_object(
+              'enabled',true,
+              'camera_role',rp.analytics_role,
+              'sampling_mode',rp.sampling_mode,
+              'interval_seconds',rp.interval_seconds,
+              'config',rp.config,
+              'tables',coalesce((
+                select jsonb_agg(jsonb_build_object(
+                  'table_key',rt.table_key,'label',rt.label,'capacity',rt.capacity,
+                  'tracking_mode',rt.tracking_mode,'anchor',rt.anchor,'roi',rt.roi,
+                  'can_combine',rt.can_combine
+                ) order by rt.sort_order,rt.table_key)
+                from public.restaurant_tables rt
+                where rt.camera_id=s.camera_id and rt.site_id=s.site_id and rt.active
+              ),'[]'::jsonb),
+              'output_contract',jsonb_build_object(
+                'top_level_key','restaurant',
+                'schema_version','restaurant-vision-v1',
+                'truth_rules',jsonb_build_array(
+                  'Count only visible people; do not infer unique identity.',
+                  'visible_customers means currently visible customers, not unique footfall.',
+                  'food_present means visible food on a table; do not infer order correctness or food quality.',
+                  'Do not infer sales, revenue, staff identity, health diagnosis, or customer demographics.',
+                  'Use null when a requested field is not visually defensible.'
+                ),
+                'fields',jsonb_build_array(
+                  'visible_customers','staff_count','occupied_tables','served_tables',
+                  'kitchen_load','handoff_load','counter_active','confidence','tables'
+                ),
+                'table_fields',jsonb_build_array(
+                  'table_key','occupied','customer_count','food_present','drinks_present',
+                  'staff_present','clearing_state','combined_group','visibility_quality','confidence'
+                )
+              )
+            )
+          else null
+        end
+      ),
+      'content_type',s.content_type,
+      'bytes',s.bytes,
+      'image_b64',encode(s.image,'base64')
+    ) order by s.captured_at),'[]'::jsonb)
+    into v_out
+    from claimed q
+    join public.snapshot_visual_reviews r on r.event_id=q.event_id
+    join public.snapshots s on s.event_id=q.event_id
+    join public.sites si on si.id=s.site_id
+    left join public.site_business_context b on b.site_id=s.site_id
+    left join public.cameras c on c.id=s.camera_id
+    left join public.restaurant_camera_profiles rp on rp.camera_id=s.camera_id
+   where coalesce(c.is_canonical,true);
+
+  return coalesce(v_out,'[]'::jsonb);
+end $function$;
+
+revoke all on function public.wl_vision_claim_snapshots_v2(integer, text, boolean)
+  from public, anon, authenticated;
+grant execute on function public.wl_vision_claim_snapshots_v2(integer, text, boolean)
+  to service_role;

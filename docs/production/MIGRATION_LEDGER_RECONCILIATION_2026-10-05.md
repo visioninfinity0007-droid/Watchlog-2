@@ -689,3 +689,12 @@ order by 1;
 select 'fn' k, p.oid::regprocedure::text as name from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.prosrc ~ 'capabilities_reported_at'
 union all select 'trigger', t.tgname||' -> '||t.tgfoid::regproc::text from pg_trigger t where t.tgrelid='public.agents'::regclass and not t.tgisinternal;
 ```
+
+### 0156 section 4 (added 2026-10-05): visual-review claims for cameras without a restaurant profile
+
+Production's `wl_vision_claim_snapshots_v2` (prosrc md5 `25787ce940f1409f11c3d3ddcc3f79e6`) filters
+`not (rp.sampling_mode='event' and source='periodic_snapshot')`. For a camera with no enabled restaurant
+profile `rp` is NULL, the predicate is NULL and the row is dropped, so office periodic stills are never
+claimed (every HASCO Head Office periodic still was still `pending` on 2026-10-05). 0156 redefines the
+function from that exact production body with only the comparison made null-safe. Like the rest of 0156,
+it needs explicit approval before it is applied to production.

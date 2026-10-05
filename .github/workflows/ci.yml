@@ -359,6 +359,8 @@ jobs:
         run: python prototype/tests/test_production_only_migrations.py --pg
       - name: Production-truth hotfix 0156 — capability truth, semver triplet, snapshot request expiry
         run: python prototype/tests/e2e_production_hotfix_0156_pg.py
+      - name: 0156 visual-review claims include periodic stills of cameras without a restaurant profile
+        run: python prototype/tests/e2e_vision_claim_periodic_no_profile_pg.py
       - name: Health foundation integration — real RPC execution (0042-0048)
         run: python prototype/tests/e2e_health_pg.py
       - name: Incident footage integration — real RPC execution + authz (0040/0041)
