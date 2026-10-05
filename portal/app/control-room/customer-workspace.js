@@ -23,7 +23,7 @@ import {
 } from "../owner/ui";
 import styles from "./cameras.module.css";
 import { atMostOneRecorder, latestEventFor, latestEventIndex } from "./camera-events";
-import { recorderImpact } from "../site-health/recorder-impact";
+import { currentRecorderRows, recorderImpact } from "../site-health/recorder-impact";
 
 function human(v) {
   return String(v || "Not verified")
@@ -231,7 +231,8 @@ export default function CustomerCameraView() {
     [ctx],
   );
   const cameraIds = useMemo(() => cameras.map((c) => c.id), [cameras]);
-  const recorderRows = recorderSummary?.recorders || [];
+  // While the site connection is lost a recorder state is last known, never current.
+  const recorderRows = currentRecorderRows(recorderSummary?.recorders || [], Boolean(ctx?.connectivity?.agent_online));
   const multiRecorder = recorderRows.length > 1;
   const recorderById = useMemo(
     () => new Map(recorderRows.map((row) => [String(row.id), row])),

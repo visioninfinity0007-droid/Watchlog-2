@@ -274,6 +274,21 @@ t("a blocking recorder affects every camera behind it; a storage issue only the 
   assert.deepEqual([...r.recorderIssueCameraIds].sort(), ["a1", "a2", "b1"]);
 });
 
+// While the site connection is lost, recorder health is last known (fresh for 15 min server-side).
+t("a disconnected site shows no recorder as currently available or failing", () => {
+  const rows = [rec("rec-a", "Recorder A", "healthy", ["c1"]), rec("rec-b", "Recorder B", "offline", ["c2"], "connection")];
+  assert.equal(H.currentRecorderRows(rows, true), rows, "a connected site keeps the current states");
+  const stale = H.currentRecorderRows(rows, false);
+  assert.deepEqual(stale.map(r => r.state), ["unknown", "unknown"]);
+  assert.deepEqual(stale.map(r => r.last_known_state), ["healthy", "offline"]);
+  assert.deepEqual(stale.map(r => r.issue), [null, null]);
+  assert.equal(stale[1].last_known_issue, "connection");
+  assert.deepEqual(stale.map(r => r.id), ["rec-a", "rec-b"]);
+  assert.equal(stale.filter(r => r.state === "healthy").length, 0, "never counted as available");
+  assert.equal(H.recorderImpact({ cams: [], faults: [], recorderRows: stale }).recorderIssues.length, 0);
+  assert.deepEqual(H.currentRecorderRows(undefined, false), []);
+});
+
 // --- Site Control labels (MNVR-049) ------------------------------------------------------------
 const VERIFIED_HERE = /verified on (your|this)/i;
 t("model-level verified evidence is never shown as verified on the customer's system", () => {

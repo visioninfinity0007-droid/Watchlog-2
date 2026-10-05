@@ -5,7 +5,7 @@ import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
 import {coverageTruth,OwnerPage,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Empty,Loading,Notice,AskLinks,ratioPct} from "../owner/ui";
-import {recorderImpact} from "./recorder-impact";
+import {currentRecorderRows,recorderImpact} from "./recorder-impact";
 
 function human(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
 function ago(ts){
@@ -138,7 +138,8 @@ export default function HealthWorkspace(){
   const ever=Boolean(ctx?.connectivity?.last_seen);
   const lastSeen=ctx?.connectivity?.last_seen;
   const system=ctx?.recorder||{};
-  const recorderRows=recorderSummary?.recorders||[];
+  // While the site connection is lost a recorder state is last known, never current (like the cameras).
+  const recorderRows=currentRecorderRows(recorderSummary?.recorders||[],online);
   const multiRecorder=recorderRows.length>1;
   const recorderById=useMemo(()=>new Map(recorderRows.map(r=>[String(r.id),r])),[recorderRows]);
   const recorderByCamera=useMemo(()=>{
@@ -298,7 +299,7 @@ export default function HealthWorkspace(){
 
       <Section title={multiRecorder?"Recorders":"Camera system"} count={multiRecorder?recorderRows.length:null}>
         <div className="ow-rows">
-          {recorderRows.length?recorderRows.map(r=>{const v=recorderView(r);return <Row key={r.id} compact tone={v.tone} title={r.name} body={v.body} meta={[r.camera_count+" camera"+(r.camera_count===1?"":"s"),r.checked_at?"Checked "+ago(r.checked_at):"Not verified yet"]} action={<Status tone={v.tone}>{v.label}</Status>}/>}):<Row compact tone={system.identified?"verified":"unknown"} title="Recorder" body={system.identified?"Camera system identity confirmed":"Not identified yet"} action={<Status tone={system.identified?"verified":"unknown"}>{system.identified?"Confirmed":"Not confirmed"}</Status>}/>}
+          {recorderRows.length?recorderRows.map(r=>{const v=recorderView(r),last=r.last_known_state?recorderView({state:r.last_known_state,issue:r.last_known_issue}):null;return <Row key={r.id} compact tone={v.tone} title={r.name} body={last&&last.tone!=="unknown"?"Site connection lost · last known: "+last.label.toLowerCase()+".":v.body} meta={[r.camera_count+" camera"+(r.camera_count===1?"":"s"),r.checked_at?"Checked "+ago(r.checked_at):"Not verified yet"]} action={<Status tone={v.tone}>{v.label}</Status>}/>}):<Row compact tone={system.identified?"verified":"unknown"} title="Recorder" body={system.identified?"Camera system identity confirmed":"Not identified yet"} action={<Status tone={system.identified?"verified":"unknown"}>{system.identified?"Confirmed":"Not confirmed"}</Status>}/>}
           <Row compact tone={connectionTone} title="WatchLog connection" body={ever?"Last contact "+ago(lastSeen):"Not connected yet"} action={<Status tone={connectionTone}>{connectionWord}</Status>}/>
         </div>
       </Section>

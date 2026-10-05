@@ -66,7 +66,7 @@ def test_page_leads_follow_the_recorder_impact_rules():
     # cause explains (recorderImpact), never every camera_id behind a failing recorder.
     cameras = read("control-room/customer-workspace.js")
     health = read("site-health/health-workspace.js")
-    assert 'import { recorderImpact } from "../site-health/recorder-impact";' in cameras
+    assert 'recorderImpact } from "../site-health/recorder-impact";' in cameras
     assert "recorderImpact({ cams: cameras, faults, recorderRows })" in cameras
     assert "} else if (impact.blockingIssues.length) {" in cameras
     assert "impact.blockingIssues.length||" in health
@@ -76,6 +76,15 @@ def test_page_leads_follow_the_recorder_impact_rules():
         assert "(r.camera_ids||[]).map(String))).size" not in page
     assert '(r.camera_count===1?"":"s")+" affected"' not in health
     assert "impact.camerasAffectedBy(r)" in health
+
+
+def test_recorder_state_is_not_current_while_the_site_is_disconnected():
+    cameras = read("control-room/customer-workspace.js")
+    health = read("site-health/health-workspace.js")
+    assert "currentRecorderRows(recorderSummary?.recorders||[],online)" in health
+    assert "currentRecorderRows(recorderSummary?.recorders || [], Boolean(ctx?.connectivity?.agent_online))" in cameras
+    for page in (cameras, health):
+        assert "recorderSummary?.recorders" in page and page.count("recorderSummary?.recorders") == 1,             "recorder rows are read once, through currentRecorderRows"
 
 
 def test_site_control_renders_through_the_recorder_rules():

@@ -19,6 +19,15 @@ export function customerCameraName(name){
   return m?"Camera "+m[1]:name;
 }
 
+// A recorder state is current only while the site is connected. wl_my_site_recorders keeps recorder
+// health fresh for 15 minutes, but the site connection is lost after 3 and only the site reports recorder
+// health, so while it is lost every recorder is Not verified, with the state it last reported kept as
+// last_known_state (never shown as current, never counted as available or failing).
+export function currentRecorderRows(rows=[],online=false){
+  const list=Array.isArray(rows)?rows:[];
+  return online?list:list.map(r=>({...r,state:"unknown",issue:null,last_known_state:r?.state??null,last_known_issue:r?.issue??null}));
+}
+
 function needsAttention(cam){
   return ["offline","degraded"].includes(low(cam.health_state))||["not_recording","storage_fault"].includes(low(cam.recording_state));
 }
