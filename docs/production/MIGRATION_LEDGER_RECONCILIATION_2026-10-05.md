@@ -9,6 +9,14 @@ Refs: `origin/main` = `6488bab`; this branch = `chore/migration-ledger-alignment
 (adds `0142_stale_incident_clip_recovery.sql` and the recovered `0144`/`0145`).
 Audit items: MNVR-064, WP-0 / PR-0 step 1.
 
+MNVR-064 is not fixed on this branch. Its premise, a recorded 0119/0121 row that
+6488bab's edit would turn into `DRIFT`, does not hold (section 6). Two hazards
+recorded here stay open: this branch does not decide how production's ledger should
+record the 32 files that a bare `apply_migrations.py` run would treat as `PENDING`
+(section 7), and 0119's `wl_agent_semver_triplet` returns `{0,0,0}` on the repo chain
+(section 5). The body of commit 20c11f2 says "Fixes MNVR-064". That trailer is wrong
+and does not close the item.
+
 ## 1. Two ledgers
 
 | Ledger | Written by | Key | Identity column |
