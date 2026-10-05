@@ -673,26 +673,28 @@ def _native_archive_key(cfg: Config, native_name: str) -> tuple:
     return (native_name, str(cfg.nvr_url or ""), str(cfg.nvr_username or ""))
 
 
-def _credential_generation():
+def _credential_generation(cfg):
+    """The change token of the credential this recorder logs in with: its own DPAPI blob for a
+    registry recorder, the legacy singleton credential otherwise."""
     try:
-        return credential_store.credential_generation()
+        return _credential_generation_for_cfg(cfg)
     except Exception:  # noqa: BLE001 — an unreadable token only means "no change seen"
         return None
 
 
-def _native_archive_backoff(key: tuple) -> float:
+def _native_archive_backoff(key: tuple, cfg) -> float:
     """Seconds before a refused native archive login may be tried again (0 = probe now)."""
     with _NATIVE_ARCHIVE_AUTH_LOCK:
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
         if entry is None:
             return 0.0
-        if entry["generation"] != _credential_generation():
+        if entry["generation"] != _credential_generation(cfg):
             _NATIVE_ARCHIVE_AUTH.pop(key, None)
             return 0.0
         return max(0.0, entry["retry_at"] - time.monotonic())
 
 
-def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
+def _note_native_archive_probe(key: tuple, error: Exception | None, cfg) -> None:
     """Record a native probe outcome: success clears the breaker, a rejected login escalates it."""
     from drivers.base import NvrAuthFailed
     with _NATIVE_ARCHIVE_AUTH_LOCK:
@@ -701,7 +703,7 @@ def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
             return
         if not (isinstance(error, NvrAuthFailed) or _is_auth_failure(error)):
             return
-        generation = _credential_generation()
+        generation = _credential_generation(cfg)
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
         failures = entry["failures"] + 1 if entry and entry["generation"] == generation else 1
         wait = _AUTH_BACKOFF_SECONDS[min(failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)]
@@ -748,7 +750,7 @@ def open_archive_driver(cfg: Config, *, live=None):
         return driver, info
 
     key = _native_archive_key(cfg, native_name)
-    wait = _native_archive_backoff(key)
+    wait = _native_archive_backoff(key, cfg)
     if wait:
         log(f"archive: vendor-native {native_name} rejected the recorder login; not retrying "
             f"for {max(1, round(wait / 60))} min (keeping {driver.name})")
@@ -758,10 +760,10 @@ def open_archive_driver(cfg: Config, *, live=None):
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        _note_native_archive_probe(key, None)
+        _note_native_archive_probe(key, None, cfg)
         channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
-        _note_native_archive_probe(key, error)
+        _note_native_archive_probe(key, error, cfg)
         if candidate is not None:
             try:
                 candidate.close()
