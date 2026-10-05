@@ -44,6 +44,23 @@ def _resolved_event() -> threading.Event:
 # Probes run side by side; recorders.json is read-modify-written, so their observed
 # identity updates take turns.
 _REGISTRY_WRITE_LOCK = threading.Lock()
+# Site workers may already be reading recorders.json while a late probe writes it, and on
+# Windows replacing a file another thread has open fails with PermissionError. The observed
+# identity write is retried after these pauses, then skipped: it is a non-secret cache
+# rewritten by the next probe, and must not cost the recorder its camera sync.
+_IDENTITY_WRITE_RETRY_SECONDS = (0.05, 0.2, 0.5)
+
+
+def _save_observed_identity(local_id: str, **facts) -> None:
+    for pause in (*_IDENTITY_WRITE_RETRY_SECONDS, None):
+        try:
+            with _REGISTRY_WRITE_LOCK:
+                recorder_registry.update_observed_identity(local_id, **facts)
+            return
+        except PermissionError:
+            if pause is None:
+                return
+            time.sleep(pause)
 
 
 @dataclass
@@ -308,18 +325,17 @@ def probe_and_sync_recorder(cloud, state: dict,
         except Exception:
             capabilities = None
 
-        with _REGISTRY_WRITE_LOCK:
-            recorder_registry.update_observed_identity(
-                ctx.local_id,
-                vendor=_device_fact(device, "vendor"),
-                model=_device_fact(device, "model"),
-                firmware=_device_fact(device, "firmware"),
-                driver=getattr(driver, "name", None),
-                identity_fingerprint=(
-                    f"serial:{_device_fact(device, 'serial')}"
-                    if _device_fact(device, "serial") else None
-                ),
-            )
+        _save_observed_identity(
+            ctx.local_id,
+            vendor=_device_fact(device, "vendor"),
+            model=_device_fact(device, "model"),
+            firmware=_device_fact(device, "firmware"),
+            driver=getattr(driver, "name", None),
+            identity_fingerprint=(
+                f"serial:{_device_fact(device, 'serial')}"
+                if _device_fact(device, "serial") else None
+            ),
+        )
 
         camera_mapping = cloud.call(
             "wl_sync_recorder_cameras",
