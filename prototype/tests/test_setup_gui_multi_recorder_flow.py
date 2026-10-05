@@ -43,6 +43,28 @@ def test_the_setup_ui_selftest_passes(gui, installer_child):
     assert gui._run_ui_selftest(installer_child=installer_child) == 0
 
 
+@pytest.mark.parametrize("installer_child", [False, True])
+def test_the_selftest_discovery_check_does_not_depend_on_machine_load(
+        gui, monkeypatch, installer_child):
+    """A loaded CI runner made the simulated discovery sweep exceed a 5 s wall-clock
+    budget, and the selftest returned 30 although discovery was fine. Simulate that load:
+    the machine stalls for 6 s during every sweep."""
+    import time
+    import discover
+    real_monotonic, real_sweep, stall = time.monotonic, discover.sweep, [0.0]
+
+    def stalled_sweep(*args, **kwargs):
+        try:
+            return real_sweep(*args, **kwargs)
+        finally:
+            stall[0] += 6.0
+
+    monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + stall[0])
+    monkeypatch.setattr(discover, "sweep", stalled_sweep)
+    assert gui._run_ui_selftest(installer_child=installer_child) == 0
+    assert stall[0] > 0, "the selftest no longer exercises the discovery engine"
+
+
 def _window(gui, tmp_path, **kw):
     gui.QApplication.instance() or gui.QApplication([])
     window = gui.SetupWindow(tmp_path / "watchlog.ini", **kw)

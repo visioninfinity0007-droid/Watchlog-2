@@ -377,7 +377,7 @@ def _has_recorder_signature(found: dict[str, set[int]]) -> bool:
 
 def sweep(subnet: str | None = None, log=print,
           progress=lambda _message: None, _connect=None,
-          _bases=None) -> list[tuple[str, list[int]]]:
+          _bases=None, _clock=None) -> list[tuple[str, list[int]]]:
     """Find recorder candidates without ever leaving setup spinning indefinitely.
 
     Automatic discovery is deliberately bounded. It scans up to the same eight local
@@ -389,11 +389,12 @@ def sweep(subnet: str | None = None, log=print,
     """
     bases, addresses = _bases if _bases is not None else _sweep_bases(subnet)
     connect_fn = _connect or socket.create_connection
+    clock = _clock or time.monotonic          # injectable for a deterministic selftest
     if not bases:
         log("  could not work out this PC's network; enter the recorder IP manually")
         return []
 
-    started = time.monotonic()
+    started = clock()
     deadline = started + DISCOVERY_DEADLINE_SECONDS
     if addresses:
         log(f"  this PC has local IPv4: {', '.join(addresses)}")
@@ -411,14 +412,14 @@ def sweep(subnet: str | None = None, log=print,
 
     def run_stage(targets, label: str):
         """Run one bounded batch. Socket timeouts make each stage finite."""
-        if time.monotonic() >= deadline:
+        if clock() >= deadline:
             return
         progress(label)
         with ThreadPoolExecutor(max_workers=SWEEP_WORKERS) as pool:
             for hit in pool.map(probe, targets):
                 if hit:
                     found.setdefault(hit[0], set()).add(hit[1])
-                if time.monotonic() >= deadline:
+                if clock() >= deadline:
                     # Do not enqueue another discovery phase after this one. pool.map's
                     # already-running connects are individually bounded by their socket
                     # timeout, so leaving the context cannot turn into a minutes-long hang.
@@ -426,7 +427,7 @@ def sweep(subnet: str | None = None, log=print,
 
     # Phase 1: patient probes on the ports that prove most Hikvision/Dahua boxes.
     for index, base in enumerate(bases, 1):
-        if time.monotonic() >= deadline:
+        if clock() >= deadline:
             break
         progress(f"Checking local network {index}/{len(bases)} ({base}.x)…")
         hosts = [f"{base}.{h}" for h in range(1, 255)]
@@ -441,7 +442,7 @@ def sweep(subnet: str | None = None, log=print,
     # Confirm every strong candidate with the complete port set, using the same
     # patient timeout. This recovers RTSP / alternate web ports without a broad scan.
     recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
-    if recorder_ips and time.monotonic() < deadline:
+    if recorder_ips and clock() < deadline:
         progress("Recorder found. Confirming its services…")
         remaining = [
             (ip, port, SWEEP_TIMEOUT)
@@ -457,7 +458,7 @@ def sweep(subnet: str | None = None, log=print,
     # while the global UX budget remains. This keeps HTTPS/custom-port recorders
     # discoverable without allowing a fleet of virtual adapters to hang setup.
     for index, base in enumerate(bases, 1):
-        if time.monotonic() >= deadline:
+        if clock() >= deadline:
             break
         hosts = [f"{base}.{h}" for h in range(1, 255)]
         run_stage(
@@ -466,7 +467,7 @@ def sweep(subnet: str | None = None, log=print,
         )
 
     recorder_ips = [ip for ip, ports in found.items() if ports & RECORDER_SIGNATURE_PORTS]
-    if recorder_ips and time.monotonic() < deadline:
+    if recorder_ips and clock() < deadline:
         progress("Recorder found. Confirming its services…")
         remaining = [
             (ip, port, SWEEP_TIMEOUT)
@@ -476,7 +477,7 @@ def sweep(subnet: str | None = None, log=print,
         ]
         run_stage(remaining, "Recorder found. Confirming web and video services…")
 
-    elapsed = time.monotonic() - started
+    elapsed = clock() - started
     log(f"  discovery finished in {elapsed:.1f}s; {len(found)} host(s) answered")
     return [(ip, sorted(ports)) for ip, ports in
             sorted(found.items(), key=lambda kv: [int(x) for x in kv[0].split(".")])]

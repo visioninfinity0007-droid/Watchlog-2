@@ -1847,23 +1847,46 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 def __exit__(self, *_args):
                     return False
 
+            probe_timeouts = []
+
             def _fake_connect(address, timeout=None):
+                probe_timeouts.append(timeout)
                 ip, port = address
                 if ip == "10.44.7.119" and port == 8000:
                     return _FakeConnect()
                 raise OSError("filtered")
 
-            discovery_started = time.monotonic()
+            two_subnets = (["192.168.10", "10.44.7"], ["192.168.10.25", "10.44.7.20"])
+            # The sweep's deadline clock is injected and stands still, so a loaded machine
+            # cannot cut the sweep short or fail it (a 5 s wall-clock budget did, exit 30).
             simulated_hits = _discover.sweep(
                 log=lambda *_a: None,
                 progress=lambda *_a: None,
-                _bases=(["192.168.10", "10.44.7"],
-                        ["192.168.10.25", "10.44.7.20"]),
+                _bases=two_subnets,
                 _connect=_fake_connect,
+                _clock=lambda: 0.0,
             )
             if 8000 not in dict(simulated_hits).get("10.44.7.119", []):
                 return 29
-            if time.monotonic() - discovery_started > 5.0:
+            # Bounded work: the fast ports of both /24s, then only the found recorder's other
+            # ports; every probe goes through the injected connect with a bounded timeout.
+            expected_probes = (2 * 254 * len(_discover.SWEEP_FAST_PORTS)
+                               + len(_discover.SWEEP_PORTS) - 1)
+            if (len(probe_timeouts) != expected_probes
+                    or not all(0 < t <= _discover.SWEEP_TIMEOUT for t in probe_timeouts)):
+                return 30
+            # Bounded time: once its clock passes the global deadline the sweep stops
+            # without probing anything further.
+            probe_timeouts.clear()
+            readings = iter([0.0])
+            late_hits = _discover.sweep(
+                log=lambda *_a: None,
+                progress=lambda *_a: None,
+                _bases=two_subnets,
+                _connect=_fake_connect,
+                _clock=lambda: next(readings, _discover.DISCOVERY_DEADLINE_SECONDS + 1.0),
+            )
+            if late_hits or probe_timeouts:
                 return 30
 
             # Standalone Setup keeps login timeout retryable. Installer-child timeout
