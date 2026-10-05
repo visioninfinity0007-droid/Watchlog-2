@@ -333,7 +333,7 @@ jobs:
           # PowerShell, so they need this Windows job (the Linux backend job cannot run them).
           python -m pip install --disable-pip-version-check --quiet pytest pillow
           if ($LASTEXITCODE -ne 0) { throw "test dependency install failed ($LASTEXITCODE)" }
-          python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py::UpgradeAndUninstallLifecycleTests
+          python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py
           if ($LASTEXITCODE -ne 0) { throw "Repair/Upgrade, registry and elevation tests failed ($LASTEXITCODE)" }
 
   installer-contract:

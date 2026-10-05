@@ -192,10 +192,18 @@ class WizardHonestyTests(unittest.TestCase):
 
     def test_a_setup_failure_offers_more_than_retry(self):
         """Retry was the ONLY control, so a technician had no way to export a support
-        bundle and no way out except killing the window -- which aborted the install."""
-        we = GUI[GUI.find("def _worker_error"):][:900]
-        self.assertIn("incomplete_exit_btn.show()", we)
-        self.assertIn("incomplete_bundle_btn.show()", we)
+        bundle and no way out except killing the window -- which aborted the install.
+        _worker_error_if_current only drops a stale worker's error and hands a current one
+        to _worker_error, which shows the failed Connect step its controls."""
+        guard = GUI[GUI.find("def _worker_error_if_current("):]
+        guard = guard[:guard.find("\n    def ", 1)]
+        self.assertIn("self._worker_error(message)", guard)
+        we = GUI[GUI.find("def _worker_error(self, message"):]
+        we = we[:we.find("\n    def ", 1)]
+        connect = we[we.find("self.stack.currentIndex() == 5"):we.find("currentIndex() == 3")]
+        self.assertIn("self.retry_btn.show()", connect)
+        self.assertIn("self.incomplete_bundle_btn.show()", connect)
+        self.assertIn("self.incomplete_exit_btn.show()", connect)
 
     def test_the_log_file_open_cannot_kill_a_windowed_build(self):
         """It runs at IMPORT, before any handler exists: a locked setup.log would kill a
@@ -214,10 +222,19 @@ class WizardHonestyTests(unittest.TestCase):
         self.assertIn("same WatchLog site in this installation", fn)
         self.assertIn("self.add_another_btn.clicked.connect(self.add_install_recorder)", GUI)
 
-    def test_the_push_outcome_is_logged(self):
-        """Computed, returned, and never logged or shown -- the second reason nobody
-        noticed the bridge was dead."""
-        self.assertIn("recorder push: configured=", BACKEND)
+    def test_the_push_outcome_is_stated_not_implied(self):
+        """0.4.11 computed the push outcome and never logged or showed it -- the second
+        reason nobody noticed the bridge was dead. Since Build 41 first-run setup never runs
+        recorder push at all (it could strand the Connect step): finalize_install returns a
+        recorder_push result that says so, and never reports push as configured."""
+        fn = BACKEND[BACKEND.find("def finalize_install("):]
+        fn = fn[:fn.find("\ndef ", 1)]
+        self.assertNotIn("provision_recorder_push(", fn)
+        self.assertIn('"recorder_push": push,', fn)
+        stated = fn[fn.find("push = {"):fn.find("}", fn.find("push = {"))]
+        self.assertIn('"configured": False', stated)
+        self.assertIn('"verified": False', stated)
+        self.assertIn("not run during installation", stated)
 
 
 class RecorderPushAgentSemanticsTests(unittest.TestCase):
