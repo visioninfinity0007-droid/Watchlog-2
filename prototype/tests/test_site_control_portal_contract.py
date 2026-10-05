@@ -116,6 +116,10 @@ def main() -> int:
         check(needle in diag, name)
     check("max(vendor)" not in diag and "max(device_vendor)" not in diag,
           "recorder identity never mixes historical rows with max()")
+    # MNVR-049: the page offers a change only on evidence_scope==="recorder", so the diagnosis must
+    # serve the recorder-scoped profile (it emits evidence_scope); the model profile never does.
+    check("wl_recorder_profile_for_recorder(v_single.id)" in diag,
+          "the single-recorder diagnosis serves recorder-scoped capabilities (evidence_scope)")
 
     passed = sum(1 for x in OK if x)
     print(f"\n  {passed}/{len(OK)} checks passed")

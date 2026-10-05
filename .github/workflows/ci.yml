@@ -479,6 +479,8 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_continuity_pg.py
       - name: Multi-recorder reporting coverage — owner/daily truth bridge (0155)
         run: python prototype/tests/e2e_multi_recorder_reporting_coverage_pg.py
+      - name: Recorder-scoped owner capability truth — Site Control and Watch AI read this recorder's evidence (0157, MNVR-049)
+        run: python prototype/tests/e2e_recorder_scoped_owner_truth_pg.py
       - name: Coverage ACL per step 0153..0155 — coverage classes never exposed before its site check (MNVR-065)
         run: python prototype/tests/e2e_coverage_truth_acl_steps_pg.py
       - name: Multi-recorder authority — stale Agent cannot mutate recorder state
