@@ -760,8 +760,10 @@ const storageRecorderOverrides = {
   wl_my_site_recorders: { enabled: true, site_id: SITE_ID, recorders: storageRecorderRows },
 };
 const storageRecorderRoutes = [
-  { slug: "health-recorder-storage", path: `/site-health/?site=${SITE_ID}`, ready: "1 recorder needs attention",
-    expect: ["Check the recorder's storage drive", "Gate · Camera offline", "Check the camera's power and cable"] },
+  // A non-blocking storage issue does not take the lead from an independent camera fault (77fa11b3).
+  { slug: "health-recorder-storage", path: `/site-health/?site=${SITE_ID}`, ready: "Monitoring needs attention",
+    expect: ["Check the recorder's storage drive", "Gate · Camera offline", "Check the camera's power and cable"],
+    forbid: ["1 recorder needs attention"] },
 ];
 // Phase 28: each business site type renders its own operating story from the same governed day.
 const siteTypeRoutes = (type, home, dayNoun, week = "A period comparison is not available for this site yet.") => [
