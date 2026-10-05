@@ -1805,8 +1805,99 @@ def cmd_existing_site_preflight(cfg: Config, *, result_path: str | None = None,
     return 0 if result["ok"] else 2
 
 
+# The database's own 42501 text for a site-level push token on a multi-recorder site
+# (0146 wl_push_recorder_for_site). Shown verbatim when WatchLog offers no recorder-
+# scoped push, so the local refusal and the database refusal read the same.
+MULTI_RECORDER_PUSH_REFUSED = (
+    "recorder push is not available for a site with more than one recorder")
+
+
+def _recorder_push_absent(error: Exception) -> bool:
+    """True only when the database definitively has no recorder-scoped push token RPC
+    (wl_agent_issue_push_token(agent, key, recorder) does not exist there)."""
+    return (isinstance(error, CloudError)
+            and getattr(error, "fn", "") == "wl_agent_issue_push_token"
+            and (getattr(error, "code", None) == "PGRST202"
+                 or getattr(error, "status", None) == 404))
+
+
+def _push_refusal(error: Exception) -> str | None:
+    """The database's refusal text for a 42501 from the push token RPC, else None."""
+    if isinstance(error, CloudError) and getattr(error, "code", None) == "42501":
+        return str(getattr(error, "message", "") or "")[:200] or None
+    return None
+
+
+def _issue_push_token(cloud, state: dict, recorder_id: str | None) -> str | None:
+    """One push token: recorder-scoped when ``recorder_id`` is given (the answer must
+    name that recorder), otherwise the 5.0.x site-level form."""
+    params = {"p_agent_id": state["agent_id"], "p_agent_key": state["agent_key"]}
+    if recorder_id:
+        params["p_recorder_id"] = recorder_id
+    issued = cloud.call("wl_agent_issue_push_token", **params)
+    if not isinstance(issued, dict):
+        return None
+    if recorder_id and str(issued.get("recorder_id") or "") != str(recorder_id):
+        return None                     # never point a recorder at another one's token
+    return issued.get("token") or None
+
+
+def _configure_recorder_push(driver_cfg, open_fn, url: str) -> dict:
+    """Point one recorder (opened from its own config) at its push URL."""
+    driver = open_fn(driver_cfg)
+    try:
+        configure = getattr(driver, "configure_push", None)
+        if configure is None:
+            return {"configured": False, "verified": False,
+                    "detail": "this recorder model does not support recorder-push"}
+        out = configure(url) or {}
+        return {"configured": bool(out.get("applied")),
+                "verified": bool(out.get("verified")),
+                "detail": str(out.get("detail") or "")}
+    finally:
+        try:
+            close = getattr(driver, "close", None)
+            if close is not None:
+                close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _recorder_push_token(cloud, state: dict, ctx, multi: bool) -> tuple:
+    """(token or None, refusal detail) for one RecorderContext.
+
+    Raises _NoRecorderScopedPush on a multi-recorder registry when the database has no
+    recorder-scoped form; any other unexpected failure propagates."""
+    def legacy():
+        try:
+            return _issue_push_token(cloud, state, None), ""
+        except CloudError as exc:
+            if _push_refusal(exc) is None:
+                raise
+            return None, _push_refusal(exc)
+
+    if not ctx.cloud_recorder_id:
+        if multi:
+            return None, "this recorder is not linked to WatchLog yet"
+        return legacy()                # one recorder WatchLog has no identity for
+    try:
+        return _issue_push_token(cloud, state, ctx.cloud_recorder_id), ""
+    except CloudError as exc:
+        if _recorder_push_absent(exc):
+            if multi:
+                raise _NoRecorderScopedPush() from exc
+            return legacy()
+        if _push_refusal(exc) is not None:
+            return None, _push_refusal(exc)
+        raise
+
+
+class _NoRecorderScopedPush(Exception):
+    """WatchLog offers no recorder-scoped push token on a multi-recorder site."""
+
+
 def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
-                       _open_driver=None) -> int:
+                       _open_driver=None, _contexts=None) -> int:
     """Point the RECORDER at WatchLog so the site reports with no PC running.
 
     RUNS AS ITS OWN PROCESS, deliberately. The setup wizard used to do this inline, and
@@ -1819,48 +1910,94 @@ def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
     It also means the recorder still gets configured even when the wizard dies, because
     the background agent can run this on its own schedule with no installer present.
 
-    Prints a single machine-readable PUSH_JSON line. Exit 0 = the recorder confirmed it.
+    Push identity is per RECORDER (MNVR-011): the token names the recorder, and WatchLog
+    resolves the recorder from it before any channel. With a recorder registry every
+    configured recorder runs from its own RecorderContext, with its own token from
+    wl_agent_issue_push_token(agent, key, p_recorder_id), its own driver and its own push
+    URL. On a multi-recorder registry it refuses unless WatchLog offers recorder-scoped
+    push, and never falls back to a site-level token there. A single recorder on a
+    database without the recorder form, and the 5.0.x singleton (no registry), keep the
+    site-level form, which the database itself refuses on a multi-recorder site.
+
+    Prints a single machine-readable PUSH_JSON line (never a token). Exit 0 = every
+    recorder confirmed it.
     """
     result = {"configured": False, "verified": False, "detail": ""}
+
+    def report(res: dict, code: int) -> int:
+        print("PUSH_JSON " + json.dumps(res), flush=True)
+        return code
+
     try:
         base = (cfg.push_bridge_url or "").strip().rstrip("/")
         if not base:
             result["detail"] = "no push bridge configured in this build"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+            return report(result, 2)
 
         state = _state if _state is not None else load_state(cfg.state_path)
         if not state or not state.get("agent_id") or not state.get("agent_key"):
             result["detail"] = "this site is not enrolled yet"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+            return report(result, 2)
 
+        contexts = list((_contexts or recorder_runtime.load_contexts)(cfg) or [])
         cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
-        issued = cloud.call("wl_agent_issue_push_token",
-                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
-        token = (issued or {}).get("token") if isinstance(issued, dict) else None
-        if not token:
-            result["detail"] = "WatchLog did not issue a push token"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+        open_fn = _open_driver or open_driver
 
-        driver = (_open_driver or open_driver)(cfg)
-        configure = getattr(driver, "configure_push", None)
-        if configure is None:
-            result["detail"] = "this recorder model does not support recorder-push"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+        if not contexts:
+            # 5.0.x singleton runtime: the site-level form, guarded by the database.
+            try:
+                token = _issue_push_token(cloud, state, None)
+            except CloudError as exc:
+                if _push_refusal(exc) is None:
+                    raise
+                result["detail"] = _push_refusal(exc)
+                return report(result, 2)
+            if not token:
+                result["detail"] = "WatchLog did not issue a push token"
+                return report(result, 2)
+            result = _configure_recorder_push(cfg, open_fn, f"{base}/push/{token}")
+            log(f"recorder push: configured={result['configured']} "
+                f"verified={result['verified']} {result['detail']}")
+            return report(result, 0 if result["verified"] else 2)
 
-        out = configure(f"{base}/push/{token}") or {}
-        result = {"configured": bool(out.get("applied")),
-                  "verified": bool(out.get("verified")),
-                  "detail": str(out.get("detail") or "")}
-        print("PUSH_JSON " + json.dumps(result), flush=True)
-        log(f"recorder push: configured={result['configured']} "
-            f"verified={result['verified']} {result['detail']}")
-        return 0 if result["verified"] else 2
+        # Every token is issued before any recorder is touched, so a refusal for the
+        # whole site leaves every recorder exactly as it was.
+        multi = len(contexts) > 1
+        planned = []
+        try:
+            for ctx in contexts:
+                token, detail = _recorder_push_token(cloud, state, ctx, multi)
+                if token is None and not detail:
+                    detail = "WatchLog did not issue a push token"
+                planned.append((ctx, token, detail))
+        except _NoRecorderScopedPush:
+            result["detail"] = MULTI_RECORDER_PUSH_REFUSED
+            return report(result, 2)
+
+        rows = []
+        for ctx, token, detail in planned:
+            row = {"recorder": ctx.display_name, "configured": False,
+                   "verified": False, "detail": detail}
+            if token:
+                try:
+                    row.update(_configure_recorder_push(ctx.config, open_fn,
+                                                        f"{base}/push/{token}"))
+                except Exception as exc:  # noqa: BLE001 - one recorder never sinks the rest
+                    row["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+                log(f"recorder push [{ctx.display_name}]: configured={row['configured']} "
+                    f"verified={row['verified']} {row['detail']}")
+            rows.append(row)
+
+        result = {"configured": all(r["configured"] for r in rows),
+                  "verified": all(r["verified"] for r in rows),
+                  "detail": (rows[0]["detail"] if not multi else
+                             "; ".join(f"{r['recorder']}: {r['detail'] or 'ok'}"
+                                       for r in rows)),
+                  "recorders": rows}
+        return report(result, 0 if result["verified"] else 2)
     except Exception as exc:  # noqa: BLE001 - a bonus layer never fails loudly
-        result["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+        result = {"configured": False, "verified": False,
+                  "detail": f"could not configure recorder push ({type(exc).__name__})"}
         try:
             print("PUSH_JSON " + json.dumps(result), flush=True)
         except Exception:  # noqa: BLE001
