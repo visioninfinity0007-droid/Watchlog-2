@@ -183,10 +183,14 @@ Its only caller in the repo, 0119 `wl_agent_report_capabilities`, keeps
 
 | File | Version | Normalized sha256 | md5 |
 |---|---|---|---|
-| `0119_remote_agent_maintenance.sql` | 8aafb24 (= 6488bab^) | `86b2683926f750671d6fe37a4670ed8915becdf0c4cdea2549f4b9f5ffe4bd40` | `3d0f6896484ba9c328927f4e99342f69` |
+| `0119_remote_agent_maintenance.sql` | eac3a9a (= 6488bab^; same bytes as 8aafb24) | `86b2683926f750671d6fe37a4670ed8915becdf0c4cdea2549f4b9f5ffe4bd40` | `3d0f6896484ba9c328927f4e99342f69` |
 | `0119_remote_agent_maintenance.sql` | 6488bab | `c544689df8ec78bfa0a80abdfaaa36bd4212e5ed57fff33e3ad57e9414bbb95c` | `6c3e2353099013e4794592d21a2ae90e` |
-| `0121_restaurant_visual_analytics.sql` | 8aafb24 (= 6488bab^) | `d90c783782dcca8215691012dade0dc193e4610ba1cc2ed17ec8f75d76494679` | `1b712b33dfd32cd80aee97eddb551f63` |
+| `0121_restaurant_visual_analytics.sql` | eac3a9a (= 6488bab^; same bytes as 8aafb24) | `d90c783782dcca8215691012dade0dc193e4610ba1cc2ed17ec8f75d76494679` | `1b712b33dfd32cd80aee97eddb551f63` |
 | `0121_restaurant_visual_analytics.sql` | 6488bab | `49efa85d18aeaab9f84d2e08c1ee5f6b30566f9d539a58a1ab15fba4d20a82f0` | `c0d22ae5b5f4725503498f3a44264333` |
+
+The `@8aafb24` labels in queries B4 and D1 are kept exactly as run. They name the
+pre-6488bab bytes of 0119/0121, which are identical at 8aafb24 and at eac3a9a
+(6488bab's parent, the merge of PR #100); 8aafb24 is an older commit, not 6488bab^.
 
 - Neither file is recorded in `public.schema_migrations` under any version, and no
   `supabase_migrations` row is byte-identical to either version of either file
