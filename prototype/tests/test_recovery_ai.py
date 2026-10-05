@@ -219,6 +219,22 @@ class BackfillIntelligence(unittest.TestCase):
         summary, got = self._run(SegDriver(SEGS), det, frame_provider=lambda d, c, t: b"J", max_frames=1)
         self.assertEqual(len(got), 1)
         self.assertTrue(summary.get("stopped_at_limit"))
+        # The second segment was never examined: the window is not recovered (MNVR-062).
+        self.assertEqual(summary["status"], "partial")
+        self.assertEqual(summary["recovered"], 1)
+
+    def test_a_frame_budget_that_covers_every_sample_is_not_a_cut(self):
+        summary, got = self._run(SegDriver(SEGS), None, frame_provider=lambda d, c, t: b"J",
+                                 max_frames=2)
+        self.assertEqual((summary["status"], len(got)), ("supported", 2))
+        self.assertFalse(summary.get("stopped_at_limit"))
+
+    def test_samples_already_recovered_do_not_use_up_the_budget_check(self):
+        seen = set()
+        self._run(SegDriver(SEGS[:1]), None, frame_provider=lambda d, c, t: b"J", seen=seen)
+        summary, got = self._run(SegDriver(SEGS), None, frame_provider=lambda d, c, t: b"J",
+                                 seen=seen, max_frames=1)
+        self.assertEqual((summary["status"], summary["duplicates"], len(got)), ("supported", 1, 1))
 
 
 class OverlapDriver(SegDriver):

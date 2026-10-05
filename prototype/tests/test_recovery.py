@@ -582,6 +582,23 @@ class DeepRecoveryRun(unittest.TestCase):
         self.assertEqual(cloud.completes[-1]["p_recovered_count"], 1)
 
 
+class FrameBudget(unittest.TestCase):
+    def test_an_interval_whose_frame_budget_ran_out_is_partial(self):
+        # Two recordings in the first hour and a budget of one frame per chunk: the second
+        # recording of that hour is never examined (MNVR-062 verification: it was 'recovered').
+        segs = [{"start": (T0 + timedelta(minutes=m)).isoformat(),
+                 "end": (T0 + timedelta(minutes=m + 2)).isoformat(), "id": f"S{m}"}
+                for m in (10, 40)]
+        cloud = FakeCloud([interval(hours=1)])
+        events = []
+        out = recovery.RecoveryRunner(cloud, "agent", "key", FootageOnlyArchive(segs),
+                                      events.append, chunk_seconds=3600, ai_max_frames=1,
+                                      frame_provider=lambda d, c, ts: b"J",
+                                      log=lambda *a: None).run_once(limit=1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(out[0]["status"], "partial")
+
+
 class FootageOnlyArchive(DeepArchiveDriver):
     """Searchable recorded footage, no searchable event log (the vendor archive shape)."""
     def historical_capability(self):

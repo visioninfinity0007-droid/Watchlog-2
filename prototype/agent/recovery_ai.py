@@ -38,6 +38,7 @@ except ImportError:                                   # pragma: no cover - path 
     import backfill
 
 SUPPORTED, UNSUPPORTED, UNKNOWN = backfill.SUPPORTED, backfill.UNSUPPORTED, backfill.UNKNOWN
+PARTIAL = "partial"                                   # some of the window examined, the rest not
 RECOVERED_SOURCE = "recovered"                        # AI over recovered footage (stronger than event replay)
 PROVENANCE_LINE = "Recovered from recorder archive (WatchLog analysis of historical footage)"
 DEFAULT_FRAME_CLIP_SECONDS = 6                        # bounded clip length to sample one frame from
@@ -469,6 +470,15 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                     if key in seen:
                         duplicates += 1             # recovered by an earlier pass
                         continue
+                    if max_frames is not None and frames >= max_frames:
+                        # The frame budget is spent while footage of the window is still
+                        # unexamined: what was recovered stands, the window is not recovered.
+                        return {"status": PARTIAL, "recovered": recovered,
+                                "activity": activity, "snapshots": snapshots,
+                                "frames": frames, "no_frame": no_frame,
+                                "attempted": attempted, "duplicates": duplicates,
+                                "provenance": RECOVERED_SOURCE, "stopped_at_limit": True,
+                                "reason": "the frame budget ran out before the window was examined"}
 
                     attempted += 1
                     frame = provider(driver, channel, sample_ts, seg.get("start"))
@@ -490,14 +500,6 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                         snapshots += 1
                     if on_event:
                         on_event(event)
-
-                    if max_frames is not None and frames >= max_frames:
-                        return {"status": SUPPORTED, "recovered": recovered,
-                                "activity": activity, "snapshots": snapshots,
-                                "frames": frames, "no_frame": no_frame,
-                                "attempted": attempted, "duplicates": duplicates,
-                                "provenance": RECOVERED_SOURCE,
-                                "stopped_at_limit": True}
 
             cursor = res.get("next_cursor")
             if not cursor:
