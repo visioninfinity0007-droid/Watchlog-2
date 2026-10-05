@@ -184,12 +184,13 @@ Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
   hardware-free fakes, run by the backend job ("Agent 5.0.27 repair gates", "Agent 5.0.28
   live-site gates") and, for ingest and recovery payloads, by the integration job on a
   disposable Postgres. They prove the Agent's logic against the documented protocol shapes.
-    Status at this commit (the backend and integration jobs run locally on 2026-10-05; GitHub CI
-  has not run it): the integration job passes, including the recorder-scoped ingest and
-  recovery-payload e2e steps. The backend job fails three Agent steps on tests from the merged
-  recovery, Hikvision-media and Dahua-media work that disagree with each other: "Agent 5.0.27
-  repair gates" (13 tests in `test_dahua_archive_paging`, `test_dahua_archive_timezone`,
-  `test_hikvision_archive_recovery_status`, `test_recovery_dahua_archive_times`), "Agent 5.0.28
+  Status at this commit (the backend and integration jobs run locally on 2026-10-05, again after
+  the review fixes; GitHub CI has not run it): the integration job passes, including the
+  recorder-scoped ingest and recovery-payload e2e steps. The backend job fails three Agent steps
+  on tests from the merged recovery, Hikvision-media and Dahua-media work that disagree with each
+  other: "Agent 5.0.27 repair gates" (13 tests in `test_dahua_archive_paging`,
+  `test_dahua_archive_timezone`, `test_hikvision_archive_recovery_status`,
+  `test_recovery_dahua_archive_times`, `test_recovery_ai`), "Agent 5.0.28
   live-site gates" (6 in `test_recovery_hikvision_terminal`; its ONVIF, incident, event-stream,
   Hikvision and Dahua lines pass) and "Automatic outage recovery" (1 in `test_recovery_ai`).
   Nothing in this section is CI-proven until those pass on GitHub.
