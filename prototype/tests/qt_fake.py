@@ -181,6 +181,9 @@ class _Widget:
     def isEnabled(self):
         return self._enabled
 
+    def click(self):
+        self.clicked.emit()
+
     def close(self):
         self._shown = False
         app = QApplication.instance()

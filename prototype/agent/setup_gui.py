@@ -293,6 +293,13 @@ class SetupWindow(QMainWindow):
         self.search_btn.clicked.connect(self.search_recorders)
         row.addWidget(self.search_btn)
         row.addStretch(1)
+        # First install, after "Add another recorder": return to the recorders already
+        # chosen without connecting a further one (offline, wrong password, mis-click).
+        self.back_to_cameras_btn = QPushButton("Back to cameras")
+        self.back_to_cameras_btn.setObjectName("secondary")
+        self.back_to_cameras_btn.clicked.connect(self.return_to_cameras)
+        self.back_to_cameras_btn.hide()
+        row.addWidget(self.back_to_cameras_btn)
         cl.addLayout(row)
         self.discovery_status = label("", "muted")
         self.discovery_status.hide()
@@ -349,6 +356,11 @@ class SetupWindow(QMainWindow):
         self.login_progress.setTextVisible(False)
         self.login_progress.hide()
         cl.addWidget(self.login_progress)
+        self.login_back_to_cameras_btn = QPushButton("Back to cameras without this recorder")
+        self.login_back_to_cameras_btn.setObjectName("secondary")
+        self.login_back_to_cameras_btn.clicked.connect(self.return_to_cameras)
+        self.login_back_to_cameras_btn.hide()
+        cl.addWidget(self.login_back_to_cameras_btn)
         l.addWidget(c)
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
@@ -390,6 +402,20 @@ class SetupWindow(QMainWindow):
         more.addWidget(label("Connect each recorder at this site in the same installation.",
                              "muted"), 1)
         cl.addLayout(more)
+        # The recorders in this installation (shown once there is more than one), so a
+        # recorder chosen by mistake can be taken out again before Connect.
+        self.install_list = QListWidget()
+        self.install_list.setMaximumHeight(90)
+        self.install_list.hide()
+        cl.addWidget(self.install_list)
+        self.remove_recorder_btn = QPushButton("Remove selected recorder")
+        self.remove_recorder_btn.setObjectName("secondary")
+        self.remove_recorder_btn.clicked.connect(self.remove_install_recorder)
+        self.remove_recorder_btn.hide()
+        cl.addWidget(self.remove_recorder_btn)
+        self.cameras_error = label("", "muted")
+        self.cameras_error.setWordWrap(True)
+        cl.addWidget(self.cameras_error)
         l.addWidget(c)
         self._nav(l, 3, "Connect WatchLog", self.begin_finalize)
         self.stack.addWidget(page)
@@ -469,6 +495,27 @@ class SetupWindow(QMainWindow):
             else:
                 item.setStyleSheet(f"color:{MUTED};padding:8px 0;font-size:13px;")
         self.status.setText("")
+        self._refresh_install_controls()
+
+    def _refresh_install_controls(self):
+        """First install: show the ways back to, and out of, the recorders already chosen."""
+        chosen = bool(self.install_recorders) and not self.manage_recorders
+        self.back_to_cameras_btn.setVisible(chosen)
+        self.login_back_to_cameras_btn.setVisible(chosen)
+        entries = [] if self.manage_recorders else self._install_entries()
+        several = len(entries) > 1
+        current = self.install_list.currentItem()
+        keep = current.data(Qt.UserRole) if current is not None else None
+        self.install_list.clear()
+        for index, entry in enumerate(entries):
+            cameras = len((entry.get("verified_recorder") or {}).get("channels") or [])
+            item = QListWidgetItem(f"{entry['display_name']}   •   {cameras} camera(s)")
+            item.setData(Qt.UserRole, index)
+            self.install_list.addItem(item)
+        if keep is not None and int(keep) < len(entries):
+            self.install_list.setCurrentRow(int(keep))
+        self.install_list.setVisible(several)
+        self.remove_recorder_btn.setVisible(several)
 
     def set_busy(self, busy: bool, message: str = ""):
         self._busy = busy
@@ -759,12 +806,16 @@ class SetupWindow(QMainWindow):
             self.status.setText(message)
             return
         self.recorder_result = result
-        self.recorder_summary.setText(
-            f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
-        self.recorder_name_edit.setText(
-            backend.default_recorder_name(len(self.install_recorders)))
+        self._show_recorder_summary(result)
+        self.recorder_name_edit.setText(backend.unused_recorder_name(
+            [entry["display_name"] for entry in self.install_recorders]))
+        self.cameras_error.setText("")
         self.populate_cameras()
         self.go(4)
+
+    def _show_recorder_summary(self, result: dict):
+        self.recorder_summary.setText(
+            f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
 
     def _current_entry(self) -> dict:
         """The recorder on the camera step, in finalize_install's recorder shape."""
@@ -795,6 +846,7 @@ class SetupWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.camera_table.setItem(index, col, item)
+        self._refresh_install_controls()
 
     def profiles(self):
         """Connectivity-first defaults; richer camera configuration belongs in portal."""
@@ -804,11 +856,11 @@ class SetupWindow(QMainWindow):
         """Keep the recorder on screen and find the next one (first install only)."""
         if self._busy or self.manage_recorders or not self.recorder_result:
             return
-        entry = self._current_entry()
-        names = {e["display_name"].casefold() for e in self.install_recorders}
-        if entry["display_name"].casefold() in names:
-            QMessageBox.warning(self, "WatchLog Setup", "Give each recorder a different name.")
+        problem = self._install_problem(adding=True)
+        if problem:
+            self._refuse_install(problem)
             return
+        entry = self._current_entry()
         self.install_recorders.append(entry)
         self.recorder_address = ""
         self.recorder_password = ""
@@ -826,6 +878,74 @@ class SetupWindow(QMainWindow):
             self.search_recorders()
         self.status.setText(
             f"{entry['display_name']} is ready to connect. Select or enter the next recorder.")
+
+    def _install_problem(self, adding: bool) -> str | None:
+        """Why the recorders on the camera step cannot be connected as they are, in
+        the words finalize_install would use; None when they can. Checked in the UI
+        so an installer child never ends the whole installation over a typo."""
+        if not self.recorder_name_edit.text().strip() and (adding or self.install_recorders):
+            return "Give each recorder a name."
+        return backend.install_recorders_problem(self._install_entries())
+
+    def _refuse_install(self, message: str):
+        """Keep the technician on the camera step with the reason, inline (no modal box)."""
+        self.cameras_error.setText(message)
+        self.status.setText(message)
+
+    def _show_install_entry(self, entry: dict):
+        """Put an already chosen recorder back on the camera step, as it was."""
+        self.recorder_address = entry["address"]
+        self.recorder_user = entry["username"]
+        self.recorder_password = entry["password"]
+        self.recorder_result = entry["verified_recorder"]
+        self.recorder_hint = entry.get("hint")
+        self.manual_ip.setText(self.recorder_address)
+        self.user_edit.setText(self.recorder_user)
+        self.password_edit.setText(self.recorder_password)
+        self.selected_recorder.setText(f"Recorder: {self.recorder_address}")
+        self.login_error.setText("")
+        self.cameras_error.setText("")
+        self._show_recorder_summary(self.recorder_result)
+        self.recorder_name_edit.setText(entry["display_name"])
+        self.populate_cameras()
+        self.go(4)
+
+    def return_to_cameras(self):
+        """Leave Find Recorder / Login without a further recorder (first install)."""
+        if self.manage_recorders or not self.install_recorders:
+            return
+        if self._busy:
+            if self.stack.currentIndex() != 2:
+                return                  # a recorder login is being checked; let it finish
+            # Abandon discovery as Use this IP does; a late result is ignored.
+            self._worker_seq += 1
+            self._active_worker = 0
+            self.set_busy(False)
+            self._set_discovery_loading(False)
+        self._show_install_entry(self.install_recorders.pop())
+        self.status.setText("Add another recorder or connect the recorders listed.")
+
+    def remove_install_recorder(self):
+        """Take the selected recorder out of this installation before Connect."""
+        if self._busy or self.manage_recorders:
+            return
+        entries = self._install_entries()
+        if len(entries) < 2:
+            return
+        item = self.install_list.currentItem()
+        if item is None:
+            self.cameras_error.setText("Select the recorder to remove.")
+            return
+        index = int(item.data(Qt.UserRole))
+        removed = entries[index]["display_name"]
+        self.install_list.setCurrentRow(-1)
+        if index < len(self.install_recorders):
+            del self.install_recorders[index]
+            self.cameras_error.setText("")
+            self.populate_cameras()
+        else:                           # the recorder on screen: bring back the previous one
+            self._show_install_entry(self.install_recorders.pop())
+        self.status.setText(f"{removed} removed from this installation.")
 
     def install_plan(self) -> dict:
         """finalize_install arguments for the recorders chosen in this installation."""
@@ -848,6 +968,13 @@ class SetupWindow(QMainWindow):
     def begin_finalize(self):
         if self._busy:
             return
+        if not self.manage_recorders and self.stack.currentIndex() == 4:
+            # The whole recorder set is checked here, not by finalize_install on the
+            # Connect page, where a refusal would end an installer child.
+            problem = self._install_problem(adding=False)
+            if problem:
+                self._refuse_install(problem)
+                return
         self.go(5)
         self.retry_btn.hide()
         self.incomplete_status_btn.hide()
@@ -1815,6 +1942,32 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             app.processEvents()
             if window.stack.currentIndex() != 3 or "already part" not in window.login_error.text():
                 return 48
+            # That further recorder is abandoned: back to the cameras, nothing lost.
+            if window.login_back_to_cameras_btn.isHidden():
+                return 49
+            window.login_back_to_cameras_btn.click()
+            app.processEvents()
+            if (window.stack.currentIndex() != 4 or len(window.install_recorders) != 1
+                    or window.recorder_name_edit.text() != "Recorder 2"):
+                return 50
+            # Connect refuses a repeated name on the camera step itself; on the Connect
+            # page the refusal would end an installer child.
+            window.recorder_name_edit.setText("shop")
+            window.begin_finalize()
+            app.processEvents()
+            if (window.stack.currentIndex() != 4 or window._active_worker
+                    or "different name" not in window.cameras_error.text()):
+                return 51
+            # A recorder chosen by mistake is removed; the plan keeps only the other.
+            if window.install_list.count() != 2 or window.remove_recorder_btn.isHidden():
+                return 52
+            window.install_list.setCurrentRow(1)
+            window.remove_recorder_btn.click()
+            app.processEvents()
+            plan = window.install_plan()
+            if (window.install_recorders or plan["kwargs"]["additional_recorders"] is not None
+                    or plan["args"][3] != "10.10.10.2" or window.stack.currentIndex() != 4):
+                return 53
             window.install_recorders = []
             window.recorder_result = None
 

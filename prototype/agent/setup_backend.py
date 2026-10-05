@@ -1734,6 +1734,32 @@ def default_recorder_name(index: int) -> str:
     return "Primary Recorder" if int(index) == 0 else f"Recorder {int(index) + 1}"
 
 
+def unused_recorder_name(names) -> str:
+    """The prefilled name for the next recorder: the next default name that no
+    recorder already chosen uses (a technician may have typed "Recorder 2")."""
+    taken = {str(name or "").strip().casefold() for name in names or []}
+    index = len(taken)
+    while default_recorder_name(index).casefold() in taken:
+        index += 1
+    return default_recorder_name(index)
+
+
+def install_recorders_problem(entries: list[dict]) -> str | None:
+    """What finalize_install would refuse about this recorder set, as the message
+    Setup shows on the camera step before Connect; None when it is acceptable."""
+    if not entries:
+        return None
+    first = entries[0]
+    try:
+        _validate_install_recorders(
+            {"address": first.get("address"), "verified_recorder": first.get("verified_recorder"),
+             "display_name": first.get("display_name")},
+            list(entries[1:]))
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def default_camera_profiles(recorder: dict | None) -> list[dict]:
     """Connectivity-first camera choices for one verified recorder: every
     discovered channel monitored, purpose left for the portal."""
