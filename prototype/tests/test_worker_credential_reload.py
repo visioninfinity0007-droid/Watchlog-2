@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Health and recovery pick up a repaired recorder login without a restart (MNVR-012).
+
+Only the live collector reloaded the recorder credential when Setup rewrote it, and only
+while it was waiting to reconnect. The health and recovery workers kept the login they
+were started with, so after a password change they went on failing (and reporting an
+authentication fault) until the Agent restarted. Both now reload the credential whenever
+its generation changes.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "agent"))
+
+import watchlog_agent as core  # noqa: E402
+from drivers.base import DriverError  # noqa: E402
+
+A = "aaaaaaaa-0000-4000-8000-000000000001"
+
+
+class Cloud:
+    def call(self, name, **kw):
+        return {}
+
+
+@pytest.fixture
+def rotated(monkeypatch):
+    """Setup has replaced the recorder login since the worker loaded it."""
+    state = {"generation": "g2", "reloads": 0}
+
+    def reload(cfg):
+        state["reloads"] += 1
+        cfg.nvr_username, cfg.nvr_password = "new-user", "new-pw"
+
+    monkeypatch.setattr(core, "_credential_generation_for_cfg", lambda _cfg: state["generation"])
+    monkeypatch.setattr(core, "_reload_credential_for_cfg", reload)
+    monkeypatch.setattr(core, "log", lambda _m: None)
+    return state
+
+
+def _cfg(**extra):
+    cfg = SimpleNamespace(
+        nvr_driver="hikvision-isapi", nvr_url="http://recorder.invalid",
+        nvr_username="old-user", nvr_password="old-pw", recorder_local_id="local-a",
+        credential_generation_seen="g1", recorder_cloud_id=None,
+        health_batch=4, health_concurrency=1)
+    cfg.__dict__.update(extra)
+    return cfg
+
+
+def test_health_cycle_uses_a_login_replaced_after_start(monkeypatch, rotated):
+    used = []
+
+    def build(name, url, user, password, *a, **k):
+        used.append((user, password))
+        raise DriverError("recorder did not answer")
+
+    monkeypatch.setattr(core, "build", build)
+    cfg = _cfg()
+    core.health_cycle(Cloud(), {"agent_id": "agent", "agent_key": "key"}, cfg, {})
+    assert used == [("new-user", "new-pw")]
+    assert cfg.credential_generation_seen == "g2"
+
+    core.health_cycle(Cloud(), {"agent_id": "agent", "agent_key": "key"}, cfg, {})
+    assert rotated["reloads"] == 1, "an unchanged credential is not decrypted again"
+
+
+def test_an_unreadable_new_login_keeps_the_old_one_and_retries(monkeypatch, rotated):
+    used = []
+
+    def broken(_cfg):
+        raise RuntimeError("credential unreadable")
+
+    monkeypatch.setattr(core, "_reload_credential_for_cfg", broken)
+    monkeypatch.setattr(core, "build", lambda name, url, user, pw, *a, **k: (
+        used.append(user) or (_ for _ in ()).throw(DriverError("down"))))
+    cfg = _cfg()
+    core.health_cycle(Cloud(), {"agent_id": "agent", "agent_key": "key"}, cfg, {})
+    assert used == ["old-user"]
+    assert cfg.credential_generation_seen == "g1", "retried on the next cycle"
+
+
+def test_recovery_worker_uses_a_login_replaced_after_start(monkeypatch, rotated):
+    stop = threading.Event()
+    used = []
+
+    def open_archive(cfg):
+        used.append(cfg.nvr_password)
+        stop.set()
+        raise DriverError("recorder did not answer")
+
+    monkeypatch.setattr(core, "open_archive_driver", open_archive)
+    spool = SimpleNamespace(pending_recovery_gap=lambda: None, count=lambda: 0)
+    cfg = _cfg(recorder_cloud_id=A, recovery_enabled=True, recovery_seconds=0.01,
+               recovery_ai_enabled=False, last_live_path=Path("unused-last-live.json"),
+               recovery_threshold_seconds=180)
+    channels = [{"channel": "1", "camera_id": "cam-1"}]
+    core.recovery_worker(cfg, {"agent_id": "agent", "agent_key": "key"}, Cloud(), stop,
+                         spool, channels, {})
+    assert used == ["new-pw"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
