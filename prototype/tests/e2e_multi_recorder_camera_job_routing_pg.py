@@ -225,6 +225,19 @@ def run() -> int:
                 msg,
             )
 
+            # MNVR-069: the read catalog advertises only actions the Agent runs.
+            for unsupported in ("get_configuration_drift", "get_recorder_capabilities"):
+                raised, msg = as_auth_raises(
+                    user,
+                    "select wl_site_command_enqueue(%s,%s,%s::jsonb,'read','test')",
+                    site, unsupported, json.dumps({"recorder_id": str(rec_a)}),
+                )
+                step(
+                    raised and "not in the read catalog" in msg.lower(),
+                    f"read catalog refuses {unsupported}, which the Agent cannot run",
+                    msg,
+                )
+
             claimed_cmd = as_anon(
                 "select wl_agent_claim_command(%s,%s)", agent, key
             )[0]
