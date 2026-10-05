@@ -1786,12 +1786,29 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
 def _site_control_driver(cfg: Config):
     """The recorder driver a Site Control command runs against. 'auto' (the Config default, and
     what older installers wrote) is not a registered driver name, so resolve it the way the health
-    cycle does instead of letting build() raise KeyError after the command was claimed."""
+    cycle does instead of letting build() raise KeyError after the command was claimed.
+
+    The device must still be the recorder the command names: after an address swap another
+    recorder that accepts the same login can answer there (contract section 13). Where a serial
+    is saved for this recorder, the device's reported serial is checked before any command
+    runs (a RecorderIdentityMismatch then fails the claimed command); with none saved nothing
+    extra is probed and nothing is refused."""
     if cfg.nvr_driver in ("auto", ""):
-        driver, _info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
-                                   log=lambda *a, **k: None)
-        return driver
-    return build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+        driver, info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
+                                  log=lambda *a, **k: None)
+    else:
+        driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+        info = None
+    try:
+        if _fingerprint_serial(getattr(cfg, "recorder_identity_fingerprint", None)):
+            require_recorder_identity(cfg, info if info is not None else driver.probe())
+    except BaseException:
+        try:
+            driver.close()
+        except Exception:                                       # noqa: BLE001
+            pass
+        raise
+    return driver
 
 
 def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site_control) -> None:

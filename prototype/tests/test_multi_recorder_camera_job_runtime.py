@@ -563,3 +563,86 @@ def test_registry_required_only_when_configured_rows_or_an_unreadable_registry(
     rr.registry_path().write_text("{not json", encoding="utf-8")
     assert recorder_runtime.mark_registry_required(base) is True
     assert recorder_runtime.registry_unavailable(base) is True
+
+
+# --- Site Control verifies the recorder's identity before it runs a command --------------
+
+@pytest.mark.parametrize("driver_name", ["auto", "dahua-cgi"])
+def test_site_control_refuses_a_different_recorder_at_the_saved_address(
+        monkeypatch, driver_name):
+    cfg_a = _cfg("a", "11111111-1111-1111-1111-111111111111", "http://192.0.2.10")
+    cfg_a.nvr_driver = driver_name
+    cfg_a.recorder_identity_fingerprint = "serial:AAA111"
+    monkeypatch.setattr(recorder_runtime, "config_for_cloud_recorder", lambda _c, _r: cfg_a)
+    drivers, executed, completed = [], [], []
+
+    class Driver:
+        closed = False
+
+        def probe(self):
+            return SimpleNamespace(serial="BBB222", vendor="Dahua", model="X")
+
+        def close(self):
+            self.closed = True
+
+    def make(*_a, **_k):
+        drivers.append(Driver())
+        return drivers[-1]
+
+    monkeypatch.setattr(core, "build", make)
+    monkeypatch.setattr(core, "autodetect", lambda *_a, **_k: (make(), make().probe()))
+    for name in ("execute_read", "execute_write"):
+        monkeypatch.setattr(site_control, name,
+                            lambda *_a, **_k: executed.append(_a) or {"ok": True})
+
+    class Cloud:
+        def call(self, name, **kwargs):
+            completed.append(kwargs)
+            return {"ok": True}
+
+    core._run_claimed_command(
+        cfg_a, {"agent_id": "agent", "agent_key": "key"}, Cloud(),
+        {"id": "cmd-a", "recorder_id": cfg_a.recorder_cloud_id, "action": "get_channels",
+         "params": {}}, site_control)
+
+    assert executed == [], "a command for recorder A never runs on another device"
+    assert completed[0]["p_status"] == "failed"
+    assert "serial number" in completed[0]["p_error"]
+    assert "192.0.2.10" not in completed[0]["p_error"] and "BBB222" not in completed[0]["p_error"]
+    assert drivers and all(d.closed for d in drivers[:1])
+
+
+def test_site_control_runs_on_the_saved_recorder_and_skips_the_probe_without_a_serial(
+        monkeypatch):
+    cfg_a = _cfg("a", "11111111-1111-1111-1111-111111111111", "http://a")
+    cfg_a.nvr_driver = "dahua-cgi"
+    monkeypatch.setattr(recorder_runtime, "config_for_cloud_recorder", lambda _c, _r: cfg_a)
+    probes, completed = [], []
+
+    class Driver:
+        def probe(self):
+            probes.append(1)
+            return SimpleNamespace(serial="AAA111")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(core, "build", lambda *_a, **_k: Driver())
+    monkeypatch.setattr(site_control, "execute_read",
+                        lambda *_a, **_k: {"ok": True, "data": {}})
+
+    class Cloud:
+        def call(self, name, **kwargs):
+            completed.append(kwargs)
+            return {"ok": True}
+
+    state = {"agent_id": "agent", "agent_key": "key"}
+    cmd = {"id": "cmd-a", "recorder_id": cfg_a.recorder_cloud_id, "action": "get_channels",
+           "params": {}}
+    # Unknown stays unknown: no saved serial, no extra probe, nothing refused.
+    core._run_claimed_command(cfg_a, state, Cloud(), cmd, site_control)
+    assert probes == [] and completed[-1]["p_status"] == "succeeded"
+    # A saved serial that matches: verified, then run.
+    cfg_a.recorder_identity_fingerprint = "serial:aaa111"
+    core._run_claimed_command(cfg_a, state, Cloud(), cmd, site_control)
+    assert probes == [1] and completed[-1]["p_status"] == "succeeded"
