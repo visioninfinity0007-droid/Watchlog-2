@@ -362,6 +362,12 @@ def probe_and_sync_recorder(cloud, state: dict,
         )
         if not isinstance(camera_mapping, dict):
             raise RuntimeError("recorder camera sync returned no mapping")
+        # WatchLog now maps these channels to camera UUIDs: keep each ONVIF camera on the
+        # channel synced for the rest of the process (positional renumbering would move a
+        # camera onto one that disappeared before it). Other recorders are not bound.
+        pin = getattr(driver, "pin_inventory", None)
+        if callable(pin):
+            pin()
 
         if capabilities and capabilities.get("channels"):
             cloud.call(

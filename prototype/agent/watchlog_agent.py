@@ -1510,6 +1510,11 @@ def _retry_recorder_cloud_inventory(cloud: Cloud, state: dict, cfg: Config,
         raise RuntimeError("recorder camera retry returned no mapping")
     if not set(channels).issubset({str(k) for k in mapping}):
         raise RuntimeError("recorder camera retry mapping is incomplete")
+    # Pin what WatchLog accepted, as main() does (_synced_inventory): this recorder's ONVIF
+    # cameras then keep their synced channels while the Agent runs.
+    pin = getattr(driver, "pin_inventory", None)
+    if callable(pin):
+        pin()
 
     holder["camera_mapping"] = {str(k): str(v) for k, v in mapping.items()}
     holder["camera_sync_signature"] = signature
@@ -3004,8 +3009,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             return item.get("channel")
         return getattr(item, "channel", None)
 
-    def _synced_inventory():
-        """(archive channels, {camera UUID: channel}) of the bound recorder's synced cameras."""
+    def _bound_inventory():
+        """(archive channels, {camera UUID: channel}) of the bound recorder's synced cameras.
+        (Not the module-level _synced_inventory(driver), which enumerates and pins a driver.)"""
         source = channels() if callable(channels) else channels
         chans, cams = [], {}
         for c in source or []:
@@ -3056,7 +3062,7 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             _reload_credential_if_changed(cfg)
             recorder_id = getattr(cfg, "recorder_cloud_id", None)
             if recorder_id:
-                cams, camera_channels = _synced_inventory()
+                cams, camera_channels = _bound_inventory()
                 if not cams:
                     # Never guess a recorder channel. A recorder that was unreachable at
                     # startup waits until health enumeration has explicitly synced its
