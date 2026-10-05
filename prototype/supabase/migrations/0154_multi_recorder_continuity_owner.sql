@@ -20,7 +20,9 @@
 --   * Agent recorder sync may update is_primary/is_configured but never continuity_owner;
 --   * a same-site reinstall (fresh local id) re-adopts the continuity recorder and
 --     flags the previous installation's secondaries as needing re-add, instead of
---     creating duplicate recorders; a recorder's known serial is never
+--     creating duplicate recorders; a fresh primary proven to be another recorder
+--     (a replaced NVR) binds as that recorder or a new one and the untouched
+--     continuity recorder is flagged instead; a recorder's known serial is never
 --     overwritten (wl_sync_recorders below).
 
 alter table public.recorders
@@ -149,11 +151,12 @@ revoke all on function public.wl_recorder_event_dedupe_key(
 -- cameras orphaned, and the old secondaries silently offline. Two facts make
 -- re-adoption deterministic:
 --   * bound_agent_id     the Agent whose wl_sync_recorders last named the row;
---   * readd_required_at  set on a configured secondary that the site's current
---                        installation has not re-added since it re-adopted the
---                        continuity recorder. It stays configured (its cameras
---                        stay expected, so coverage never hides them) and is
---                        listed by wl_multi_recorder_agent_contract.
+--   * readd_required_at  set on a configured recorder that the site's current
+--                        installation has not re-added since its fresh
+--                        registry (or that an earlier installation bound). It
+--                        stays configured (its cameras stay expected, so
+--                        coverage never hides them) and is listed by
+--                        wl_multi_recorder_agent_contract.
 alter table public.recorders
   add column if not exists bound_agent_id uuid,
   add column if not exists readd_required_at timestamptz;
@@ -192,31 +195,39 @@ revoke all on function public.wl_recorder_fingerprint_norm(text)
 -- first recorder created (and so the continuity owner), and on a legacy singleton
 -- site it is the item that adopts legacy-default, whatever the payload order.
 --
--- Re-adoption (same-site reinstall, or the same Agent losing its registry): when
+-- Fresh registry (same-site reinstall, or the same Agent losing its registry):
 -- the payload does not name the continuity recorder and its primary's local id
--- is new to the site, that primary IS the re-staged continuity recorder. The
--- continuity row takes the new local id; its UUID, cameras, history and
--- continuity ownership stay. It fails closed (42501, nothing changes) when the
--- payload proves otherwise (the primary's identity fingerprint is another
--- recorder of the site, the primary's and the continuity recorder's serials are
--- both known and differ, or another new row carries the continuity recorder's
--- fingerprint), or when the caller is an earlier installation than the one
--- that last bound the continuity recorder. Remaining presumption: when either
--- serial is unknown (the primary reported none, or the continuity recorder
--- never did), nothing can disprove identity at re-adoption, so the re-staged
--- primary is presumed to be the continuity recorder. Setup should therefore
--- stage the continuity recorder as the first primary after a reinstall and send
--- its serial whenever the recorder reports one. A later sync that proves the
--- presumption wrong cannot rewrite history: for every recorder, a configured
--- item whose known identity fingerprint differs from the recorder's recorded
--- one fails closed (42501, nothing changes), and a recorded fingerprint is only
--- ever filled, never replaced. Disabling such a recorder still works.
--- Configured secondaries the payload
--- does not name are flagged readd_required_at after a re-adoption, or whenever
--- an earlier-enrolled Agent bound them. A new local id whose identity
--- fingerprint matches exactly one recorder of the site that the payload does
--- not name re-adopts that recorder (re-adding the same physical recorder);
--- without such proof it is a new recorder.
+-- is new to the site. A caller that is an earlier installation than the one
+-- that last bound the continuity recorder fails closed (42501, nothing
+-- changes). Otherwise:
+--   * re-adoption: unless the payload proves otherwise, the primary IS the
+--     re-staged continuity recorder. The continuity row takes the new local
+--     id; its UUID, cameras, history and continuity ownership stay.
+--   * proven different (the primary's identity fingerprint is another recorder
+--     of the site, the primary's and the continuity recorder's serials are both
+--     known and differ - a replaced NVR -, or another new row carries the
+--     continuity recorder's fingerprint): the primary is never grafted onto the
+--     continuity row. It binds as the recorder it proves to be, or as a new
+--     recorder; a new row carrying the continuity recorder's fingerprint
+--     re-adopts it; otherwise the continuity row stays untouched (local id,
+--     serial, cameras) and is flagged as needing re-add, so the new
+--     installation can bind and the gap stays visible.
+-- Remaining presumption: when either serial is unknown (the primary reported
+-- none, or the continuity recorder never did), nothing can disprove identity at
+-- re-adoption, so the re-staged primary is presumed to be the continuity
+-- recorder. Setup should therefore stage the continuity recorder as the first
+-- primary after a reinstall and send its serial whenever the recorder reports
+-- one. A later sync that proves the presumption wrong cannot rewrite history:
+-- for every recorder, a configured item whose known identity fingerprint
+-- differs from the recorder's recorded one fails closed (42501, nothing
+-- changes), and a recorded fingerprint is only ever filled, never replaced.
+-- Disabling such a recorder still works.
+-- Configured recorders the payload does not name are flagged readd_required_at
+-- after a fresh registry, or whenever an earlier-enrolled Agent bound them. A
+-- new local id whose identity fingerprint matches exactly one recorder of the
+-- site that the payload does not name re-adopts that recorder (re-adding the
+-- same physical recorder, the continuity recorder included); without such
+-- proof it is a new recorder.
 create or replace function public.wl_sync_recorders(
   p_agent_id uuid,
   p_agent_key text,
@@ -240,6 +251,7 @@ declare
   v_existing integer;
   v_payload_keys text[];
   v_primary_item jsonb;
+  v_fresh_registry boolean := false;
   v_readopt boolean := false;
   v_matches integer;
 begin
@@ -321,7 +333,9 @@ begin
    where coalesce((r->>'is_primary')::boolean,false)
    limit 1;
 
-  -- Re-adoption is decided once, before anything changes.
+  -- Re-adoption is decided once, before anything changes. A fresh registry:
+  -- the payload does not name the continuity recorder and its primary's local
+  -- id is new to the site.
   if v_primary_item is not null
      and v_continuity.id is not null
      and not (v_continuity.local_key = any(v_payload_keys))
@@ -332,35 +346,6 @@ begin
           and x.local_key=btrim(v_primary_item->>'local_key')
      )
   then
-    if exists (
-      select 1 from public.recorders x
-       where x.tenant_id=v_agent.tenant_id
-         and x.site_id=v_agent.site_id
-         and x.id<>v_continuity.id
-         and public.wl_recorder_fingerprint_norm(x.identity_fingerprint)
-             = public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint')
-    ) or exists (
-      select 1 from jsonb_array_elements(p_recorders) r
-       where not coalesce((r->>'is_primary')::boolean,false)
-         and public.wl_recorder_fingerprint_norm(r->>'identity_fingerprint')
-             = public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint)
-         and not exists (
-           select 1 from public.recorders x
-            where x.tenant_id=v_agent.tenant_id
-              and x.site_id=v_agent.site_id
-              and x.local_key=btrim(r->>'local_key')
-         )
-    ) or (
-      -- Both serials known and different: a different physical recorder.
-      public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint') is not null
-      and public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint) is not null
-      and public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint')
-          <> public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint)
-    ) then
-      raise exception 'recorder registry does not include this site''s continuity recorder'
-        using errcode='42501';
-    end if;
-
     if v_continuity.bound_agent_id is not null
        and v_continuity.bound_agent_id<>v_agent.id
        and exists (
@@ -373,7 +358,41 @@ begin
         using errcode='42501';
     end if;
 
-    v_readopt := true;
+    v_fresh_registry := true;
+
+    -- Proof that the primary is NOT the continuity recorder. Then it is never
+    -- grafted onto the continuity row: it is bound as the recorder it proves
+    -- to be, or as a new one, and the untouched continuity recorder is
+    -- flagged as needing re-add below.
+    v_readopt := not (
+      exists (
+        -- The primary's identity fingerprint is another recorder of the site.
+        select 1 from public.recorders x
+         where x.tenant_id=v_agent.tenant_id
+           and x.site_id=v_agent.site_id
+           and x.id<>v_continuity.id
+           and public.wl_recorder_fingerprint_norm(x.identity_fingerprint)
+               = public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint')
+      ) or exists (
+        -- Another new row carries the continuity recorder's fingerprint.
+        select 1 from jsonb_array_elements(p_recorders) r
+         where not coalesce((r->>'is_primary')::boolean,false)
+           and public.wl_recorder_fingerprint_norm(r->>'identity_fingerprint')
+               = public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint)
+           and not exists (
+             select 1 from public.recorders x
+              where x.tenant_id=v_agent.tenant_id
+                and x.site_id=v_agent.site_id
+                and x.local_key=btrim(r->>'local_key')
+           )
+      ) or (
+        -- Both serials known and different: a different physical recorder.
+        public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint') is not null
+        and public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint) is not null
+        and public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint')
+            <> public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint)
+      )
+    );
   end if;
 
   -- Remove preferred-primary designation before applying the complete desired
@@ -464,12 +483,13 @@ begin
     end if;
 
     -- Re-adding a recorder the site already has: proven by its fingerprint.
+    -- This includes a continuity recorder the payload does not name (one that
+    -- a fresh primary was proven not to be).
     if v_recorder.id is null and v_fingerprint is not null then
       select count(*) into v_matches
         from public.recorders x
        where x.tenant_id=v_agent.tenant_id
          and x.site_id=v_agent.site_id
-         and not x.continuity_owner
          and not (x.local_key = any(v_payload_keys))
          and public.wl_recorder_fingerprint_norm(x.identity_fingerprint)=v_fingerprint;
 
@@ -484,10 +504,13 @@ begin
                updated_at=now()
          where x.tenant_id=v_agent.tenant_id
            and x.site_id=v_agent.site_id
-           and not x.continuity_owner
            and not (x.local_key = any(v_payload_keys))
            and public.wl_recorder_fingerprint_norm(x.identity_fingerprint)=v_fingerprint
         returning x.* into v_recorder;
+
+        if v_recorder.id=v_continuity.id then
+          v_continuity := v_recorder;
+        end if;
       end if;
     end if;
 
@@ -547,23 +570,23 @@ begin
     v_out := v_out || jsonb_build_object(v_local_key,v_recorder.id);
   end loop;
 
-  -- The previous installation's secondaries stay configured and visible until
-  -- this installation re-adds them (or disables them): every unnamed one after
-  -- a re-adoption, and otherwise those an earlier-enrolled Agent bound (Setup
-  -- may reuse the continuity recorder's old local id, so no re-adoption runs).
-  -- An unnamed recorder this Agent bound itself is left alone: omission alone
-  -- never changes a recorder.
+  -- The previous installation's recorders stay configured and visible until
+  -- this installation re-adds them (or disables a secondary): every unnamed one
+  -- after a fresh registry (including the continuity recorder when the fresh
+  -- primary was proven to be another recorder), and otherwise those an
+  -- earlier-enrolled Agent bound (Setup may reuse old local ids, so no fresh
+  -- registry is seen). An unnamed recorder this Agent bound itself is left
+  -- alone: omission alone never changes a recorder.
   update public.recorders r
      set readd_required_at=coalesce(r.readd_required_at,now()),
          updated_at=now()
    where r.tenant_id=v_agent.tenant_id
      and r.site_id=v_agent.site_id
      and r.is_configured
-     and not r.continuity_owner
      and not (r.local_key = any(v_payload_keys))
      and r.readd_required_at is null
      and (
-       v_readopt
+       v_fresh_registry
        or exists (
          select 1 from public.agents b
           where b.id=r.bound_agent_id
