@@ -80,9 +80,12 @@ def main() -> None:
     # 0085's cameras_configuration_truth trigger materializes a camera_health row (on the insert
     # and again on the configure update), so upsert the desired offline/recording state whether or
     # not the row pre-exists; pre-0085 there is no trigger and this simply inserts it.
-    conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, recording_state) "
-                 "values (%s,%s,%s,'offline','recording') "
-                 "on conflict (camera_id) do update set health_state='offline', recording_state='recording'",
+    # The camera reports a video-loss signal: since NEW-L4 only that cause is a critical
+    # camera_offline fault (a probe timeout is a camera_not_verified warning).
+    conn.execute("insert into camera_health (camera_id, tenant_id, site_id, health_state, reason_code, "
+                 "recording_state) values (%s,%s,%s,'offline','video_loss','recording') "
+                 "on conflict (camera_id) do update set health_state='offline', reason_code='video_loss', "
+                 "recording_state='recording'",
                  (cam, tenant, site))
     conn.execute("insert into nvr_health (agent_id, tenant_id, site_id, nvr_reachable, nvr_auth_ok, storage_state) "
                  "values (%s,%s,%s, true, true, 'ok')", (agent, tenant, site))

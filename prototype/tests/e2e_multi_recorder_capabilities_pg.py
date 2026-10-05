@@ -107,10 +107,10 @@ def run() -> int:
                 return cur.execute(
                     f"""insert into public.agents(
                          tenant_id,site_id,agent_key_hash,hostname,platform,
-                         agent_version,last_seen_at
+                         agent_version,device_driver,last_seen_at
                        ) values (
                          %s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),
-                         %s,'windows','5.0.27',{seen}
+                         %s,'windows','5.0.27','onvif',{seen}
                        ) returning id""",
                     (tenant_id, site_id, key, f"agent-{suffix}"),
                 ).fetchone()[0]

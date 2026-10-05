@@ -980,6 +980,11 @@ revoke all on function public.wl_event_is_recorder_scoped_disk(text,uuid,jsonb)
 --     recorder_health.storage_state alone (0152 wl_my_site_recorders) does
 --     not see it and has to consult the open 'storage' fault.
 -- UNKNOWN never opens a fault; MISSING/DISABLED cameras stay inventory.
+-- An offline camera's fault reason comes from camera_health.reason_code
+-- (NEW-L4): only a video-loss signal is critical camera_offline/video_loss;
+-- a probe timeout or any other cause is a 'camera_not_verified' warning.
+-- The key 'camera:<id>:offline' is unchanged, and an open row follows the
+-- current cause.
 -- ---------------------------------------------------------------------
 create or replace function public.wl_reconcile_site_faults(p_site_id uuid)
 returns jsonb
@@ -995,6 +1000,7 @@ declare
   v_configured int := 0;
   v_desired jsonb;
   v_opened int := 0;
+  v_reclassified int := 0;
   v_resolved int := 0;
   v_open_total int := 0;
 begin
@@ -1143,8 +1149,19 @@ begin
        and o.storage_observed_at >= v_fresh_cut
        and o.storage_state in ('fault','degraded')
     union all
+    -- The cause comes from camera_health.reason_code. Only a reported
+    -- video-loss signal is a critical camera_offline/video_loss fault; a
+    -- probe timeout (or any other cause) means WatchLog could not verify
+    -- the camera, which is a warning, never video loss.
     select 'camera:' || ch.camera_id::text || ':offline',
-           'camera', 'camera_offline', 'critical', 'video_loss',
+           'camera',
+           case when ch.reason_code::text = 'video_loss'
+                then 'camera_offline' else 'camera_not_verified' end,
+           case when ch.reason_code::text = 'video_loss'
+                then 'critical' else 'warning' end,
+           case when ch.reason_code::text in
+                     ('video_loss','probe_timeout','stale_frame','tamper')
+                then ch.reason_code::text else 'unknown' end,
            ch.camera_id, null::uuid
       from public.camera_health ch
       left join public.camera_inventory ci on ci.camera_id = ch.camera_id
@@ -1197,6 +1214,26 @@ begin
     returning 1
   ) select count(*) into v_opened from ins;
 
+  -- A camera's cause can change while its fault stays open (probe timeout
+  -- then video loss, or the reverse). Keep the open row's classification
+  -- current under the same key; state, acknowledgement and opened_at stay.
+  with d as (
+    select * from jsonb_to_recordset(v_desired) as x(
+      dedupe_key text, fault_domain text, fault_type text,
+      severity text, reason_code text)
+  ), upd as (
+    update public.operational_faults f
+       set fault_type=d.fault_type, severity=d.severity,
+           reason_code=d.reason_code
+      from d
+     where f.site_id=p_site_id and f.state<>'resolved'
+       and d.fault_domain='camera'
+       and f.dedupe_key=d.dedupe_key
+       and (f.fault_type, f.severity, f.reason_code::text)
+           is distinct from (d.fault_type, d.severity, d.reason_code)
+    returning 1
+  ) select count(*) into v_reclassified from upd;
+
   with res as (
     update public.operational_faults f
        set state='resolved', resolved_at=v_now
@@ -1213,6 +1250,7 @@ begin
                             'current_agent_id',v_current_agent,
                             'configured_recorders',v_configured,
                             'evaluated_at',v_now,'opened',v_opened,
+                            'reclassified',v_reclassified,
                             'resolved',v_resolved,'open_total',v_open_total);
 end
 $function$;
