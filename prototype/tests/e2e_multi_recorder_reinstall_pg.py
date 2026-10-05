@@ -26,6 +26,10 @@ rolls back. Proves:
 - a recorder's known serial is never overwritten by a different one: a later
   sync proving the presumed re-adoption wrong is refused (42501), while
   disabling such a recorder still works;
+- the current Agent re-adds or retires a flagged recorder (the continuity
+  recorder only re-adds) by its cloud id: same UUID and cameras, flag cleared,
+  no duplicate; ids of other sites, unflagged rows and proven-different
+  recorders are refused;
 - the same Agent losing its registry re-adopts deterministically too;
 - a single-recorder site reinstalled the same way keeps one recorder and its
   legacy 5.0.x camera sync keeps working.
@@ -155,12 +159,14 @@ def run() -> int:
                     "select id,recorder_id,channel from cameras where site_id=%s",
                     (site_id,)).fetchall()}
 
-            def row(local_key, primary, serial=None, configured=True, name=None):
+            def row(local_key, primary, serial=None, configured=True, name=None, readd=None):
                 out = {"local_key": local_key, "display_name": name or local_key,
                        "driver": "hikvision", "is_primary": primary,
                        "is_configured": configured}
                 if serial:
                     out["identity_fingerprint"] = f"serial:{serial}"
+                if readd:
+                    out["readd_recorder_id"] = readd
                 return out
 
             def needing_readd(agent_id, key):
@@ -512,7 +518,23 @@ def run() -> int:
                  "one continuity owner and one primary; the Agent contract lists A and B as "
                  "needing re-add", str(inv4))
 
-            # The old NVR A returning with its serial re-adopts A, continuity kept.
+            # The flagged continuity recorder is re-added by its cloud id, never
+            # onto a proven-different recorder and never disabled.
+            snapshot4 = recorders(site4)
+            _, state, msg = sync(agent_s, key_s, [
+                row("c-new", True, "CCC333", name="Recorder C"),
+                row("a-back", False, "DDD444", name="Recorder A", readd=rec_a4),
+            ])
+            step(state == "42501" and recorders(site4) == snapshot4
+                 and fingerprints(site4).get(rec_a4) == "serial:AAA111",
+                 "re-adding A by id with a different known serial fails closed, nothing changes",
+                 msg)
+            _, state, msg = sync(agent_s, key_s, [
+                row("c-new", True, "CCC333", name="Recorder C"),
+                row("a-back", False, configured=False, name="Recorder A", readd=rec_a4),
+            ])
+            step(state == "42501" and recorders(site4) == snapshot4,
+                 "the continuity recorder cannot be retired by id in contract v4", msg)
             cur.execute("savepoint a_serial_sp")
             got, state, msg = sync(agent_s, key_s, [
                 row("c-new", True, "CCC333", name="Recorder C"),
@@ -522,6 +544,29 @@ def run() -> int:
                  and recorders(site4)[rec_a4]["readd"] is None,
                  "the old NVR A returning with its serial re-adopts A's row", msg)
             cur.execute("rollback to savepoint a_serial_sp")
+            got, state, msg = sync(agent_s, key_s, [
+                row("c-new", True, "CCC333", name="Recorder C"),
+                row("a-back", False, name="Recorder A", readd=rec_a4),
+            ])
+            recs4 = recorders(site4)
+            step(state is None and str((got or [{}])[0].get("a-back")) == rec_a4
+                 and len(recs4) == 3 and recs4[rec_a4]["key"] == "a-back"
+                 and recs4[rec_a4]["readd"] is None and recs4[rec_a4]["continuity"] is True
+                 and fingerprints(site4).get(rec_a4) == "serial:AAA111"
+                 and needing_readd(agent_s, key_s) == {rec_b4},
+                 "re-adding A by its id without a serial re-adopts A's row and clears its flag",
+                 msg or json.dumps(recs4))
+            back_a4 = cameras(agent_s, key_s, rec_a4, ["1", "2"])
+            step({k: str(v) for k, v in back_a4.items()} == {k: str(v) for k, v in cams_a4.items()},
+                 "A's camera sync after re-adding by id reuses its camera UUIDs",
+                 json.dumps(back_a4, default=str))
+            again4, state, msg = sync(agent_s, key_s, [
+                row("c-new", True, "CCC333", name="Recorder C"),
+                row("a-back", False, name="Recorder A", readd=rec_a4),
+            ])
+            step(state is None and str((again4 or [{}])[0].get("a-back")) == rec_a4
+                 and len(recorders(site4)) == 3,
+                 "a re-run naming the same id is idempotent", msg)
 
             # ----------------------------------------------------------------
             # The presumption is later disproven: a re-adopted continuity
@@ -581,6 +626,84 @@ def run() -> int:
                  and fingerprints(site5).get(rec_b5) == "serial:BBB222",
                  "disabling that recorder still works and keeps its recorded serial", msg)
             cur.execute("rollback to savepoint secondary_serial_sp")
+
+            # ----------------------------------------------------------------
+            # A flagged secondary that reports no serial: re-added or retired
+            # by its cloud id, with no duplicate recorder or cameras.
+            # ----------------------------------------------------------------
+            tenant6, site6 = bootstrap("reinstall-byid@watchlog.test", "Reinstall By Id",
+                                       "By Id Mart")
+            key_v = "reinstall-byid-old-agent"
+            agent_v = add_agent(tenant6, site6, key_v, "byid-old-install", "30 days")
+            old6, _, _ = sync(agent_v, key_v, [
+                row("a-old", True, name="Recorder A"),
+                row("b-old", False, name="Recorder B"),
+            ])
+            rec_a6, rec_b6 = (str((old6 or [{}])[0].get(k)) for k in ("a-old", "b-old"))
+            cams_b6 = cameras(agent_v, key_v, rec_b6, ["1", "2"])
+            cams6 = site_cameras(site6)
+            seen(agent_v, "1 hour")
+            key_w = "reinstall-byid-new-agent"
+            agent_w = add_agent(tenant6, site6, key_w, "byid-new-install", "0 seconds")
+            got, state, msg = sync(agent_w, key_w, [row("a-new", True, name="Recorder A")])
+            step(state is None and str((got or [{}])[0].get("a-new")) == rec_a6
+                 and needing_readd(agent_w, key_w) == {rec_b6},
+                 "after the reinstall B (no serial) is listed as needing re-add", msg)
+            snapshot6 = recorders(site6)
+            refusals = [
+                ("42501", [row("a-new", True), row("b-new", False, readd=rec_a6)],
+                 "a recorder that is not waiting for re-add"),
+                ("42501", [row("a-new", True), row("b-new", False, readd=rec_b4)],
+                 "another site's recorder"),
+                ("22023", [row("a-new", True), row("b-new", False, readd=rec_b6),
+                           row("b-two", False, readd=rec_b6)],
+                 "the same id twice"),
+                ("22023", [row("a-new", True), row("b-new", False, readd="not-a-recorder")],
+                 "a malformed id"),
+                ("42501", [row("a-new", True, readd=rec_b6)],
+                 "a local id that already belongs to another recorder"),
+            ]
+            for want, payload, why in refusals:
+                _, state, msg = sync(agent_w, key_w, payload)
+                step(state == want and recorders(site6) == snapshot6,
+                     f"re-add by id refuses {why} ({want}), nothing changes",
+                     f"{state} {msg}")
+            cur.execute("savepoint unlisted_sp")
+            cur.execute("update recorders set is_configured=false where id=%s", (rec_b6,))
+            _, state, msg = sync(agent_w, key_w, [row("a-new", True),
+                                                  row("b-new", False, readd=rec_b6)])
+            step(state == "42501",
+                 "re-add by id refuses a flagged recorder the contract does not list (disabled)",
+                 f"{state} {msg}")
+            cur.execute("rollback to savepoint unlisted_sp")
+            cur.execute("savepoint retire_sp")
+            got, state, msg = sync(agent_w, key_w, [
+                row("a-new", True, name="Recorder A"),
+                row("b-gone", False, configured=False, name="Recorder B", readd=rec_b6),
+            ])
+            recs6 = recorders(site6)
+            step(state is None and str((got or [{}])[0].get("b-gone")) == rec_b6
+                 and len(recs6) == 2 and recs6[rec_b6]["configured"] is False
+                 and recs6[rec_b6]["readd"] is None and needing_readd(agent_w, key_w) == set(),
+                 "the current Agent retires flagged B by its id: disabled, flag cleared",
+                 msg or json.dumps(recs6))
+            cur.execute("rollback to savepoint retire_sp")
+            got, state, msg = sync(agent_w, key_w, [
+                row("a-new", True, name="Recorder A"),
+                row("b-new", False, name="Recorder B", readd=rec_b6),
+            ])
+            recs6 = recorders(site6)
+            step(state is None and str((got or [{}])[0].get("b-new")) == rec_b6
+                 and len(recs6) == 2 and recs6[rec_b6]["key"] == "b-new"
+                 and recs6[rec_b6]["readd"] is None and recs6[rec_b6]["configured"] is True
+                 and needing_readd(agent_w, key_w) == set(),
+                 "re-adding B by its id without a serial re-adopts B's row: flag cleared, no "
+                 "second recorder", msg or json.dumps(recs6))
+            back_b6 = cameras(agent_w, key_w, rec_b6, ["1", "2"])
+            step({k: str(v) for k, v in back_b6.items()} == {k: str(v) for k, v in cams_b6.items()}
+                 and site_cameras(site6) == cams6,
+                 "B's camera sync after re-adding by id reuses its camera UUIDs, none added",
+                 json.dumps(back_b6, default=str))
 
             acl = cur.execute(
                 """select coalesce(has_function_privilege('anon',

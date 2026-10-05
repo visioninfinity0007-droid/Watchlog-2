@@ -23,7 +23,8 @@
 --     creating duplicate recorders; a fresh primary proven to be another recorder
 --     (a replaced NVR) binds as that recorder or a new one and the untouched
 --     continuity recorder is flagged instead; a recorder's known serial is never
---     overwritten (wl_sync_recorders below).
+--     overwritten; a flagged recorder is re-added (or a flagged secondary
+--     retired) by its cloud id (wl_sync_recorders below).
 
 alter table public.recorders
   add column if not exists continuity_owner boolean not null default false;
@@ -156,7 +157,8 @@ revoke all on function public.wl_recorder_event_dedupe_key(
 --                        registry (or that an earlier installation bound). It
 --                        stays configured (its cameras stay expected, so
 --                        coverage never hides them) and is listed by
---                        wl_multi_recorder_agent_contract.
+--                        wl_multi_recorder_agent_contract until it is re-added
+--                        or, for a secondary, retired.
 alter table public.recorders
   add column if not exists bound_agent_id uuid,
   add column if not exists readd_required_at timestamptz;
@@ -196,10 +198,10 @@ revoke all on function public.wl_recorder_fingerprint_norm(text)
 -- site it is the item that adopts legacy-default, whatever the payload order.
 --
 -- Fresh registry (same-site reinstall, or the same Agent losing its registry):
--- the payload does not name the continuity recorder and its primary's local id
--- is new to the site. A caller that is an earlier installation than the one
--- that last bound the continuity recorder fails closed (42501, nothing
--- changes). Otherwise:
+-- the payload names the continuity recorder neither by local id nor by
+-- readd_recorder_id, and its primary's local id is new to the site. A caller
+-- that is an earlier installation than the one that last bound the continuity
+-- recorder fails closed (42501, nothing changes). Otherwise:
 --   * re-adoption: unless the payload proves otherwise, the primary IS the
 --     re-staged continuity recorder. The continuity row takes the new local
 --     id; its UUID, cameras, history and continuity ownership stay.
@@ -224,10 +226,12 @@ revoke all on function public.wl_recorder_fingerprint_norm(text)
 -- Disabling such a recorder still works.
 -- Configured recorders the payload does not name are flagged readd_required_at
 -- after a fresh registry, or whenever an earlier-enrolled Agent bound them. A
--- new local id whose identity fingerprint matches exactly one recorder of the
--- site that the payload does not name re-adopts that recorder (re-adding the
--- same physical recorder, the continuity recorder included); without such
--- proof it is a new recorder.
+-- new local id re-adopts an existing recorder of the site that the payload does
+-- not name when its identity fingerprint matches exactly that recorder, or when
+-- the item names the recorder by readd_recorder_id (a flagged recorder of the
+-- caller's site, listed by the contract; with is_configured=false this retires
+-- a flagged secondary - the continuity recorder cannot be disabled in v4).
+-- Without such proof or naming it is a new recorder.
 create or replace function public.wl_sync_recorders(
   p_agent_id uuid,
   p_agent_key text,
@@ -250,6 +254,8 @@ declare
   v_primary_in_payload integer;
   v_existing integer;
   v_payload_keys text[];
+  v_payload_readd uuid[];
+  v_readd_id uuid;
   v_primary_item jsonb;
   v_fresh_registry boolean := false;
   v_readopt boolean := false;
@@ -303,6 +309,25 @@ begin
       using errcode='22023';
   end if;
 
+  if exists (
+    select 1 from jsonb_array_elements(p_recorders) r
+     where nullif(btrim(coalesce(r->>'readd_recorder_id','')),'') is not null
+       and btrim(r->>'readd_recorder_id')
+           !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  ) then
+    raise exception 'readd_recorder_id must be a recorder id' using errcode='22023';
+  end if;
+
+  select coalesce(array_agg(btrim(r->>'readd_recorder_id')::uuid),'{}'::uuid[])
+    into v_payload_readd
+    from jsonb_array_elements(p_recorders) r
+   where nullif(btrim(coalesce(r->>'readd_recorder_id','')),'') is not null;
+
+  if cardinality(v_payload_readd)
+     <> (select count(distinct x) from unnest(v_payload_readd) x) then
+    raise exception 'duplicate readd_recorder_id in payload' using errcode='22023';
+  end if;
+
   -- Serialize with the lazy legacy creators and other syncs for this site
   -- before reading its registry.
   perform pg_advisory_xact_lock(
@@ -334,11 +359,13 @@ begin
    limit 1;
 
   -- Re-adoption is decided once, before anything changes. A fresh registry:
-  -- the payload does not name the continuity recorder and its primary's local
-  -- id is new to the site.
+  -- the payload names the continuity recorder neither by local id nor by
+  -- cloud id, and its primary is new to the site and not re-added by id.
   if v_primary_item is not null
      and v_continuity.id is not null
      and not (v_continuity.local_key = any(v_payload_keys))
+     and not (v_continuity.id = any(v_payload_readd))
+     and nullif(btrim(coalesce(v_primary_item->>'readd_recorder_id','')),'') is null
      and not exists (
        select 1 from public.recorders x
         where x.tenant_id=v_agent.tenant_id
@@ -415,12 +442,45 @@ begin
     v_primary := coalesce((v_item->>'is_primary')::boolean,false);
     v_configured := coalesce((v_item->>'is_configured')::boolean,true);
     v_fingerprint := public.wl_recorder_fingerprint_norm(v_item->>'identity_fingerprint');
+    v_readd_id := nullif(btrim(coalesce(v_item->>'readd_recorder_id','')),'')::uuid;
 
     select * into v_recorder
       from public.recorders
      where tenant_id=v_agent.tenant_id
        and site_id=v_agent.site_id
        and local_key=v_local_key;
+
+    -- Re-adding (or retiring, with is_configured=false) a recorder the
+    -- contract lists in recorders_needing_readd, named by its cloud id: only
+    -- a flagged recorder of the caller's own site, under a local id that is
+    -- new to the site (or already that recorder's, so a re-run is a no-op).
+    if v_readd_id is not null then
+      if v_recorder.id is not null then
+        if v_recorder.id<>v_readd_id then
+          raise exception 'this local recorder id already belongs to another recorder of the site'
+            using errcode='42501';
+        end if;
+      else
+        update public.recorders x
+           set local_key=v_local_key,
+               updated_at=now()
+         where x.id=v_readd_id
+           and x.tenant_id=v_agent.tenant_id
+           and x.site_id=v_agent.site_id
+           and x.is_configured
+           and x.readd_required_at is not null
+        returning x.* into v_recorder;
+
+        if v_recorder.id is null then
+          raise exception 'recorder is not waiting to be re-added on this site'
+            using errcode='42501';
+        end if;
+
+        if v_recorder.id=v_continuity.id then
+          v_continuity := v_recorder;
+        end if;
+      end if;
+    end if;
 
     if v_recorder.id is not null
        and v_continuity.id is not null
@@ -571,7 +631,7 @@ begin
   end loop;
 
   -- The previous installation's recorders stay configured and visible until
-  -- this installation re-adds them (or disables a secondary): every unnamed one
+  -- this installation re-adds them (or retires a secondary): every unnamed one
   -- after a fresh registry (including the continuity recorder when the fresh
   -- primary was proven to be another recorder), and otherwise those an
   -- earlier-enrolled Agent bound (Setup may reuse old local ids, so no fresh
@@ -632,8 +692,9 @@ grant execute on function public.wl_sync_recorders(uuid,text,jsonb)
 -- Contract v4: runtime fan-out must not activate until immutable continuity
 -- ownership exists on both DB and Agent. Additive field: the recorders this
 -- installation still has to re-add after a reinstall (id and owner-given name
--- only). Recorder push and re-adoption ship in the same chain as v4, so they
--- need no feature flag.
+-- only); wl_sync_recorders accepts that id as an item's readd_recorder_id.
+-- Recorder push and re-adoption ship in the same chain as v4, so they need no
+-- feature flag.
 create or replace function public.wl_multi_recorder_agent_contract(
   p_agent_id uuid,
   p_agent_key text
