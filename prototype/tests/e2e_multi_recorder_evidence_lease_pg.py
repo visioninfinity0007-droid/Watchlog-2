@@ -18,8 +18,9 @@ Rolled back after execution. Proves:
   service_role only; its pg_cron job is checked here when pg_cron is
   installed, and its schedule source statically by
   test_incident_still_stale_recovery.py) returns a lapsed still to pending
-  within its budget, fails a spent one, expires in-flight stills past their
-  expiry, and leaves live and ready stills alone;
+  within its budget, fails a spent one, and leaves live and ready stills
+  alone; in-flight stills past their expiry are left to the hourly 0107
+  retention, which deletes them (the finalizer never marks them expired);
 - the release RPC is Agent-facing only.
 """
 from __future__ import annotations
@@ -512,8 +513,8 @@ def run() -> int:
                 f"{rows['lapsed']} / {rows['other-site']}",
             )
             step(
-                rows["old-pending"][0] == "expired" and rows["old-processing"][0] == "expired",
-                "finalizer expires in-flight stills past their expiry",
+                rows["old-pending"][0] == "pending" and rows["old-processing"][0] == "processing",
+                "finalizer leaves in-flight stills past their expiry to the 0107 retention",
                 f"{rows['old-pending']} / {rows['old-processing']}",
             )
             step(
@@ -524,9 +525,40 @@ def run() -> int:
             )
             step(
                 out is not None and out.get("failed", 0) >= 1
-                and out.get("released", 0) >= 2 and out.get("expired", 0) >= 2,
+                and out.get("released", 0) >= 2 and out.get("expired", 0) == 0,
                 "finalizer reports what it changed",
                 json.dumps(out, default=str),
+            )
+
+            # The hourly 0107 retention (wl_evidence_enforce_retention, the single
+            # retention source) deletes expired pending/processing/ready stills;
+            # the finalizer must not turn them into 'expired' rows it never deletes.
+            cur.execute("savepoint retention_sp")
+            cur.execute("select set_config('request.jwt.claims', %s, true)",
+                        (json.dumps({"role": "service_role"}),))
+            cur.execute("set local role service_role")
+            retention, err = None, ""
+            try:
+                retention = cur.execute("select wl_evidence_enforce_retention()").fetchone()[0]
+                cur.execute("reset role")
+                cur.execute("release savepoint retention_sp")
+            except psycopg.Error as exc:
+                err = str(exc).splitlines()[0]
+                cur.execute("rollback to savepoint retention_sp")
+                cur.execute("reset role")
+            cur.execute("select set_config('request.jwt.claims', '', true)")
+            kept = {tag: still_row(i) for tag, i in still_ids.items()}
+            step(
+                retention is not None
+                and kept["old-pending"] is None and kept["old-processing"] is None,
+                "an expired in-flight still is gone after the finalizer plus retention",
+                err or f"{kept['old-pending']} / {kept['old-processing']}",
+            )
+            step(
+                all(kept[t] is not None
+                    for t in ("spent", "lapsed", "fresh", "ready", "other-site")),
+                "retention keeps the unexpired stills the finalizer handled",
+                str({t: (r[0] if r else None) for t, r in kept.items()}),
             )
             again = as_anon("select wl_agent_claim_incident_stills(%s,%s,3)", agent, key)[0]
             step(

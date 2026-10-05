@@ -44,6 +44,10 @@ def test_stale_still_finalizer_is_server_only_and_bounded():
     assert "e.status='processing'" in BODY
     assert "coalesce(e.claim_expires_at,now())<=now()" in BODY
     assert "case when l.attempts>=3 then 'failed' else 'pending' end" in BODY
+    # Expired stills belong to the hourly 0107 retention, which deletes only
+    # pending/processing/ready rows: the finalizer never marks them expired.
+    assert "e.expires_at>now()" in BODY
+    assert "'expired'" not in BODY
     assert (f"revoke all on function public.{FUNCTION}() "
             "from public,anon,authenticated,service_role;") in TAIL
     assert f"grant execute on function public.{FUNCTION}() to service_role;" in TAIL

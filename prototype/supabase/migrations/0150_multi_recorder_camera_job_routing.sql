@@ -1033,9 +1033,11 @@ grant execute on function public.wl_agent_release_inflight_evidence(
 -- its claimed stills would keep showing processing until the 0107 retention
 -- deletes them at expiry. Once a claim lease has passed nobody is capturing
 -- the still: it returns to pending within its 3-attempt budget, or fails
--- once the budget is spent. Pending/processing stills past their expiry are
--- marked expired, as the claim does. Ready, failed and unsupported stills are
--- never touched and no capture is ever fabricated. service_role only.
+-- once the budget is spent. Stills past their expiry are left alone: the
+-- hourly 0107 retention (wl_evidence_enforce_retention, the single retention
+-- source) deletes pending/processing/ready rows at expiry, and an 'expired'
+-- row would escape it. Ready, failed and unsupported stills are never
+-- touched and no capture is ever fabricated. service_role only.
 -- ---------------------------------------------------------------------
 create or replace function public.wl_finalize_stale_incident_stills()
 returns jsonb
@@ -1044,25 +1046,9 @@ security definer
 set search_path = public
 as $function$
 declare
-  v_expired int := 0;
   v_released int := 0;
   v_failed int := 0;
 begin
-  with stale as (
-    select e.id
-      from public.operations_incident_evidence e
-     where e.status in ('pending','processing')
-       and e.expires_at<=now()
-     for update skip locked
-  ), expired as (
-    update public.operations_incident_evidence e
-       set status='expired'
-      from stale s
-     where e.id=s.id
-    returning e.id
-  )
-  select count(*) into v_expired from expired;
-
   with lapsed as (
     select e.id,e.attempts
       from public.operations_incident_evidence e
@@ -1092,14 +1078,13 @@ begin
   return jsonb_build_object(
     'released',v_released,
     'failed',v_failed,
-    'expired',v_expired,
     'ran_at',now()
   );
 end
 $function$;
 
 comment on function public.wl_finalize_stale_incident_stills() is
-  'WatchLog 0150: return lapsed processing stills to pending within the attempt budget, fail spent ones, expire in-flight stills past expiry';
+  'WatchLog 0150: return lapsed unexpired processing stills to pending within the attempt budget and fail spent ones; expiry stays with the 0107 retention';
 
 revoke all on function public.wl_finalize_stale_incident_stills()
   from public,anon,authenticated,service_role;
