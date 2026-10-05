@@ -371,8 +371,8 @@ class _SamplerDrivers:
         driver = error = None
         try:
             driver = self._opener(recorder_id)
-        except Exception as exc:  # noqa: BLE001 — recorder-local; backed off below
-            error = exc
+        except BaseException as exc:  # noqa: BLE001 — recorder-local; backed off below
+            error = exc               # (open_driver exits on missing config)
         stale = False
         with self._lock:
             self._opening.discard(key)

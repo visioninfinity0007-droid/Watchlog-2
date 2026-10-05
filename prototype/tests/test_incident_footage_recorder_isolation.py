@@ -130,5 +130,36 @@ def test_claiming_pauses_while_the_in_flight_limit_is_reached(monkeypatch):
     assert not worker.is_alive()
 
 
+def test_a_worker_survives_a_request_that_exits(monkeypatch):
+    stop = threading.Event()
+    cloud = Cloud(stop, [_row("req-1", A), _row("req-2", A)])
+    calls = []
+
+    def open_archive(cfg):
+        calls.append(1)
+        if len(calls) == 1:
+            raise SystemExit("recorder address not configured")
+        return Recorder("a"), DeviceInfo(vendor="Dahua", model="X")
+
+    monkeypatch.setattr(ie.core, "Cloud", lambda url, key: cloud)
+    monkeypatch.setattr(ie.core, "log", lambda _m: None)
+    monkeypatch.setattr(ie.recorder_runtime, "config_for_cloud_recorder",
+                        lambda _cfg, rid: SimpleNamespace(nvr_url="http://a.invalid"))
+    monkeypatch.setattr(ie.core, "open_archive_driver", open_archive)
+    monkeypatch.setattr(ie, "POLL_SECONDS", 0.05)
+    base = SimpleNamespace(supabase_url="https://cloud.invalid", publishable_key="pk",
+                           nvr_url="http://a.invalid")
+    worker = threading.Thread(target=ie.footage_worker, args=(base, STATE, stop))
+    worker.start()
+    try:
+        deadline = time.monotonic() + 3
+        while "req-2" not in cloud.completed and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        stop.set()
+        worker.join(10)
+    assert "req-2" in cloud.completed, "the recorder's worker died with the first request"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

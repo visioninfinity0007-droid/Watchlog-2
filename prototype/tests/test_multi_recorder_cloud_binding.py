@@ -857,3 +857,26 @@ def test_only_recorder_without_a_readable_login_holds_instead_of_crash_looping(m
         assert health[0] == {"recorder_credential": "unavailable"}
         assert health[-1] == {"recorder_credential": "ok"}
         assert opened == []
+
+
+def test_a_probe_that_exits_still_resolves_its_recorder():
+    """open_driver raises SystemExit on a missing recorder config; in a probe thread that
+    must become that recorder's error, never a startup that waits forever."""
+    with Env() as env:
+        a, b, base = seed_two(env.root)
+        cloud = FakeCloud({a: MAPPING_IDS[0], b: MAPPING_IDS[1]})
+
+        def open_driver(cfg):
+            if cfg.recorder_local_id == b:
+                raise SystemExit("recorder address not configured")
+            return Driver("A"), info("Hikvision", "A", "SER-A")
+
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "prepared", mro.prepare_recorders(base, STATE, cloud, open_driver)), daemon=True)
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive(), "startup waited forever on an exited probe"
+        by_local = {x.context.local_id: x for x in result["prepared"]}
+        assert by_local[a].error is None
+        assert "SystemExit" in by_local[b].error

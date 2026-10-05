@@ -234,5 +234,17 @@ def test_a_slow_recorder_open_does_not_delay_the_lease_refresh(tmp_path, monkeyp
     assert not worker.is_alive()
 
 
+def test_an_open_that_exits_backs_off_instead_of_sticking():
+    clock = Clock()
+
+    def opener(_recorder_id):
+        raise SystemExit("recorder address not configured")
+
+    pool = aa._SamplerDrivers(opener, generation=lambda _rid: "g", clock=clock)
+    pool.get(A, A)
+    assert wait_until(lambda: not pool.opening(A)), "the recorder stayed 'opening' forever"
+    assert pool.retry_at(A) is not None
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

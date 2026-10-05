@@ -370,7 +370,7 @@ def probe_and_sync_recorder(cloud, state: dict,
 def _probe_into(slot: PreparedRecorder, cloud, state: dict, open_driver_fn) -> None:
     try:
         result = probe_and_sync_recorder(cloud, state, slot.context, open_driver_fn)
-    except Exception as exc:  # noqa: BLE001 — recorder-local, like every probe failure
+    except BaseException as exc:  # noqa: BLE001 — recorder-local; the slot must always resolve
         result = PreparedRecorder(
             context=slot.context, device=None, channels=[], capabilities=None,
             camera_mapping=None,

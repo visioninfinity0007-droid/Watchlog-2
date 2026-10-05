@@ -299,6 +299,8 @@ class _RecorderFootageWorkers:
                 continue
             try:
                 _serve_clip_request(cloud, self._state, self._cfg, self._hosts, row)
+            except BaseException as error:  # noqa: BLE001 — this recorder's worker must live on
+                core.worker_fault("incident footage", error)
             finally:
                 with self._lock:
                     self._in_flight -= 1
