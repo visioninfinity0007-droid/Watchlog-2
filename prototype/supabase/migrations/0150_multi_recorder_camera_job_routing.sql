@@ -319,10 +319,13 @@ begin
   if v_tenant is null then
     raise exception 'no such site' using errcode='22023';
   end if;
-  if public.wl_platform_role() is null
-     and v_tenant is distinct from public.wl_my_tenant()
-  then
-    raise exception 'not authorised for this site' using errcode='42501';
+  if public.wl_platform_role() is null then
+    if v_tenant is distinct from public.wl_my_tenant() then
+      raise exception 'not authorised for this site' using errcode='42501';
+    end if;
+    -- The recommend tier wl_my_site_diagnosis advertises is enforced here:
+    -- a viewer cannot propose a recorder write (MNVR-050).
+    perform public.wl_require_role(array['owner','admin','manager']);
   end if;
 
   if p_action ~* '(firmware|format|factory|reset|reboot|deleterec|delete_rec|adduser|user_|network_|password|wipe|erase)' then
@@ -426,6 +429,61 @@ revoke all on function public.wl_site_command_propose_write(
 grant execute on function public.wl_site_command_propose_write(
   uuid,text,jsonb,text,text,text
 ) to authenticated,service_role;
+
+-- Approving makes a proposed recorder write executable. The approve tier
+-- wl_my_site_diagnosis advertises (owner/admin) is enforced here, not only in
+-- the portal (MNVR-050). Platform staff keep their existing access.
+create or replace function public.wl_site_command_approve(
+  p_command_id uuid,
+  p_approved_by text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_cmd public.site_commands;
+begin
+  select *
+    into v_cmd
+    from public.site_commands
+   where id=p_command_id
+   for update;
+
+  if v_cmd.id is null then
+    raise exception 'no such command' using errcode='22023';
+  end if;
+  if public.wl_platform_role() is null then
+    if v_cmd.tenant_id is distinct from public.wl_my_tenant() then
+      raise exception 'not authorised' using errcode='42501';
+    end if;
+    perform public.wl_require_role(array['owner','admin']);
+  end if;
+
+  if v_cmd.status<>'proposed' then
+    return jsonb_build_object(
+      'ok',false,'reason','not_proposed','status',v_cmd.status
+    );
+  end if;
+
+  update public.site_commands
+     set status='queued',
+         detail=coalesce(detail,'{}'::jsonb)
+                || jsonb_build_object(
+                     'approved_by',coalesce(p_approved_by,'operator')
+                   )
+   where id=p_command_id;
+
+  return jsonb_build_object('ok',true,'status','queued');
+end
+$function$;
+
+revoke all on function public.wl_site_command_approve(
+  uuid,text
+) from public,anon,authenticated,service_role;
+grant execute on function public.wl_site_command_approve(
+  uuid,text
+) to authenticated;
 
 create or replace function public.wl_agent_claim_command(
   p_agent_id uuid,

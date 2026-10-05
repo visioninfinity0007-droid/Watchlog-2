@@ -439,6 +439,8 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_capabilities_pg.py
       - name: Multi-recorder camera jobs — deterministic recorder routing (0150)
         run: python prototype/tests/e2e_multi_recorder_camera_job_routing_pg.py
+      - name: Site Control write roles — viewers cannot propose or approve recorder writes (0150, MNVR-050)
+        run: python prototype/tests/e2e_site_control_role_authz_pg.py
       - name: Multi-recorder analytics — recorder attribution and final contract (0151+)
         run: python prototype/tests/e2e_multi_recorder_analytics_pg.py
       - name: Multi-recorder owner read model — customer-safe recorder grouping (0152)
