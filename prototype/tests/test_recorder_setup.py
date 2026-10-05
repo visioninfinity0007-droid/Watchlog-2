@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import programdata_sandbox  # noqa: E402,F401  (test_recorder writes setup.log under PROGRAMDATA)
 
 import setup_backend as backend  # noqa: E402
 
