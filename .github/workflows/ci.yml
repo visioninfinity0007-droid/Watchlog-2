@@ -507,7 +507,10 @@ jobs:
             python prototype/tests/e2e_setup_recorder_disable_pg.py
             python prototype/tests/e2e_setup_recorder_reinstall_pg.py
           else
-            echo "SKIP: migrations 0146-0155 (DB contract v4) are not in this tree"
+            # Not run here: this is no lineage proof for this tree. Say so on the run page.
+            msg="NOT RUN: e2e_setup_recorder_disable_pg.py and e2e_setup_recorder_reinstall_pg.py need migrations 0146-0156 (DB contract v4, mr/db-contracts), which are not in this tree; recorder add/disable/re-add lineage is unproven for this commit"
+            echo "::warning title=Recorder lineage e2e not run::$msg"
+            echo "$msg" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi
       - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
         run: python prototype/tests/e2e_recovery_ingest_pg.py

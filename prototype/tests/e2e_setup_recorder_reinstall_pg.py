@@ -12,7 +12,10 @@ Proves:
 - the old Agent binds A (continuity) and B;
 - after uninstall + reinstall on the same site, the new Agent's sync maps the
   staged row to the existing continuity recorder A: no third recorder;
-- control: a newly minted local id (the old behaviour) would add a recorder.
+- control: since 0154 (c8a7e16, dd8102f) a fresh registry is re-adopted onto the
+  continuity recorder, never forked, even under a newly minted local id; only a
+  primary proven to be a different physical recorder (both serials known and
+  different) is bound as a new recorder.
 
 Needs the multi-recorder migrations (0146-0155). Disposable local Postgres only;
 everything runs in one transaction that is rolled back.
@@ -150,14 +153,35 @@ def _scenario(cur):
          "Setup staged the reinstall under the continuity local id, unbound",
          row["local_id"][:8])
 
-    # Control: a newly minted local id would fork the site's recorders.
+    # Control (0154): a fresh registry is re-adopted onto the continuity recorder, never
+    # forked, even under a newly minted local id with no serial.
     cur.execute("savepoint control_sp")
-    cloud.call("wl_sync_recorders", p_agent_id=state2["agent_id"], p_agent_key=key2,
-               p_recorders=[{"local_key": str(uuid.uuid4()), "display_name": "Primary Recorder",
-                             "is_primary": True, "is_configured": True}])
-    forked = len(_site_recorders(cur, site_id))
+    fresh_key = str(uuid.uuid4())
+    readopted = cloud.call(
+        "wl_sync_recorders", p_agent_id=state2["agent_id"], p_agent_key=key2,
+        p_recorders=[{"local_key": fresh_key, "display_name": "Primary Recorder",
+                      "is_primary": True, "is_configured": True}])
+    count = len(_site_recorders(cur, site_id))
     cur.execute("rollback to savepoint control_sp")
-    step(forked == 3, "control: a new local id adds a third recorder", f"{forked} recorders")
+    step(count == 2 and (readopted or {}).get(fresh_key) == cloud_a,
+         "control: a newly minted local id is re-adopted onto A, not forked",
+         f"{count} recorders, {json.dumps(readopted)}")
+
+    # Control (0154): a primary proven to be a different physical recorder is never
+    # grafted onto the continuity row.
+    cur.execute("savepoint proven_sp")
+    cur.execute("update recorders set identity_fingerprint='serial:SER-OLD-A' where id=%s",
+                (cloud_a,))
+    other = cloud.call(
+        "wl_sync_recorders", p_agent_id=state2["agent_id"], p_agent_key=key2,
+        p_recorders=[{"local_key": str(uuid.uuid4()), "display_name": "Primary Recorder",
+                      "identity_fingerprint": "serial:SER-OTHER",
+                      "is_primary": True, "is_configured": True}])
+    count = len(_site_recorders(cur, site_id))
+    cur.execute("rollback to savepoint proven_sp")
+    step(count == 3 and cloud_a not in set((other or {}).values()),
+         "control: a primary with a different known serial is a new recorder",
+         f"{count} recorders")
 
     second = agent_bind(cloud, state2, root)
     rows = _site_recorders(cur, site_id)
