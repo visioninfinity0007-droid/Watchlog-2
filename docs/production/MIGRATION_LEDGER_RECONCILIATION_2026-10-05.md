@@ -245,8 +245,15 @@ Derived from the code and the ledger above, not executed against production:
   maturity contract`, which needs PHP (absent on this machine); unrelated to this
   branch. `portal-contracts` job: 6 pass.
 - `tools/reserved_migrations.json` on this branch never reserved 0144 or 0145
-  (only 0094), so there was nothing to remove here. `mr/db-contracts` reserves both;
-  that reservation has to be dropped there once this branch is merged.
+  (only 0094), so there was nothing to remove here. `mr/db-contracts` (at `e3ab17f`)
+  already carries `0144_portal_qa_truth_contracts.sql` and
+  `0145_camera_preview_performance.sql` and dropped its 0144/0145 reservation in
+  `44c1453`; nothing is left to clean up there.
+- Open hand-off (the reverse direction): this branch reserves 0146..0155 for the
+  `mr/db-contracts` chain (section 9). Those reservations must be removed from
+  `tools/reserved_migrations.json` when the `mr/db-contracts` files merge.
+  `tools/lint_migrations.py` only warns ("reserved migration(s) ... are present")
+  until then; it does not fail.
 
 ## 9. 0156: standalone production hotfix (NOT applied; needs explicit approval)
 
