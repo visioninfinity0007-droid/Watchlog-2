@@ -646,8 +646,9 @@ class _MappedArchiveDriver:
                   for ev in (page.get("events") or [])]
         return {**page, "events": events}
 
-    def get_clip(self, channel, start, end):
-        return self._native.get_clip(self.native_channel(channel), start, end)
+    def get_clip(self, channel, start, end, **kw):
+        # kw carries dahua-cgi's clock argument through (incident_evidence._get_clip).
+        return self._native.get_clip(self.native_channel(channel), start, end, **kw)
 
     def get_recorded_segment(self, channel, start, end) -> dict:
         native = self.channel_map.get(str(channel))
