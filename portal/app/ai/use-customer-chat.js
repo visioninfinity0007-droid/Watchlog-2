@@ -18,6 +18,10 @@ export default function useCustomerChat(){
   const[contextLoading,setContextLoading]=useState(false);
   const[error,setError]=useState("");
   const inputRef=useRef(null);
+  // Site Control "Ask to change" links name the recorder (and camera) a change is about. They travel
+  // with the first message as site_control_target; Watch AI validates them against this site and puts
+  // only that target on a Site Control proposal.
+  const targetRef=useRef(null);
 
   const loadContext=useCallback(async id=>{
     if(!id){setCtx(null);return null}
@@ -49,6 +53,8 @@ export default function useCustomerChat(){
     const requestedConversation=params.get("conversation")||"";
     const conv=requestedSite&&requestedSite!==id?"":requestedConversation;
     const prompt=params.get("prompt")||"";
+    const recorder=params.get("recorder")||"",camera=params.get("camera")||"";
+    targetRef.current=(recorder||camera)&&requestedSite===id?{recorder_id:recorder||null,camera_id:camera||null}:null;
     setSites(list);setSiteId(id);setConversationId(conv);
     if(prompt)setDraft(prompt);
     rememberSite(id,list.find(x=>x.id===id)?.name||"");
@@ -82,7 +88,8 @@ export default function useCustomerChat(){
     if(!prompt||busy||booting||!siteId)return;
     setDraft("");setError("");setBusy(true);
     setMessages(m=>[...m,{role:"user",content:prompt,payload:{},id:`local-${Date.now()}`}]);
-    const r=await supabase().functions.invoke("watchlog-ai",{body:{prompt,site_id:siteId,conversation_id:conversationId||null}});
+    const target=targetRef.current;targetRef.current=null;
+    const r=await supabase().functions.invoke("watchlog-ai",{body:{prompt,site_id:siteId,conversation_id:conversationId||null,...(target?{site_control_target:target}:{})}});
     setBusy(false);
     if(r.error||r.data?.error){setError(r.data?.message||say(r.error)||"WatchLog could not complete that request.");return}
     const id=r.data.conversation_id||conversationId;

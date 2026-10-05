@@ -1,6 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { coerceModelResult, UNREADABLE_ANSWER } from "./model_result.ts";
 import { applyCustomerVocabulary, customerCardData, harnessMessage, harnessTenantKey, modelToolView } from "./harness.ts";
+import { groundRecorderCards, recorderCardData, verifiedOnThisRecorder } from "./recorder_card.ts";
+import { siteControlTarget, targetSiteControlActions } from "./site_control_target.ts";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
@@ -155,13 +157,15 @@ function compactBusinessContext(bc: any) {
 function compactCapabilities(caps: any) {
   return Array.isArray(caps)
     ? caps.map((c: Json) => ({ capability: c?.capability, verdict: c?.verdict, evidence_class: c?.evidence_class,
-        ai_location: c?.ai_location, constraints: c?.constraints || undefined }))
+        evidence_scope: c?.evidence_scope ?? undefined, ai_location: c?.ai_location, constraints: c?.constraints || undefined }))
     : caps;
 }
 function compactContext(ctx: Json) {
   return {
     facts_version: ctx?.facts_version, generated_at: ctx?.generated_at, site: ctx?.site,
-    business_context: compactBusinessContext(ctx?.business_context), onboarding: ctx?.onboarding, recorder: ctx?.recorder,
+    business_context: compactBusinessContext(ctx?.business_context), onboarding: ctx?.onboarding,
+    recorder: ctx?.recorder,
+    recorders: (Array.isArray(ctx?.recorders) ? ctx.recorders : []).slice(0, 16),
     connectivity: ctx?.connectivity, capabilities: compactCapabilities(ctx?.capabilities), capability_known: ctx?.capability_known,
     cameras: ctx?.cameras, faults: ctx?.faults, coverage: ctx?.coverage, permissions: ctx?.permissions,
     recent_events: (ctx?.recent_events || []).slice(0, 12), safety: ctx?.safety,
@@ -229,7 +233,11 @@ function capabilityMap(profile: any) {
   return out;
 }
 function deterministicSetupAdvice(ctx: Json) {
-  const profile = capabilityMap(ctx?.capabilities);
+  const recorders = Array.isArray(ctx?.recorders) ? ctx.recorders : [];
+  const multiRecorder = recorders.length > 1;
+  // Site-level recorder capability is legacy singleton truth. On a true
+  // multi-recorder site it must not be projected across mixed hardware.
+  const profile = multiRecorder ? {} : capabilityMap(ctx?.capabilities);
   const bc = ctx?.business_context || {};
   const siteType = bc.site_type || ctx?.site?.site_type || "other";
   const goals = SITE_TYPE_GOALS[siteType] || ["human_vehicle_classification", "after_hours"];
@@ -239,13 +247,39 @@ function deterministicSetupAdvice(ctx: Json) {
   const hoursKnown = !!(bc.open_time && bc.close_time && Array.isArray(bc.working_days) && bc.working_days.length);
 
   for (const analytic of goals) {
+    if (multiRecorder) {
+      if (SOFTWARE_ANALYTICS.has(analytic)) {
+        recommendations.push({
+          analytic,
+          decision: "watchlog_software",
+          evidence_class: "UNKNOWN",
+          rationale: "Recorder support differs by recorder. WatchLog software analytics can provide this without assuming hardware support."
+        });
+        software.push(analytic);
+      } else {
+        recommendations.push({
+          analytic,
+          decision: "recorder_needs_verification",
+          evidence_class: "UNKNOWN",
+          rationale: "Recorder support must be verified on each configured recorder before WatchLog relies on or proposes a recorder-side change."
+        });
+        unavailable.push({ analytic, verdict: "unknown", evidence_class: "UNKNOWN" });
+      }
+      questions.push(`Verify ${analytic.replaceAll("_", " ")} separately on each configured recorder.`);
+      if (analytic === "after_hours" && !hoursKnown) questions.push("Confirm this site's operating hours and working days.");
+      if (analytic === "restricted_area" && !hasPurpose(["restricted"])) questions.push("Which monitored cameras view restricted or sensitive areas?");
+      if ((analytic === "line_crossing" || analytic === "intrusion") && !hasPurpose(["entrance", "perimeter", "loading"])) questions.push("Which monitored cameras cover entrances, loading access or perimeter crossings?");
+      continue;
+    }
     const cap = profile[analytic] || { capability: analytic, verdict: "unknown", evidence_class: "UNKNOWN", write: null, safety_class: "na" };
     const verdict = cap.verdict || "unknown", evidence = cap.evidence_class || "UNKNOWN";
-    if (verdict === "supported" && evidence === "FIELD_VERIFIED" && cap.write === true && cap.safety_class === "safe_write") {
-      recommendations.push({ analytic, decision: "recorder_configure", evidence_class: evidence, rationale: "Field-verified safe recorder configuration is available for this exact model." });
+    // MNVR-049, the same rule as Site Control: only evidence proven on THIS recorder makes a recorder
+    // change configurable; a model-level FIELD_VERIFIED from another unit needs verification here.
+    if (verdict === "supported" && verifiedOnThisRecorder(cap) && cap.write === true && cap.safety_class === "safe_write") {
+      recommendations.push({ analytic, decision: "recorder_configure", evidence_class: evidence, rationale: "Field-verified safe recorder configuration is available on this recorder." });
       recorderProposals.push({ analytic, capability: analytic, safety_class: "safe_write", evidence_class: evidence, requires_approval: true });
     } else if (verdict === "supported") {
-      recommendations.push({ analytic, decision: "recorder_needs_verification", evidence_class: evidence, rationale: "Recorder support is recorded, but WatchLog will not write until the exact safe path is field-verified." });
+      recommendations.push({ analytic, decision: "recorder_needs_verification", evidence_class: evidence, rationale: "Recorder support is recorded, but WatchLog will not write until the exact safe path is field-verified on this recorder." });
     } else if (verdict === "by_camera") {
       recommendations.push({ analytic, decision: "camera_side", evidence_class: evidence, rationale: "This capability belongs to the camera rather than the recorder." });
     } else if (SOFTWARE_ANALYTICS.has(analytic)) {
@@ -260,7 +294,26 @@ function deterministicSetupAdvice(ctx: Json) {
     if (analytic === "restricted_area" && !hasPurpose(["restricted"])) questions.push("Which monitored cameras view restricted or sensitive areas?");
     if ((analytic === "line_crossing" || analytic === "intrusion") && !hasPurpose(["entrance", "perimeter", "loading"])) questions.push("Which monitored cameras cover entrances, loading access or perimeter crossings?");
   }
-  return { advisor_version: "site-config-advisor-v1-compatible", site_type: siteType, recorder: ctx?.recorder || {}, recommendations, site_control_proposals: recorderProposals, software_analytics: [...new Set(software)].sort(), unavailable, human_questions: [...new Set(questions)], note: "Recommendation only; recorder changes require authorized human approval and WatchLog safety verification." };
+  return {
+    advisor_version: "site-config-advisor-v2-multi-recorder-safe",
+    site_type: siteType,
+    recorder: multiRecorder ? {} : (ctx?.recorder || {}),
+    recorders: multiRecorder ? recorders.map((r: Json) => ({
+      id: r?.id || null,
+      name: r?.name || "Recorder",
+      state: r?.state || "unknown",
+      issue: r?.issue || null,
+      camera_count: r?.camera_count ?? null,
+    })) : [],
+    recommendations,
+    site_control_proposals: recorderProposals,
+    software_analytics: [...new Set(software)].sort(),
+    unavailable,
+    human_questions: [...new Set(questions)],
+    note: multiRecorder
+      ? "Recommendation only. Recorder capabilities must be verified per recorder before any recorder-side change is proposed."
+      : "Recommendation only; recorder changes require authorized human approval and WatchLog safety verification."
+  };
 }
 async function rpcOptional(sb: any, name: string, args: Json) {
   const { data, error } = await sb.rpc(name, args);
@@ -668,7 +721,8 @@ function dailyFallback(tools: Json) {
   };
 }
 function fallback(prompt: string, ctx: Json, tools: Json) {
-  const p = prompt.toLowerCase(), cameras = ctx?.cameras || [], faults = ctx?.faults || [], recorder = ctx?.recorder || {}, coverage = ctx?.coverage || {};
+  const p = prompt.toLowerCase(), cameras = ctx?.cameras || [], faults = ctx?.faults || [], recorder = ctx?.recorder || {}, recorders = Array.isArray(ctx?.recorders) ? ctx.recorders : [], coverage = ctx?.coverage || {};
+  const multiRecorder = recorders.length > 1;
   const serviceMonitoring = businessDayMonitoringFallback(prompt, ctx, tools);
   if (serviceMonitoring) return serviceMonitoring;
   if (tools?.evidence) {
@@ -688,7 +742,7 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
   }
   if (/setup|configure|connect|install|what can|capabilit/.test(p)) {
     const steps = ctx?.onboarding?.steps || [], next = steps.find((s: Json) => !s?.done), advice = tools?.setup_advisor || deterministicSetupAdvice(ctx);
-    return { answer: next ? `The next setup step is ${String(next.label || next.key).toLowerCase()}.` : "The main setup is complete. I can help you fine-tune the cameras, monitoring and reports for this site.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: [recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified", cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
+    return { answer: next ? `The next setup step is ${String(next.label || next.key).toLowerCase()}.` : "The main setup is complete. I can help you fine-tune the cameras, monitoring and reports for this site.", cards: [{ type: "setup", title: "WatchLog setup", data: { steps, recorder: multiRecorder ? undefined : ([recorder.vendor, recorder.model].filter(Boolean).join(" ") || "Not identified"), recorders: multiRecorder ? recorders : undefined, cameras_discovered: cameras.length, cameras_monitored: cameras.filter((c: Json) => c.monitor).length, recommendation_summary: advice?.recommendations, software_analytics: advice?.software_analytics, human_questions: advice?.human_questions } }], suggestions: next ? ["Continue setup", "Check my cameras", multiRecorder ? "What can each recorder support?" : "What can my recorder support?"] : ["What happened today?", "Check site health"], proposed_actions: [{ kind: "navigate", label: "Open guided setup", data: { href: "/setup/" } }], mode: "guided_fallback" };
   }
   const restaurantPeriod = restaurantPeriodFallback(prompt, ctx, tools);
   if (restaurantPeriod) return restaurantPeriod;
@@ -710,7 +764,20 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
     const offline = cameras.filter((c: Json) => c.monitor && c.health_state === "offline");
     return { answer: offline.length ? `${offline.length} monitored camera${offline.length === 1 ? " is" : "s are"} currently offline.` : `No monitored camera is currently marked offline in the latest WatchLog context.`, cards: [{ type: "health", title: "Camera health", data: { cameras, faults } }], suggestions: ["Which cameras are not recording?", "Check my recorder", "Show monitoring coverage"], proposed_actions: [{ kind: "navigate", label: "Open site health", data: { href: "/site-health/" } }], mode: "guided_fallback" };
   }
-  if (/recorder|nvr|dvr|support/.test(p)) return { answer: recorder?.model ? `This site is using ${[recorder.vendor, recorder.model].filter(Boolean).join(" ")}. I’ll only describe recorder features that are confirmed for this site.` : "The recorder model has not been confirmed for this site yet.", cards: [{ type: "recorder", title: "Recorder", data: { recorder, capabilities: ctx?.capabilities || [], capability_known: ctx?.capability_known, recommendation: tools?.setup_advisor } }], suggestions: ["What analytics can this recorder support?", "Check recorder health"], proposed_actions: [], mode: "guided_fallback" };
+  if (/recorder|nvr|dvr|support/.test(p)) {
+    if (multiRecorder) {
+      const needingAttention = recorders.filter((r: Json) => ["offline", "attention"].includes(String(r?.state || "").toLowerCase()));
+      const names = recorders.slice(0, 4).map((r: Json) => String(r?.name || "Recorder"));
+      return {
+        answer: `This site has ${recorders.length} configured recorders${names.length ? `: ${names.join(", ")}` : ""}. Recorder capabilities are verified per recorder, so I won’t apply one recorder’s capability to the others.${needingAttention.length ? ` ${needingAttention.length} recorder${needingAttention.length === 1 ? " needs" : "s need"} attention.` : ""}`,
+        cards: [{ type: "recorder", title: "Recorders", data: recorderCardData(ctx, tools?.setup_advisor) }],
+        suggestions: ["Which recorder needs attention?", "What can each recorder support?", "Check monitoring coverage"],
+        proposed_actions: [{ kind: "navigate", label: "Open site health", data: { href: "/site-health/" } }],
+        mode: "guided_fallback",
+      };
+    }
+    return { answer: recorder?.model ? `This site is using ${[recorder.vendor, recorder.model].filter(Boolean).join(" ")}. I’ll only describe recorder features that are confirmed for this site.` : "The recorder model has not been confirmed for this site yet.", cards: [{ type: "recorder", title: "Recorder", data: recorderCardData(ctx, tools?.setup_advisor) }], suggestions: ["What analytics can this recorder support?", "Check recorder health"], proposed_actions: [], mode: "guided_fallback" };
+  }
   if (/coverage|downtime|missed|recovered|unverified/.test(p)) return { answer: "I’ll separate the time WatchLog could verify from the time it could not. A period we could not verify is never reported as ‘no activity’.", cards: [{ type: "coverage", title: "Monitoring coverage", data: coverage }], suggestions: ["Explain any unverified time", "Was anything recovered from the recorder?"], proposed_actions: [], mode: "guided_fallback" };
   return { answer: `I have the latest available information for ${ctx?.site?.name || "this site"}. Ask me about yesterday’s activity, incidents, cameras, monitoring, or reports.`, cards: [{ type: "health", title: "Current site", data: { site: ctx?.site, connectivity: ctx?.connectivity, faults, coverage } }], suggestions: ["Check my cameras", "Continue setup", "What can my recorder support?"], proposed_actions: [], mode: "guided_fallback" };
 }
@@ -969,6 +1036,15 @@ Deno.serve(async (req) => {
       result = sanitizeResult(fallback(prompt, ctxResult.data || {}, tools));
       audit = baseAudit(mode, "guided_fallback", { outcome: "router_error", tool_calls: toolCalls });
     }
+    // Every answer, model or guided: recorder cards claim no more than the site context (MNVR-051), and
+    // a Site Control proposal carries only the recorder/camera target validated against this site.
+    const siteCtx = ctxResult.data || {};
+    const target = siteControlTarget(body?.site_control_target, siteCtx);
+    result = {
+      ...result,
+      cards: groundRecorderCards(result.cards, siteCtx),
+      proposed_actions: targetSiteControlActions(result.proposed_actions, target, siteCtx),
+    };
     // Route audit — mode/provider/model/fallback/egress/latency/tool-calls for Admin + audit ONLY.
     // Provider identities are NEVER placed in the browser response below. Best-effort; never blocks.
     try {

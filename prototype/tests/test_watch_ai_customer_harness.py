@@ -10,9 +10,10 @@ def read(rel):
 def main():
     problems = []
     gateway = read("prototype/supabase/functions/watchlog-ai/index.ts")
+    owner_context = read("prototype/supabase/migrations/0152_multi_recorder_owner_read_model.sql")
 
     required = [
-        "trusted, experienced security and office manager",
+        "trusted, experienced security and operations manager",
         "natural Pakistan English",
         '"17 September 2026"',
         '"4:05 PM"',
@@ -22,10 +23,52 @@ def main():
         "WatchLog’s internal software and security implementation private",
         "Raw camera detections are evidence, not automatically unique people",
         "Do not mention AI confidence scores to customers",
+        "site-config-advisor-v2-multi-recorder-safe",
+        "Recorder capabilities are verified per recorder",
+        "recorders: (Array.isArray(ctx?.recorders)",
+        "const multiRecorder = recorders.length > 1;",
     ]
     for token in required:
         if token not in gateway:
             problems.append(f"Watch AI customer harness missing: {token}")
+
+
+    # MNVR-051 / per-recorder Site Control: every answer's recorder cards are grounded in the site
+    # context and every Site Control proposal carries only a validated recorder/camera target.
+    for token in (
+        'from "./recorder_card.ts"',
+        'from "./site_control_target.ts"',
+        "siteControlTarget(body?.site_control_target,",
+        "groundRecorderCards(result.cards,",
+        "targetSiteControlActions(result.proposed_actions,",
+        "data: recorderCardData(ctx, tools?.setup_advisor)",
+    ):
+        if token not in gateway:
+            problems.append(f"Watch AI recorder grounding missing: {token}")
+    # MNVR-049: guided setup advice proposes a recorder change only on evidence proven on this recorder,
+    # the same rule Site Control applies (recorder_card.ts verifiedOnThisRecorder).
+    if 'verdict === "supported" && verifiedOnThisRecorder(cap)' not in gateway:
+        problems.append("setup advice must require recorder-scoped evidence before recorder_configure")
+    if 'evidence === "FIELD_VERIFIED" && cap.write === true' in gateway:
+        problems.append("setup advice must not treat model-level FIELD_VERIFIED as configurable here")
+    if "data: { recorders, recommendation: tools?.setup_advisor }" in gateway:
+        problems.append("multi-recorder card must not omit capability_known (renders as Checked)")
+    grounded = gateway.find("groundRecorderCards(result.cards,")
+    saved = gateway.find('service.rpc("wl_ai_append_assistant_message"')
+    if grounded < 0 or saved < 0 or grounded > saved:
+        problems.append("recorder cards must be grounded before the answer is saved and returned")
+
+    owner_required = [
+        "'facts_version','watchlog-ai-context-v7'",
+        "'recorders',coalesce(v_recorders->'recorders','[]'::jsonb)",
+        "when v_recorder_count<=1 then v_diag->'capabilities'",
+        "else '{}'::jsonb",
+        "when v_recorder_count<=1 then coalesce((v_diag->>'capability_known')::boolean,false)",
+        "else false",
+    ]
+    for token in owner_required:
+        if token not in owner_context:
+            problems.append(f"Multi-recorder AI owner context missing fail-closed truth guard: {token}")
 
     unsafe_customer_phrases = [
         "Full model reasoning is not configured",
