@@ -46,6 +46,10 @@ ARCHIVE_POLL_SECONDS = 120                        # background historical scan; 
 ARCHIVE_BACKEND_MISSING_RETRY_SECONDS = 600       # 0055 not deployed -> idle, retry rarely
 REGISTRY_RECHECK_SECONDS = 60                     # held on an unusable recorders.json
 RECORDER_RECHECK_SECONDS = (30, 60, 120, 300)     # background recorder check; last repeats
+# How long a multi-recorder start waits for the recorder probes before its workers start.
+# Each probe keeps running in its own thread and hands its result over when it finishes,
+# so an offline recorder's connect timeouts never hold back another recorder (MNVR-021).
+MULTI_RECORDER_PROBE_WAIT_SECONDS = 0.0
 # What THIS runtime can execute. Advertised to the server (0059) so it never treats a feature as
 # usable before a compatible agent reports it. This is runtime capability, NOT field-proven hardware.
 RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
@@ -839,18 +843,26 @@ def _preflight_transient(error: Exception) -> bool:
 
 
 def _prepared_from_saved_identity(cfg):
-    """The one configured recorder as already bound in recorders.json, or None when it
-    has no saved cloud identity (or cannot be loaded). No cloud call is made."""
+    """Every configured recorder as already bound in recorders.json, or None when any of
+    them has no saved cloud identity (or the registry cannot be loaded, or holds a
+    duplicate identity). No cloud call is made and no recorder is probed: cameras are
+    bound later by each recorder's health cycle. A recorder whose login cannot be read
+    comes back degraded, as from a full preflight (MNVR-009)."""
     try:
-        contexts = recorder_runtime.load_contexts(cfg)
+        contexts = recorder_runtime.load_contexts(cfg, degrade_credential_errors=True)
     except Exception:  # noqa: BLE001 — startup then fails closed
         return None
-    if len(contexts) != 1 or not contexts[0].cloud_recorder_id:
+    if not contexts or any(not ctx.cloud_recorder_id for ctx in contexts):
         return None
-    return multi_recorder_orchestrator.PreparedRecorder(
-        context=contexts[0], device=None, channels=[], capabilities=None,
-        camera_mapping=None,
-    )
+    return [
+        multi_recorder_orchestrator.PreparedRecorder(
+            context=ctx, device=None, channels=[], capabilities=None,
+            camera_mapping=None,
+            error=(f"recorder login unavailable on this PC ({ctx.credential_error})"
+                   if ctx.credential_error else None),
+        )
+        for ctx in contexts
+    ]
 
 
 def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
@@ -871,8 +883,11 @@ def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
         try:
             multi_recorder_orchestrator.require_cloud_contract(cloud, state)
             if mode == "bind":
+                # Identity is non-secret: a recorder whose login is unreadable is still
+                # confirmed, and stays held until Setup repairs it (MNVR-009).
                 multi_recorder_orchestrator.bind_cloud_identities(
-                    cloud, state, recorder_runtime.load_contexts(cfg))
+                    cloud, state,
+                    recorder_runtime.load_contexts(cfg, degrade_credential_errors=True))
         except Exception as error:  # noqa: BLE001
             if mode == "contract" or _preflight_transient(error):
                 continue
@@ -938,6 +953,35 @@ def _hold_for_registry_repair(error: Exception) -> None:
         raise SystemExit("recorder configuration is valid again; restarting WatchLog")
 
 
+def _hold_for_recorder_credential(ctx, once: bool) -> None:
+    """The site's only recorder has no readable login on this PC: hold, never crash-loop.
+
+    Connecting with an empty login would be a failed sign-in on the recorder and a false
+    "wrong password". As for an unusable registry, monitor nothing (no recorder connection
+    and no heartbeat, so nothing is reported as watched), publish a clear local status and
+    re-check the credential file; once Setup has repaired it, exit so the launcher starts
+    one clean runtime."""
+    message = ("the recorder login on this PC cannot be read; monitoring is stopped "
+               "until WatchLog Setup repairs it")
+    if once:
+        raise SystemExit(f"FATAL: {message}.")
+    core.log(f"ERROR: {message} ({ctx.credential_error})")
+    core.update_runtime_health(recorder_credential="unavailable")
+    seen = getattr(ctx.config, "credential_generation_seen", None)
+    while True:
+        time.sleep(REGISTRY_RECHECK_SECONDS)
+        try:
+            generation = ctx.credential_generation()
+            if generation == seen:
+                continue
+            seen = generation
+            ctx.reload_credential()
+        except Exception:  # noqa: BLE001 — still unreadable; keep holding
+            continue
+        core.update_runtime_health(recorder_credential="ok")
+        raise SystemExit("recorder login is readable again; restarting WatchLog")
+
+
 def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                      device=None, channels=None) -> None:
     """Core event loop plus analytics worker.
@@ -953,7 +997,11 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     recorders at all, which runs on the legacy recorder-less RPCs. A single recorder
     whose cloud identity is already saved keeps monitoring under it when the cloud
     cannot be reached (or this PC is a standby) and finishes the check in the
-    background; an unbound row or a definitive refusal still fails closed.
+    background; an unbound row or a definitive refusal still fails closed. The same
+    holds for several recorders when every one of them is already bound (MNVR-009).
+    A recorder whose login cannot be read on this PC is held UNVERIFIED while the
+    others run; a site whose only recorder has no readable login holds until Setup
+    repairs it.
     """
     try:
         configured_recorders = [
@@ -977,7 +1025,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     if configured_recorders:
         try:
             prepared = multi_recorder_orchestrator.prepare_recorders(
-                cfg, state, cloud, core.open_driver
+                cfg, state, cloud, core.open_driver,
+                probe_wait=(MULTI_RECORDER_PROBE_WAIT_SECONDS
+                            if len(configured_recorders) > 1 else None),
             )
         except Exception as error:
             if len(configured_recorders) == 1 and _recorder_contract_absent(error):
@@ -989,11 +1039,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                          "single-recorder runtime without recorder identity")
             else:
                 # Network not ready at boot, an outage or a standby PC says nothing
-                # about the recorder: a single recorder already bound in
-                # recorders.json keeps monitoring under that saved identity.
-                if len(configured_recorders) == 1 and _preflight_transient(error):
-                    saved = _prepared_from_saved_identity(cfg)
-                    prepared = [saved] if saved is not None else None
+                # about the recorders: when every configured recorder is already bound
+                # in recorders.json, monitoring starts under those saved identities.
+                if _preflight_transient(error):
+                    prepared = _prepared_from_saved_identity(cfg)
                 if prepared is None:
                     raise SystemExit(
                         "FATAL: recorder preflight did not complete; monitoring "
@@ -1003,7 +1052,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 recheck = "bind"
                 core.log("recorder: WatchLog did not answer the recorder check "
                          f"({type(error).__name__}); monitoring under the saved recorder "
-                         "identity and retrying in the background")
+                         "identities and retrying in the background")
 
     if prepared is not None:
         if len(prepared) != len(configured_recorders):
@@ -1022,6 +1071,12 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                     f"unavailable ({item.error}); its live/health workers will retry "
                     "independently"
                 )
+            elif getattr(item, "pending", False):
+                core.log(
+                    f"multi-recorder: {item.context.display_name} preflight probe still "
+                    "running; its workers start now and take its camera inventory when "
+                    "it finishes"
+                )
         _report_retained_queues(cfg)
 
         if len(prepared) > 1:
@@ -1033,7 +1088,14 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 analytics_worker=analytics_worker,
                 archive_worker=archive_worker,
                 last_live_writer=_persist_stream_last_live,
+                recorder_check=(
+                    (lambda stop, restart: _retry_recorder_preflight(
+                        cfg, state, cloud, stop, restart, "bind"))
+                    if recheck == "bind" else None),
             )
+
+        if getattr(prepared[0].context, "credential_error", None):
+            _hold_for_recorder_credential(prepared[0].context, once)
 
         channels, holder_seed = _adopt_single_recorder(cfg, prepared[0])
         device = prepared[0].device or device
