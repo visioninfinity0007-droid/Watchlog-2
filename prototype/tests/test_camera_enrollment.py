@@ -34,6 +34,7 @@ import setup_backend as sb         # noqa: E402
 def _private_data_root(tmp_path, monkeypatch):
     """establish_identity heartbeats (runtime health is published under the data root) and
     appends setup.log there: keep both in a temporary directory, never the real ProgramData."""
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
     monkeypatch.setattr(core, "default_state_dir", lambda: tmp_path / "WatchLog")
     monkeypatch.setattr(sb, "programdata_dir", lambda: tmp_path / "WatchLog")
 

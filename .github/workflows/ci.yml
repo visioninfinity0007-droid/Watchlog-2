@@ -65,6 +65,8 @@ jobs:
         run: python -m pytest prototype/tests/test_incident_clip_stale_recovery.py -q
       - name: Production-only migrations contract (0144/0145, recovered from the production ledger)
         run: python -m pytest prototype/tests/test_production_only_migrations.py -q
+      - name: Stale incident still recovery contract — server-side still lease schedule (0150, MNVR-033)
+        run: python -m pytest prototype/tests/test_incident_still_stale_recovery.py -q
       - name: Production ledger reconciliation contract (32 already-live files, runner sha256)
         run: python -m pytest prototype/tests/test_ledger_reconciliation.py -q
       - name: Health Foundation schema/authz contract (Phase A)
@@ -85,6 +87,10 @@ jobs:
         run: python prototype/tests/test_recording_storage_contract.py
       - name: Operational faults + read-model contract (Phase A)
         run: python prototype/tests/test_operational_faults_contract.py
+      - name: Multi-recorder current proof + fault contract (latest SQL definitions)
+        run: python -m pytest prototype/tests/test_multi_recorder_fault_contract.py -q
+      - name: E2E gates test the final migration chain (no stale migration re-run)
+        run: python -m pytest prototype/tests/test_e2e_no_stale_migration_rerun.py -q
       - name: Operations Intelligence contract (0049 — generic rule/incident engine)
         run: python prototype/tests/test_operations_intelligence_contract.py
       - name: Native-NVR AI + incident-footage contract (Security Intelligence 0040/0041)
@@ -171,6 +177,8 @@ jobs:
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract
         run: python prototype/tests/test_site_control_portal_contract.py
+      - name: Site Control catalog parity — database accepts only actions the Agent runs (MNVR-069)
+        run: python -m pytest prototype/tests/test_site_control_catalog_parity.py -q
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
@@ -469,6 +477,56 @@ jobs:
         run: python prototype/tests/e2e_ai_evidence_pg.py
       - name: Site-neutral period facts — site-period-v1, no office semantics, tenant isolation (0143)
         run: python prototype/tests/e2e_site_period_pg.py
+      - name: Multi-recorder foundation — identity, compatibility, tenant isolation (0146)
+        run: python prototype/tests/e2e_multi_recorder_foundation_pg.py
+      - name: Multi-recorder health/recovery — recorder isolation and legacy fail-closed (0147)
+        run: python prototype/tests/e2e_multi_recorder_health_pg.py
+      - name: Multi-recorder reconciliation — durable health/storage recorder identity (0148)
+        run: python prototype/tests/e2e_multi_recorder_reconciliation_pg.py
+      - name: Multi-recorder current truth — per-recorder current proof, faults and recorder events (0147)
+        run: python prototype/tests/e2e_multi_recorder_faults_pg.py
+      - name: Offline-camera fault cause — only video loss is critical, a probe timeout is not verified (0147, NEW-L4)
+        run: python prototype/tests/e2e_camera_fault_reason_pg.py
+      - name: Multi-recorder capabilities — recorder-scoped overlay and site truth (0149)
+        run: python prototype/tests/e2e_multi_recorder_capabilities_pg.py
+      - name: Multi-recorder camera jobs — deterministic recorder routing (0150)
+        run: python prototype/tests/e2e_multi_recorder_camera_job_routing_pg.py
+      - name: Site Control write roles — viewers cannot propose or approve recorder writes (0150, MNVR-050)
+        run: python prototype/tests/e2e_site_control_role_authz_pg.py
+      - name: Site Control write eligibility — recorder-scoped field evidence and managed authorization (0149/0150, MNVR-049)
+        run: python prototype/tests/e2e_multi_recorder_write_eligibility_pg.py
+      - name: In-flight evidence after an Agent restart — 0142 lease, startup release, server-side still lease (0150, MNVR-033)
+        run: python prototype/tests/e2e_multi_recorder_evidence_lease_pg.py
+      - name: Multi-recorder analytics — recorder attribution and final contract (0151+)
+        run: python prototype/tests/e2e_multi_recorder_analytics_pg.py
+      - name: Multi-recorder owner read model — customer-safe recorder grouping (0152)
+        run: python prototype/tests/e2e_multi_recorder_portal_pg.py
+      - name: Recorder capability snapshot truth — stale driver/Agent snapshot is unknown, never promoted (0152, NEW-L5)
+        run: python prototype/tests/e2e_capability_snapshot_truth_pg.py
+      - name: Multi-recorder coverage truth — partial recorder outage and camera impact (0153)
+        run: python prototype/tests/e2e_multi_recorder_coverage_pg.py
+      - name: Multi-recorder lifecycle — movable primary, immutable continuity (0154)
+        run: python prototype/tests/e2e_multi_recorder_continuity_pg.py
+      - name: Multi-recorder reporting coverage — owner/daily truth bridge (0155)
+        run: python prototype/tests/e2e_multi_recorder_reporting_coverage_pg.py
+      - name: Coverage ACL per step 0153..0155 — coverage classes never exposed before its site check (MNVR-065)
+        run: python prototype/tests/e2e_coverage_truth_acl_steps_pg.py
+      - name: Multi-recorder authority — stale Agent cannot mutate recorder state
+        run: python prototype/tests/e2e_multi_recorder_authority_pg.py
+      - name: Multi-recorder fresh site — first recorder owns continuity, lazy legacy then adoption (0146/0154)
+        run: python prototype/tests/e2e_multi_recorder_fresh_site_pg.py
+      - name: Multi-recorder push — recorder-scoped tokens, legacy token fails closed on multi-recorder sites, Agent/push share one dedupe identity (0146)
+        run: python prototype/tests/e2e_multi_recorder_push_pg.py
+      - name: Multi-recorder reinstall — fresh local id re-adopts the continuity recorder, secondaries flagged for re-add (0154)
+        run: python prototype/tests/e2e_multi_recorder_reinstall_pg.py
+      - name: Multi-recorder upgrade rehearsal — 0001..0145 + 5.0.x data, then 0146..0156 in numeric order on its own database
+        run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py
+      - name: Multi-recorder upgrade rehearsal, planned production order — 0001..0145 + 5.0.x data, then 0156, then 0146..0155
+        run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py --production-order
+      - name: Site removal and tenant deletion after 0146 — RESTRICT composite keys on a multi-recorder site (rolled back)
+        run: python prototype/tests/e2e_multi_recorder_site_removal_pg.py
+      - name: Coverage ACL per migration step — no tenant coverage function exposed before its site check (MNVR-065)
+        run: python prototype/tests/e2e_coverage_classes_acl_per_step_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies

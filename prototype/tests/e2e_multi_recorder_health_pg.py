@@ -1,0 +1,704 @@
+#!/usr/bin/env python3
+"""Multi-recorder health/recovery foundation (0147): real Postgres execution.
+
+Self-contained and rolled back. Proves:
+- recorder health/inventory is scoped to recorder+channel, not site+channel;
+- two recorders with channel 1 get independent camera health;
+- legacy health APIs keep working for one recorder and fail closed for >1;
+- recorder recovery intervals can share the same time window without collision;
+- recovery camera/recorder lineage is enforced;
+- cross-tenant recorder writes are denied;
+- recorder-health RLS is tenant-isolated;
+- recorder-specific recovery cannot promote the site-wide RECOVERED metric;
+- exact new RPC/helper ACLs are narrow.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+ENV = {}
+env_path = ROOT.parent / ".env"
+for line in env_path.read_text(errors="ignore").splitlines() if env_path.exists() else []:
+    m = re.match(r"^([A-Za-z0-9_]+)=(.*)$", line)
+    if m:
+        ENV.setdefault(m.group(1), m.group(2).strip().strip('"').strip("'"))
+for k in ("SUPABASE_DB_HOST", "SUPABASE_DB_PORT", "SUPABASE_DB_USER",
+          "SUPABASE_DB_PASSWORD", "SUPABASE_DB_NAME"):
+    if os.environ.get(k):
+        ENV[k] = os.environ[k]
+
+import psycopg  # noqa: E402
+
+STEPS: list[bool] = []
+
+
+def step(ok: bool, name: str, detail: str = "") -> None:
+    STEPS.append(bool(ok))
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail else ""))
+
+
+def run() -> int:
+    dsn = dict(
+        host=ENV["SUPABASE_DB_HOST"],
+        port=int(ENV.get("SUPABASE_DB_PORT", 5432)),
+        user=ENV["SUPABASE_DB_USER"],
+        password=ENV["SUPABASE_DB_PASSWORD"],
+        dbname=ENV.get("SUPABASE_DB_NAME", "postgres"),
+        connect_timeout=30,
+        autocommit=False,
+    )
+
+    with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
+        try:
+            def claims(uid):
+                return json.dumps({"sub": str(uid), "role": "authenticated"})
+
+            def as_auth(uid, sql, *params):
+                cur.execute("savepoint auth_sp")
+                cur.execute("select set_config('request.jwt.claims', %s, true)", (claims(uid),))
+                cur.execute("set local role authenticated")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                finally:
+                    cur.execute("reset role")
+                    cur.execute("release savepoint auth_sp")
+                return row
+
+            def as_anon(sql, *params):
+                cur.execute("savepoint anon_sp")
+                cur.execute("set local role anon")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                finally:
+                    cur.execute("reset role")
+                    cur.execute("release savepoint anon_sp")
+                return row
+
+            def as_anon_raises(sql, *params):
+                cur.execute("savepoint anon_err")
+                cur.execute("set local role anon")
+                raised, message = False, ""
+                try:
+                    cur.execute(sql, params or None).fetchone()
+                except psycopg.Error as exc:
+                    raised, message = True, str(exc).splitlines()[0]
+                cur.execute("rollback to savepoint anon_err")
+                return raised, message
+
+            def bootstrap(email, company, site_name):
+                uid = cur.execute(
+                    "insert into auth.users(id,email) values (gen_random_uuid(),%s) returning id",
+                    (email,),
+                ).fetchone()[0]
+                boot = as_auth(uid, "select wl_bootstrap_tenant(%s,%s)", company, site_name)[0]
+                site = cur.execute(
+                    "select id from sites where tenant_id=%s order by created_at limit 1",
+                    (boot["tenant_id"],),
+                ).fetchone()[0]
+                return uid, boot["tenant_id"], site
+
+            def add_agent(tenant_id, site_id, key, suffix):
+                return cur.execute(
+                    """insert into public.agents(
+                         tenant_id,site_id,agent_key_hash,hostname,platform,
+                         agent_version,last_seen_at
+                       ) values (
+                         %s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),
+                         %s,'windows','5.0.27',now()
+                       ) returning id""",
+                    (tenant_id, site_id, key, f"agent-{suffix}"),
+                ).fetchone()[0]
+
+            def sync_recorders(agent_id, key, rows):
+                return as_anon(
+                    "select wl_sync_recorders(%s,%s,%s::jsonb)",
+                    agent_id, key, json.dumps(rows),
+                )[0]
+
+            def sync_camera(agent_id, key, recorder_id, channel="1"):
+                return as_anon(
+                    "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
+                    agent_id, key, recorder_id,
+                    json.dumps([{
+                        "channel": channel,
+                        "name": f"Camera {channel}",
+                        "is_configured": True,
+                    }]),
+                )[0][channel]
+
+            # Multi-recorder tenant A.
+            ua, ta, sa = bootstrap(
+                "health-a@watchlog.test", "Health A", "Warehouse A"
+            )
+            key_a = "health-agent-a"
+            agent_a = add_agent(ta, sa, key_a, "a")
+            recs = sync_recorders(agent_a, key_a, [
+                {
+                    "local_key": "rec-a",
+                    "display_name": "Recorder A",
+                    "vendor": "Hikvision",
+                    "model": "TEST-A",
+                    "driver": "onvif",
+                    "is_primary": True,
+                    "is_configured": True,
+                },
+                {
+                    "local_key": "rec-b",
+                    "display_name": "Recorder B",
+                    "vendor": "Dahua",
+                    "model": "TEST-B",
+                    "driver": "onvif",
+                    "is_primary": False,
+                    "is_configured": True,
+                },
+            ])
+            rec_a, rec_b = recs["rec-a"], recs["rec-b"]
+            cam_a = sync_camera(agent_a, key_a, rec_a, "1")
+            cam_b = sync_camera(agent_a, key_a, rec_b, "1")
+
+            health_a = {
+                "nvr": {
+                    "reachable": True,
+                    "auth_ok": True,
+                    "reason": "ok",
+                    "state": "operational",
+                    "vendor": "Hikvision",
+                    "model": "TEST-A",
+                    "firmware": "A1",
+                },
+                "channels": {
+                    "enumerated": True,
+                    "reported": [{"channel": "1", "enabled": True}],
+                },
+            }
+            health_b = {
+                "nvr": {
+                    "reachable": False,
+                    "auth_ok": None,
+                    "reason": "nvr_unreachable",
+                    "state": "offline",
+                    "vendor": "Dahua",
+                    "model": "TEST-B",
+                    "firmware": "B1",
+                },
+                "channels": {
+                    "enumerated": False,
+                    "reported": [],
+                },
+            }
+
+            ra = as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(health_a),
+            )[0]
+            rb = as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_b, json.dumps(health_b),
+            )[0]
+            step(ra["present"] == 1 and ra["missing"] == 0,
+                 "Recorder A inventory sees only Recorder A channel 1")
+            step(rb["unknown"] == 1 and rb["present"] == 0,
+                 "unreachable Recorder B makes only its camera inventory unknown")
+
+            inv = {
+                str(r[0]): r[1]
+                for r in cur.execute(
+                    """select ci.camera_id,ci.inventory_state
+                         from camera_inventory ci
+                        where ci.camera_id in (%s,%s)""",
+                    (cam_a, cam_b),
+                ).fetchall()
+            }
+            step(inv[str(cam_a)] == "present" and inv[str(cam_b)] == "unknown",
+                 "same channel number has independent recorder-scoped inventory", str(inv))
+
+            ca = as_anon(
+                "select wl_report_recorder_camera_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a,
+                json.dumps({"cameras": [{
+                    "channel": "1", "health": "operational", "reason": "ok"
+                }]}),
+            )[0]
+            cb = as_anon(
+                "select wl_report_recorder_camera_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_b,
+                json.dumps({"cameras": [{
+                    "channel": "1", "health": "offline", "reason": "nvr_unreachable"
+                }]}),
+            )[0]
+            states = {
+                str(r[0]): r[1]
+                for r in cur.execute(
+                    "select camera_id,health_state from camera_health where camera_id in (%s,%s)",
+                    (cam_a, cam_b),
+                ).fetchall()
+            }
+            step(ca["operational"] == 1 and cb["offline"] == 1
+                 and states[str(cam_a)] == "operational"
+                 and states[str(cam_b)] == "offline",
+                 "camera current health resolves by recorder+channel", str(states))
+
+            unknown_auth_report = {
+                "nvr": {
+                    "reachable": True,
+                    "auth_ok": None,
+                    "reason": "unknown",
+                    "state": "unknown",
+                },
+                "channels": {"enumerated": False, "reported": []},
+            }
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(unknown_auth_report),
+            )
+            unknown_inv = cur.execute(
+                "select inventory_state from camera_inventory where camera_id=%s",
+                (cam_a,),
+            ).fetchone()[0]
+            unknown_health = cur.execute(
+                """select nvr_reachable,nvr_auth_ok,last_ok_at
+                     from recorder_health
+                    where recorder_id=%s and agent_id=%s""",
+                (rec_a, agent_a),
+            ).fetchone()
+            step(
+                unknown_inv == "unknown"
+                and unknown_health[0] is True
+                and unknown_health[1] is None,
+                "reachable recorder with unknown auth does not verify camera inventory",
+                str((unknown_inv, unknown_health)),
+            )
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(health_a),
+            )
+
+            # MNVR-066: a slot the operator declared empty (is_configured=false)
+            # stays 'disabled' in inventory whatever the recorder reports (0085).
+            empty_slot = cur.execute(
+                """insert into cameras(tenant_id,site_id,recorder_id,channel,name,is_configured)
+                   values (%s,%s,%s,'2','Empty slot 2',false) returning id""",
+                (ta, sa, rec_a),
+            ).fetchone()[0]
+            both_reported = json.loads(json.dumps(health_a))
+            both_reported["channels"]["reported"] = [
+                {"channel": "1", "enabled": True}, {"channel": "2", "enabled": True},
+            ]
+            rep2 = as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(both_reported),
+            )[0]
+            slot_inv = cur.execute(
+                "select inventory_state,reason_code from camera_inventory where camera_id=%s",
+                (empty_slot,),
+            ).fetchone()
+            step(slot_inv == ("disabled", "channel_disabled")
+                 and rep2.get("present") == 1 and rep2.get("disabled") == 1
+                 and rep2.get("not_configured") == 1,
+                 "an unconfigured camera stays disabled even when its channel is reported",
+                 str((slot_inv, rep2)))
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(unknown_auth_report),
+            )
+            slot_inv = cur.execute(
+                "select inventory_state from camera_inventory where camera_id=%s",
+                (empty_slot,),
+            ).fetchone()[0]
+            step(slot_inv == "disabled",
+                 "an unconfigured camera stays disabled when the recorder cannot be verified",
+                 str(slot_inv))
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(health_a),
+            )
+
+            rows = cur.execute(
+                """select recorder_id,nvr_reachable,nvr_auth_ok
+                     from recorder_health
+                    where site_id=%s and agent_id=%s
+                    order by recorder_id""",
+                (sa, agent_a),
+            ).fetchall()
+            step(len(rows) == 2 and {str(r[0]) for r in rows} == {str(rec_a), str(rec_b)},
+                 "recorder current health has one row per recorder for the Agent")
+
+            raised, msg = as_anon_raises(
+                "select wl_report_health(%s,%s,%s::jsonb)",
+                agent_a, key_a, json.dumps(health_a),
+            )
+            step(raised and "ambiguous" in msg.lower(),
+                 "legacy recorder health fails closed on multi-recorder site", msg)
+
+            raised, msg = as_anon_raises(
+                "select wl_report_camera_health(%s,%s,%s::jsonb)",
+                agent_a, key_a,
+                json.dumps({"cameras": [{
+                    "channel": "1", "health": "operational", "reason": "ok"
+                }]}),
+            )
+            step(raised and "ambiguous" in msg.lower(),
+                 "legacy camera health fails closed on multi-recorder site", msg)
+
+            # Same recovery window may exist once per recorder.
+            start = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+            end = datetime(2026, 10, 2, 9, 30, tzinfo=timezone.utc)
+            open_a = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_a, key_a, rec_a, start, end, "1",
+            )[0]
+            open_b = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_a, key_a, rec_b, start, end, "1",
+            )[0]
+            step(open_a["id"] != open_b["id"],
+                 "same outage window can be opened independently for two recorders")
+
+            duplicate_a = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_a, key_a, rec_a, start, end, "1",
+            )[0]
+            step(duplicate_a.get("duplicate") is True
+                 and str(duplicate_a["id"]) == str(open_a["id"]),
+                 "same recorder recovery window remains idempotent")
+
+            raised, msg = as_anon_raises(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_a, key_a, rec_a,
+                datetime(2026, 10, 2, 10, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 10, 5, tzinfo=timezone.utc),
+                "999",
+            )
+            step(raised and "does not belong" in msg.lower(),
+                 "recovery refuses channel not owned by recorder", msg)
+
+            # MNVR-045: a recorder interval with no channel would make the
+            # Agent guess the archive target, so it is refused outright.
+            for label, channels_sql in (
+                ("an empty", "array[]::text[]"),
+                ("a NULL", "null::text[]"),
+                ("a NULL-element", "array[null]::text[]"),
+                ("a blank-element", "array['']::text[]"),
+            ):
+                raised, msg = as_anon_raises(
+                    "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,"
+                    + channels_sql + ")",
+                    agent_a, key_a, rec_a,
+                    datetime(2026, 10, 2, 10, 10, tzinfo=timezone.utc),
+                    datetime(2026, 10, 2, 10, 15, tzinfo=timezone.utc),
+                )
+                step(raised and "at least one recorder channel" in msg.lower(),
+                     f"recorder recovery refuses {label} channel list", msg)
+
+            claimed_a = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,1,900)",
+                agent_a, key_a, rec_a,
+            )[0]
+            step(len(claimed_a) == 1
+                 and str(claimed_a[0]["id"]) == str(open_a["id"])
+                 and str(claimed_a[0]["recorder_id"]) == str(rec_a)
+                 and claimed_a[0]["channels"] == ["1"],
+                 "Recorder A claim cannot take Recorder B recovery work")
+
+            complete_a = as_anon(
+                "select wl_complete_recorder_recovery(%s,%s,%s,%s,'recovered',1,'{}'::jsonb,'{}'::jsonb)",
+                agent_a, key_a, rec_a, open_a["id"],
+            )[0]
+            step(complete_a["ok"] is True and complete_a["status"] == "recovered",
+                 "recorder-scoped recovery completes only under its recorder identity")
+
+            # A legacy (NULL recorder) interval on a multi-recorder site cannot be
+            # attributed to one recorder, so no recorder claim may take it.
+            orphan = cur.execute(
+                """insert into recovery_intervals(
+                     tenant_id,site_id,agent_id,recorder_id,started_at,ended_at,cameras
+                   ) values (%s,%s,%s,null,%s,%s,array[%s::uuid])
+                   returning id""",
+                (ta, sa, agent_a,
+                 datetime(2026, 10, 2, 8, 0, tzinfo=timezone.utc),
+                 datetime(2026, 10, 2, 8, 30, tzinfo=timezone.utc), cam_a),
+            ).fetchone()[0]
+            claimed_multi = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_a, key_a, rec_a,
+            )[0]
+            step(all(str(x["id"]) != str(orphan) for x in claimed_multi),
+                 "multi-recorder site: a recorder claim never takes a legacy site-wide interval",
+                 str([x["id"] for x in claimed_multi]))
+
+            raised, msg = as_anon_raises(
+                "select wl_open_recovery_interval(%s,%s,%s,%s,array[%s::uuid])",
+                agent_a, key_a,
+                datetime(2026, 10, 2, 11, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 11, 5, tzinfo=timezone.utc),
+                cam_a,
+            )
+            step(raised and "ambiguous" in msg.lower(),
+                 "legacy recovery opening fails closed on multi-recorder site", msg)
+
+            # Tenant B: cross-tenant writes denied and RLS isolates reads.
+            ub, tb, sb = bootstrap(
+                "health-b@watchlog.test", "Health B", "Retail B"
+            )
+            key_b = "health-agent-b"
+            agent_b = add_agent(tb, sb, key_b, "b")
+            rec_c = sync_recorders(agent_b, key_b, [{
+                "local_key": "rec-c",
+                "display_name": "Recorder C",
+                "is_primary": True,
+                "is_configured": True,
+            }])["rec-c"]
+            cam_c = sync_camera(agent_b, key_b, rec_c, "1")
+
+            raised, msg = as_anon_raises(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_c, json.dumps(health_a),
+            )
+            step(raised and "not configured for this agent site" in msg.lower(),
+                 "Agent A cannot write recorder health for tenant B", msg)
+
+            seen_a = as_auth(
+                ua, "select count(*) from recorder_health"
+            )[0]
+            actual_a = cur.execute(
+                "select count(*) from recorder_health where tenant_id=%s", (ta,)
+            ).fetchone()[0]
+            seen_b = as_auth(
+                ub, "select count(*) from recorder_health"
+            )[0]
+            actual_b = cur.execute(
+                "select count(*) from recorder_health where tenant_id=%s", (tb,)
+            ).fetchone()[0]
+            step(seen_a == actual_a and seen_b == actual_b,
+                 "recorder_health direct reads are tenant-isolated by RLS")
+
+            # Single-recorder tenant B retains legacy RPC behavior.
+            legacy = as_anon(
+                "select wl_report_health(%s,%s,%s::jsonb)",
+                agent_b, key_b, json.dumps({
+                    "nvr": {
+                        "reachable": True, "auth_ok": True,
+                        "reason": "ok", "state": "operational",
+                    },
+                    "channels": {
+                        "enumerated": True,
+                        "reported": [{"channel": "1", "enabled": True}],
+                    },
+                }),
+            )[0]
+            step(legacy["ok"] is True and legacy["present"] == 1,
+                 "legacy health RPC remains compatible on one-recorder site")
+            legacy_nvr = cur.execute(
+                "select nvr_reachable,nvr_auth_ok from nvr_health where agent_id=%s",
+                (agent_b,),
+            ).fetchone()
+            step(legacy_nvr == (True, True),
+                 "legacy wrapper keeps nvr_health current for existing fault/read models")
+
+            legacy_open = as_anon(
+                "select wl_open_recovery_interval(%s,%s,%s,%s,array[%s::uuid])",
+                agent_b, key_b,
+                datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 12, 5, tzinfo=timezone.utc),
+                cam_c,
+            )[0]
+            legacy_recorder = cur.execute(
+                "select recorder_id from recovery_intervals where id=%s",
+                (legacy_open["id"],),
+            ).fetchone()[0]
+            step(legacy_recorder is None,
+                 "legacy single-recorder recovery keeps NULL recorder_id for old site-wide coverage semantics")
+
+            # MNVR-015: on a one-recorder site the legacy and recorder recovery
+            # paths serve the same recorder. A bound Agent must still pick up a
+            # legacy interval opened before it upgraded, and a legacy Agent (after
+            # a rollback) must still pick up a recorder-scoped one.
+            legacy_window = (datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc),
+                             datetime(2026, 10, 2, 12, 5, tzinfo=timezone.utc))
+            reopened = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_b, key_b, rec_c, legacy_window[0], legacy_window[1], "1",
+            )[0]
+            step(reopened.get("duplicate") is True
+                 and str(reopened.get("id")) == str(legacy_open["id"]),
+                 "one-recorder site: re-reporting a legacy window on the recorder path stays idempotent",
+                 json.dumps(reopened, default=str))
+            by_recorder = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_b, key_b, rec_c,
+            )[0]
+            picked = [x for x in by_recorder if str(x["id"]) == str(legacy_open["id"])]
+            step(len(picked) == 1 and picked[0]["channels"] == ["1"],
+                 "one-recorder site: the bound Agent claims a legacy interval with its channels",
+                 json.dumps(by_recorder, default=str))
+            done_by_recorder = as_anon(
+                "select wl_complete_recorder_recovery(%s,%s,%s,%s,'recovered',1,'{}'::jsonb,'{}'::jsonb)",
+                agent_b, key_b, rec_c, legacy_open["id"],
+            )[0]
+            step(done_by_recorder.get("ok") is True,
+                 "one-recorder site: the bound Agent completes that legacy interval",
+                 json.dumps(done_by_recorder, default=str))
+
+            recorder_open = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_b, key_b, rec_c,
+                datetime(2026, 10, 2, 13, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 13, 5, tzinfo=timezone.utc), "1",
+            )[0]
+            by_legacy = as_anon(
+                "select wl_agent_claim_recovery(%s,%s,5,900)", agent_b, key_b,
+            )[0]
+            step(any(str(x["id"]) == str(recorder_open["id"]) for x in by_legacy),
+                 "one-recorder site: a legacy Agent after rollback claims a recorder-scoped interval",
+                 json.dumps(by_legacy, default=str))
+            done_by_legacy = as_anon(
+                "select wl_complete_recovery(%s,%s,%s,'unrecoverable',0,'{}'::jsonb,'{}'::jsonb)",
+                agent_b, key_b, recorder_open["id"],
+            )[0]
+            step(done_by_legacy.get("ok") is True,
+                 "one-recorder site: the legacy Agent completes that recorder-scoped interval",
+                 json.dumps(done_by_legacy, default=str))
+
+            # Deployed 5.0.x Agents open legacy intervals with no cameras ('{}'):
+            # a whole-site gap. On a one-recorder site that is every configured
+            # camera of the recorder, so the recorder claim must name those
+            # channels; with no channels the bound Agent would close the gap
+            # 'unrecoverable' without reading the archive.
+            sync_camera(agent_b, key_b, rec_c, "2")
+            as_anon(
+                "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
+                agent_b, key_b, rec_c,
+                json.dumps([{"channel": "3", "name": "Camera 3", "is_configured": False}]),
+            )
+            siteless = as_anon(
+                "select wl_open_recovery_interval(%s,%s,%s,%s,'{}'::uuid[])",
+                agent_b, key_b,
+                datetime(2026, 10, 2, 14, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 14, 5, tzinfo=timezone.utc),
+            )[0]
+            by_recorder = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_b, key_b, rec_c,
+            )[0]
+            picked = [x for x in by_recorder if str(x["id"]) == str(siteless.get("id"))]
+            step(siteless.get("status") == "pending" and len(picked) == 1
+                 and picked[0]["channels"] == ["1", "2"] and picked[0]["cameras"] == [],
+                 "one-recorder site: a camera-less legacy interval is claimed with every "
+                 "configured channel of the recorder (never an empty slot)",
+                 json.dumps(by_recorder, default=str))
+            stored = cur.execute(
+                "select recorder_id,cameras from recovery_intervals where id=%s",
+                (siteless["id"],),
+            ).fetchone()
+            step(stored == (None, []),
+                 "the camera-less legacy interval itself stays site-wide (NULL recorder, no cameras)",
+                 str(stored))
+
+            # A one-recorder site whose recorder has no configured camera yet:
+            # the bound Agent cannot name an archive target, so it must not
+            # claim (and so falsely close) the whole-site gap; it stays pending
+            # for a later claim and for a legacy Agent.
+            ud, td, sd = bootstrap("health-d@watchlog.test", "Health D", "Kiosk D")
+            key_d = "health-agent-d"
+            agent_d = add_agent(td, sd, key_d, "d")
+            rec_d = sync_recorders(agent_d, key_d, [{
+                "local_key": "rec-d", "display_name": "Recorder D",
+                "is_primary": True, "is_configured": True,
+            }])["rec-d"]
+            as_anon(
+                "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
+                agent_d, key_d, rec_d,
+                json.dumps([{"channel": "1", "name": "Camera 1", "is_configured": False}]),
+            )
+            siteless_d = as_anon(
+                "select wl_open_recovery_interval(%s,%s,%s,%s,'{}'::uuid[])",
+                agent_d, key_d,
+                datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 15, 5, tzinfo=timezone.utc),
+            )[0]
+            by_recorder_d = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_d, key_d, rec_d,
+            )[0]
+            state_d = cur.execute(
+                "select status,attempts from recovery_intervals where id=%s",
+                (siteless_d.get("id"),),
+            ).fetchone()
+            step(siteless_d.get("status") == "pending"
+                 and all(x.get("channels") for x in by_recorder_d)
+                 and all(str(x["id"]) != str(siteless_d.get("id")) for x in by_recorder_d)
+                 and state_d == ("pending", 0),
+                 "one-recorder site without a configured camera: the recorder claim leaves a "
+                 "camera-less legacy interval pending instead of returning it without channels",
+                 json.dumps([by_recorder_d, state_d], default=str))
+            by_legacy_d = as_anon(
+                "select wl_agent_claim_recovery(%s,%s,5,900)", agent_d, key_d,
+            )[0]
+            step(any(str(x["id"]) == str(siteless_d.get("id")) for x in by_legacy_d),
+                 "that camera-less legacy interval stays claimable by a legacy Agent",
+                 json.dumps(by_legacy_d, default=str))
+
+            # Site-wide coverage function must explicitly ignore recorder-specific
+            # recovery. This is a truth guard: no partial-recorder recovery can
+            # promote the whole site's coverage. In the final chain the site-wide
+            # three-class contract lives in wl_site_coverage_legacy_classes (0153),
+            # which wl_site_coverage_report_classes (0155) delegates to.
+            coverage_def = cur.execute(
+                """select pg_get_functiondef(p.oid)
+                     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+                    where n.nspname='public'
+                      and p.proname='wl_site_coverage_legacy_classes'
+                    limit 1"""
+            ).fetchone()[0]
+            step("ri.recorder_id is null" in coverage_def,
+                 "site-wide RECOVERED coverage excludes recorder-specific recovery")
+
+            # Exact EXECUTE ACLs.
+            def execute_grantees(sig):
+                rows = cur.execute(
+                    """select case when a.grantee=0 then 'PUBLIC'
+                                    else a.grantee::regrole::text end,
+                              p.proowner::regrole::text
+                         from pg_proc p,
+                              aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+                        where p.oid=%s::regprocedure
+                          and a.privilege_type='EXECUTE'""",
+                    (sig,),
+                ).fetchall()
+                owner = rows[0][1] if rows else None
+                return {g for g, _ in rows if g != owner}
+
+            for sig in (
+                "public.wl_report_recorder_health(uuid,text,uuid,jsonb)",
+                "public.wl_report_recorder_camera_health(uuid,text,uuid,jsonb)",
+                "public.wl_open_recorder_recovery_interval(uuid,text,uuid,timestamptz,timestamptz,text[])",
+                "public.wl_agent_claim_recorder_recovery(uuid,text,uuid,integer,integer)",
+                "public.wl_complete_recorder_recovery(uuid,text,uuid,uuid,text,integer,jsonb,jsonb)",
+            ):
+                got = execute_grantees(sig)
+                step(got == {"anon"}, f"{sig} EXECUTE ACL is exactly anon (+owner)", str(sorted(got)))
+
+            for sig in (
+                "public.wl_report_recorder_health_core(uuid,uuid,uuid,uuid,jsonb)",
+                "public.wl_report_recorder_camera_health_core(uuid,uuid,uuid,uuid,jsonb)",
+            ):
+                got = execute_grantees(sig)
+                step(got == set(), f"{sig} EXECUTE ACL is owner only", str(sorted(got)))
+
+        finally:
+            conn.rollback()
+
+    passed = sum(1 for s in STEPS if s)
+    print(f"\n  {passed}/{len(STEPS)} steps passed")
+    return 0 if passed == len(STEPS) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(run())

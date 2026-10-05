@@ -145,10 +145,21 @@ def _office_block(office: dict) -> str:
                     f'<table class="kv">{rows}</table>')
 
 
+# A null coverage_ratio means coverage is UNKNOWN for the window (for example a
+# multi-recorder window that starts before recorder tracking). It is stated as
+# unknown, never rendered as complete or as 100%.
+COVERAGE_UNKNOWN = ("Monitoring coverage could not be confirmed for this window. It is not "
+                    "counted as fully monitored; activity may be unobserved.")
+
+
 def _coverage_block(coverage: dict) -> str:
-    if not coverage or coverage.get("coverage_ratio") is None:
+    if not coverage:
         return ""
-    ratio = float(coverage.get("coverage_ratio") or 0)
+    if coverage.get("coverage_ratio") is None:
+        return _section("Monitoring coverage",
+                        f'<div class="cov"><span class="cov-n">Unknown</span></div>'
+                        f'<div class="warn">{_esc(COVERAGE_UNKNOWN)}</div>')
+    ratio = float(coverage.get("coverage_ratio"))
     gaps = coverage.get("gaps") or []
     warn = "" if ratio >= 0.999 else (
         f'<div class="warn">Monitoring was not continuous — {len(gaps)} gap'
@@ -263,7 +274,7 @@ def render_pdf_html(report: dict) -> str:
     restricted = report.get("restricted") or []
     people = (report.get("people") or {}).get("summary") or {}
     cov = report.get("coverage") or {}
-    ratio = float(cov.get("coverage_ratio") or 1)
+    ratio = cov.get("coverage_ratio")
     honesty = report.get("honesty") or []
 
     inc_rows = "".join(
@@ -276,8 +287,15 @@ def render_pdf_html(report: dict) -> str:
                            f'<td>{_esc(r.get("episodes"))}</td><td>{_esc(r.get("last"))}</td></tr>' for r in restricted))
     restr_block = (f'<h2>Restricted-area access</h2><table class="grid"><thead><tr><th>Camera</th><th>Purpose</th>'
                    f'<th>Windows</th><th>Last</th></tr></thead><tbody>{restr_block}</tbody></table>' if restricted else "")
-    cov_warn = ("" if ratio >= 0.999 else
-                f'<p class="warn">Monitoring was not continuous — {_esc(len(cov.get("gaps") or []))} gap(s); activity during a gap is unobserved.</p>')
+    if not cov:
+        cov_warn = ""
+    elif ratio is None:
+        cov_warn = f'<p class="warn">{_esc(COVERAGE_UNKNOWN)}</p>'
+    elif float(ratio) >= 0.999:
+        cov_warn = ""
+    else:
+        cov_warn = (f'<p class="warn">Monitoring was not continuous — {_esc(len(cov.get("gaps") or []))} '
+                    'gap(s); activity during a gap is unobserved.</p>')
     cc = m.get("coverage_classes")
     cov_classes = ""
     if cc:
