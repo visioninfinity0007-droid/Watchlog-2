@@ -835,7 +835,20 @@ declare
   v_rec numeric;
   v_a timestamptz;
   v_b timestamptz;
+  v_single uuid;
 begin
+  -- A site with exactly one configured recorder keeps the legacy wall-clock
+  -- contract, and the recorder RPCs treat that recorder's intervals and the
+  -- legacy NULL-recorder intervals as the same work (v_singleton). A
+  -- recorder-aware Agent bound to that recorder stores its recovery with the
+  -- recorder id, so count it here exactly like a NULL-recorder interval.
+  select (array_agg(r.id))[1]
+    into v_single
+    from public.recorders r
+   where r.site_id=p_site_id
+     and r.is_configured
+  having count(*)=1;
+
   v_base := public.wl_site_coverage_report(p_site_id,p_from,p_to);
   v_a := least(p_from,p_to);
   v_b := greatest(p_from,p_to);
@@ -865,7 +878,7 @@ begin
     ) r
     from public.recovery_intervals ri
     where ri.site_id=p_site_id
-      and ri.recorder_id is null
+      and (ri.recorder_id is null or ri.recorder_id=v_single)
       and ri.status='recovered'
       and greatest(ri.started_at,v_a)<least(ri.ended_at,v_b)
   ),

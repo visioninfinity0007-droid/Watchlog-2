@@ -96,6 +96,47 @@ def run() -> int:
             step(claim2 == [], "a recovered interval is not re-claimed")
             rowc = cur.execute("select status, recovered_count from recovery_intervals where id=%s",(rid,)).fetchone()
             step(rowc[0]=="recovered" and rowc[1]==42, "recovery ledger persisted status + count + checkpoint")
+
+            # A single-recorder site whose recorder-aware Agent (5.1) is bound to the
+            # site's one configured recorder opens, claims and completes recovery through
+            # the recorder RPCs, so the interval stores that recorder's id instead of NULL.
+            # The site still reports through the legacy wall-clock contract; the recorder
+            # RPCs treat that row as the site's legacy work, so coverage must count it as
+            # RECOVERED too (it did under 5.0.x), or every recovery is silently UNVERIFIED.
+            uid = cur.execute("insert into auth.users (id,email) values (gen_random_uuid(),'recov-single@watchlog.test') returning id").fetchone()[0]
+            tid2 = as_member("select wl_bootstrap_tenant('recov-single','recov-single')")[0]["tenant_id"]
+            sid = cur.execute("select id from sites where tenant_id=%s",(tid2,)).fetchone()[0]
+            key2 = "recov-single-e2e-key"
+            agent2 = cur.execute("""insert into agents (tenant_id, site_id, agent_key_hash, enrolled_at, last_seen_at)
+                                    values (%s,%s, encode(sha256(%s::bytea),'hex'), '2026-05-01', now()) returning id""",(tid2,sid,key2)).fetchone()[0]
+            recs = cur.execute("select wl_sync_recorders(%s,%s,%s::jsonb)",(agent2,key2,json.dumps([
+                {"local_key":"primary","display_name":"Recorder","is_primary":True,"is_configured":True}]))).fetchone()[0]
+            rec = recs["primary"]
+            cur.execute("select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",(agent2,key2,rec,json.dumps([
+                {"channel":"1","name":"Gate","is_configured":True}])))
+            cur.execute("""insert into agent_coverage_gaps (tenant_id,site_id,agent_id,started_at,ended_at,cause,source)
+                           values (%s,%s,%s,%s::timestamptz,%s::timestamptz,'agent_restart','agent')""",(tid2,sid,agent2,gs,ge))
+            s0 = coverage(lo, hi)["classes"]
+            step(s0["unverified_seconds"] > 50000 and s0["recovered_seconds"] == 0,
+                 "single-recorder site: outage window is UNVERIFIED before recovery", f"unv={s0['unverified_seconds']}")
+            so = cur.execute("select wl_open_recorder_recovery_interval(%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::text[])",
+                             (agent2,key2,rec,gs,ge,["1"])).fetchone()[0]
+            srid = so["id"]
+            sclaim = cur.execute("select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",(agent2,key2,rec)).fetchone()[0]
+            step(len(sclaim)==1 and str(sclaim[0]["id"])==str(srid), "single-recorder site: recorder RPC claims its interval")
+            cur.execute("select wl_complete_recorder_recovery(%s,%s,%s,%s,'recovered',%s,%s::jsonb)",
+                        (agent2,key2,rec,srid,5,json.dumps({"cursor":"done"})))
+            srow = cur.execute("select recorder_id, status from recovery_intervals where id=%s",(srid,)).fetchone()
+            step(str(srow[0])==str(rec) and srow[1]=="recovered",
+                 "single-recorder site: the interval is stored against the recorder and recovered", str(srow))
+            s1c = coverage(lo, hi)
+            s1 = s1c["classes"]
+            step(s1["recovered_seconds"] > 50000 and s1["unverified_seconds"] < 100,
+                 "single-recorder site: a recorder-RPC recovery counts as RECOVERED, not UNVERIFIED",
+                 f"rec={s1['recovered_seconds']} unv={s1['unverified_seconds']}")
+            stotal = s1["live_seconds"] + s1["recovered_seconds"] + s1["unverified_seconds"]
+            step(abs(stotal - float(s1c["wall_seconds"])) < 2,
+                 "single-recorder site: LIVE + RECOVERED + UNVERIFIED == wall", f"{stotal} vs {s1c['wall_seconds']}")
         finally:
             conn.rollback()
     ok = sum(1 for x in STEPS if x); print(f"\n  {ok}/{len(STEPS)} steps passed")
