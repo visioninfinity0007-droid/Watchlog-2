@@ -132,7 +132,9 @@ def _parse_device_clock(text: str) -> datetime:
 
     Dahua CGI commonly returns ``result=YYYY-MM-DD HH:MM:SS``. A few firmware
     families use a different key or the bare value, so all values are inspected.
-    We intentionally do not guess if no supported timestamp is present.
+    A value that names its UTC offset ("15:00:00+05:00") still gives the wall
+    time the recorder stamps its recordings with, so the offset is dropped, not
+    applied. We intentionally do not guess if no supported timestamp is present.
     """
     raw = str(text or "").strip()
     candidates: list[str] = []
@@ -143,9 +145,7 @@ def _parse_device_clock(text: str) -> datetime:
     for value in candidates:
         parsed = _parse_time(value)
         if parsed is not None:
-            if parsed.tzinfo is not None:
-                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-            return parsed
+            return parsed.replace(tzinfo=None)
     raise DriverError("recorder current time was not parseable; refusing ambiguous archive request")
 
 

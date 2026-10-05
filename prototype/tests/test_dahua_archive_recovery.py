@@ -21,7 +21,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dahua_fake_recorder import (  # noqa: E402
-    JPEG, FakeCloud, FakeDahua, FakeRecorder, continuous_files, local, pinned_datetime)
+    FMT, JPEG, FakeCloud, FakeDahua, FakeRecorder, FakeResponse, continuous_files, local,
+    pinned_datetime)
 import backfill  # noqa: E402
 import dahua_archive as da  # noqa: E402
 import recovery  # noqa: E402
@@ -183,6 +184,40 @@ class TransientArchiveErrors(unittest.TestCase):
         drv.s = _Answers(_offline)
         self.assertEqual(da.prove_recorder_archive(drv, "1")["status"], "unknown")
         self.assertEqual(retention.estimate_retention(drv, "1")["status"], "unknown")
+
+
+class ClockWithUtcOffset(unittest.TestCase):
+    """A getCurrentTime value that names its UTC offset ("15:00:00+05:00") still gives the
+    recorder's wall time: that wall time is what stamps its recordings. Read as UTC instead, the
+    measured offset was ~0 and every search asked for the wrong five hours."""
+
+    class OffsetClockRecorder(FakeRecorder):
+        def get(self, url, params=None, timeout=None, stream=False):
+            if url.endswith("global.cgi"):
+                self.calls.append(("global.cgi", dict(params or {}), timeout, stream))
+                return FakeResponse(text=f"result={self.wall_clock().strftime(FMT)}+05:00\r\n")
+            return super().get(url, params=params, timeout=timeout, stream=stream)
+
+    def setUp(self):
+        da.install()
+        patcher = mock.patch.object(da, "datetime", pinned_datetime(PC_NOW))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_device_clock_keeps_the_wall_time_it_names(self):
+        self.assertEqual(da._parse_device_clock("result=2026-10-04 15:00:00+05:00"),
+                         local("2026-10-04 15:00:00"))
+
+    def test_search_uses_the_recorder_wall_clock_window(self):
+        rec = self.OffsetClockRecorder(PC_NOW, zone=timedelta(hours=5), files=continuous_files(
+            local("2026-10-04 12:00:00"), local("2026-10-04 14:00:00")))
+        res = da.enumerate_historical_events(FakeDahua(rec), "1", G0 - timedelta(minutes=30),
+                                             G0 + timedelta(minutes=30))
+        find = rec.calls_to("mediaFileFind.cgi", "findFile")[0][1]
+        self.assertEqual((find["condition.StartTime"], find["condition.EndTime"]),
+                         ("2026-10-04 12:30:00", "2026-10-04 13:30:00"))
+        self.assertEqual([e["ts"] for e in res["events"]],
+                         ["2026-10-04T07:30:00Z", "2026-10-04T08:00:00Z"])
 
 
 if __name__ == "__main__":
