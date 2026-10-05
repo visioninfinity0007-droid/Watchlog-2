@@ -1095,14 +1095,64 @@ $function$;
 alter table public.cameras
   drop constraint if exists cameras_site_channel_uniq;
 
--- Recorder push (0013/0108/0110) still has one site-level token, sends only a
--- channel, and resolved cameras by site+channel. With site+channel no longer
--- unique, an alarm on a multi-recorder site would attach to an arbitrary
--- recorder's camera with recorder_id NULL (and its still could land on another
--- camera). Until push identity is recorder-scoped, push fails closed on a site
--- with more than one configured recorder; on a single-recorder site it keeps
--- working and is attributed to that one recorder. ACLs from 0013/0108/0110 are
--- kept: create or replace preserves them.
+-- Recorder push (0013/0108/0110) had one site-level token, sent only a channel,
+-- and resolved cameras by site+channel. With site+channel no longer unique, an
+-- alarm on a multi-recorder site would attach to an arbitrary recorder's camera
+-- with recorder_id NULL (and its still could land on another camera). Push
+-- identity is now recorder-scoped (contract section 14):
+--   * push_sources.recorder_id names the one recorder a token belongs to. Every
+--     existing source of a site with exactly one recorder is attributed to it
+--     (only the newest live source per site, so each recorder keeps at most one
+--     live token; older live duplicates stay legacy site-wide tokens);
+--   * wl_agent_issue_push_token(agent, key, recorder) issues one idempotent
+--     token per recorder for the current site Agent; the owner-portal
+--     wl_issue_push_token(site, recorder) rotates one recorder's token;
+--   * wl_ingest_push and wl_push_liveness resolve the recorder from the token
+--     before any channel, then the camera by (recorder_id, channel);
+--   * a legacy token that names no recorder keeps working only while the site
+--     has exactly one configured recorder, and fails closed otherwise; so do
+--     the site-level issue/status forms;
+--   * a token of a disabled recorder fails closed.
+-- ACLs from 0013/0108/0110/0115 are kept: create or replace preserves them.
+alter table public.push_sources
+  add column if not exists recorder_id uuid;
+
+with single_recorder as (
+  select r.tenant_id, r.site_id, (array_agg(r.id))[1] as recorder_id
+    from public.recorders r
+   group by r.tenant_id, r.site_id
+  having count(*) = 1
+     and bool_and(r.is_configured)
+), newest_live as (
+  select distinct on (ps.site_id) ps.id
+    from public.push_sources ps
+   where ps.enabled
+   order by ps.site_id, ps.created_at desc, ps.id desc
+)
+update public.push_sources ps
+   set recorder_id = s.recorder_id
+  from single_recorder s
+ where ps.recorder_id is null
+   and ps.tenant_id = s.tenant_id
+   and ps.site_id = s.site_id
+   and (not ps.enabled or ps.id in (select id from newest_live));
+
+alter table public.push_sources
+  drop constraint if exists push_sources_recorder_lineage_fkey;
+
+alter table public.push_sources
+  add constraint push_sources_recorder_lineage_fkey
+  foreign key (recorder_id, tenant_id, site_id)
+  references public.recorders(id, tenant_id, site_id)
+  on delete restrict;
+
+create unique index if not exists push_sources_one_live_per_recorder_idx
+  on public.push_sources(recorder_id)
+  where enabled and recorder_id is not null;
+
+-- Owner-only guard for a legacy token or site-level form that names no
+-- recorder: the site's single configured recorder, NULL when it has none yet,
+-- and 42501 once more than one recorder is configured.
 create or replace function public.wl_push_recorder_for_site(
   p_tenant_id uuid,
   p_site_id uuid
@@ -1140,9 +1190,61 @@ $function$;
 revoke all on function public.wl_push_recorder_for_site(uuid,uuid)
   from public, anon, authenticated, service_role;
 
--- The single configured recorder is the site's continuity owner (0154), so the
--- historical site:channel dedupe key is unchanged and still matches that
--- recorder's Agent events.
+-- Owner-only: the recorder an authenticated push source feeds. A recorder
+-- token must name a configured recorder of its own site; a legacy token falls
+-- back to the single-recorder rule above.
+create or replace function public.wl_push_source_recorder(p_source_id uuid)
+returns uuid
+language plpgsql
+stable
+set search_path = public
+as $function$
+declare
+  v_src public.push_sources;
+begin
+  select * into v_src from public.push_sources where id=p_source_id;
+  if v_src.id is null then
+    raise exception 'push source not recognised' using errcode='28000';
+  end if;
+
+  if v_src.recorder_id is null then
+    return public.wl_push_recorder_for_site(v_src.tenant_id, v_src.site_id);
+  end if;
+
+  if not exists (
+    select 1 from public.recorders r
+     where r.id=v_src.recorder_id
+       and r.tenant_id=v_src.tenant_id
+       and r.site_id=v_src.site_id
+       and r.is_configured
+  ) then
+    raise exception 'recorder push source is not configured'
+      using errcode='42501';
+  end if;
+
+  return v_src.recorder_id;
+end
+$function$;
+
+revoke all on function public.wl_push_source_recorder(uuid)
+  from public, anon, authenticated, service_role;
+
+-- Event identity (MNVR-026). A push event is keyed with
+--   wl_recorder_event_dedupe_key(site, token recorder, channel,
+--                                device_event_id, device_ts, event_type)
+-- which is exactly the key wl_ingest_events gives that recorder's Agent event,
+-- so one alarm reaching WatchLog both ways is one row, whichever arrives first.
+-- For that to hold, the push bridge must send, for the same alarm:
+--   channel          the recorder channel id the Agent reports (cameras.channel
+--                    of that recorder);
+--   event_type       the WatchLog type the Agent driver maps that alarm to;
+--   device_event_id  exactly what the Agent driver sends: NULL for Hikvision
+--                    ISAPI and Dahua alarms today, so the bridge must not
+--                    invent one;
+--   device_ts        the recorder's alarm time; the key uses whole UTC seconds.
+-- The continuity owner keeps the historical site:channel namespace; any other
+-- recorder is namespaced by its UUID. A site with no recorder yet keeps the
+-- plain site:channel key.
 create or replace function public.wl_ingest_push(p_token text, p_events jsonb)
 returns jsonb
 language plpgsql
@@ -1165,7 +1267,8 @@ begin
   end if;
   select * into v_agent from public.agents where id = v_src.agent_id;
 
-  v_recorder_id := public.wl_push_recorder_for_site(v_agent.tenant_id, v_agent.site_id);
+  -- The token establishes the recorder before any channel is read.
+  v_recorder_id := public.wl_push_source_recorder(v_src.id);
 
   select count(*) into v_received
     from jsonb_array_elements(coalesce(p_events, '[]'::jsonb));
@@ -1182,8 +1285,16 @@ begin
     where e->>'device_ts' is not null
   ),
   keyed as (
-    select i.*, public.wl_dedupe_key(v_agent.site_id, i.channel, i.device_event_id,
-                                     i.device_ts, i.event_type) as dedupe_key
+    select i.*,
+           case
+             when v_recorder_id is null then
+               public.wl_dedupe_key(v_agent.site_id, i.channel, i.device_event_id,
+                                    i.device_ts, i.event_type)
+             else
+               public.wl_recorder_event_dedupe_key(v_agent.site_id, v_recorder_id,
+                                                   i.channel, i.device_event_id,
+                                                   i.device_ts, i.event_type)
+           end as dedupe_key
       from incoming i
   ),
   deduped as (
@@ -1212,10 +1323,19 @@ begin
 
   if v_map <> '[]'::jsonb then
     with supplied as (
-      select public.wl_dedupe_key(v_agent.site_id, e->>'channel',
-                                  nullif(e->>'device_event_id',''),
-                                  (e->>'device_ts')::timestamptz,
-                                  coalesce(nullif(e->>'event_type',''), 'unknown')) as k,
+      select case
+               when v_recorder_id is null then
+                 public.wl_dedupe_key(v_agent.site_id, e->>'channel',
+                                      nullif(e->>'device_event_id',''),
+                                      (e->>'device_ts')::timestamptz,
+                                      coalesce(nullif(e->>'event_type',''), 'unknown'))
+               else
+                 public.wl_recorder_event_dedupe_key(
+                   v_agent.site_id, v_recorder_id, e->>'channel',
+                   nullif(e->>'device_event_id',''),
+                   (e->>'device_ts')::timestamptz,
+                   coalesce(nullif(e->>'event_type',''), 'unknown'))
+             end as k,
              e->>'channel'      as channel,
              e->>'snapshot_b64' as b64
         from jsonb_array_elements(coalesce(p_events, '[]'::jsonb)) e
@@ -1255,6 +1375,16 @@ begin
 end
 $function$;
 
+comment on function public.wl_ingest_push(text, jsonb) is
+  'Token-authenticated recorder push ingest. The token names its recorder (a legacy '
+  'token only while the site has one configured recorder); cameras resolve by '
+  '(recorder_id, channel). Dedupe identity is wl_recorder_event_dedupe_key(site, '
+  'recorder, channel, device_event_id, device_ts, event_type), shared with the Agent: '
+  'the bridge must send the Agent''s channel, event type and device_event_id (NULL '
+  'when the Agent sends none) and the recorder''s alarm time.';
+
+-- Liveness is recorded on the token's own source, so each recorder's push
+-- reachability is separate. Still inserts nothing.
 create or replace function public.wl_push_liveness(p_token text)
 returns jsonb
 language plpgsql
@@ -1269,7 +1399,7 @@ begin
     raise exception 'push token not recognised' using errcode = '28000';
   end if;
 
-  perform public.wl_push_recorder_for_site(v_src.tenant_id, v_src.site_id);
+  perform public.wl_push_source_recorder(v_src.id);
 
   update public.push_sources set last_push_at = now() where id = v_src.id;
   update public.agents set last_seen_at = now() where id = v_src.agent_id;
@@ -1278,6 +1408,9 @@ begin
 end
 $function$;
 
+-- 5.0.x site-level form (0108). It never mints a token for a multi-recorder
+-- site. On a single-recorder site a new token is scoped to that recorder; an
+-- existing live token for that recorder (or a legacy site-wide one) is reused.
 create or replace function public.wl_agent_issue_push_token(
   p_agent_id  uuid,
   p_agent_key text
@@ -1287,9 +1420,10 @@ security definer
 set search_path = public
 as $function$
 declare
-  v_agent     public.agents;
-  v_new_agent uuid;
-  v_token     text;
+  v_agent       public.agents;
+  v_recorder_id uuid;
+  v_new_agent   uuid;
+  v_token       text;
 begin
   select * into v_agent
     from public.agents a
@@ -1306,13 +1440,20 @@ begin
   end if;
 
   -- Neither reuse nor mint a site-level token for a multi-recorder site.
-  perform public.wl_push_recorder_for_site(v_agent.tenant_id, v_agent.site_id);
+  v_recorder_id := public.wl_push_recorder_for_site(v_agent.tenant_id, v_agent.site_id);
 
-  -- Reuse this site's live push source if it already has one.
+  if v_recorder_id is not null then
+    perform pg_advisory_xact_lock(
+      hashtext('wl_recorder_push_source'), hashtext(v_recorder_id::text)
+    );
+  end if;
+
+  -- Reuse this site's live push source for that recorder, if it has one.
   select ps.token into v_token
     from public.push_sources ps
    where ps.site_id = v_agent.site_id
      and ps.enabled
+     and (ps.recorder_id is null or ps.recorder_id = v_recorder_id)
    order by ps.created_at desc
    limit 1;
 
@@ -1326,8 +1467,8 @@ begin
             'Recorder push', 'recorder-push', now())
     returning id into v_new_agent;
 
-    insert into public.push_sources (tenant_id, site_id, agent_id)
-    values (v_agent.tenant_id, v_agent.site_id, v_new_agent)
+    insert into public.push_sources (tenant_id, site_id, agent_id, recorder_id)
+    values (v_agent.tenant_id, v_agent.site_id, v_new_agent, v_recorder_id)
     returning token into v_token;
   end if;
 
@@ -1338,3 +1479,345 @@ begin
     'note', 'Point the recorder at the WatchLog push bridge with this token.');
 end
 $function$;
+
+-- Recorder form for 5.1 Agents: one idempotent token per configured recorder,
+-- issued only to the current site Agent. On a single-recorder site the site's
+-- legacy site-wide token is adopted for that recorder, so a recorder already
+-- configured with it keeps working (0108: never rotate on a Setup re-run).
+create or replace function public.wl_agent_issue_push_token(
+  p_agent_id    uuid,
+  p_agent_key   text,
+  p_recorder_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent     public.agents;
+  v_src       public.push_sources;
+  v_new_agent uuid;
+  v_token     text;
+begin
+  v_agent := public.wl_auth_agent(p_agent_id, p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent authentication failed' using errcode = '28000';
+  end if;
+
+  if coalesce(v_agent.device_driver, '') = 'recorder-push' then
+    raise exception 'a recorder-push agent cannot issue push tokens'
+      using errcode = '42501';
+  end if;
+
+  perform public.wl_assert_current_agent_authority(v_agent.id, v_agent.site_id);
+
+  if not exists (
+    select 1 from public.recorders r
+     where r.id = p_recorder_id
+       and r.tenant_id = v_agent.tenant_id
+       and r.site_id = v_agent.site_id
+       and r.is_configured
+  ) then
+    raise exception 'recorder not configured for this agent site'
+      using errcode = '42501';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext('wl_recorder_push_source'), hashtext(p_recorder_id::text)
+  );
+
+  select ps.token into v_token
+    from public.push_sources ps
+   where ps.recorder_id = p_recorder_id
+     and ps.enabled
+   order by ps.created_at desc
+   limit 1;
+
+  -- The recorder was checked configured above, so a count of one means it
+  -- is the site's only configured recorder.
+  if v_token is null
+     and (select count(*) from public.recorders r
+           where r.tenant_id = v_agent.tenant_id
+             and r.site_id = v_agent.site_id
+             and r.is_configured) = 1
+  then
+    select ps.* into v_src
+      from public.push_sources ps
+     where ps.tenant_id = v_agent.tenant_id
+       and ps.site_id = v_agent.site_id
+       and ps.recorder_id is null
+       and ps.enabled
+     order by ps.created_at desc
+     limit 1;
+
+    if v_src.id is not null then
+      update public.push_sources
+         set recorder_id = p_recorder_id
+       where id = v_src.id
+      returning token into v_token;
+    end if;
+  end if;
+
+  if v_token is null then
+    insert into public.agents (tenant_id, site_id, agent_key_hash, hostname,
+                               device_driver, last_seen_at)
+    values (v_agent.tenant_id, v_agent.site_id,
+            md5(gen_random_uuid()::text || gen_random_uuid()::text),
+            'Recorder push', 'recorder-push', now())
+    returning id into v_new_agent;
+
+    insert into public.push_sources (tenant_id, site_id, agent_id, recorder_id)
+    values (v_agent.tenant_id, v_agent.site_id, v_new_agent, p_recorder_id)
+    returning token into v_token;
+  end if;
+
+  return jsonb_build_object(
+    'ok', true,
+    'token', v_token,
+    'site_id', v_agent.site_id,
+    'recorder_id', p_recorder_id,
+    'note', 'Point the recorder at the WatchLog push bridge with this token.');
+end
+$function$;
+
+revoke all on function public.wl_agent_issue_push_token(uuid,text,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.wl_agent_issue_push_token(uuid,text,uuid) to anon;
+
+-- Owner portal, site-level form (0013): guarded like the Agent form. It rotates
+-- a single-recorder site's tokens to one token for that recorder, and refuses a
+-- multi-recorder site (use the recorder form below).
+create or replace function public.wl_issue_push_token(p_site_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_tenant      uuid := public.wl_require_role(array['owner', 'admin']);
+  v_site        public.sites;
+  v_recorder_id uuid;
+  v_agent       uuid;
+  v_token       text;
+begin
+  select * into v_site from public.sites where id = p_site_id and tenant_id = v_tenant;
+  if v_site.id is null then
+    raise exception 'that site does not belong to your account';
+  end if;
+
+  v_recorder_id := public.wl_push_recorder_for_site(v_tenant, p_site_id);
+
+  -- Rotate: disable any existing source for this site.
+  update public.push_sources set enabled = false where site_id = p_site_id;
+
+  insert into public.agents (tenant_id, site_id, agent_key_hash, hostname,
+                             device_driver, last_seen_at)
+  values (v_tenant, p_site_id, md5(gen_random_uuid()::text || gen_random_uuid()::text),
+          'Recorder push', 'recorder-push', now())
+  returning id into v_agent;
+
+  insert into public.push_sources (tenant_id, site_id, agent_id, recorder_id)
+  values (v_tenant, p_site_id, v_agent, v_recorder_id)
+  returning token into v_token;
+
+  return jsonb_build_object(
+    'ok', true,
+    'token', v_token,
+    'note', 'Configure the recorder to POST events to the WatchLog push '
+            || 'endpoint with this token. Shown once - keep it safe.');
+end
+$function$;
+
+-- Owner portal, recorder form: rotates one configured recorder's token only.
+-- On a single-recorder site the legacy site-wide tokens feed the same
+-- recorder, so they are rotated with it.
+create or replace function public.wl_issue_push_token(
+  p_site_id     uuid,
+  p_recorder_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_tenant uuid := public.wl_require_role(array['owner', 'admin']);
+  v_site   public.sites;
+  v_agent  uuid;
+  v_token  text;
+begin
+  select * into v_site from public.sites where id = p_site_id and tenant_id = v_tenant;
+  if v_site.id is null then
+    raise exception 'that site does not belong to your account';
+  end if;
+
+  if not exists (
+    select 1 from public.recorders r
+     where r.id = p_recorder_id
+       and r.tenant_id = v_tenant
+       and r.site_id = p_site_id
+       and r.is_configured
+  ) then
+    raise exception 'that recorder is not configured for this site'
+      using errcode = '42501';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext('wl_recorder_push_source'), hashtext(p_recorder_id::text)
+  );
+
+  update public.push_sources
+     set enabled = false
+   where site_id = p_site_id
+     and enabled
+     and (recorder_id = p_recorder_id
+          or (recorder_id is null
+              and (select count(*) from public.recorders r
+                    where r.tenant_id = v_tenant
+                      and r.site_id = p_site_id
+                      and r.is_configured) = 1));
+
+  insert into public.agents (tenant_id, site_id, agent_key_hash, hostname,
+                             device_driver, last_seen_at)
+  values (v_tenant, p_site_id, md5(gen_random_uuid()::text || gen_random_uuid()::text),
+          'Recorder push', 'recorder-push', now())
+  returning id into v_agent;
+
+  insert into public.push_sources (tenant_id, site_id, agent_id, recorder_id)
+  values (v_tenant, p_site_id, v_agent, p_recorder_id)
+  returning token into v_token;
+
+  return jsonb_build_object(
+    'ok', true,
+    'token', v_token,
+    'recorder_id', p_recorder_id,
+    'note', 'Configure this recorder to POST events to the WatchLog push '
+            || 'endpoint with this token. Shown once - keep it safe.');
+end
+$function$;
+
+revoke all on function public.wl_issue_push_token(uuid,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.wl_issue_push_token(uuid,uuid) to authenticated;
+
+-- Portal list (0013): each source names its recorder. No token is exposed.
+create or replace function public.wl_push_sources()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $function$
+declare v_tenant uuid := public.wl_my_tenant();
+begin
+  if v_tenant is null then return '[]'::jsonb; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', p.id, 'site', s.name, 'enabled', p.enabled,
+             'recorder_id', p.recorder_id, 'recorder', r.display_name,
+             'created_at', p.created_at, 'last_push_at', p.last_push_at)
+             order by p.created_at desc)
+      from public.push_sources p
+      join public.sites s on s.id = p.site_id
+      left join public.recorders r on r.id = p.recorder_id
+     where p.tenant_id = v_tenant), '[]'::jsonb);
+end
+$function$;
+
+-- Agent push status (0115), site-level form: guarded like the other legacy
+-- push forms, so a multi-recorder site never reports one recorder's delivery
+-- as the site's.
+create or replace function public.wl_agent_push_status(p_agent_id uuid, p_agent_key text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent       public.agents;
+  v_recorder_id uuid;
+  v_src         public.push_sources;
+begin
+  select * into v_agent
+    from public.agents a
+   where a.id = p_agent_id
+     and a.agent_key_hash = encode(sha256(p_agent_key::bytea), 'hex');
+  if v_agent.id is null then
+    raise exception 'agent authentication failed' using errcode = '28000';
+  end if;
+
+  v_recorder_id := public.wl_push_recorder_for_site(v_agent.tenant_id, v_agent.site_id);
+
+  select * into v_src
+    from public.push_sources ps
+   where ps.site_id = v_agent.site_id
+     and ps.enabled
+     and (ps.recorder_id is null or ps.recorder_id = v_recorder_id)
+   order by ps.created_at desc
+   limit 1;
+
+  if v_src.id is null then
+    return jsonb_build_object(
+      'enabled', false, 'delivery_verified', false, 'last_push_at', null);
+  end if;
+
+  return jsonb_build_object(
+    'enabled', true,
+    'delivery_verified', v_src.last_push_at is not null,
+    'created_at', v_src.created_at,
+    'last_push_at', v_src.last_push_at);
+end
+$function$;
+
+-- Agent push status, recorder form: delivery of that recorder's own token.
+create or replace function public.wl_agent_push_status(
+  p_agent_id    uuid,
+  p_agent_key   text,
+  p_recorder_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+  v_src   public.push_sources;
+begin
+  v_agent := public.wl_auth_agent(p_agent_id, p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent authentication failed' using errcode = '28000';
+  end if;
+
+  if not exists (
+    select 1 from public.recorders r
+     where r.id = p_recorder_id
+       and r.tenant_id = v_agent.tenant_id
+       and r.site_id = v_agent.site_id
+  ) then
+    raise exception 'recorder not found for this agent site' using errcode = '42501';
+  end if;
+
+  select * into v_src
+    from public.push_sources ps
+   where ps.recorder_id = p_recorder_id
+     and ps.enabled
+   order by ps.created_at desc
+   limit 1;
+
+  if v_src.id is null then
+    return jsonb_build_object(
+      'enabled', false, 'delivery_verified', false, 'last_push_at', null,
+      'recorder_id', p_recorder_id);
+  end if;
+
+  return jsonb_build_object(
+    'enabled', true,
+    'delivery_verified', v_src.last_push_at is not null,
+    'created_at', v_src.created_at,
+    'last_push_at', v_src.last_push_at,
+    'recorder_id', p_recorder_id);
+end
+$function$;
+
+revoke all on function public.wl_agent_push_status(uuid,text,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.wl_agent_push_status(uuid,text,uuid) to anon;

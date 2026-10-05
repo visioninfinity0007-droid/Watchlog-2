@@ -21,7 +21,9 @@ This script reproduces the real upgrade on its OWN fresh, disposable database:
            (wl_sync_cameras, wl_ingest_events, wl_heartbeat,
            wl_open_recovery_interval with uuid[], ...) still succeed on the
            single-recorder site; pending/in-progress recovery still claimable
-           by the legacy Agent; recovered history still RECOVERED.
+           by the legacy Agent; recovered history still RECOVERED; the 5.0.x
+           recorder push token is scoped to the site's recorder and keeps
+           working.
 
 Steps marked "[gated: MNVR-015]" exercise the 0147 recovery_intervals backfill
 (MNVR-015, owned by a later work package). They are expected to FAIL until that
@@ -206,6 +208,19 @@ def seed_legacy(s: Session) -> dict:
     s.anon("select wl_report_health(%s,%s,%s::jsonb)", agent_id, agent_key, json.dumps(HEALTH))
     s.anon("select wl_ingest_events(%s,%s,%s::jsonb)",
            agent_id, agent_key, json.dumps(LEGACY_EVENTS))
+    # Setup provisioned recorder push for this site (5.0.x site-level token).
+    push_token = s.anon("select wl_agent_issue_push_token(%s,%s)",
+                        agent_id, agent_key)[0]["token"]
+    # An older live duplicate (two Setup runs racing): it must not block the
+    # one-live-token-per-recorder index, and keeps working as a legacy token.
+    dup_agent = s.one("""insert into agents(tenant_id,site_id,agent_key_hash,hostname,
+                                            device_driver,last_seen_at)
+                         values (%s,%s,md5(gen_random_uuid()::text),'Recorder push',
+                                 'recorder-push',now()) returning id""",
+                      tenant_id, site_id)[0]
+    dup_token = s.one("""insert into push_sources(tenant_id,site_id,agent_id,created_at)
+                         values (%s,%s,%s,now()-interval '1 day') returning token""",
+                      tenant_id, site_id, dup_agent)[0]
 
     canonical = str(camera_map["2"])
     for start, end in (W_RECOVERED, W_IN_PROGRESS, W_PENDING):
@@ -238,7 +253,8 @@ def seed_legacy(s: Session) -> dict:
         "uid": uid, "tenant_id": tenant_id, "site_id": site_id,
         "agent_id": agent_id, "agent_key": agent_key, "camera_map": camera_map,
         "recovered_id": recovered_id, "in_progress_id": in_progress_id,
-        "pending_id": pending_id, "new_site_id": boot2["site_id"],
+        "pending_id": pending_id, "push_token": push_token, "dup_token": dup_token,
+        "new_site_id": boot2["site_id"],
         "new_site_code": boot2["enrollment_code"],
     }
 
@@ -417,6 +433,43 @@ def run() -> int:
             step(bool(opened) and opened[0].get("ok") is True
                  and opened[0].get("status") == "pending",
                  "legacy wl_open_recovery_interval with uuid[] opens a new window", msg)
+
+            # Recorder push provisioned by 5.0.x is scoped to the site's recorder.
+            src = s.one("select to_jsonb(p)->>'recorder_id', enabled from push_sources p "
+                        "where token=%s", seed["push_token"])
+            dup = s.one("select to_jsonb(p)->>'recorder_id', enabled from push_sources p "
+                        "where token=%s", seed["dup_token"])
+            step(src is not None and src[0] == str(rec_id) and src[1] is True
+                 and dup == (None, True),
+                 "the newest pre-upgrade push token is backfilled to the site's single "
+                 "recorder; an older live duplicate stays a legacy token",
+                 str((src, dup)))
+            dup_push, msg = s.anon_try(
+                "select wl_ingest_push(%s,%s::jsonb)", seed["dup_token"],
+                json.dumps([{"channel": "6", "event_type": "motion",
+                             "device_ts": "2026-10-05T10:30:00Z"}]))
+            step(bool(dup_push) and dup_push[0]["inserted"] == 1,
+                 "the legacy duplicate still ingests while the site has one recorder", msg)
+            pushed, msg = s.anon_try(
+                "select wl_ingest_push(%s,%s::jsonb)", seed["push_token"],
+                json.dumps([{"channel": "4", "event_type": "motion",
+                             "device_ts": "2026-10-05T10:00:00Z", "snapshot_b64": "anps"}]))
+            push_row = s.one(
+                """select e.recorder_id,e.camera_id,e.dedupe_key,s.camera_id
+                     from events e left join snapshots s on s.event_id=e.id
+                    where e.site_id=%s and e.device_ts='2026-10-05T10:00:00Z'""", site)
+            push_key = s.one(
+                "select wl_dedupe_key(%s,'4',null,'2026-10-05T10:00:00Z'::timestamptz,'motion')",
+                site)[0]
+            step(bool(pushed) and pushed[0]["inserted"] == 1 and push_row is not None
+                 and str(push_row[0]) == str(rec_id)
+                 and str(push_row[1]) == str(seed["camera_map"]["4"])
+                 and push_row[2] == push_key and str(push_row[3]) == str(push_row[1]),
+                 "the pre-upgrade push token still ingests on the recorder's camera, legacy key",
+                 msg or str(push_row))
+            reissued, msg = s.anon_try("select wl_agent_issue_push_token(%s,%s)", agent, key)
+            step(bool(reissued) and reissued[0].get("token") == seed["push_token"],
+                 "the 5.0.x token RPC returns the same token after the upgrade", msg)
 
             # A site first contacted after the upgrade gets its owner lazily.
             enrolled, msg = s.anon_try("select wl_enroll(%s,%s,%s,%s,%s,%s,%s)",
