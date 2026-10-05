@@ -772,7 +772,8 @@ begin
        )
      );
 
-    -- Legacy singleton storage current state remains exactly on nvr_health.
+    -- Legacy singleton storage current state remains exactly on nvr_health
+    -- (and is mirrored onto the singleton recorder below).
     with bids as (
       select distinct t->>'id' as dedupe_key
       from jsonb_array_elements(coalesce(p_transitions,'[]'::jsonb)) t
@@ -824,6 +825,65 @@ begin
          excluded.sto_observed_at=nh.sto_observed_at
          and excluded.sto_observed_epoch is distinct from nh.sto_observed_epoch
          and excluded.sto_observed_ingest>coalesce(nh.sto_observed_ingest,-1)
+       )
+     );
+
+    -- Mirror the same legacy storage state onto the singleton recorder's
+    -- recorder_health row (same forward-only watermark). The owner read
+    -- model reads recorder_health; without this a one-recorder site's
+    -- storage stays frozen at the copy made when this migration ran.
+    with bids as (
+      select distinct t->>'id' as dedupe_key
+      from jsonb_array_elements(coalesce(p_transitions,'[]'::jsonb)) t
+      where coalesce(t->>'id','')<>''
+    ),
+    a_sto as (
+      select
+        st.effective_at,st.store_epoch,st.seq,
+        st.id as ingest,st.to_state,st.reason_code
+      from public.storage_transitions st
+      join bids b on b.dedupe_key=st.dedupe_key
+      where st.agent_id=v_agent.id
+        and st.recorder_id is null
+    ),
+    l_sto as (
+      select
+        to_state,reason_code,effective_at,store_epoch,seq,ingest
+      from a_sto
+      order by effective_at desc,seq desc nulls last,ingest desc
+      limit 1
+    )
+    insert into public.recorder_health as rh(
+      recorder_id,agent_id,tenant_id,site_id,
+      storage_state,storage_reason_code,
+      sto_observed_at,sto_observed_epoch,sto_observed_seq,sto_observed_ingest,
+      updated_at
+    )
+    select
+      v_legacy_recorder_id,v_agent.id,v_agent.tenant_id,v_agent.site_id,
+      l.to_state,l.reason_code,
+      l.effective_at,l.store_epoch,l.seq,l.ingest,v_now
+    from l_sto l
+    where v_legacy_recorder_id is not null
+    on conflict (recorder_id,agent_id) do update
+       set storage_state=excluded.storage_state,
+           storage_reason_code=excluded.storage_reason_code,
+           sto_observed_at=excluded.sto_observed_at,
+           sto_observed_epoch=excluded.sto_observed_epoch,
+           sto_observed_seq=excluded.sto_observed_seq,
+           sto_observed_ingest=excluded.sto_observed_ingest,
+           updated_at=v_now
+     where (
+       excluded.sto_observed_at>coalesce(rh.sto_observed_at,'-infinity'::timestamptz)
+       or (
+         excluded.sto_observed_at=rh.sto_observed_at
+         and excluded.sto_observed_epoch is not distinct from rh.sto_observed_epoch
+         and excluded.sto_observed_seq>coalesce(rh.sto_observed_seq,-1)
+       )
+       or (
+         excluded.sto_observed_at=rh.sto_observed_at
+         and excluded.sto_observed_epoch is distinct from rh.sto_observed_epoch
+         and excluded.sto_observed_ingest>coalesce(rh.sto_observed_ingest,-1)
        )
      );
   end if;

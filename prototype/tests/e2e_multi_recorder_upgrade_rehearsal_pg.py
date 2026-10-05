@@ -25,9 +25,10 @@ This script reproduces the real upgrade on its OWN fresh, disposable database:
            single-recorder site; pending/in-progress recovery still claimable
            by the legacy Agent; recovered history still RECOVERED.
 
-Steps marked "[gated: MNVR-015]" exercise the 0147 recovery_intervals backfill
-(MNVR-015, owned by a later work package). They are expected to FAIL until that
-fix lands and must stay in place so they gate it.
+Steps marked "[gated: MNVR-015]" guard the 0147 recovery_intervals fix
+(MNVR-015): pre-upgrade intervals stay legacy (recorder_id NULL), so the legacy
+Agent keeps claiming and completing them and recovered history keeps counting.
+They must stay in place so a reintroduced backfill fails here.
 
 Disposable plain Postgres only (WATCHLOG_CI_PLAIN_POSTGRES=1, local host): the
 script creates and drops its own database, <SUPABASE_DB_NAME>_upgrade_rehearsal,
