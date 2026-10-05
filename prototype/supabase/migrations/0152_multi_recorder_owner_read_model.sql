@@ -291,3 +291,150 @@ begin
   );
 end
 $function$;
+
+
+-- ---------------------------------------------------------------------
+-- Recorder capability snapshot truth (NEW-L5).
+--
+-- sites.capabilities is the recorder analytics snapshot an Agent last synced
+-- (wl_sync_capabilities). Nothing re-syncs it when the Agent changes driver
+-- or a new Agent takes over, so at Al-Khalid a 2026-09-24 dahua-cgi snapshot
+-- (native_ai, footage candidate) kept being served after the site moved to
+-- ONVIF on 2026-09-26 with zero native events.
+--
+-- A snapshot is CURRENT only when all of these hold, otherwise it is UNKNOWN
+-- and no capability claim is returned (fail closed, never promoted):
+--   * it was recorded by the site's current authoritative Agent;
+--   * under that Agent's current driver (case-insensitive; 'auto' or blank
+--     is not a driver);
+--   * it is not older than that Agent's enrollment;
+--   * the site has at most one configured recorder (never project one
+--     recorder's snapshot onto a multi-recorder site).
+-- Provenance is stamped on every write of capabilities/capabilities_at,
+-- from the Agent that is current at that moment. Rows synced before this migration carry no
+-- provenance and stay UNKNOWN until the current Agent re-syncs.
+--
+-- The AI context (wl_ai_context), Site Control diagnosis
+-- (wl_my_site_diagnosis) and owner recorder model (wl_my_site_recorders)
+-- never read sites.capabilities; wl_capabilities() is the read model that
+-- serves it, and it now applies this rule.
+-- ---------------------------------------------------------------------
+create table if not exists public.site_capability_provenance (
+  site_id uuid primary key references public.sites(id) on delete cascade,
+  capabilities_at timestamptz,
+  agent_id uuid,
+  driver text,
+  recorded_at timestamptz not null default now()
+);
+
+alter table public.site_capability_provenance enable row level security;
+revoke all on table public.site_capability_provenance
+  from public, anon, authenticated;
+
+create or replace function public.wl_stamp_site_capability_provenance()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+begin
+  select a.* into v_agent
+    from public.agents a
+   where a.id = public.wl_current_site_agent(new.id)
+     and a.site_id = new.id;
+
+  insert into public.site_capability_provenance as p(
+    site_id, capabilities_at, agent_id, driver, recorded_at
+  ) values (
+    new.id, new.capabilities_at, v_agent.id, v_agent.device_driver, now()
+  )
+  on conflict (site_id) do update
+     set capabilities_at = excluded.capabilities_at,
+         agent_id = excluded.agent_id,
+         driver = excluded.driver,
+         recorded_at = excluded.recorded_at;
+  return null;
+end
+$function$;
+
+revoke all on function public.wl_stamp_site_capability_provenance()
+  from public, anon, authenticated;
+
+drop trigger if exists sites_capability_provenance on public.sites;
+create trigger sites_capability_provenance
+  after update of capabilities, capabilities_at on public.sites
+  for each row
+  execute function public.wl_stamp_site_capability_provenance();
+
+create or replace function public.wl_site_capability_snapshot_current(
+  p_site_id uuid
+) returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $function$
+  select coalesce((
+    select s.capabilities is not null
+       and s.capabilities_at is not null
+       and a.id is not null
+       and p.agent_id = a.id
+       and p.capabilities_at = s.capabilities_at
+       and s.capabilities_at >= a.enrolled_at
+       and lower(btrim(p.driver)) not in ('', 'auto')
+       and lower(btrim(p.driver)) = lower(btrim(a.device_driver))
+       and (select count(*)
+              from public.recorders r
+             where r.site_id = s.id
+               and r.tenant_id = s.tenant_id
+               and r.is_configured) <= 1
+      from public.sites s
+      left join public.agents a
+        on a.id = public.wl_current_site_agent(s.id)
+       and a.site_id = s.id
+      left join public.site_capability_provenance p
+        on p.site_id = s.id
+     where s.id = p_site_id
+  ), false);
+$function$;
+
+revoke all on function public.wl_site_capability_snapshot_current(uuid)
+  from public, anon, authenticated;
+
+-- Same shape as 0088 plus snapshot_state ('current' | 'unknown'). An unknown
+-- snapshot returns capabilities null: no stale claim reaches a caller.
+create or replace function public.wl_capabilities()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $function$
+declare
+  v_tenant uuid := public.wl_my_tenant();
+begin
+  if v_tenant is null then return '[]'::jsonb; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'site', s.name,
+             'site_id', s.id,
+             'reported_at', s.capabilities_at,
+             'snapshot_state', case when x.is_current then 'current' else 'unknown' end,
+             'capabilities', case when x.is_current
+                                  then public.wl_overlay_camera_truth(s.id, s.capabilities)
+                                  else null end)
+             order by s.name)
+      from public.sites s
+      cross join lateral (
+        select public.wl_site_capability_snapshot_current(s.id) as is_current
+      ) x
+     where s.tenant_id = v_tenant
+       and s.capabilities is not null), '[]'::jsonb);
+end
+$function$;
+
+-- Restate the 0015 ACL.
+revoke all on function public.wl_capabilities() from public, anon;
+grant execute on function public.wl_capabilities() to authenticated;
