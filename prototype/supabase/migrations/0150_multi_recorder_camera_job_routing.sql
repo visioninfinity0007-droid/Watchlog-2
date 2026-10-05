@@ -1027,6 +1027,104 @@ grant execute on function public.wl_agent_release_inflight_evidence(
 ) to anon;
 
 -- ---------------------------------------------------------------------
+-- Server-side still lease (MNVR-033), in the style of the production 0142
+-- clip finalizer. The claim-time lease rules above run only while an Agent
+-- polls; an Agent that is replaced, removed or offline never polls again, so
+-- its claimed stills would keep showing processing until the 0107 retention
+-- deletes them at expiry. Once a claim lease has passed nobody is capturing
+-- the still: it returns to pending within its 3-attempt budget, or fails
+-- once the budget is spent. Pending/processing stills past their expiry are
+-- marked expired, as the claim does. Ready, failed and unsupported stills are
+-- never touched and no capture is ever fabricated. service_role only.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_finalize_stale_incident_stills()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_expired int := 0;
+  v_released int := 0;
+  v_failed int := 0;
+begin
+  with stale as (
+    select e.id
+      from public.operations_incident_evidence e
+     where e.status in ('pending','processing')
+       and e.expires_at<=now()
+     for update skip locked
+  ), expired as (
+    update public.operations_incident_evidence e
+       set status='expired'
+      from stale s
+     where e.id=s.id
+    returning e.id
+  )
+  select count(*) into v_expired from expired;
+
+  with lapsed as (
+    select e.id,e.attempts
+      from public.operations_incident_evidence e
+     where e.status='processing'
+       and e.expires_at>now()
+       and coalesce(e.claim_expires_at,now())<=now()
+     for update skip locked
+  ), finalized as (
+    update public.operations_incident_evidence e
+       set status=case when l.attempts>=3 then 'failed' else 'pending' end,
+           claimed_by_agent_id=null,
+           claim_expires_at=null,
+           error_message=case
+             when l.attempts>=3
+             then 'The camera view was not captured after several attempts.'
+           end,
+           completed_at=case when l.attempts>=3 then now() end
+      from lapsed l
+     where e.id=l.id
+    returning e.status
+  )
+  select count(*) filter (where status='pending'),
+         count(*) filter (where status='failed')
+    into v_released,v_failed
+    from finalized;
+
+  return jsonb_build_object(
+    'released',v_released,
+    'failed',v_failed,
+    'expired',v_expired,
+    'ran_at',now()
+  );
+end
+$function$;
+
+comment on function public.wl_finalize_stale_incident_stills() is
+  'WatchLog 0150: return lapsed processing stills to pending within the attempt budget, fail spent ones, expire in-flight stills past expiry';
+
+revoke all on function public.wl_finalize_stale_incident_stills()
+  from public,anon,authenticated,service_role;
+grant execute on function public.wl_finalize_stale_incident_stills()
+  to service_role;
+
+-- Scheduled exactly like 0142: independent of any Agent poll.
+do $$
+begin
+  if exists (select 1 from pg_available_extensions where name = 'pg_cron') then
+    create extension if not exists pg_cron;
+    perform cron.unschedule(jobid)
+      from cron.job
+     where jobname = 'watchlog-finalize-stale-incident-stills';
+    perform cron.schedule(
+      'watchlog-finalize-stale-incident-stills',
+      '*/2 * * * *',
+      'select public.wl_finalize_stale_incident_stills()'
+    );
+  end if;
+exception when others then
+  raise notice 'stale incident still scheduling skipped: %', sqlerrm;
+end $$;
+
+-- ---------------------------------------------------------------------
 -- Analytics/config snapshot work includes recorder identity end-to-end.
 -- ---------------------------------------------------------------------
 create or replace function public.wl_agent_analytics_config(

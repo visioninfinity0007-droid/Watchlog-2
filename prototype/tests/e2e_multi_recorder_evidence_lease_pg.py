@@ -14,6 +14,10 @@ Rolled back after execution. Proves:
   reclaimed forever;
 - a clip or still that cannot be routed (no camera, or a blank channel) is
   failed at claim time instead of being skipped or handed out;
+- with no Agent polling at all, the server-side still finalizer (0142 style,
+  service_role only, scheduled like 0142) returns a lapsed still to pending
+  within its budget, fails a spent one, expires in-flight stills past their
+  expiry, and leaves live and ready stills alone;
 - the release RPC is Agent-facing only.
 """
 from __future__ import annotations
@@ -174,12 +178,15 @@ def run() -> int:
                 ).fetchone()[0]
 
             def still(tenant_id, site_id, incident_id, camera_id, status="pending",
-                      claimed_by=None, attempts=0, lease="null"):
+                      claimed_by=None, attempts=0, lease="null",
+                      expires="now()+interval '7 days'"):
                 return cur.execute(
                     f"""insert into operations_incident_evidence(
                           tenant_id,site_id,incident_id,camera_id,occurred_at,purpose,
-                          status,claimed_by_agent_id,attempts,claim_expires_at
-                        ) values (%s,%s,%s,%s,now(),'lease test',%s,%s,%s,{lease})
+                          status,claimed_by_agent_id,attempts,claim_expires_at,
+                          expires_at
+                        ) values (%s,%s,%s,%s,now(),'lease test',%s,%s,%s,{lease},
+                                  {expires})
                         returning id""",
                     (tenant_id, site_id, incident_id, camera_id, status, claimed_by, attempts),
                 ).fetchone()[0]
@@ -440,6 +447,119 @@ def run() -> int:
             )
 
             # ----------------------------------------------------------
+            # E. Server-side still lease: no Agent polls (replaced, removed or
+            #    offline). Only the service-role finalizer runs.
+            # ----------------------------------------------------------
+            cur.execute(
+                "update operations_incident_evidence set status='expired' where site_id=%s "
+                "and status in ('pending','processing')",
+                (site,),
+            )
+            still_ids = {}
+            for tag, kwargs, tenant_id, site_id, agent_id, cam_id in (
+                ("spent", dict(status="processing", attempts=3,
+                               lease="now()-interval '1 minute'"),
+                 tenant, site, agent, cam_a),
+                ("lapsed", dict(status="processing", attempts=1,
+                                lease="now()-interval '1 minute'"),
+                 tenant, site, agent, cam_a),
+                ("fresh", dict(status="processing", attempts=1,
+                               lease="now()+interval '4 minutes'"),
+                 tenant, site, agent, cam_a),
+                ("old-pending", dict(expires="now()-interval '1 minute'"),
+                 tenant, site, agent, cam_a),
+                ("old-processing", dict(status="processing", attempts=1,
+                                        lease="now()-interval '1 minute'",
+                                        expires="now()-interval '1 minute'"),
+                 tenant, site, agent, cam_a),
+                ("ready", dict(status="ready", attempts=1), tenant, site, agent, cam_a),
+                ("other-site", dict(status="processing", attempts=2,
+                                    lease="now()-interval '1 minute'"),
+                 tenant_x, site_x, agent_x, cam_x),
+            ):
+                inc = incident(tenant_id, site_id, agent_id, cam_id, f"e-{tag}")
+                if kwargs.get("status") == "processing":
+                    kwargs["claimed_by"] = agent_id
+                still_ids[tag] = still(tenant_id, site_id, inc, cam_id, **kwargs)
+
+            cur.execute("savepoint finalize_sp")
+            cur.execute("set local role service_role")
+            out, err = None, ""
+            try:
+                out = cur.execute("select wl_finalize_stale_incident_stills()").fetchone()[0]
+                cur.execute("reset role")
+                cur.execute("release savepoint finalize_sp")
+            except psycopg.Error as exc:
+                err = str(exc).splitlines()[0]
+                cur.execute("rollback to savepoint finalize_sp")
+                cur.execute("reset role")
+            rows = {tag: still_row(i) for tag, i in still_ids.items()}
+            step(out is not None, "service role runs the still finalizer with no Agent call",
+                 err or json.dumps(out, default=str))
+            step(
+                rows["spent"][0] == "failed" and rows["spent"][1] is None
+                and rows["spent"][4] == "The camera view was not captured after several attempts.",
+                "finalizer fails a lapsed still whose attempts are spent",
+                str(rows["spent"]),
+            )
+            step(
+                rows["lapsed"][0] == "pending" and rows["lapsed"][1] is None
+                and rows["lapsed"][2] is None and rows["lapsed"][3] == 1
+                and rows["other-site"][0] == "pending",
+                "finalizer returns a lapsed still within budget to pending (any site)",
+                f"{rows['lapsed']} / {rows['other-site']}",
+            )
+            step(
+                rows["old-pending"][0] == "expired" and rows["old-processing"][0] == "expired",
+                "finalizer expires in-flight stills past their expiry",
+                f"{rows['old-pending']} / {rows['old-processing']}",
+            )
+            step(
+                rows["fresh"][0] == "processing" and str(rows["fresh"][1]) == str(agent)
+                and rows["ready"][0] == "ready",
+                "finalizer leaves a live lease and a ready still alone",
+                f"{rows['fresh']} / {rows['ready']}",
+            )
+            step(
+                out is not None and out.get("failed", 0) >= 1
+                and out.get("released", 0) >= 2 and out.get("expired", 0) >= 2,
+                "finalizer reports what it changed",
+                json.dumps(out, default=str),
+            )
+            again = as_anon("select wl_agent_claim_incident_stills(%s,%s,3)", agent, key)[0]
+            step(
+                str(still_ids["lapsed"]) in {str(s["request_id"]) for s in again},
+                "a returned still is claimed by the next Agent poll",
+                str([s["request_id"] for s in again]),
+            )
+
+            has_cron = cur.execute(
+                "select exists(select 1 from pg_extension where extname='pg_cron')"
+            ).fetchone()[0]
+            if has_cron:
+                job = cur.execute(
+                    "select schedule,command from cron.job "
+                    "where jobname='watchlog-finalize-stale-incident-stills'"
+                ).fetchone()
+                step(
+                    job is not None and "wl_finalize_stale_incident_stills" in job[1],
+                    "the still finalizer is scheduled with pg_cron", str(job),
+                )
+            else:
+                source = (ROOT / "supabase" / "migrations"
+                          / "0150_multi_recorder_camera_job_routing.sql").read_text(
+                              encoding="utf-8")
+                step(
+                    re.search(
+                        r"cron\.schedule\(\s*'watchlog-finalize-stale-incident-stills',"
+                        r"\s*'\*/2 \* \* \* \*',\s*"
+                        r"'select public\.wl_finalize_stale_incident_stills\(\)'",
+                        source,
+                    ) is not None,
+                    "the still finalizer is scheduled like 0142 (no pg_cron here: source check)",
+                )
+
+            # ----------------------------------------------------------
             # ACL: the release RPC is Agent-facing only.
             # ----------------------------------------------------------
             rows = cur.execute(
@@ -454,6 +574,20 @@ def run() -> int:
             grantees = {g for g, owner_role in rows if g != owner_role}
             step(grantees == {"anon"},
                  "release RPC EXECUTE ACL is exactly anon (+owner)", str(sorted(grantees)))
+
+            rows = cur.execute(
+                """select case when a.grantee=0 then 'PUBLIC'
+                                else a.grantee::regrole::text end,
+                          p.proowner::regrole::text
+                     from pg_proc p,
+                          aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+                    where p.proname='wl_finalize_stale_incident_stills'
+                      and a.privilege_type='EXECUTE'""",
+            ).fetchall()
+            grantees = {g for g, owner_role in rows if g != owner_role}
+            step(grantees == {"service_role"},
+                 "still finalizer EXECUTE ACL is exactly service_role (+owner)",
+                 str(sorted(grantees)))
 
         finally:
             conn.rollback()

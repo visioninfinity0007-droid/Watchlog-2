@@ -443,7 +443,7 @@ jobs:
         run: python prototype/tests/e2e_site_control_role_authz_pg.py
       - name: Site Control write eligibility — recorder-scoped field evidence and managed authorization (0149/0150, MNVR-049)
         run: python prototype/tests/e2e_multi_recorder_write_eligibility_pg.py
-      - name: In-flight evidence after an Agent restart — 0142 lease, startup release, bounded stills (0150, MNVR-033)
+      - name: In-flight evidence after an Agent restart — 0142 lease, startup release, server-side still lease (0150, MNVR-033)
         run: python prototype/tests/e2e_multi_recorder_evidence_lease_pg.py
       - name: Multi-recorder analytics — recorder attribution and final contract (0151+)
         run: python prototype/tests/e2e_multi_recorder_analytics_pg.py
