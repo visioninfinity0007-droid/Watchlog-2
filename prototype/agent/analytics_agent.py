@@ -942,8 +942,6 @@ _BOUND_RECORDER_FIELDS = (
     "nvr_url", "nvr_driver", "nvr_username", "nvr_password",
     "recorder_local_id", "recorder_cloud_id", "recorder_display_name",
     "recorder_state_dir", "spool_path", "health_store_path", "last_live_path",
-    # the credential generation the login above was loaded at (MNVR-012)
-    "credential_generation_seen",
 )
 
 
@@ -961,6 +959,9 @@ def _adopt_single_recorder(cfg, prepared) -> tuple[list[dict], dict]:
     bound = prepared.context.config
     for name in _BOUND_RECORDER_FIELDS:
         setattr(cfg, name, getattr(bound, name))
+    # The generation that login was loaded at, so health and recovery reload a login
+    # rewritten after it (MNVR-012); None makes them take a baseline on first use.
+    cfg.credential_generation_seen = getattr(bound, "credential_generation_seen", None)
     channels = multi_recorder_fanout._channel_rows(prepared)
     mapping = (
         {str(k): str(v) for k, v in prepared.camera_mapping.items()}
