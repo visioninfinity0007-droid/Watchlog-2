@@ -33,6 +33,8 @@ jobs:
         run: python -m pytest prototype/tests/test_ci_runs_every_test.py prototype/tests/test_programdata_isolation_guard.py -q
       - name: Release version contract (wl_version == NSIS fallback; release recorded in the installer source of truth)
         run: python -m pytest prototype/tests/test_release_version_contract.py -q
+      - name: Repair downgrade guard (5.0.28 Repair refuses a multi-recorder site; reader runs under pwsh)
+        run: python -m pytest prototype/tests/test_repair_multi_recorder_guard.py -q
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
@@ -277,6 +279,13 @@ jobs:
           if (Test-Path (Join-Path $wl "watchlog.env")) { throw "legacy watchlog.env not removed after migration" }
           Remove-Item $pd -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "DPAPI round trip + real legacy migration verified."
+      - name: Repair downgrade guard under Windows PowerShell 5.1 (whole orchestrator, sandbox ProgramData)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --quiet --disable-pip-version-check pytest
+          python -m pytest prototype/tests/test_repair_multi_recorder_guard.py -q
+          if ($LASTEXITCODE -ne 0) { throw "Repair downgrade guard tests failed ($LASTEXITCODE)" }
 
   installer-contract:
     runs-on: windows-latest

@@ -4,6 +4,8 @@
   Existing-site only. No discovery, no re-enrollment, no recorder credential entry.
 
   Safety order:
+    0. Refuse a multi-recorder site: recorders.json (written by 5.1.0+) lists more than one
+       configured recorder, or exists but cannot be read (see Read-RecorderRegistry).
     1. Verify candidate payload/version.
     2. Run the staged candidate as SYSTEM against existing config/DPAPI identity
        while the current WatchLog remains running. No installed file is touched.
@@ -38,6 +40,7 @@ $ConfigPath = Join-Path $InstallDir "watchlog.ini"
 $StatePath = Join-Path $DataRoot "agent_state.json"
 $AgentKeyPath = Join-Path $DataRoot "Secrets\agent_key.dpapi"
 $RecorderCredentialPath = Join-Path $DataRoot "Secrets\nvr_credential.dpapi"
+$RecorderRegistryPath = Join-Path $DataRoot "recorders.json"
 $CandidateAgent = Join-Path $CandidateDir "watchlog-agent.exe"
 $UpgradeHelper = Join-Path $CandidateDir "wl-upgrade.ps1"
 $RegisterService = Join-Path $CandidateDir "register-service.ps1"
@@ -103,6 +106,39 @@ function Runtime-Version([string]$Path) {
     if ($LASTEXITCODE -ne 0) { return "" }
     return ([string]($out | Select-Object -First 1)).Trim()
   } catch { return "" }
+}
+
+function Read-RecorderRegistry([string]$Path) {
+  # WatchLog 5.1.0+ keeps the site's recorders in recorders.json; 5.0.x never writes it.
+  # This runtime ignores that file and runs only the legacy single recorder, and a site
+  # with several configured recorders refuses its legacy cloud calls while the heartbeat
+  # still looks online. So count the configured recorders the way 5.1 does (a row without
+  # is_configured counts as configured). A missing file is a 5.0.x site. A file that
+  # exists but cannot be read or understood is "invalid": the count cannot be proven, so
+  # the caller refuses rather than guess.
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return @{ state = "absent"; configured = 0; detail = "no recorders.json (5.0.x site)" }
+  }
+  try {
+    $doc = [IO.File]::ReadAllText($Path) | ConvertFrom-Json
+  } catch {
+    return @{ state = "invalid"; configured = 0; detail = "recorders.json is not readable JSON: $($_.Exception.Message)" }
+  }
+  if ($null -eq $doc -or [string]$doc.schema -ne "watchlog.recorders.v1") {
+    return @{ state = "invalid"; configured = 0; detail = "recorders.json has an unsupported schema" }
+  }
+  if (-not ($doc.recorders -is [System.Array])) {
+    return @{ state = "invalid"; configured = 0; detail = "recorders.json has no recorder list" }
+  }
+  $configured = 0
+  foreach ($row in $doc.recorders) {
+    if (-not ($row -is [System.Management.Automation.PSCustomObject])) {
+      return @{ state = "invalid"; configured = 0; detail = "recorders.json has a malformed recorder entry" }
+    }
+    $flag = $row.PSObject.Properties["is_configured"]
+    if ($null -eq $flag -or [bool]$flag.Value) { $configured++ }
+  }
+  return @{ state = "ok"; configured = $configured; detail = "$configured configured recorder(s)" }
 }
 
 function Protect-CandidateDirectory {
@@ -276,6 +312,18 @@ function Wait-NewRuntimeHealth([datetime]$StartedAtUtc) {
 try {
   Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
   Write-Repair "WatchLog Repair/Upgrade target=$ExpectedVersion candidate=$CandidateDir install=$InstallDir"
+
+  # Downgrade guard: first, before the candidate runs or anything is paused, refuse a site
+  # that a 5.1.0+ Agent has already set up with more than one recorder.
+  $script:CurrentStage = "site recorder check"
+  $registry = Read-RecorderRegistry $RecorderRegistryPath
+  Write-Repair "recorder registry: state=$($registry.state) $($registry.detail)"
+  if ($registry.state -eq "invalid") {
+    Fail 25 "WatchLog could not read this site's recorder list, so it cannot confirm that the site uses only one recorder. WatchLog $ExpectedVersion was not installed. Install 5.1.0 or later, or ask support to check C:\ProgramData\WatchLog\recorders.json."
+  }
+  if ($registry.configured -gt 1) {
+    Fail 24 "This site uses more than one recorder; WatchLog $ExpectedVersion cannot manage it. Disable the extra recorders in Manage Recorders first, or install 5.1.0 or later."
+  }
 
   $script:CurrentStage = "existing-site readiness checks"
 
