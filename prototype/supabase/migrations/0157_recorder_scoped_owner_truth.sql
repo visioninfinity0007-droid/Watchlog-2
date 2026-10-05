@@ -1,29 +1,27 @@
--- 0157 - Owner capability truth is recorder-scoped on a single-recorder site.
+-- 0157 - Faults name their camera and recorder; deterministic fault order.
 --
 -- STACKED AFTER 0156. REPO ONLY until separately approved.
 --
--- Site Control (portal) offers a setting for change only when its evidence is
--- FIELD_VERIFIED *on this recorder* (evidence_scope = 'recorder', MNVR-049).
--- The single-recorder diagnosis (0155) served wl_recorder_profile(vendor,model),
--- the model-level profile, which has no evidence_scope at all. So no site could
--- reach "Configurable", while Watch AI, reading the same model-level rows through
--- wl_ai_context, still treated model-level FIELD_VERIFIED as a configurable
--- recorder capability. The two surfaces disagreed.
+-- What changes (wl_ai_context, otherwise the 0152 body; facts_version v7, the
+-- payload stays additive):
+--   * 'faults' (0152) carried only {camera: raw name, reason}, ordered by name.
+--     Profile-named cameras are 'Camera '||channel, so two recorders that both
+--     have channel 1 produced identical fault rows in either order, and System
+--     Health could only guess which camera (and recorder) a fault was about.
+--     Each fault now also carries camera_id and recorder_id, as the diagnosis
+--     faults already do (0155).
+--   * the fault order gets a tie-breaker (name, then camera id), so it is
+--     deterministic.
 --
--- wl_my_site_diagnosis now serves wl_recorder_profile_for_recorder (0149) for the
--- configured recorder whenever the site identity is that recorder's own
--- vendor/model. Same row shape plus evidence_scope; a FIELD_VERIFIED proven only
--- on another unit of the model is downgraded there, exactly as the write path
--- (0150) requires. wl_ai_context reads capabilities from this diagnosis, so Watch
--- AI gets the same recorder-scoped truth. Everything else is the 0155 body.
---
--- wl_ai_context 'faults' (0152) carried only {camera: raw name, reason}, ordered
--- by name. Profile-named cameras are 'Camera '||channel, so two recorders that
--- both have channel 1 produced identical fault rows in either order, and System
--- Health could only guess which camera (and recorder) a fault was about. Each
--- fault now also carries camera_id and recorder_id, as the diagnosis faults do
--- (0155), and the order is deterministic. Everything else is the 0152 body; the
--- payload stays additive (facts_version v7).
+-- What does not change: wl_my_site_diagnosis is restated, but 0155 already
+-- serves the recorder-scoped capability profile on a single-recorder site
+-- (wl_recorder_profile_for_recorder, 0149, when the identity is the configured
+-- recorder's own vendor/model; else wl_recorder_profile_model_scoped, 0155).
+-- The 0157 body differs from 0155 only in comments, layout and writing the
+-- identity match as '=' instead of 'is not distinct from', which is the same
+-- result there because both values are non-null whenever that branch is
+-- reached. Its ACL is restated unchanged. Site Control and Watch AI already read
+-- the same recorder-scoped capability rows after 0155 (MNVR-049).
 
 -- Site Control diagnosis is recorder-aware (MNVR-048). The portal Site Control
 -- page calls this directly and codes against this shape:
@@ -39,7 +37,7 @@
 --                     from ONE row (never max() across historical Agent rows).
 --                     null on a multi-recorder site.
 --   capabilities      [wl_recorder_profile_for_recorder rows] | null
---                     The singleton recorder's own capability truth (0157):
+--                     The singleton recorder's own capability truth (0155):
 --                     model rows with this recorder's evidence overlay and
 --                     evidence_scope. FIELD_VERIFIED + evidence_scope
 --                     'recorder' only when this recorder's identity has its
