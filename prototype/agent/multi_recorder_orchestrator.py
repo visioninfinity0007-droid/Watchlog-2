@@ -12,7 +12,9 @@ cloud recorder identity exists.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 
 import recorder_registry
 import recorder_runtime
@@ -33,6 +35,17 @@ MULTI_RECORDER_REQUIRED_FEATURES = frozenset({
 })
 
 
+def _resolved_event() -> threading.Event:
+    event = threading.Event()
+    event.set()
+    return event
+
+
+# Probes run side by side; recorders.json is read-modify-written, so their observed
+# identity updates take turns.
+_REGISTRY_WRITE_LOCK = threading.Lock()
+
+
 @dataclass
 class PreparedRecorder:
     context: recorder_runtime.RecorderContext
@@ -41,6 +54,37 @@ class PreparedRecorder:
     capabilities: dict | None
     camera_mapping: dict | None
     error: str | None = None
+    # True while this recorder's preflight probe is still running in its own
+    # thread (prepare_recorders(probe_wait=...)); ``ready`` is set once the
+    # fields above hold its final result.
+    pending: bool = False
+    ready: threading.Event = field(default_factory=_resolved_event, repr=False)
+    _listeners: list = field(default_factory=list, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def on_ready(self, callback) -> None:
+        """Call ``callback(self)`` once the probe result is final (now, if it is)."""
+        with self._lock:
+            if not self.ready.is_set():
+                self._listeners.append(callback)
+                return
+        callback(self)
+
+    def _resolve(self, result: "PreparedRecorder") -> None:
+        with self._lock:
+            self.device = result.device
+            self.channels = result.channels
+            self.capabilities = result.capabilities
+            self.camera_mapping = result.camera_mapping
+            self.error = result.error
+            self.pending = False
+            self.ready.set()
+            listeners, self._listeners = self._listeners, []
+        for callback in listeners:
+            try:
+                callback(self)
+            except Exception:  # noqa: BLE001 — a listener never breaks the probe thread
+                pass
 
 
 def require_cloud_contract(cloud, state: dict) -> dict:
@@ -243,6 +287,14 @@ def probe_and_sync_recorder(cloud, state: dict,
     """Probe + explicitly sync one recorder. Failure is recorder-local."""
     if not ctx.cloud_recorder_id:
         raise RuntimeError("recorder cloud identity is not bound")
+    if getattr(ctx, "credential_error", None):
+        # Never contact a recorder with an empty login: that is a failed sign-in on
+        # the recorder (lockout risk) and would be reported as a wrong password.
+        return PreparedRecorder(
+            context=ctx, device=None, channels=[], capabilities=None,
+            camera_mapping=None,
+            error=f"recorder login unavailable on this PC ({ctx.credential_error})",
+        )
 
     driver = None
     try:
@@ -256,17 +308,18 @@ def probe_and_sync_recorder(cloud, state: dict,
         except Exception:
             capabilities = None
 
-        recorder_registry.update_observed_identity(
-            ctx.local_id,
-            vendor=_device_fact(device, "vendor"),
-            model=_device_fact(device, "model"),
-            firmware=_device_fact(device, "firmware"),
-            driver=getattr(driver, "name", None),
-            identity_fingerprint=(
-                f"serial:{_device_fact(device, 'serial')}"
-                if _device_fact(device, "serial") else None
-            ),
-        )
+        with _REGISTRY_WRITE_LOCK:
+            recorder_registry.update_observed_identity(
+                ctx.local_id,
+                vendor=_device_fact(device, "vendor"),
+                model=_device_fact(device, "model"),
+                firmware=_device_fact(device, "firmware"),
+                driver=getattr(driver, "name", None),
+                identity_fingerprint=(
+                    f"serial:{_device_fact(device, 'serial')}"
+                    if _device_fact(device, "serial") else None
+                ),
+            )
 
         camera_mapping = cloud.call(
             "wl_sync_recorder_cameras",
@@ -314,15 +367,53 @@ def probe_and_sync_recorder(cloud, state: dict,
                 pass
 
 
-def prepare_recorders(base_cfg, state: dict, cloud, open_driver_fn) -> list[PreparedRecorder]:
-    """Bind all identities first, then independently probe/sync each recorder."""
-    contexts = recorder_runtime.load_contexts(base_cfg)
+def _probe_into(slot: PreparedRecorder, cloud, state: dict, open_driver_fn) -> None:
+    try:
+        result = probe_and_sync_recorder(cloud, state, slot.context, open_driver_fn)
+    except Exception as exc:  # noqa: BLE001 — recorder-local, like every probe failure
+        result = PreparedRecorder(
+            context=slot.context, device=None, channels=[], capabilities=None,
+            camera_mapping=None,
+            error=f"{type(exc).__name__}: {str(exc).splitlines()[0][:160] if str(exc) else ''}",
+        )
+    slot._resolve(result)
+
+
+def probe_all(cloud, state: dict, contexts, open_driver_fn,
+              probe_wait: float | None = None) -> list[PreparedRecorder]:
+    """Probe every recorder in its own thread, side by side (MNVR-021).
+
+    An offline recorder's connect timeouts never delay its siblings. With
+    ``probe_wait`` None this returns once every probe has finished; otherwise it
+    returns after at most ``probe_wait`` seconds, and a probe still running stays
+    ``pending`` and delivers its result through ``on_ready`` when it finishes."""
+    slots = [
+        PreparedRecorder(context=ctx, device=None, channels=[], capabilities=None,
+                         camera_mapping=None, pending=True, ready=threading.Event())
+        for ctx in contexts
+    ]
+    for slot in slots:
+        threading.Thread(
+            target=_probe_into, args=(slot, cloud, state, open_driver_fn),
+            daemon=True, name=f"probe-{str(slot.context.local_id)[:8]}",
+        ).start()
+    deadline = None if probe_wait is None else time.monotonic() + max(0.0, probe_wait)
+    for slot in slots:
+        slot.ready.wait(None if deadline is None else max(0.0, deadline - time.monotonic()))
+    return slots
+
+
+def prepare_recorders(base_cfg, state: dict, cloud, open_driver_fn,
+                      probe_wait: float | None = None) -> list[PreparedRecorder]:
+    """Bind all identities first, then independently probe/sync each recorder.
+
+    A recorder whose login cannot be read on this PC is still bound (identity is
+    non-secret) but is never probed: it comes back as a degraded context with
+    ``error`` set, and its siblings are unaffected (MNVR-009)."""
+    contexts = recorder_runtime.load_contexts(base_cfg, degrade_credential_errors=True)
     if not contexts:
         return []
 
     require_cloud_contract(cloud, state)
     bind_cloud_identities(cloud, state, contexts, base_cfg=base_cfg)
-    return [
-        probe_and_sync_recorder(cloud, state, ctx, open_driver_fn)
-        for ctx in contexts
-    ]
+    return probe_all(cloud, state, contexts, open_driver_fn, probe_wait=probe_wait)
