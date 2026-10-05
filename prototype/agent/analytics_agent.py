@@ -766,19 +766,31 @@ def _archive_dt(value):
 
 
 def _archive_scan_handlers(cfg: Config, detector, stop: threading.Event):
-    """Build bounded recorder-frame retrieval + the same local analytics used live."""
+    """Build bounded recorder-frame retrieval + the same local analytics used live.
+
+    The camera config is re-read whenever its version changes (MNVR-038): the archive
+    thread starts before a fresh install has any analytics config, and cameras added later
+    must be scannable without an Agent restart."""
     import recovery_ai
 
-    cached = analytics.load_config(cfg.analytics_config_path)
-    config = cached.get("config") or {}
-    camera_rows = {
-        str(row.get("id")): row
-        for row in (config.get("cameras") or [])
-        if row.get("id") and row.get("channel")
-    }
+    current = {"version": None, "config": {}, "cameras": {}}
     engines = {}
 
+    def _camera_config():
+        cached = analytics.load_config(cfg.analytics_config_path)
+        version = cached.get("version")
+        if version != current["version"] or not current["cameras"]:
+            config = cached.get("config") or {}
+            current.update(version=version, config=config, cameras={
+                str(row.get("id")): row
+                for row in (config.get("cameras") or [])
+                if row.get("id") and row.get("channel")
+            })
+            engines.clear()          # rules may have changed with the version
+        return current["config"], current["cameras"]
+
     def retrieve_frames(camera_id, from_ts, to_ts):
+        _config, camera_rows = _camera_config()
         camera = camera_rows.get(str(camera_id))
         if camera is None:
             core.log(f"analytics: archive camera {str(camera_id)[:8]} not present in local config")
@@ -836,6 +848,7 @@ def _archive_scan_handlers(cfg: Config, detector, stop: threading.Event):
     def analyze_frame(camera_id, jpeg, ts, rule_ids):
         if detector is None:
             return []
+        config, camera_rows = _camera_config()
         camera = camera_rows.get(str(camera_id))
         if camera is None:
             return []
