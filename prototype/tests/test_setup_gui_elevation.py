@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import programdata_sandbox  # noqa: E402,F401  (before any agent import: no writes to the real ProgramData)
 
 from setup_gui_harness import AGENT, import_setup_gui  # noqa: E402
 

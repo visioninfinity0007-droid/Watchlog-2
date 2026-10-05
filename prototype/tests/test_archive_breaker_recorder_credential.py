@@ -19,6 +19,8 @@ from unittest import mock
 
 AGENT = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(AGENT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import programdata_sandbox  # noqa: E402,F401  (before any agent import: no writes to the real ProgramData)
 
 import watchlog_agent as core  # noqa: E402
 from drivers.base import DeviceInfo, NvrAuthFailed  # noqa: E402

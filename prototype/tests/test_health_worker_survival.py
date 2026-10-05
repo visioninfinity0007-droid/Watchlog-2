@@ -22,6 +22,8 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import programdata_sandbox  # noqa: E402,F401  (before any agent import: no writes to the real ProgramData)
 
 import watchlog_agent as core  # noqa: E402
 from drivers.base import DriverError  # noqa: E402

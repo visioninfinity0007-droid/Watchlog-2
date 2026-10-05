@@ -25,6 +25,8 @@ jobs:
         run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml
       - name: Compile all Python
         run: python -m compileall -q prototype tools
+      - name: Test hygiene guard (no test writes to the real ProgramData)
+        run: python -m pytest prototype/tests/test_programdata_isolation_guard.py -q
       - name: Agent identity + camera enrollment tests
         run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py prototype/tests/test_recorder_registry.py prototype/tests/test_recorder_runtime.py prototype/tests/test_multi_recorder_event_identity.py prototype/tests/test_multi_recorder_health_store.py prototype/tests/test_multi_recorder_runtime_adapters.py prototype/tests/test_multi_recorder_cloud_binding.py prototype/tests/test_multi_recorder_camera_job_runtime.py prototype/tests/test_multi_recorder_analytics_runtime.py prototype/tests/test_multi_recorder_fanout.py prototype/tests/test_multi_recorder_continuity.py prototype/tests/test_recorder_manager.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
