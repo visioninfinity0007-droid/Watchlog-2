@@ -5,6 +5,7 @@ import {supabase,say} from "../../lib/supabase";
 import {requireTenant} from "../shell";
 import {rememberSite,selectedSiteId,withSite} from "../site-context";
 import {coverageTruth,OwnerPage,SiteSelect,Lead,Section,Row,Status,Ledger,RailSection,Stat,Figure,Summary,Empty,Loading,Notice,AskLinks,ratioPct} from "../owner/ui";
+import {recorderImpact} from "./recorder-impact";
 
 function human(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
 function ago(ts){
@@ -145,8 +146,9 @@ export default function HealthWorkspace(){
     for(const row of recorderRows)for(const cameraId of row.camera_ids||[])map.set(String(cameraId),String(row.id));
     return map;
   },[recorderRows]);
-  const recorderIssues=recorderRows.filter(r=>["offline","attention"].includes(String(r.state||"").toLowerCase()));
-  const recorderIssueCameraIds=useMemo(()=>new Set(recorderIssues.flatMap(r=>(r.camera_ids||[]).map(String))),[recorderSummary]);
+  // Recorder root cause (MNVR-068): one issue per failing recorder; its cameras take its advice.
+  const impact=recorderImpact({cams,faults,recorderRows});
+  const {recorderIssues,recorderIssueCameraIds,cameraFaults}=impact;
   const recorderHealthy=recorderRows.filter(r=>String(r.state||"").toLowerCase()==="healthy").length;
   const coverage=ctx?.coverage||null;
   // One governed coverage truth for the whole page (rail, summary and the "could not be verified" section).
@@ -170,9 +172,7 @@ export default function HealthWorkspace(){
   },[cams]);
 
   // The conclusion: is WatchLog currently able to observe this site?
-  const recorderRootReasons=new Set(["nvr_unreachable","nvr_auth_failed","storage_fault","storage_degraded","disk_full"]);
-  const cameraFaults=recorderRows.length?faults.filter(f=>!recorderRootReasons.has(String(f?.reason||f?.reason_code||f?.type||f?.fault_type||"").toLowerCase())):faults;
-  const issueCount=recorderIssues.length+cameraFaults.length+stats.offline+stats.degraded+stats.recordingIssue;
+  const issueCount=impact.issueCount;
   let tone="ok",title="WatchLog is observing this site",copy="Connected · "+cams.length+" monitored camera"+(cams.length===1?"":"s")+" healthy with recording confirmed.";
   let cta=null;
   if(!ever&&!online){
@@ -202,7 +202,7 @@ export default function HealthWorkspace(){
   // shown as not verified with the last known state - never as current green.
   const ledger=cams.map(c=>{
     const h=healthView(c.health_state),r=recordingView(c.recording_state);
-    const fault=cameraFaults.find(f=>f.camera&&f.camera===c.name);
+    const fault=impact.faultFor(c),failed=impact.recorderFor(c);
     const recorder=recorderById.get(recorderByCamera.get(String(c.id)));
     const stale=!online;
     return{
@@ -212,12 +212,13 @@ export default function HealthWorkspace(){
       recorder:recorder?.name||null,
       health:stale?{label:"Not verified",tone:"unknown",note:h.tone!=="unknown"?"Last known: "+h.label.toLowerCase():null}:h,
       recording:stale?{label:"Not verified",tone:"unknown",note:r.tone!=="unknown"?"Last known: "+r.label.toLowerCase():null}:r,
-      action:fault?faultView(fault).action:stale?"Waiting for the site to reconnect":h.tone==="bad"||h.tone==="warn"?"Check the camera's power and cable.":r.tone==="bad"||r.tone==="warn"?"Check the recording schedule on the recorder.":h.tone==="unknown"||r.tone==="unknown"?"WatchLog is still confirming":"None",
-      attention:Boolean(fault)||["bad","warn"].includes(h.tone)||["bad","warn"].includes(r.tone)
+      action:failed?recorderView(failed).action:fault?faultView(fault).action:stale?"Waiting for the site to reconnect":h.tone==="bad"||h.tone==="warn"?"Check the camera's power and cable.":r.tone==="bad"||r.tone==="warn"?"Check the recording schedule on the recorder.":h.tone==="unknown"||r.tone==="unknown"?"WatchLog is still confirming":"None",
+      attention:Boolean(fault||failed)||["bad","warn"].includes(h.tone)||["bad","warn"].includes(r.tone),
+      reported:Boolean(fault||failed)
     };
   }).sort((a,b)=>Number(b.attention)-Number(a.attention));
   // Cameras whose own state needs checking but which have no reported fault row.
-  const unreported=online?ledger.filter(c=>c.attention&&!recorderIssueCameraIds.has(String(c.key))&&!cameraFaults.some(f=>f.camera&&f.camera===c.name)):[];
+  const unreported=online?ledger.filter(c=>c.attention&&!c.reported&&!recorderIssueCameraIds.has(String(c.key))):[];
   const ownerActions=recorderIssues.length+cameraFaults.map(faultView).filter(v=>v.owner).length+unreported.length+(!online&&ever?1:0);
 
   const rail=ctx?<>
@@ -229,6 +230,7 @@ export default function HealthWorkspace(){
     <RailSection label="Site">
       <Stat label="Connection" note={ever?"Last contact "+ago(lastSeen):null} value={<Status tone={connectionTone}>{connectionWord}</Status>}/>
       <Stat label="Cameras confirmed healthy" value={cams.length&&online?stats.operational+" of "+cams.length:null}/>
+      <Stat label="Recording confirmed" value={cams.length&&online?stats.recording+" of "+cams.length:null}/>
       <Stat label={multiRecorder?"Recorders available":"Recorder"} value={recorderRows.length
         ?<><Status tone={recorderIssues.some(r=>String(r.state||"").toLowerCase()==="offline")?"bad":recorderIssues.length?"warn":recorderHealthy===recorderRows.length?"ok":"unknown"}>
           {multiRecorder?recorderHealthy+" of "+recorderRows.length:recorderView(recorderRows[0]).label}

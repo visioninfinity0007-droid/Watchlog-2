@@ -1,6 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { coerceModelResult, UNREADABLE_ANSWER } from "./model_result.ts";
 import { applyCustomerVocabulary, customerCardData, harnessMessage, harnessTenantKey, modelToolView } from "./harness.ts";
+import { groundRecorderCards, recorderCardData } from "./recorder_card.ts";
+import { siteControlTarget, targetSiteControlActions } from "./site_control_target.ts";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
 import {
@@ -766,13 +768,13 @@ function fallback(prompt: string, ctx: Json, tools: Json) {
       const names = recorders.slice(0, 4).map((r: Json) => String(r?.name || "Recorder"));
       return {
         answer: `This site has ${recorders.length} configured recorders${names.length ? `: ${names.join(", ")}` : ""}. Recorder capabilities are verified per recorder, so I won’t apply one recorder’s capability to the others.${needingAttention.length ? ` ${needingAttention.length} recorder${needingAttention.length === 1 ? " needs" : "s need"} attention.` : ""}`,
-        cards: [{ type: "recorder", title: "Recorders", data: { recorders, recommendation: tools?.setup_advisor } }],
+        cards: [{ type: "recorder", title: "Recorders", data: recorderCardData(ctx, tools?.setup_advisor) }],
         suggestions: ["Which recorder needs attention?", "What can each recorder support?", "Check monitoring coverage"],
         proposed_actions: [{ kind: "navigate", label: "Open site health", data: { href: "/site-health/" } }],
         mode: "guided_fallback",
       };
     }
-    return { answer: recorder?.model ? `This site is using ${[recorder.vendor, recorder.model].filter(Boolean).join(" ")}. I’ll only describe recorder features that are confirmed for this site.` : "The recorder model has not been confirmed for this site yet.", cards: [{ type: "recorder", title: "Recorder", data: { recorder, capabilities: ctx?.capabilities || [], capability_known: ctx?.capability_known, recommendation: tools?.setup_advisor } }], suggestions: ["What analytics can this recorder support?", "Check recorder health"], proposed_actions: [], mode: "guided_fallback" };
+    return { answer: recorder?.model ? `This site is using ${[recorder.vendor, recorder.model].filter(Boolean).join(" ")}. I’ll only describe recorder features that are confirmed for this site.` : "The recorder model has not been confirmed for this site yet.", cards: [{ type: "recorder", title: "Recorder", data: recorderCardData(ctx, tools?.setup_advisor) }], suggestions: ["What analytics can this recorder support?", "Check recorder health"], proposed_actions: [], mode: "guided_fallback" };
   }
   if (/coverage|downtime|missed|recovered|unverified/.test(p)) return { answer: "I’ll separate the time WatchLog could verify from the time it could not. A period we could not verify is never reported as ‘no activity’.", cards: [{ type: "coverage", title: "Monitoring coverage", data: coverage }], suggestions: ["Explain any unverified time", "Was anything recovered from the recorder?"], proposed_actions: [], mode: "guided_fallback" };
   return { answer: `I have the latest available information for ${ctx?.site?.name || "this site"}. Ask me about yesterday’s activity, incidents, cameras, monitoring, or reports.`, cards: [{ type: "health", title: "Current site", data: { site: ctx?.site, connectivity: ctx?.connectivity, faults, coverage } }], suggestions: ["Check my cameras", "Continue setup", "What can my recorder support?"], proposed_actions: [], mode: "guided_fallback" };
@@ -1032,6 +1034,15 @@ Deno.serve(async (req) => {
       result = sanitizeResult(fallback(prompt, ctxResult.data || {}, tools));
       audit = baseAudit(mode, "guided_fallback", { outcome: "router_error", tool_calls: toolCalls });
     }
+    // Every answer, model or guided: recorder cards claim no more than the site context (MNVR-051), and
+    // a Site Control proposal carries only the recorder/camera target validated against this site.
+    const siteCtx = ctxResult.data || {};
+    const target = siteControlTarget(body?.site_control_target, siteCtx);
+    result = {
+      ...result,
+      cards: groundRecorderCards(result.cards, siteCtx),
+      proposed_actions: targetSiteControlActions(result.proposed_actions, target, siteCtx),
+    };
     // Route audit — mode/provider/model/fallback/egress/latency/tool-calls for Admin + audit ONLY.
     // Provider identities are NEVER placed in the browser response below. Best-effort; never blocks.
     try {
