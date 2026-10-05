@@ -48,6 +48,11 @@ STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
 REMUX_TIMEOUT_SECONDS = 60
 UNSUPPORTED_FOOTAGE = ("This recorder does not expose on-demand incident footage through the "
                        "validated WatchLog path.")
+# Customer-visible clip outcomes for failures that are not the recorder's own answer. Exception
+# names, local recorder ids and routing or credential text are not customer language; the
+# detail goes to the agent log.
+FOOTAGE_FAILED = "Recorder could not provide this footage."
+RECORDER_UNAVAILABLE = "This recorder is not available to WatchLog on the site PC right now."
 # Customer-visible still outcomes. Driver and library text (endpoints, HTTP codes, exception
 # names) is not customer language, so a failed still is always one of these; the detail goes
 # to the agent log.
@@ -94,17 +99,15 @@ def _recorder_hosts(cfg) -> tuple:
 
 def _safe_reason(error: Exception, hosts=(),
                  redacted: str = "Recorder could not export the requested footage window.") -> str:
+    if not isinstance(error, DriverError):
+        return UNSUPPORTED_FOOTAGE if _is_unsupported(error) else FOOTAGE_FAILED
     lines = str(error).splitlines()
-    first = lines[0] if lines else ""
-    if isinstance(error, DriverError):
-        text = first[:220]
-    else:
-        text = f"{type(error).__name__}: {first[:180]}" if first else ""
+    text = (lines[0] if lines else "")[:220]
     # Do not leak local recorder URLs, host names or LAN addresses in cloud-visible error text.
     low = text.lower()
     if _RECORDER_ADDRESS.search(text) or any(host.lower() in low for host in hosts if host):
         return redacted
-    return text or "Recorder could not provide this footage."
+    return text or FOOTAGE_FAILED
 
 
 def _is_unsupported(error: Exception) -> bool:
@@ -306,8 +309,13 @@ def _serve_clip_request(cloud, state: dict, cfg, hosts: tuple, row: dict) -> Non
             f"incident footage: uploaded {len(data) // 1024} KB for request {request_id[:8]}"
         )
     except Exception as error:  # noqa: BLE001
-        # The job ran on the recorder it names: redact that recorder's host too.
-        reason = _safe_reason(error, hosts + _recorder_hosts(job_cfg))
+        if job_cfg is None:
+            # The request could not be routed to a usable local recorder (no single mapping,
+            # unreadable credential, untrusted registry): internal detail, local log only.
+            reason = RECORDER_UNAVAILABLE
+        else:
+            # The job ran on the recorder it names: redact that recorder's host too.
+            reason = _safe_reason(error, hosts + _recorder_hosts(job_cfg))
         try:
             cloud.call(
                 "wl_agent_fail_clip",

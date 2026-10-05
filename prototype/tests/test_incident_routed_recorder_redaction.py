@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "agent"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import programdata_sandbox  # noqa: E402,F401  (before any agent import: no writes to the real ProgramData)
 
+import credential_store  # noqa: E402
 import incident_evidence  # noqa: E402
 import recorder_runtime  # noqa: E402
 import watchlog_agent as core  # noqa: E402
@@ -107,6 +108,38 @@ class RoutedRecorderRedaction(unittest.TestCase):
         self.assertEqual(len(reasons), 1)
         self.assertNotIn(B_HOST, reasons[0].lower())
         self.assertEqual(reasons[0], "Recorder could not export the requested footage window.")
+
+    def test_a_clip_that_cannot_be_routed_gets_a_customer_reason(self):
+        """A routing or credential failure (recorder B's DPAPI blob unreadable) was stored as
+        "SecretError: recorder credential missing for <local recorder id>" and shown word for
+        word on the incident."""
+        local_id = "5e1f0000-0000-4000-8000-0000000000aa"
+
+        def unreadable(_cfg, _recorder_id):
+            raise credential_store.SecretError(f"recorder credential missing for {local_id}")
+
+        stop = threading.Event()
+        cloud = _Cloud(stop, "wl_agent_claim_clip_requests", {
+            "request_id": "clip-2", "channel": "3", "recorder_id": RECORDER_B,
+            "start_at": T0.isoformat(), "end_at": (T0 + timedelta(seconds=30)).isoformat()})
+        with mock.patch.object(core, "Cloud", cloud),                 mock.patch.object(recorder_runtime, "config_for_cloud_recorder", unreadable),                 mock.patch.object(core, "log", lambda *_a, **_k: None):
+            incident_evidence.footage_worker(PROCESS_CFG, STATE, stop)
+        reasons = cloud.reasons("wl_agent_fail_clip")
+        self.assertEqual(reasons, [incident_evidence.RECORDER_UNAVAILABLE])
+
+    def test_a_clip_failure_outside_the_driver_names_no_exception(self):
+        class _Broken(_FailingRecorder):
+            def get_clip(self, channel, start, end):
+                raise ValueError("recorder_id required for multi-recorder job")
+
+        stop = threading.Event()
+        cloud = _Cloud(stop, "wl_agent_claim_clip_requests", {
+            "request_id": "clip-3", "channel": "3", "recorder_id": RECORDER_B,
+            "start_at": T0.isoformat(), "end_at": (T0 + timedelta(seconds=30)).isoformat()})
+        with mock.patch.object(core, "Cloud", cloud),                 mock.patch.object(recorder_runtime, "config_for_cloud_recorder", _route),                 mock.patch.object(core, "open_archive_driver", lambda _c: (
+                    _Broken(), DeviceInfo(vendor="Hikvision", model="X", driver="hikvision"))),                 mock.patch.object(core, "log", lambda *_a, **_k: None):
+            incident_evidence.footage_worker(PROCESS_CFG, STATE, stop)
+        self.assertEqual(cloud.reasons("wl_agent_fail_clip"), [incident_evidence.FOOTAGE_FAILED])
 
     def test_a_failed_still_does_not_name_the_routed_recorder(self):
         cloud = self._run(incident_evidence.stills_worker, "wl_agent_claim_incident_stills", {
