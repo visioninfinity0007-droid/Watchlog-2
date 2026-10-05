@@ -51,6 +51,22 @@ _REGISTRY_WRITE_LOCK = threading.Lock()
 _IDENTITY_WRITE_RETRY_SECONDS = (0.05, 0.2, 0.5)
 
 
+def _apply_cloud_mapping(mapping: dict) -> None:
+    """Persist the cloud binding, retrying a recorders.json that is briefly busy.
+
+    Unlike the observed-identity cache, the binding must be saved: a PermissionError that
+    outlasts the pauses is raised (the caller treats it as transient, not a refusal)."""
+    for pause in (*_IDENTITY_WRITE_RETRY_SECONDS, None):
+        try:
+            with _REGISTRY_WRITE_LOCK:
+                recorder_registry.apply_cloud_mapping(mapping)
+            return
+        except PermissionError:
+            if pause is None:
+                raise
+            time.sleep(pause)
+
+
 def _save_observed_identity(local_id: str, **facts) -> None:
     for pause in (*_IDENTITY_WRITE_RETRY_SECONDS, None):
         try:
@@ -150,7 +166,7 @@ def _bind_contexts(contexts, mapping: dict) -> None:
 
 
 def _apply_mapping(contexts, mapping: dict) -> None:
-    recorder_registry.apply_cloud_mapping(mapping)
+    _apply_cloud_mapping(mapping)
     _bind_contexts(contexts, mapping)
 
 
@@ -195,7 +211,7 @@ def _sync_registry_state(cloud, state: dict) -> dict:
         raise RuntimeError(
             "recorder registry sync mapping did not exactly match local registry"
         )
-    recorder_registry.apply_cloud_mapping(mapping)
+    _apply_cloud_mapping(mapping)
     return mapping
 
 

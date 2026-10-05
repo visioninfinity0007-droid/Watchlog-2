@@ -412,10 +412,12 @@ def apply_cloud_mapping(mapping: dict) -> dict:
     if len(set(normalized.values())) != len(normalized):
         raise ValueError("duplicate cloud recorder id in mapping")
 
+    changed = False
     for local_id, cloud_id in normalized.items():
         existing = by_local[local_id].get("cloud_recorder_id")
         if existing and str(existing) != cloud_id:
             raise ValueError("cloud recorder identity drift")
+        changed = changed or str(existing or "") != cloud_id
         by_local[local_id]["cloud_recorder_id"] = cloud_id
 
     all_cloud = [
@@ -425,6 +427,10 @@ def apply_cloud_mapping(mapping: dict) -> dict:
     if len(all_cloud) != len(set(all_cloud)):
         raise ValueError("duplicate cloud recorder id in registry")
 
+    if not changed:
+        # Every binding is already saved (each start and each background recheck): no
+        # rewrite, so a reader holding recorders.json open cannot make it fail.
+        return current
     return save_registry({"schema": REGISTRY_SCHEMA, "recorders": rows})
 
 

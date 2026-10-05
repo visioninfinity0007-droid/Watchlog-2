@@ -1078,8 +1078,10 @@ def _adopt_registry_recorder_unbound(cfg) -> None:
 def _preflight_transient(error: Exception) -> bool:
     """True when a preflight failure says nothing about the recorder identities: the
     cloud could not be reached or answered 5xx/429, or this PC is not the site's
-    current Agent (a standby). A refusal or contract mismatch is definitive."""
-    if isinstance(error, requests.RequestException):
+    current Agent (a standby). A refusal or contract mismatch is definitive. A
+    recorders.json that stayed busy while the binding was saved (Windows refuses to replace
+    a file another thread or process has open) says nothing about the identities either."""
+    if isinstance(error, (requests.RequestException, PermissionError)):
         return True
     if not isinstance(error, core.CloudError):
         return False
