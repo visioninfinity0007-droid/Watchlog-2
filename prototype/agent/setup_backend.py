@@ -1888,29 +1888,47 @@ def _save_recorder_camera_profiles(local_id: str, display_name: str,
          "display_name": display_name, "profiles": list(profiles or [])})
 
 
+class RecorderBindingUnknown(ValueError):
+    """wl_sync_recorders was sent with the further recorders, but whether WatchLog
+    committed it is unknown (no answer, a server or gateway error, or an answer that
+    names other recorders). Those recorders' local rows must be kept: WatchLog may
+    already hold a recorder for each local key, and a Retry re-sends the same keys."""
+
+
+def _binding_definitely_refused(exc: Exception) -> bool:
+    """True only for an answer saying WatchLog rolled the call back: a 4xx from the
+    RPC (a refused or failed call), not a request timeout (408)."""
+    status = getattr(exc, "status", None)
+    return (isinstance(exc, core.CloudError) and isinstance(status, int)
+            and 400 <= status < 500 and status != 408)
+
+
 def _bind_install_recorders(cloud, state: dict) -> dict:
     """Bind every local recorder to its WatchLog recorder, as the Agent's startup
     binding does: the continuity recorder alone first (it adopts the recorder the
     first camera sync created), then the whole registry. Fail closed unless the
-    answer names exactly the local recorders."""
-    def sync(payload: list[dict]) -> dict:
+    answer names exactly the local recorders. When the whole-registry call's outcome
+    is unknown it raises RecorderBindingUnknown, so the caller keeps the rows."""
+    def sync(payload: list[dict], unknown: type) -> dict:
         try:
             mapping = cloud.call("wl_sync_recorders", p_agent_id=state["agent_id"],
                                  p_agent_key=state["agent_key"], p_recorders=payload)
         except Exception as exc:  # noqa: BLE001
-            raise ValueError(
+            error = ValueError if _binding_definitely_refused(exc) else unknown
+            raise error(
                 "WatchLog could not link this site's recorders. Please try again.") from exc
         if not isinstance(mapping, dict) or \
                 {str(k) for k in mapping} != {row["local_key"] for row in payload}:
-            raise ValueError("WatchLog did not confirm this site's recorders. Please try again.")
+            raise unknown("WatchLog did not confirm this site's recorders. Please try again.")
         recorder_registry.apply_cloud_mapping(mapping)
         return mapping
 
     continuity = recorder_registry.continuity_recorder()
     if continuity is not None and not continuity.get("cloud_recorder_id"):
+        # The further recorders are not in this call, so rolling them back stays safe.
         sync([row for row in recorder_registry.registry_cloud_descriptors()
-              if row["local_key"] == continuity["local_id"]])
-    return sync(recorder_registry.registry_cloud_descriptors())
+              if row["local_key"] == continuity["local_id"]], ValueError)
+    return sync(recorder_registry.registry_cloud_descriptors(), RecorderBindingUnknown)
 
 
 def _sync_install_recorder_cameras(cloud, state: dict, row: dict, recorder: dict,
@@ -2222,8 +2240,11 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                 _save_recorder_camera_profiles(
                     row["local_id"], entry["display_name"],
                     entry.get("profiles") or default_camera_profiles(extra))
-    except BaseException:
-        if multi:
+    except BaseException as exc:
+        # Roll back this run's further recorders only when WatchLog definitely does
+        # not hold them. After an unknown binding outcome they stay, with their
+        # credentials, so Retry re-sends the same local keys (no second recorder).
+        if multi and not isinstance(exc, RecorderBindingUnknown):
             _discard_unbound(added)
         raise
 

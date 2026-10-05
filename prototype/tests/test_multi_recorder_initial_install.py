@@ -470,3 +470,83 @@ def test_default_camera_profiles_match_the_connectivity_first_defaults():
          "analytics_enabled": True},
     ]
     assert sb.default_camera_profiles(None) == []
+
+
+# --- a binding answer lost after WatchLog committed it (review AII-3) ---------------------
+
+def _lose_first_full_binding_answer(cloud, error):
+    """The whole-registry wl_sync_recorders commits, then its answer is lost once."""
+    real = cloud.call
+    lost = {"done": False}
+
+    def call(name, **kw):
+        if name == "wl_sync_recorders" and len(kw["p_recorders"]) > 1 and not lost["done"]:
+            lost["done"] = True
+            real(name, **kw)                       # WatchLog committed it...
+            raise error                            # ...and the answer never arrived
+        return real(name, **kw)
+
+    cloud.call = call
+
+
+def test_a_lost_binding_answer_keeps_the_rows_so_retry_does_not_fork_recorders(monkeypatch):
+    with _Env() as env:
+        cloud = FakeWatchLog()
+        _patch(monkeypatch, cloud)
+        _lose_first_full_binding_answer(cloud, RuntimeError("read timed out"))
+        extra = [_extra(B, "Warehouse", "admin-b", "pw-b")]
+
+        with pytest.raises(ValueError, match="could not link"):
+            _finalize(env, extra)
+
+        kept = _rows_by_url()
+        # The outcome is unknown: the further recorder's row and credential stay, so a
+        # Retry re-sends the same local key instead of creating a second recorder.
+        assert set(kept) == {"http://192.0.2.10", "http://192.0.2.20"}
+        b_id = kept["http://192.0.2.20"]["local_id"]
+        assert cs.load_recorder_credential(b_id)["password"] == "pw-b"
+
+        _patch(monkeypatch, cloud, prior=SITE)
+        out = _finalize(env, extra)
+
+        rows = _rows_by_url()
+        assert len(rows) == 2 and rows["http://192.0.2.20"]["local_id"] == b_id
+        assert len(cloud.recorders) == 2                     # no orphan WatchLog recorder
+        assert set(cloud.recorders) == {r["local_id"] for r in rows.values()}
+        assert out["recorder_count"] == 2
+
+
+def test_a_server_error_answer_is_also_an_unknown_binding_outcome(monkeypatch):
+    with _Env() as env:
+        cloud = FakeWatchLog()
+        _patch(monkeypatch, cloud)
+        _lose_first_full_binding_answer(
+            cloud, sb.core.CloudError("wl_sync_recorders", 504, None, "gateway timeout"))
+
+        with pytest.raises(ValueError, match="could not link"):
+            _finalize(env, [_extra(B, "Warehouse", "admin-b", "pw-b")])
+
+        assert len(_rows_by_url()) == 2
+
+
+def test_a_definite_binding_refusal_still_rolls_back_this_runs_rows(monkeypatch):
+    with _Env() as env:
+        cloud = FakeWatchLog()
+        _patch(monkeypatch, cloud)
+        real = cloud.call
+
+        def call(name, **kw):
+            if name == "wl_sync_recorders" and len(kw["p_recorders"]) > 1:
+                cloud.calls.append((name, kw))
+                # WatchLog refused it (its transaction rolled back): nothing committed.
+                raise sb.core.CloudError(name, 400, "P0001", "recorder limit reached")
+            return real(name, **kw)
+
+        cloud.call = call
+        with pytest.raises(ValueError, match="could not link"):
+            _finalize(env, [_extra(B, "Warehouse", "admin-b", "pw-b")])
+
+        (kept,) = rr.recorders()
+        assert kept["url"] == "http://192.0.2.10"
+        blobs = {p.stem for p in cs.recorder_secrets_dir().glob("*.dpapi")}
+        assert blobs == {kept["local_id"]}
