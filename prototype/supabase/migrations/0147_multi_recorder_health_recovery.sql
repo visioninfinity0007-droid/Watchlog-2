@@ -979,6 +979,12 @@ revoke all on function public.wl_event_is_recorder_scoped_disk(text,uuid,jsonb)
 --     only: it is not written to recorder_health, so a reader of
 --     recorder_health.storage_state alone (0152 wl_my_site_recorders) does
 --     not see it and has to consult the open 'storage' fault.
+--   * freshness: a recorder_health row older than 15 minutes (the cut 0152
+--     and 0153 use) is unknown, never its last reachable/auth value. A
+--     recorder context that hung while the Agent stays alive therefore stops
+--     driving its connectivity and camera faults and instead holds one
+--     'recorder_not_verified' warning ('nvr:<..>:not_verified') until it
+--     reports again.
 -- UNKNOWN never opens a fault; MISSING/DISABLED cameras stay inventory.
 -- An offline camera's fault reason comes from camera_health.reason_code
 -- (NEW-L4): only a video-loss signal is critical camera_offline/video_loss;
@@ -1042,12 +1048,13 @@ begin
     select r.id as recorder_id,
            case when v_configured = 1 then 'nvr:' || v_current_agent::text
                 else 'nvr:' || r.id::text end as key_prefix,
-           case when rh.recorder_id is not null then rh.nvr_reachable
-                else (select l.nvr_reachable from legacy l) end as nvr_reachable,
-           case when rh.recorder_id is not null then rh.nvr_auth_ok
-                else (select l.nvr_auth_ok from legacy l) end as nvr_auth_ok,
+           case when rh.recorder_id is null then (select l.nvr_reachable from legacy l)
+                when rh.updated_at >= v_fresh_cut then rh.nvr_reachable end as nvr_reachable,
+           case when rh.recorder_id is null then (select l.nvr_auth_ok from legacy l)
+                when rh.updated_at >= v_fresh_cut then rh.nvr_auth_ok end as nvr_auth_ok,
            rh.sto_current_state as rh_storage_state,
-           rh.sto_current_at as rh_storage_at
+           rh.sto_current_at as rh_storage_at,
+           (rh.recorder_id is not null and rh.updated_at < v_fresh_cut) as health_stale
       from public.recorders r
       left join public.recorder_health rh
         on rh.recorder_id = r.id
@@ -1059,16 +1066,16 @@ begin
     union all
     -- No configured recorder: the historical Agent-wide row is all there is.
     select null::uuid, 'nvr:' || v_current_agent::text,
-           l.nvr_reachable, l.nvr_auth_ok, null::text, null::timestamptz
+           l.nvr_reachable, l.nvr_auth_ok, null::text, null::timestamptz, false
       from legacy l
      where v_configured = 0
   ), obs as (
-    select s.recorder_id, s.key_prefix, s.nvr_reachable, s.nvr_auth_ok,
+    select s.recorder_id, s.key_prefix, s.nvr_reachable, s.nvr_auth_ok, s.health_stale,
            case when s.use_event then s.ev_state else s.pr_state end as storage_state,
            case when s.use_event then s.ev_reason else s.pr_reason end as storage_reason,
            case when s.use_event then s.ev_at else s.pr_at end as storage_observed_at
       from (
-        select b.recorder_id, b.key_prefix, b.nvr_reachable, b.nvr_auth_ok,
+        select b.recorder_id, b.key_prefix, b.nvr_reachable, b.nvr_auth_ok, b.health_stale,
                pr.storage_state as pr_state, pr.storage_reason as pr_reason,
                pr.storage_observed_at as pr_at,
                ev.storage_state as ev_state, ev.storage_reason as ev_reason,
@@ -1130,6 +1137,14 @@ begin
            'nvr_unreachable', null::uuid, a.agent_id
       from obs o cross join agent_state a
      where not a.agent_down and o.nvr_reachable is false
+    union all
+    -- Silent recorder health is unknown: say so instead of keeping a frozen
+    -- reachable/auth value (and the camera faults gated on it) alive.
+    select o.key_prefix || ':not_verified',
+           'nvr_connectivity', 'recorder_not_verified', 'warning',
+           'unknown', null::uuid, a.agent_id
+      from obs o cross join agent_state a
+     where not a.agent_down and o.health_stale
     union all
     select o.key_prefix || ':auth',
            'nvr_auth', 'nvr_auth_failed', 'critical',
