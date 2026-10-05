@@ -11,6 +11,7 @@ Recorder-scoped workers:
 - live collector + event spool
 - camera/NVR health + durable health store
 - archive recovery (only after explicit recorder channel sync)
+- periodic stills (5.0.28 NEW-L2), stamped with the recorder's recorder_id
 
 This module is activated only after multi_recorder_orchestrator has bound EVERY
 configured local recorder to a cloud recorder UUID under contract v4.
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import requests
 
+import periodic_stills
 import watchlog_agent as core
 from spool import Spool
 
@@ -66,6 +68,8 @@ class RecorderWorkers:
     # credential_ready, which credential_watch sets once Setup has repaired it.
     credential_ready: threading.Event | None = None
     credential_watch: threading.Thread | None = None
+    # This recorder's periodic still producer (run mode only).
+    stills: threading.Thread | None = None
 
 
 def _channel_rows(prepared) -> list[dict]:
@@ -138,12 +142,12 @@ def _adopt_late_probe(item, holder: dict, cfg) -> None:
 
 def _gated(target, ready: threading.Event, stop: threading.Event):
     """Run ``target`` only once the recorder's login is readable."""
-    def run(*args):
+    def run(*args, **kwargs):
         while not ready.wait(1.0):
             if stop.is_set():
                 return
         if not stop.is_set():
-            target(*args)
+            target(*args, **kwargs)
     return run
 
 
@@ -201,6 +205,7 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
         collector_target = core.collector
         health_target = core.health_worker
         recovery_target = core.recovery_worker
+        stills_target = periodic_stills.periodic_still_worker
         if getattr(cfg, "credential_error", None):
             holder["credential_unavailable"] = True
             credential_ready = threading.Event()
@@ -213,6 +218,7 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
             collector_target = _gated(collector_target, credential_ready, stop)
             health_target = _gated(health_target, credential_ready, stop)
             recovery_target = _gated(recovery_target, credential_ready, stop)
+            stills_target = _gated(stills_target, credential_ready, stop)
 
         spool = Spool(cfg.spool_path, cfg.spool_max_rows)
         resume_evt = threading.Event()
@@ -242,6 +248,20 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
             daemon=True,
             name=f"recovery-{recorder_id[:8]}",
         )
+        # One periodic still producer per recorder: its own driver, spool, credential and
+        # back-off, sampling by this recorder's own camera choices.
+        stills = threading.Thread(
+            target=stills_target,
+            args=(cfg, spool, stop, channels),
+            kwargs={
+                "profiles": periodic_stills.recorder_camera_profiles(
+                    cfg, continuity_owner=bool(
+                        getattr(item.context, "continuity_owner", False))),
+                "label": getattr(cfg, "recorder_display_name", None) or recorder_id[:8],
+            },
+            daemon=True,
+            name=f"periodic-stills-{recorder_id[:8]}",
+        )
         out.append(RecorderWorkers(
             prepared=item,
             cfg=cfg,
@@ -254,6 +274,7 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
             recovery=recovery,
             credential_ready=credential_ready,
             credential_watch=credential_watch,
+            stills=stills,
         ))
 
     if len(cloud_ids) != len(set(cloud_ids)):
@@ -293,6 +314,11 @@ def _recorder_live_state(units, clock: float, stamp: str) -> tuple[int, list[dic
         }
         if unit.holder.get("credential_unavailable"):
             row["credential"] = "unavailable"
+        # This recorder's own event-stream state, in the single-recorder heartbeat's shape
+        # (redacted error, ONVIF counters): which recorder's stream is down, and why.
+        stream = core._event_stream_health(unit.holder.get("event_stream"))
+        if stream is not None:
+            row["event_stream"] = stream
         rows.append(row)
     return live_count, rows
 
@@ -425,6 +451,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
         for unit in units:
             unit.health.start()
             unit.recovery.start()
+            if unit.stills is not None:
+                unit.stills.start()
             if not unit.holder.get("synced_channels") and unit.prepared.error:
                 core.log(
                     f"multi-recorder: {unit.cfg.recorder_display_name} "
@@ -531,6 +559,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 unit.health.join(timeout=5)
             if unit.recovery.is_alive():
                 unit.recovery.join(timeout=5)
+            if unit.stills is not None and unit.stills.is_alive():
+                unit.stills.join(timeout=5)
             if unit.credential_watch is not None and unit.credential_watch.is_alive():
                 unit.credential_watch.join(timeout=5)
         if checker is not None and checker.is_alive():

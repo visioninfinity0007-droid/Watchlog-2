@@ -16,7 +16,7 @@ Hikvision/Dahua drivers on fake sessions:
 A and B must count as live from their keep-alives and keep their outage clocks at the stream's
 own activity; C must not count as live and its outage clock must not move.
 
-ONVIF has no stream-activity reporting in 5.0.28, so its empty-pull variant is not covered here.
+The ONVIF empty-pull variant (5.0.28 answered-pull liveness) is test_fanout_onvif_stream_liveness.py.
 """
 from __future__ import annotations
 
