@@ -714,10 +714,34 @@ def _native_archive_key(cfg: Config, native_name: str) -> tuple:
     return (native_name, str(cfg.nvr_url or ""), str(cfg.nvr_username or ""))
 
 
+def _continuity_recorder_at(cfg) -> str | None:
+    """The registry's continuity recorder when ``cfg`` is main()'s base Config pointed at its
+    address, else None. That Config logs in with the legacy singleton credential, which on a
+    registry site is the continuity recorder's own login mirrored (replace_recorder_credential
+    with mirror_legacy). Another recorder's login is never assumed; no or an unreadable
+    registry keeps the 5.0.x singleton."""
+    try:
+        import recorder_registry
+        url = str(getattr(cfg, "nvr_url", "") or "").rstrip("/")
+        rows = [row for row in recorder_registry.recorders()
+                if row.get("continuity_owner") and row.get("is_configured")
+                and str(row.get("url") or "").strip().rstrip("/") == url]
+    except Exception:  # noqa: BLE001 — unknown registry: the legacy token, as before
+        return None
+    return rows[0]["local_id"] if url and len(rows) == 1 else None
+
+
 def _credential_generation(cfg):
     """The change token of the credential this recorder logs in with: its own DPAPI blob for a
-    registry recorder, the legacy singleton credential otherwise."""
+    registry recorder, the legacy singleton credential otherwise. The base Config of
+    --status-json/--accept/--recheck-archive-json pointed at the continuity recorder resolves
+    to that recorder's own token, the one its running Agent persisted (RV-AF2-01): a refusal
+    one of them saw then holds back the other instead of being deleted as stale."""
     try:
+        if not getattr(cfg, "recorder_local_id", None):
+            local_id = _continuity_recorder_at(cfg)
+            if local_id:
+                return credential_store.recorder_credential_generation(local_id)
         return _credential_generation_for_cfg(cfg)
     except Exception:  # noqa: BLE001 — an unreadable token only means "no change seen"
         return None
