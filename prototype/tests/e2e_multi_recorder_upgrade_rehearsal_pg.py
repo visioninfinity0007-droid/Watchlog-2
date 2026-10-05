@@ -14,12 +14,24 @@ This script reproduces the real upgrade on its OWN fresh, disposable database:
            dedupe keys, snapshots, nvr_health, and recovery_intervals in
            pending, in_progress and recovered states; a 5.0.x recorder push
            token (plus an older live duplicate), which must end up scoped to
-           the site's recorder and keep working; plus a pre-provisioned
-           site with no Agent or camera yet;
-  stage 2  apply the rest (0146..0155) with the same runner and the real
-           migrations directory, as the production deploy will;
+           the site's recorder and keep working; a pre-provisioned site with
+           no Agent or camera yet; and three sites with several legacy Agent
+           rows (replaced PCs, recorder-push rows, tied rows) for the default
+           recorder's vendor/model backfill;
+  stage 2  apply the rest with the same runner and the real migrations
+           directory, as the production deploy will. Default (numeric) order:
+           0146..0155 then the 0156 hotfix in one run. With --production-order
+           the planned production order instead: stage 2a applies only the 0156
+           hotfix (it goes to production first, on its own), stage 2b then
+           applies 0146..0155 (and any later chain file, e.g. 0157 on
+           mr/portal-ops), and the functions 0156 defines must be unchanged by
+           the later chain;
   assert   camera UUIDs, events and snapshots preserved; exactly one recorder
-           and one continuity owner per site; legacy 5.0.x payloads
+           and one continuity owner per site; the default recorder's
+           vendor/model/driver come from the site's current Agent
+           (wl_current_site_agent: the most recently seen non-push Agent) and
+           stay NULL when that choice is ambiguous (another non-push Agent ties
+           it on last_seen_at/enrolled_at and reports a different recorder); legacy 5.0.x payloads
            (wl_sync_cameras, wl_ingest_events, wl_heartbeat,
            wl_open_recovery_interval with uuid[], ...) still succeed on the
            single-recorder site; pending/in-progress recovery still claimable
@@ -31,10 +43,12 @@ Agent keeps claiming and completing them and recovered history keeps counting.
 They must stay in place so a reintroduced backfill fails here.
 
 Disposable plain Postgres only (WATCHLOG_CI_PLAIN_POSTGRES=1, local host): the
-script creates and drops its own database, <SUPABASE_DB_NAME>_upgrade_rehearsal,
-next to SUPABASE_DB_NAME and never touches SUPABASE_DB_NAME itself.
+script creates and drops its own database, <SUPABASE_DB_NAME>_upgrade_rehearsal
+(or _upgrade_rehearsal_prod with --production-order), next to SUPABASE_DB_NAME and
+never touches SUPABASE_DB_NAME itself.
 
     python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py
+    python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py --production-order
 """
 from __future__ import annotations
 
@@ -52,6 +66,7 @@ MIGRATIONS = ROOT / "supabase" / "migrations"
 APPLY = ROOT / "supabase" / "apply_migrations.py"
 PRELUDE = ROOT / "supabase" / "ci_prelude.sql"
 BASELINE_LAST = 145          # production baseline: 0001..0145
+HOTFIX_FIRST = (156,)        # standalone hotfixes applied to production before the chain
 MNVR_015 = "[gated: MNVR-015] "
 
 ENV = {}
@@ -245,6 +260,33 @@ def seed_legacy(s: Session) -> dict:
           in_progress_id)
     pending_id = open_interval(W_PENDING)
 
+    # Sites with several legacy Agent rows: the default recorder's vendor/model
+    # must follow one documented choice (the current site Agent) or stay empty.
+    def agent_rows(site_name, rows):
+        t = s.one("insert into tenants(name) values (%s) returning id", f"{site_name} Co")[0]
+        site = s.one("insert into sites(tenant_id,name) values (%s,%s) returning id", t, site_name)[0]
+        for driver, vendor, model, enrolled, seen in rows:
+            s.sql("""insert into agents(tenant_id,site_id,agent_key_hash,hostname,device_driver,
+                                        device_vendor,device_model,enrolled_at,last_seen_at)
+                     values (%s,%s,md5(gen_random_uuid()::text),'legacy-pc',%s,%s,%s,%s,%s)""",
+                  t, site, driver, vendor, model, enrolled, seen)
+        return site
+
+    replaced_site = agent_rows("Replaced PCs", [
+        ("dahua-cgi", "Dahua", "OLD-NVR", "2026-05-01T00:00:00Z", "2026-08-01T00:00:00Z"),
+        ("hikvision-isapi", "Hikvision", "CUR-NVR", "2026-08-02T00:00:00Z", "2026-10-04T10:00:00Z"),
+        # A recorder-push row is seen whenever an alarm arrives; it never owns the site.
+        ("recorder-push", None, None, "2026-08-03T00:00:00Z", "2026-10-04T11:00:00Z"),
+    ])
+    tied_conflict_site = agent_rows("Tied Conflict", [
+        ("dahua-cgi", "Dahua", "TIE-A", "2026-06-01T00:00:00Z", "2026-09-01T00:00:00Z"),
+        ("hikvision-isapi", "Hikvision", "TIE-B", "2026-06-01T00:00:00Z", "2026-09-01T00:00:00Z"),
+    ])
+    tied_agree_site = agent_rows("Tied Agree", [
+        ("onvif", "Dahua", "SAME-NVR", "2026-06-01T00:00:00Z", None),
+        ("onvif", "Dahua", "SAME-NVR", "2026-06-01T00:00:00Z", None),
+    ])
+
     # A pre-provisioned site that has no Agent and no camera at deploy time.
     uid2 = s.one("insert into auth.users(id,email) values (gen_random_uuid(),"
                  "'rehearsal-new@watchlog.test') returning id")[0]
@@ -257,6 +299,8 @@ def seed_legacy(s: Session) -> dict:
         "pending_id": pending_id, "push_token": push_token, "dup_token": dup_token,
         "new_site_id": boot2["site_id"],
         "new_site_code": boot2["enrollment_code"],
+        "replaced_site": replaced_site, "tied_conflict_site": tied_conflict_site,
+        "tied_agree_site": tied_agree_site,
     }
 
 
@@ -278,14 +322,33 @@ def snapshot_state(s: Session, seed: dict) -> dict:
     }
 
 
-def run() -> int:
+def span(names: list[str]) -> str:
+    """'0146..0156' for a run of migration file names."""
+    if not names:
+        return "(none)"
+    return names[0][:4] if len(names) == 1 else f"{names[0][:4]}..{names[-1][:4]}"
+
+
+def function_bodies(dbname: str, migration: Path) -> dict:
+    """md5(prosrc) of every public function the given migration file defines."""
+    names = sorted(set(re.findall(r"(?i)create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?(\w+)",
+                                  migration.read_text(encoding="utf-8"))))
+    with psycopg.connect(**dsn(dbname)) as c:
+        return {r[0]: r[1] for r in c.execute(
+            """select p.oid::regprocedure::text, md5(p.prosrc)
+                 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+                where n.nspname='public' and p.proname = any(%s)""", (names,)).fetchall()}
+
+
+def run(production_order: bool = False) -> int:
     if os.environ.get("WATCHLOG_CI_PLAIN_POSTGRES") != "1":
         sys.exit("FATAL: disposable plain-Postgres rehearsal only (set WATCHLOG_CI_PLAIN_POSTGRES=1).")
     if ENV.get("SUPABASE_DB_HOST") not in ("localhost", "127.0.0.1", "::1"):
         sys.exit("FATAL: the rehearsal creates and drops a database; local Postgres only.")
 
     admin_db = ENV.get("SUPABASE_DB_NAME", "postgres")
-    rehearsal_db = f"{admin_db}_upgrade_rehearsal"
+    rehearsal_db = f"{admin_db}_upgrade_rehearsal" + ("_prod" if production_order else "")
+    print(f"  order: {'production (0156 first, then the chain)' if production_order else 'numeric'}")
     admin = psycopg.connect(**dsn(admin_db, autocommit=True))
     admin.execute(f'drop database if exists "{rehearsal_db}" with (force)')
     admin.execute(f'create database "{rehearsal_db}"')
@@ -327,12 +390,32 @@ def run() -> int:
                          "intervals": before["intervals"], "recovered": pre_cov})[:400])
 
         # ---------------- stage 2: the multi-recorder chain ----------------
+        if production_order:
+            hotfixes = [p for p in pending if migration_number(p) in HOTFIX_FIRST]
+            chain = [p for p in pending if migration_number(p) not in HOTFIX_FIRST]
+            for p in hotfixes:
+                shutil.copy2(p, stage / p.name)
+            out2a = apply_migrations(rehearsal_db, stage)
+            ran = re.findall(r"apply\s+(\S+\.sql)", out2a)
+            step(hotfixes and ran == [p.name for p in hotfixes]
+                 and f"{len(hotfixes)} migration(s) executed" in out2a,
+                 f"stage 2a applies only the hotfix {span([p.name for p in hotfixes])} "
+                 "on the 0001..0145 baseline", ", ".join(ran))
+            hotfix_bodies = {p.name: function_bodies(rehearsal_db, p) for p in hotfixes}
+        else:
+            chain = pending
         out2 = apply_migrations(rehearsal_db, None)
         ran = re.findall(r"apply\s+(\S+\.sql)", out2)
-        step(ran == [p.name for p in pending]
-             and f"{len(pending)} migration(s) executed" in out2,
-             "stage 2 applies exactly the pending 0146..0155 chain with the same runner",
-             ", ".join(ran))
+        names = [p.name for p in chain]
+        step(ran == names and f"{len(chain)} migration(s) executed" in out2,
+             f"stage 2{'b' if production_order else ''} applies exactly the pending "
+             f"{span(names)} chain with the same runner", ", ".join(ran))
+        if production_order:
+            for name, bodies in hotfix_bodies.items():
+                later = function_bodies(rehearsal_db, MIGRATIONS / name)
+                step(bool(bodies) and later == bodies,
+                     f"functions defined by {name[:4]} are not redefined by the later chain",
+                     str(sorted(k for k in bodies if later.get(k) != bodies[k])))
 
         with psycopg.connect(**dsn(rehearsal_db)) as conn:
             s = Session(conn)
@@ -360,6 +443,23 @@ def run() -> int:
                  "snapshots preserved with their events and cameras")
             step(after["nvr_health"] == before["nvr_health"],
                  "nvr_health preserved for existing fault and read models")
+
+            # Default recorder vendor/model on sites with several legacy Agent rows.
+            def default_recorder(site_id):
+                return s.sql("""select vendor,model,driver from recorders
+                                 where site_id=%s and local_key='legacy-default'""",
+                             site_id).fetchall()
+            got = default_recorder(seed["replaced_site"])
+            step(got == [("Hikvision", "CUR-NVR", "hikvision-isapi")],
+                 "several legacy Agents: vendor/model come from the current site Agent "
+                 "(most recently seen, never the recorder-push row)", str(got))
+            got = default_recorder(seed["tied_conflict_site"])
+            step(got == [(None, None, None)],
+                 "two non-push Agents tie and report different recorders: vendor/model stay empty",
+                 str(got))
+            got = default_recorder(seed["tied_agree_site"])
+            step(got == [("Dahua", "SAME-NVR", "onvif")],
+                 "tied Agents that report the same recorder keep that vendor/model", str(got))
 
             # Recovery history (before any post-upgrade write).
             post_cov = s.member(seed["uid"], "select wl_site_coverage_report_classes(%s,%s,%s)",
@@ -504,4 +604,4 @@ def run() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(run(production_order="--production-order" in sys.argv[1:]))

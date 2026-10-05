@@ -54,8 +54,12 @@ create policy portal_read_recorders on public.recorders
 
 -- Existing sites are single-recorder by architecture. Create one deterministic
 -- default recorder for each site that already has cameras or a non-push Agent.
--- Recorder vendor/model/driver are copied only from the current non-push Agent;
--- they remain reported facts, not capability proof.
+-- Recorder vendor/model/driver are copied only from the current site Agent,
+-- wl_current_site_agent(): the live lease holder on a multi-agent site, else the
+-- most recently seen non-push Agent (then latest enrolled). They stay NULL when
+-- that choice is ambiguous: another non-push Agent ties it on last_seen_at and
+-- enrolled_at (only the id tie-breaker separates them) and reports a different
+-- vendor/model. They remain reported facts, not capability proof.
 insert into public.recorders(
   tenant_id, site_id, local_key, display_name,
   vendor, model, driver,
@@ -67,9 +71,9 @@ select
   s.id,
   'legacy-default',
   s.name || ' Recorder',
-  a.device_vendor,
-  a.device_model,
-  a.device_driver,
+  case when amb.ambiguous then null else a.device_vendor end,
+  case when amb.ambiguous then null else a.device_model end,
+  case when amb.ambiguous then null else a.device_driver end,
   true,
   true,
   s.capabilities,
@@ -80,6 +84,25 @@ left join lateral (
     from public.agents ax
    where ax.id = public.wl_current_site_agent(s.id)
 ) a on true
+left join lateral (
+  select true as ambiguous
+    from public.agents o
+   where o.site_id = s.id
+     and o.id <> a.id
+     and coalesce(o.device_driver, '') <> 'recorder-push'
+     and o.last_seen_at is not distinct from a.last_seen_at
+     and o.enrolled_at is not distinct from a.enrolled_at
+     and (o.device_vendor, o.device_model) is distinct from (a.device_vendor, a.device_model)
+     and not exists (
+       select 1
+         from public.site_agent_leases l
+        where l.site_id = s.id
+          and s.multi_agent_enabled
+          and l.holder_agent_id = a.id
+          and l.lease_expires_at > now()
+     )
+   limit 1
+) amb on true
 where (
   exists (select 1 from public.cameras c where c.site_id = s.id)
   or a.id is not null

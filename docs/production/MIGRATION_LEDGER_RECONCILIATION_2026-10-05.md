@@ -11,10 +11,11 @@ Audit items: MNVR-064, WP-0 / PR-0 step 1.
 
 MNVR-064 is not fixed on this branch. Its premise, a recorded 0119/0121 row that
 6488bab's edit would turn into `DRIFT`, does not hold (section 6). Two hazards
-recorded here stay open: this branch does not decide how production's ledger should
-record the 32 files that a bare `apply_migrations.py` run would treat as `PENDING`
-(section 7), and 0119's `wl_agent_semver_triplet` returns `{0,0,0}` on the repo chain
-(section 5). The body of commit 20c11f2 says "Fixes MNVR-064". That trailer is wrong
+recorded here stay open: production's ledger does not record the 32 already-live
+files that a bare `apply_migrations.py` run would treat as `PENDING` together with
+0156, 33 files in all (section 7; a prepared, not executed, reconciliation is in
+section 10), and 0119's `wl_agent_semver_triplet` returns `{0,0,0}` on the repo chain
+(section 5; fixed by 0156). The body of commit 20c11f2 says "Fixes MNVR-064". That trailer is wrong
 and does not close the item.
 
 `0156_production_truth_hotfix.sql` (section 9) is a standalone production hotfix. It
@@ -223,11 +224,12 @@ pre-6488bab bytes of 0119/0121, which are identical at 8aafb24 and at eac3a9a
 
 Derived from the code and the ledger above, not executed against production:
 
-- Plan: 32 `PENDING` files on this branch (the 30 in section 5 plus 0144 and 0145),
-  0 `DRIFT`, so no fail-closed block; it would execute them in filename order, each
-  file sent as one multi-statement execution, and exit at the first error.
-- Local rehearsal on the disposable Postgres: apply the full chain, delete the 32
-  rows from `schema_migrations` to mirror production's ledger, rerun
+- Plan: 33 `PENDING` files on this branch (the 30 in section 5, 0144 and 0145, and
+  0156), 0 `DRIFT`, so no fail-closed block; it would execute them in filename order,
+  each file sent as one multi-statement execution, and exit at the first error.
+  (Before 0156 was added the count was 32.)
+- Local rehearsal on the disposable Postgres: apply the full chain, delete the rows
+  production lacks from `schema_migrations` to mirror production's ledger, rerun
   `apply_migrations.py`. Result: `0111`-`0120` re-executed without error (their
   function bodies were rewritten to the repo text, including 0119's
   `wl_agent_semver_triplet`); `0121` failed with
@@ -263,8 +265,9 @@ belong to the multi-recorder chain on `mr/db-contracts` and are reserved in
 0001..0156`). Nothing in it has been applied to production. Applying it is a
 production change that needs explicit approval, recorded in both ledgers (the
 Supabase migration API row and `public.schema_migrations` with the file's sha256).
-Because of the 32 unrecorded files in section 7, a bare `apply_migrations.py` run
-would try those first, so 0156 must be applied on its own.
+Because of the 32 unrecorded, already-live files in section 7, a bare
+`apply_migrations.py` run would try those first, so 0156 must be applied on its own,
+or after the ledger reconciliation in section 10.
 
 What it changes, and what production showed on 2026-10-05 (read-only queries E1-E6):
 
@@ -323,6 +326,130 @@ Local verification (disposable postgres:16 only):
   With the earlier 24 h manual window the head-of-line step fails (both Agent slots
   still held by 2-hour-old manual requests after the scheduled expiry run).
 - The 0144/0145 `--pg` contract and the 0059 runtime-capability integration still pass.
+
+## 10. Prepared ledger reconciliation (2026-10-06; NOT executed, needs approval)
+
+`docs/production/ledger_reconciliation_2026-10-06.sql` records in production's
+`public.schema_migrations` the 32 files whose objects are live but which the ledger
+lacks: `0111`-`0139` (30 files, both `0115` files), `0144` and `0145`. It executes no
+migration SQL. Running step 2 is a production write and needs explicit approval.
+
+Production re-read on 2026-10-06 (read-only): `public.schema_migrations` still has
+114 rows (digest `7b5024031f9e3887e039427f6ea30f96`, unchanged), none for these 32
+files; `supabase_migrations` holds `0143`, `0144`, `0145` as its last rows. The
+file's step-1 query, run read-only against production the same day, found all 143
+key objects of the 32 files (0 missing) and none of the files already recorded.
+
+What the file does:
+
+1. Step 1 (read-only): per file, the key objects of section 5 (functions by name,
+   tables, indexes, columns, triggers, policies, cron jobs, the two `reporting_prefs`
+   paths of 0132/0137) and whether each exists. Step 1b prints the bodies listed
+   below and `wl_agent_semver_triplet('5.0.27')`.
+2. Step 2: one transaction. A `DO` guard repeats the step-1 check and also aborts if
+   any of the 32 files is already recorded with a different sha256; then one
+   `INSERT ... ON CONFLICT (filename) DO NOTHING` with the sha256 that
+   `apply_migrations.normalized_sha()` computes for the committed bytes; then a
+   post-check (expect 32 recorded, 0 mismatched, 146 ledger rows); `COMMIT`.
+3. Step 3: `apply_migrations.py --status` from the deployed branch. Expected: 0 DRIFT;
+   PENDING only `0156` on `chore/migration-ledger-alignment`, `0146`-`0156` on
+   `mr/db-contracts`.
+
+Run it before 0156. 0156 is then the only file a bare `apply_migrations.py` would
+run on this branch.
+
+Recorded files whose text differs from what production runs. Recording a row
+asserts that the file's effect is live; these are the exceptions, compared on
+2026-10-06 (production `md5(prosrc)` read-only against the local repo chain):
+
+| File | Function | Production | Repo | Difference |
+|---|---|---|---|---|
+| `0119_remote_agent_maintenance` | `wl_agent_semver_triplet(text)` | `8a4f5c64...` / 205 | `54188d12...` / 207 | **Semantic.** Repo regex `\\.` returns `{0,0,0}`; production returns `{5,0,27}`. Production is correct; 0156 redefines the function to the production body. Recording 0119 does not change production. |
+| `0119`, `0121` (6488bab) | none | - | - | 6488bab changed only dollar-quote delimiters; function bodies are unchanged. The recorded sha256 is that of the committed post-6488bab bytes, which is what the runner compares. |
+| `0121_restaurant_visual_analytics` | `wl_vision_claim_snapshots(integer,text)` | `ecc57aab...` / 5141 | `a097503c...` / 4793 | Formatting only. The production body was read back (md5 matched) and compared token by token with the repo body: identifiers, operators and all 100 string literals identical. Recording 0121 hides no behavioural difference. |
+| `0115_recorder_push_status` | `wl_agent_push_status(uuid,text)` | `547120b7...` / 790 | `9081f780...` / 768 | Formatting only (token-identical). |
+| `0133_existing_site_preflight_auth` | `wl_agent_preflight_auth(uuid,text)` | `5136b004...` / 412 | `d5021bbc...` / 413 | Formatting only (one blank line). |
+
+Every other function whose final repo definition is in these 32 files has the same
+`md5(prosrc)`, SECURITY DEFINER flag, `proconfig` and anon/authenticated execute
+grant in production as on the local chain. Differences found elsewhere (functions
+last defined in `0037`-`0041` and `0103`, and functions created only by
+production-only Supabase migrations) are outside these 32 files and are not
+affected by recording them.
+
+A bare `apply_migrations.py` run without this reconciliation, rehearsed locally on
+2026-10-06 (full chain, ledger reduced to production's 114 rows): `0111`-`0120`
+re-executed, then `0121` failed on the existing policy. It rewrote 8 function bodies
+to older repo text: `wl_agent_semver_triplet`, `wl_known_capabilities` (drops
+`config_snapshot_requests` once 0156 is live), `wl_ai_context`,
+`wl_camera_config_snapshot`, `wl_notifications`, `wl_vision_claim_snapshots`,
+`wl_vision_day_for_worker`, `wl_vision_save_day_summary`.
+
+Test: `prototype/tests/test_ledger_reconciliation.py` (static in the `backend` job,
+`--pg` in `integration`). It pins the 32 filenames against the production ledger
+list, every sha256 against `normalized_sha()`, the runner's `classify()` /
+`build_plan()` result after the insert, and that the insert is the file's only write.
+`--pg` reduces a disposable ledger to production's 114 rows, shows that both guards
+abort with nothing recorded, runs the file, checks `--status` (PENDING only 0156 on
+this branch), reruns it as a no-op and restores the ledger.
+
+## 11. 0156 pre-apply checklist (read-only; 2026-10-06 values)
+
+Run each query read-only immediately before applying 0156 and record the result.
+If a value is very different from the one below, stop and re-assess.
+
+1. Ledger reconciled (section 10), and `apply_migrations.py --status` shows only
+   `0156` PENDING on this branch.
+
+2. Visual-review backlog that 0156's one-off update retires. Query: the
+   stranded-backlog query at the end of this document ("0156 section 4").
+   2026-10-06: **252** rows, all at one site (HASCO Steel Head Office), all `pending`,
+   captured 2026-09-30 08:26-11:26 UTC. 0156 sets them to `failed`, `attempts>=5`,
+   no analysis; they count as not reviewed, never as analysed. Owner sign-off needed:
+   those stills of 2026-09-30 stay unreviewed.
+
+3. Open manual snapshot requests that the first scheduled expiry run closes:
+
+   ```sql
+   select coalesce(request_source,'(null)') as source,
+          count(*) filter (where completed_at is null) as open,
+          min(requested_at) filter (where completed_at is null) as oldest_open,
+          max(requested_at) filter (where completed_at is null) as newest_open,
+          count(distinct site_id) filter (where completed_at is null) as open_sites,
+          count(*) filter (where completed_at is null and requested_at < now()-interval '60 minutes') as open_older_60m
+   from public.camera_snapshot_requests group by 1 order by 1;
+   ```
+
+   2026-10-06: `manual` 22 open, all older than 60 minutes (oldest 2026-09-05 12:10,
+   newest 2026-09-28 13:07 UTC), at 4 sites; no other source has requests. All 22
+   would be marked expired by the first cron run, within about 5 minutes of the apply.
+
+4. Chai Wala double stills (owner decision required). 0156 makes
+   `config_snapshot_requests` a known capability. An Agent that advertises it turns
+   on the 0125 restaurant scheduler for every enabled restaurant camera profile at
+   its site, while Agent 5.0.28 also keeps producing its own periodic stills. Both
+   streams are then reviewed for the same cameras: roughly twice the stills, review
+   load and storage. Read-only state:
+
+   ```sql
+   select s.name as site,
+          (select count(*) from public.restaurant_camera_profiles rp where rp.site_id=s.id and rp.enabled) as profiles_enabled,
+          (select string_agg(distinct rp.sampling_mode||'/'||rp.interval_seconds, ',') from public.restaurant_camera_profiles rp where rp.site_id=s.id and rp.enabled) as modes,
+          (select string_agg(a.agent_version||' caps='||coalesce(a.capabilities::text,'null'), ' | ') from public.agents a where a.site_id=s.id and a.last_seen_at>now()-interval '7 days') as agents,
+          (select count(*) from public.snapshots sn join public.events e on e.id=sn.event_id
+            where sn.site_id=s.id and e.payload->>'source'='periodic_snapshot' and sn.captured_at>now()-interval '24 hours') as periodic_stills_24h
+   from public.sites s
+   where exists (select 1 from public.restaurant_camera_profiles rp where rp.site_id=s.id and rp.enabled);
+   ```
+
+   2026-10-06: one site, Chai Wala - Chota Bukhari: 8 enabled profiles
+   (`interval` 60/120 s, `hybrid` 90/180 s), Agent 5.0.17 without
+   `config_snapshot_requests` (last seen 2026-10-05 20:00 UTC), 950 periodic stills in
+   the last 24 h. Nothing changes for this site until its Agent advertises the
+   capability. The owner decides before 5.0.28 reaches Chai Wala: either disable the
+   restaurant profiles (or set them to `event`) so that only the Agent's periodic
+   stills are used, or keep the scheduler and stop the Agent's periodic stills for
+   those cameras. Not decided as of 2026-10-06.
 
 ## Appendix: exact queries
 
@@ -724,7 +851,8 @@ canonical cameras with no enabled restaurant profile that the claim would otherw
 reviewed and never as analysed. Rows under a live lease are left alone; snapshots and events are untouched.
 Periodic stills queued after the apply are claimed normally, in arrival order with every other still.
 
-Unknown: the size of the production backlog. It was not measured. Before approval, count it read-only:
+Measured read-only on 2026-10-06: 252 rows, all at HASCO Steel Head Office, all from 2026-09-30
+(section 11). Before approval, count it again read-only:
 
 ```sql
 select s.site_id, count(*) as stranded, min(r.captured_at) as oldest, max(r.captured_at) as newest
