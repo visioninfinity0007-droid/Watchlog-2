@@ -100,9 +100,21 @@ def main() -> int:
           "a multi-recorder site never shows one site-wide settings list")
     check('evidence_scope==="recorder"' in control.replace(" ", ""),
           "'Verified on your camera system' requires recorder-scoped evidence")
-    # Per-recorder change flow: the Ask link carries the recorder and camera it is about.
+    # Per-recorder change flow, link to edge function: the Ask link carries the recorder and camera it is
+    # about, the Ask page forwards them as site_control_target, and Watch AI validates that target and
+    # puts it on any Site Control proposal. No targeted write consumes it yet, so this is not counted as
+    # end-to-end recorder-scoped Site Control.
+    chat = (REPO / "portal" / "app" / "ai" / "use-customer-chat.js").read_text(encoding="utf-8")
+    gateway = (ROOT / "supabase" / "functions" / "watchlog-ai" / "index.ts").read_text(encoding="utf-8")
+    target = (ROOT / "supabase" / "functions" / "watchlog-ai" / "site_control_target.ts").read_text(encoding="utf-8")
     check('"&recorder="' in workspace and '"&camera="' in workspace,
-          "the per-recorder change link sends recorder_id/camera_id")
+          "the per-recorder change link carries the recorder and camera ids")
+    check('params.get("recorder")' in chat and 'params.get("camera")' in chat
+          and "site_control_target:" in chat and "recorder_id:" in chat and "camera_id:" in chat,
+          "the Ask page forwards the link's recorder/camera ids as site_control_target")
+    check("siteControlTarget(body?.site_control_target," in gateway
+          and "req.recorder_id" in target and "req.camera_id" in target,
+          "Watch AI validates the forwarded site_control_target (not yet consumed by a targeted write)")
 
     # The diagnosis the page calls is the recorder-aware one (latest definition, 0155).
     check(latest_definition_sees_upper_case(), "the diagnosis lookup sees an upper-case redefinition")
