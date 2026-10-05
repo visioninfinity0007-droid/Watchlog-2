@@ -7,6 +7,8 @@ Proves:
 - tenant A sees only its own configured recorders;
 - recorder state is independent for overlapping Channel 1 recorders;
 - camera IDs group under the correct recorder;
+- the older site health snapshot and operations report list each recorder
+  from its own health, with stale health unknown;
 - tenant B cannot read tenant A's site;
 - the payload does not expose vendor/model/driver/local address/credential fields;
 - exact EXECUTE ACL is authenticated only.
@@ -239,6 +241,40 @@ def run() -> int:
                  and by_id[str(rec_b)]["state"] == "offline",
                  "recorder availability remains independent")
 
+            # The older owner read models (0050 report, 0089 snapshot) must name
+            # each recorder from its own health, not one per-Agent nvr_health
+            # row (here a frozen pre-upgrade 'reachable' value).
+            cur.execute(
+                """insert into nvr_health(agent_id,tenant_id,site_id,
+                                          nvr_reachable,nvr_auth_ok,reason_code)
+                   values (%s,%s,%s,true,true,'ok')
+                   on conflict (agent_id) do update
+                      set nvr_reachable=true,nvr_auth_ok=true,reason_code='ok'""",
+                (agent_a, ta, sa),
+            )
+
+            def legacy_read_models():
+                snap = as_auth(ua, "select wl_site_health_snapshot(%s)", sa)[0]
+                rep = as_auth(
+                    ua, "select wl_operations_report(%s,now()-interval '1 day',now())", sa
+                )[0]
+                return (
+                    {str(r.get("recorder_id")): r for r in snap["recorders"]},
+                    {str(r.get("recorder_id")): r for r in rep["reliability"]["recorders"]},
+                )
+
+            snap_by, rep_by = legacy_read_models()
+            step(set(snap_by) == {str(rec_a), str(rec_b)}
+                 and snap_by[str(rec_a)]["nvr_reachable"] is True
+                 and snap_by[str(rec_b)]["nvr_reachable"] is False,
+                 "site health snapshot lists each recorder with its own reachability",
+                 json.dumps(list(snap_by.values()), default=str)[:400])
+            step(set(rep_by) == {str(rec_a), str(rec_b)}
+                 and rep_by[str(rec_a)]["reachable"] is True
+                 and rep_by[str(rec_b)]["reachable"] is False,
+                 "operations report lists each recorder with its own reachability",
+                 json.dumps(list(rep_by.values()), default=str)[:400])
+
             unknown_auth_report = {
                 "nvr": {
                     "reachable": True, "auth_ok": None,
@@ -283,6 +319,13 @@ def run() -> int:
                 and stale_by_id[str(rec_a)]["issue"] is None,
                 "stale recorder health becomes Not verified, never stale healthy",
             )
+            snap_by, rep_by = legacy_read_models()
+            step(snap_by[str(rec_a)]["nvr_reachable"] is None
+                 and snap_by[str(rec_a)]["health_fresh"] is False
+                 and rep_by[str(rec_a)]["reachable"] is None
+                 and rep_by[str(rec_a)]["fresh"] is False,
+                 "snapshot and operations report show stale recorder health as unknown",
+                 json.dumps([snap_by[str(rec_a)], rep_by[str(rec_a)]], default=str)[:400])
             # Restore a fresh governed observation for the remaining assertions.
             anon_call(
                 "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",

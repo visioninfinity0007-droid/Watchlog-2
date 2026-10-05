@@ -538,3 +538,310 @@ $function$;
 -- Restate the 0015 ACL.
 revoke all on function public.wl_capabilities() from public, anon;
 grant execute on function public.wl_capabilities() to authenticated;
+
+-- ---------------------------------------------------------------------
+-- Recorder sections of the older owner read models (contract section 15).
+-- wl_operations_report (0050) and wl_site_health_snapshot (0089) built
+-- 'recorders' from the per-Agent nvr_health row, which the recorder-aware
+-- RPCs never write: on a multi-recorder site it was missing or frozen at its
+-- last singleton value and never named Recorder B. Both now list each
+-- configured recorder from its own recorder_health row of the current Agent,
+-- with connectivity older than 15 minutes reported unknown. The rest of each
+-- body is unchanged from 0050 / 0089.
+-- ---------------------------------------------------------------------
+
+create or replace function public.wl_operations_report(
+  p_site_id uuid,
+  p_from    timestamptz default now() - interval '7 days',
+  p_to      timestamptz default now()
+) returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_tenant uuid := wl_my_tenant();
+  v_site   public.sites;
+  v_cov    jsonb;
+  v_rel    jsonb;
+  v_sec    jsonb;
+  v_ops    jsonb;
+begin
+  if v_tenant is null then
+    raise exception 'not authenticated' using errcode = '28000';
+  end if;
+  select * into v_site from public.sites where id = p_site_id and tenant_id = v_tenant;
+  if v_site.id is null then
+    raise exception 'site not in your account' using errcode = '42501';
+  end if;
+
+  -- ---- completeness: coverage over MONITORED time; unverified excluded ------
+  select jsonb_build_object(
+    'wall_seconds', coalesce(sum(wall_seconds), 0),
+    'monitored_seconds', coalesce(sum(monitored_seconds), 0),
+    'unverified_seconds', coalesce(sum(unverified_seconds), 0),
+    'coverage_pct', case when coalesce(sum(wall_seconds), 0) = 0 then null
+        else round(100.0 * sum(monitored_seconds) / nullif(sum(wall_seconds), 0), 1) end,
+    'unverified_pct', case when coalesce(sum(wall_seconds), 0) = 0 then null
+        else round(100.0 * sum(unverified_seconds) / nullif(sum(wall_seconds), 0), 1) end,
+    'note', 'Availability is measured over MONITORED time; unverified/UNKNOWN periods '
+            || 'are surfaced, not counted as uptime or downtime.'
+  ) into v_cov
+  from public.monitoring_coverage
+  where site_id = p_site_id
+    and bucket_date between (p_from at time zone 'UTC')::date and (p_to at time zone 'UTC')::date;
+
+  -- ---- reliability ----------------------------------------------------------
+  with agent_un as (
+    select id, started_at, coalesce(ended_at, now()) as endd
+      from public.agent_unreachable_intervals
+     where site_id = p_site_id and started_at < p_to and coalesce(ended_at, now()) > p_from
+  ),
+  unv as (
+    select id, started_at, coalesce(ended_at, now()) as endd
+      from public.unverified_intervals
+     where site_id = p_site_id and started_at < p_to and coalesce(ended_at, now()) > p_from
+  ),
+  cam as (
+    select count(*) as total,
+           count(*) filter (where health_state = 'offline') as offline_now,
+           count(*) filter (where health_state = 'unknown') as unknown_now
+      from public.camera_health where site_id = p_site_id
+  ),
+  camf as (
+    select count(*) as offline_faults,
+           coalesce(jsonb_agg(id order by opened_at desc), '[]'::jsonb) as drill
+      from public.operational_faults
+     where site_id = p_site_id and fault_domain = 'camera' and opened_at between p_from and p_to
+  )
+  select jsonb_build_object(
+    'agent_unreachable', jsonb_build_object(
+       'intervals', (select count(*) from agent_un),
+       'seconds', (select coalesce(round(sum(extract(epoch from (least(endd, p_to) - greatest(started_at, p_from)))))::bigint, 0) from agent_un),
+       'drill', (select coalesce(jsonb_agg(id), '[]'::jsonb) from agent_un)),
+    -- One entry per configured recorder from its recorder_health row of the
+    -- current Agent (0152); connectivity older than 15 minutes is unknown.
+    'recorders', (select coalesce(jsonb_agg(jsonb_build_object(
+       'recorder_id', r.id, 'name', r.display_name, 'is_primary', r.is_primary,
+       'agent_id', rh.agent_id,
+       'reachable', case when rh.updated_at >= now() - interval '15 minutes' then rh.nvr_reachable end,
+       'auth_ok', case when rh.updated_at >= now() - interval '15 minutes' then rh.nvr_auth_ok end,
+       'fresh', coalesce(rh.updated_at >= now() - interval '15 minutes', false),
+       'checked_at', rh.updated_at,
+       'recording_state', case when rh.updated_at >= now() - interval '15 minutes'
+                               then rh.recording_state else 'unknown' end,
+       'storage_state', case when rh.updated_at >= now() - interval '15 minutes'
+                             then rh.storage_state else 'unknown' end)
+       order by r.is_primary desc, r.created_at, r.id), '[]'::jsonb)
+       from public.recorders r
+       left join public.recorder_health rh
+         on rh.recorder_id = r.id
+        and rh.agent_id = public.wl_current_site_agent(p_site_id)
+      where r.site_id = p_site_id and r.tenant_id = v_tenant and r.is_configured),
+    'cameras', jsonb_build_object(
+       'total', (select total from cam), 'offline_now', (select offline_now from cam),
+       'unknown_now', (select unknown_now from cam),
+       'offline_faults_opened', (select offline_faults from camf), 'drill', (select drill from camf)),
+    'unverified', jsonb_build_object(
+       'intervals', (select count(*) from unv),
+       'seconds', (select coalesce(round(sum(extract(epoch from (least(endd, p_to) - greatest(started_at, p_from)))))::bigint, 0) from unv))
+  ) into v_rel;
+
+  -- ---- security -------------------------------------------------------------
+  with inc as (
+    select * from public.operations_incidents
+     where site_id = p_site_id and opened_at between p_from and p_to
+  ),
+  ev as (
+    select event_type, count(*) c from public.events
+     where site_id = p_site_id and received_at between p_from and p_to group by event_type
+  ),
+  clip as (
+    select status, count(*) c from public.incident_clip_requests
+     where site_id = p_site_id and requested_at between p_from and p_to group by status
+  )
+  select jsonb_build_object(
+    'incidents', jsonb_build_object(
+       'total', (select count(*) from inc),
+       'by_status', (select coalesce(jsonb_object_agg(status, c), '{}'::jsonb)
+                     from (select status, count(*) c from inc group by status) s),
+       'by_severity', (select coalesce(jsonb_object_agg(severity, c), '{}'::jsonb)
+                       from (select severity, count(*) c from inc group by severity) s),
+       'review_required', (select count(*) from inc where review_required),
+       'drill', (select coalesce(jsonb_agg(jsonb_build_object(
+                   'id', id, 'type', incident_type, 'severity', severity, 'status', status,
+                   'camera_id', camera_id, 'occurred_at', occurred_at,
+                   'rule_id', rule_id, 'rule_version', rule_version) order by opened_at desc), '[]'::jsonb)
+                 from inc)),
+    'native_events', jsonb_build_object(
+       'total', (select coalesce(sum(c), 0) from ev),
+       'by_type', (select coalesce(jsonb_object_agg(event_type, c), '{}'::jsonb) from ev)),
+    'evidence', jsonb_build_object(
+       'clip_requests', (select coalesce(sum(c), 0) from clip),
+       'by_status', (select coalesce(jsonb_object_agg(status, c), '{}'::jsonb) from clip))
+  ) into v_sec;
+
+  -- ---- operations (SOP violations by primitive) -----------------------------
+  with inc as (
+    select incident_type, id, opened_at from public.operations_incidents
+     where site_id = p_site_id and opened_at between p_from and p_to
+  )
+  select jsonb_build_object(
+    'sop_violations', jsonb_build_object(
+       'total', (select count(*) from inc),
+       'by_type', (select coalesce(jsonb_object_agg(incident_type, c), '{}'::jsonb)
+                   from (select incident_type, count(*) c from inc group by incident_type) s),
+       'drill', (select coalesce(jsonb_agg(id order by opened_at desc), '[]'::jsonb) from inc)),
+    'dwell_wait', (select count(*) from inc where incident_type in ('zone_dwell', 'queue_wait')),
+    'presence_absence', (select count(*) from inc where incident_type in ('zone_presence', 'zone_absence')),
+    'occupancy', (select count(*) from inc where incident_type = 'occupancy'),
+    'schedule', (select count(*) from inc where incident_type = 'schedule_activity')
+  ) into v_ops;
+
+  return jsonb_build_object(
+    'site', jsonb_build_object('id', v_site.id, 'name', v_site.name),
+    'period', jsonb_build_object('from', p_from, 'to', p_to),
+    'completeness', coalesce(v_cov, jsonb_build_object(
+       'wall_seconds', 0, 'monitored_seconds', 0, 'unverified_seconds', 0,
+       'coverage_pct', null, 'unverified_pct', null,
+       'note', 'No monitoring-coverage data recorded for this period; completeness is UNKNOWN.')),
+    'reliability', v_rel,
+    'security', v_sec,
+    'operations', v_ops
+  );
+end $$;
+
+revoke all on function public.wl_operations_report(uuid, timestamptz, timestamptz) from public, anon;
+grant execute on function public.wl_operations_report(uuid, timestamptz, timestamptz) to authenticated;
+
+create or replace function public.wl_site_health_snapshot(p_site_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_tenant uuid := wl_my_tenant();
+  v_fresh_cut timestamptz := now() - interval '15 minutes';
+  v_current_agent uuid := wl_current_site_agent(p_site_id);
+begin
+  if v_tenant is null then
+    raise exception 'not authenticated' using errcode='28000';
+  end if;
+  if not exists(select 1 from public.sites s
+                where s.id=p_site_id and s.tenant_id=v_tenant) then
+    raise exception 'that site does not belong to your account';
+  end if;
+
+  return jsonb_build_object(
+    'site_id', p_site_id,
+    'current_agent_id', v_current_agent,
+    'recorders', (
+      -- One entry per configured recorder, from its own recorder_health row of
+      -- the current Agent (0152). Connectivity older than 15 minutes is
+      -- unknown, as in wl_my_site_recorders.
+      select coalesce(jsonb_agg(jsonb_build_object(
+        'recorder_id',r.id,
+        'name',r.display_name,
+        'is_primary',r.is_primary,
+        'agent_id',v_current_agent,
+        'nvr_reachable',case when rh.updated_at>=v_fresh_cut then rh.nvr_reachable end,
+        'nvr_auth_ok',case when rh.updated_at>=v_fresh_cut then rh.nvr_auth_ok end,
+        'health_fresh',coalesce(rh.updated_at>=v_fresh_cut,false),
+        'recording_state',(
+          select case
+            when count(*) filter(where c.is_configured) = 0 then 'unknown'
+            when count(*) filter(where c.is_configured and ch.rec_current_at>=v_fresh_cut
+                                 and ch.rec_current_state='recording')
+                 = count(*) filter(where c.is_configured) then 'recording'
+            when count(*) filter(where c.is_configured and ch.rec_current_at>=v_fresh_cut
+                                 and ch.rec_current_state='storage_fault') > 0 then 'storage_fault'
+            when count(*) filter(where c.is_configured and ch.rec_current_at>=v_fresh_cut
+                                 and ch.rec_current_state='not_recording') > 0 then 'not_recording'
+            else 'unknown' end
+            from public.cameras c
+            left join public.camera_health ch on ch.camera_id=c.id
+           where c.site_id=p_site_id and c.tenant_id=v_tenant
+             and c.recorder_id=r.id),
+        'storage_state',case when rh.sto_current_at>=v_fresh_cut
+                             then rh.sto_current_state else 'unknown' end,
+        'reason_code',case when rh.updated_at>=v_fresh_cut
+                           then rh.reason_code else 'unknown' end,
+        'storage_reason_code',case when rh.sto_current_at>=v_fresh_cut
+                                   then rh.sto_current_reason_code else 'unknown' end,
+        'storage_observed_at',rh.sto_current_at,
+        'storage_fresh',coalesce(rh.sto_current_at>=v_fresh_cut,false),
+        'storage_evidence',rh.sto_current_evidence,
+        'updated_at',rh.updated_at)
+        order by r.is_primary desc, r.created_at, r.id), '[]'::jsonb)
+        from public.recorders r
+        left join public.recorder_health rh
+          on rh.recorder_id=r.id
+         and rh.agent_id=v_current_agent
+       where r.site_id=p_site_id and r.tenant_id=v_tenant
+         and r.is_configured
+    ),
+    'cameras', (
+      select coalesce(jsonb_agg(jsonb_build_object(
+        'camera_id',c.id,'channel',c.channel,'name',c.name,
+        'is_configured',c.is_configured,
+        'configuration_state',case when c.is_configured then 'configured' else 'no_camera_configured' end,
+        'health_state',case when c.is_configured then coalesce(ch.health_state,'unknown') else 'unknown' end,
+        'inventory_state',case when c.is_configured then coalesce(ci.inventory_state,'unknown') else 'disabled' end,
+        'recording_state',case when not c.is_configured then 'unknown'
+                               when ch.rec_current_at>=v_fresh_cut then coalesce(ch.rec_current_state,'unknown')
+                               else 'unknown' end,
+        'reason_code',case when c.is_configured then ch.reason_code else 'channel_disabled' end,
+        'recording_reason_code',case when not c.is_configured then 'channel_disabled'
+                                     when ch.rec_current_at>=v_fresh_cut then coalesce(ch.rec_current_reason_code,'unknown')
+                                     else 'unknown' end,
+        'recording_observed_at',ch.rec_current_at,
+        'recording_fresh',case when c.is_configured then coalesce(ch.rec_current_at>=v_fresh_cut,false) else false end,
+        'recording_evidence',ch.rec_current_evidence,
+        'recording_transition_at',ch.rec_observed_at,
+        'updated_at',greatest(ch.updated_at,ci.updated_at)) order by c.channel),'[]'::jsonb)
+        from public.cameras c
+        left join public.camera_health ch on ch.camera_id=c.id
+        left join public.camera_inventory ci on ci.camera_id=c.id
+       where c.site_id=p_site_id and c.tenant_id=v_tenant
+    ),
+    'faults', (
+      select coalesce(jsonb_agg(jsonb_build_object(
+        'id',f.id,'domain',f.fault_domain,'fault_type',f.fault_type,
+        'severity',f.severity,'state',f.state,'reason_code',f.reason_code,
+        'camera_id',f.camera_id,'agent_id',f.agent_id,
+        'opened_at',f.opened_at,'acknowledged_at',f.acknowledged_at)
+        order by case f.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
+                 f.opened_at desc),'[]'::jsonb)
+        from public.operational_faults f
+       where f.site_id=p_site_id and f.tenant_id=v_tenant and f.state<>'resolved'
+         and (f.agent_id is null or f.agent_id=v_current_agent)
+         and (f.camera_id is null or exists(select 1 from public.cameras fc
+                                            where fc.id=f.camera_id and fc.is_configured))
+    ),
+    'summary', (
+      select jsonb_build_object(
+        'cameras_total',count(*) filter(where c.is_configured),
+        'recorder_slots_total',count(*),
+        'unconfigured_slots',count(*) filter(where not c.is_configured),
+        'operational',count(*) filter(where c.is_configured and coalesce(ch.health_state,'unknown')='operational'),
+        'degraded',count(*) filter(where c.is_configured and ch.health_state='degraded'),
+        'offline',count(*) filter(where c.is_configured and ch.health_state='offline'),
+        'unknown',count(*) filter(where c.is_configured and coalesce(ch.health_state,'unknown')='unknown'))
+        from public.cameras c left join public.camera_health ch on ch.camera_id=c.id
+       where c.site_id=p_site_id and c.tenant_id=v_tenant
+    ),
+    'faults_open', (
+      select count(*) from public.operational_faults f
+       where f.site_id=p_site_id and f.tenant_id=v_tenant and f.state<>'resolved'
+         and (f.agent_id is null or f.agent_id=v_current_agent)
+         and (f.camera_id is null or exists(select 1 from public.cameras fc
+                                            where fc.id=f.camera_id and fc.is_configured))
+    ),
+    'server_time',now());
+end $$;
+
+revoke all on function public.wl_site_health_snapshot(uuid) from public, anon;
+grant execute on function public.wl_site_health_snapshot(uuid) to authenticated;
