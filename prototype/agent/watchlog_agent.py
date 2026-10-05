@@ -940,14 +940,27 @@ def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
     else:
         total = float(DRIVER_RETRY_SECONDS if seconds is None else max(0.0, seconds))
     waited, step = 0.0, 5.0
+    unreadable_gen = None
     while waited < total:
         if stop.wait(min(step, total - waited)):
             return "stop", last_gen
         waited += step
-        gen = _credential_generation_for_cfg(cfg)
+        try:
+            gen = _credential_generation_for_cfg(cfg)
+        except Exception:                               # noqa: BLE001 — unknown: poll again
+            continue
         if gen != last_gen:
+            try:
+                _reload_credential_for_cfg(cfg)
+            except (Exception, SystemExit) as e:        # noqa: BLE001 — keep the current login
+                # A missing, mid-replace or unreadable blob must not end the collector thread
+                # (nothing restarts it). last_gen is kept, so the next poll tries again.
+                if gen != unreadable_gen:
+                    log("recorder credential changed in Setup but could not be read yet: "
+                        f"{type(e).__name__}; keeping the current login")
+                    unreadable_gen = gen
+                continue
             log("recorder credential changed in Setup; reloading and retrying now")
-            _reload_credential_for_cfg(cfg)
             return "reload", gen
     return "timeout", last_gen
 
