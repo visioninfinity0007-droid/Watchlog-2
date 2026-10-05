@@ -19,11 +19,11 @@ export default function CustomerControl(){
   // recorder profile: settings are confirmed on each recorder separately.
   const groups=recorderGroups(d),multiRecorder=groups.length>1;
   const cameraCount=groups.reduce((n,g)=>n+g.cameras.length,0);
-  // Every change is initiated through the governed WatchLog AI conversation, which proposes the write
-  // server-side (wl_site_command_propose_write) and never runs it without approval. The portal only
-  // surfaces the capability truth and role-gates who may recommend versus approve.
-  // A change is about one recorder (and camera): the link names them for the customer and carries
-  // their ids so the proposal is targeted, never site-wide on a multi-recorder site.
+  // Every change is initiated through the governed WatchLog AI conversation and never runs without
+  // approval. The portal only surfaces the capability truth and role-gates who may recommend versus
+  // approve. A change is about one recorder (and camera): the link names them for the customer and
+  // carries &recorder=/&camera= ids. Not yet end to end: the Ask page does not forward those ids as
+  // site_control_target, and nothing consumes the validated target to propose a targeted write.
   function askLink(cap,target){const what=cap?plain(cap.capability):"a camera-system setting";const on=multiRecorder&&target?.recorder?` on ${target.recorder}`:"",where=target?.camera?` for ${target.camera}${on}`:on;const verb=canApprove?"recommend the change and, once you approve it, apply it":"recommend the change for an Owner or Admin to approve";const prompt=`I want to change ${what}${where} at this site. Confirm it is safely supported here, then ${verb}. Do not make any change without explicit approval.`;let href=`/ai/?prompt=${encodeURIComponent(prompt)}`;if(target?.recorderId)href+="&recorder="+encodeURIComponent(target.recorderId);if(target?.cameraId)href+="&camera="+encodeURIComponent(target.cameraId);return withSite(href,c.siteId);}
   const single=multiRecorder?null:{recorder:groups[0]?.name,recorderId:groups[0]?.recorderId};
 
