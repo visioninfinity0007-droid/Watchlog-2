@@ -25,12 +25,10 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 # tests among them). Do not add to this list: run a new test in CI instead.
 UNREFERENCED_ON_MAIN = {
     "test_acceptance_hang_regression.py", "test_agent_coverage.py", "test_billing_authz.py",
-    "test_boot_persistence.py", "test_entitlement.py", "test_existing_site_repair.py",
-    "test_install_end_to_end.py", "test_installer_connectivity.py", "test_office_reporting.py",
-    "test_pilot_hardening.py", "test_platform_admin_authz.py", "test_proc_util.py",
-    "test_push_bridge_dahua.py", "test_recorder_push_live.py", "test_recorder_push_setup.py",
-    "test_recorder_setup.py", "test_release_hardening.py",
-    "test_remote_maintenance_hikvision.py", "test_site_control.py",
+    "test_boot_persistence.py", "test_entitlement.py", "test_install_end_to_end.py",
+    "test_installer_connectivity.py", "test_office_reporting.py", "test_platform_admin_authz.py",
+    "test_proc_util.py", "test_recorder_push_live.py", "test_recorder_setup.py",
+    "test_release_hardening.py", "test_remote_maintenance_hikvision.py",
     "test_site_lifecycle_notifications_contract.py", "test_spool_recovery_gap.py",
     "test_team_and_trial.py", "test_tenant_isolation.py", "test_videoloss_reconciliation.py",
     "test_vision_worker_runtime.py", "test_watch_ai_customer_harness.py",

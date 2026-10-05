@@ -50,6 +50,8 @@ jobs:
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
       - name: Multi-recorder Agent with the 5.0.28 live-site fixes (worker survival, last_live, stream liveness, recovery claims, redaction, singleton worker survival, recovery RPC contract, per-recorder periodic stills and ONVIF stream reporting)
         run: python -m pytest prototype/tests/test_fanout_stream_last_live.py prototype/tests/test_health_worker_survival.py prototype/tests/test_recorder_recovery_rules.py prototype/tests/test_incident_routed_recorder_redaction.py prototype/tests/test_fanout_recovery_worker_survival.py prototype/tests/test_fanout_quiet_stream_liveness.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_recorder_release.py prototype/tests/test_fanout_periodic_stills.py prototype/tests/test_fanout_onvif_stream_liveness.py -q
+      - name: Multi-recorder registry trust, same-site reinstall, secondary disable, single-recorder job routing, claimed-command completion
+        run: python -m pytest prototype/tests/test_registry_trust.py prototype/tests/test_recorder_registry_reinstall.py prototype/tests/test_disable_secondary_runtime.py prototype/tests/test_single_recorder_job_routing.py prototype/tests/test_claimed_command_completion.py -q
       - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write)
         run: python -m pytest prototype/tests/test_multi_recorder_spool_stamp_bounded.py prototype/tests/test_incident_footage_recorder_isolation.py prototype/tests/test_analytics_sampler_backoff.py prototype/tests/test_recording_current_multi_recorder.py prototype/tests/test_worker_credential_reload.py prototype/tests/test_analytics_sampler_channel_isolation.py prototype/tests/test_incident_footage_claim_backlog.py prototype/tests/test_multi_recorder_identity_write_race.py -q
       - name: Recorder push per recorder, Agent/bridge alarm parity, Site Control recorder routing and read catalog
@@ -497,6 +499,16 @@ jobs:
         run: python prototype/tests/e2e_recovery_agent_payload_pg.py
       - name: Recorder-scoped live events ingest with no camera — JSON null channel, flag kept
         run: python prototype/tests/e2e_recorder_scoped_ingest_pg.py
+      - name: Setup recorder disable + same-site reinstall against the recorder registry contract (needs 0146-0155)
+        run: |
+          # The multi-recorder migrations ship on mr/db-contracts; a tree without them has no
+          # recorder registry contract to run these against.
+          if ls prototype/supabase/migrations/0154_multi_recorder_continuity_owner.sql >/dev/null 2>&1; then
+            python prototype/tests/e2e_setup_recorder_disable_pg.py
+            python prototype/tests/e2e_setup_recorder_reinstall_pg.py
+          else
+            echo "SKIP: migrations 0146-0155 (DB contract v4) are not in this tree"
+          fi
       - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
         run: python prototype/tests/e2e_recovery_ingest_pg.py
       - name: Agent periodic stills reach ingest and the visual-review consumer (0125/0126) — production contract
