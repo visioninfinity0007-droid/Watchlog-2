@@ -144,11 +144,14 @@ def run() -> int:
             r3 = cur.execute("select wl_ingest_events(%s,%s,%s::jsonb)",
                              (agent, key, json.dumps(onvif_rows))).fetchone()[0]
             step(r3.get("inserted") == 1, "the ONVIF storage fault is accepted", str(r3))
-            onvif_stored = cur.execute("""select camera_id, payload->>'vendor' from events
+            onvif_stored = cur.execute("""select camera_id, payload->>'recorder_scoped',
+                                                  payload->>'clock_source' from events
                                            where site_id=%s and payload->>'vendor'='onvif'""",
                                        (sid,)).fetchall()
-            step(onvif_stored == [(None, "onvif")],
-                 "the ONVIF storage fault has no camera (not camera 1)", str(onvif_stored))
+            step(onvif_stored == [(None, "true", "recorder")],
+                 "the ONVIF storage fault has no camera (not camera 1) and keeps the same "
+                 "recorder_scoped flag and clock provenance as the other drivers",
+                 str(onvif_stored))
             none_rows = cur.execute("select count(*) from events where site_id=%s and "
                                     "dedupe_key like %s", (sid, "%:None:%")).fetchone()[0]
             step(none_rows == 0, "no stored dedupe key names a channel 'None'", str(none_rows))

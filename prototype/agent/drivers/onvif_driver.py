@@ -82,8 +82,8 @@ TOPIC_MAP = [
 ]
 
 # Event types that belong to the recorder, not to a camera. They carry no
-# video source, so they are emitted with channel None and a recorder_scope
-# flag; putting them on a channel would turn a recorder HDD fault into a
+# video source, so they are emitted with channel None and a recorder_scoped
+# flag (the key the Hikvision and Dahua drivers use); putting them on a channel would turn a recorder HDD fault into a
 # fault on whichever camera that channel happens to be.
 RECORDER_SCOPED_TYPES = {"disk_error"}
 
@@ -603,11 +603,11 @@ class OnvifDriver(NvrDriver):
         # then kept in the payload rather than silently replaced.
         received = received or datetime.now(timezone.utc)
         stamped = _xs_datetime(inner.get("UtcTime"))
-        ts, skew = received, None
+        ts, skew, clock_source = received, None, "agent_receive"
         if stamped is not None:
             offset = (stamped - received).total_seconds()
             if abs(offset) <= CLOCK_SKEW_TOLERANCE_SECONDS:
-                ts = stamped
+                ts, clock_source = stamped, "recorder"
             else:
                 skew = round(offset)
 
@@ -648,10 +648,12 @@ class OnvifDriver(NvrDriver):
             return None
         self._last_emitted[key] = now
 
+        # clock_source names the clock that stamped device_ts, with the same values as the
+        # Hikvision and Dahua drivers: footage lookups need to know which clock it was.
         payload = {"vendor": "onvif", "topic": topic,
-                   "source": source, "data": data}
+                   "source": source, "data": data, "clock_source": clock_source}
         if channel is None:
-            payload["recorder_scope"] = True
+            payload["recorder_scoped"] = True
         if skew is not None:
             payload["device_utc"] = (stamped.astimezone(timezone.utc).isoformat()
                                      .replace("+00:00", "Z"))
