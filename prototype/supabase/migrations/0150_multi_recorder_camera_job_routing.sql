@@ -667,6 +667,36 @@ begin
      and expires_at<=now()
      and status in ('pending','processing','ready');
 
+  -- A request that can never reach a recorder input (camera gone, or a blank
+  -- channel) fails now. It is neither left pending for 24 h, blocking a new
+  -- request, nor handed to the Agent without a channel (MNVR-033).
+  with unroutable as (
+    select r.id
+      from public.incident_clip_requests r
+     where r.site_id=v_agent.site_id
+       and r.tenant_id=v_agent.tenant_id
+       and r.status='pending'
+       and r.expires_at>now()
+       and not exists (
+         select 1
+           from public.cameras c
+          where c.id=r.camera_id
+            and c.tenant_id=v_agent.tenant_id
+            and c.site_id=v_agent.site_id
+            and c.recorder_id is not null
+            and nullif(btrim(c.channel),'') is not null
+       )
+     for update of r skip locked
+  )
+  update public.incident_clip_requests r
+     set status='failed',
+         error_message='WatchLog could not confirm which recorder input this camera uses, so recorded footage was not retrieved.',
+         completed_at=now()
+    from unroutable u
+   where r.id=u.id;
+
+  -- started_at is the processing lease the 0142 finalizer
+  -- (wl_finalize_stale_incident_clips) measures; every claim sets it.
   with picked as (
     select r.id
       from public.incident_clip_requests r
@@ -675,6 +705,7 @@ begin
        and c.tenant_id=v_agent.tenant_id
        and c.site_id=v_agent.site_id
        and c.recorder_id is not null
+       and nullif(btrim(c.channel),'') is not null
      where r.site_id=v_agent.site_id
        and r.tenant_id=v_agent.tenant_id
        and r.status='pending'
@@ -757,6 +788,51 @@ begin
      and expires_at<=now()
      and status in ('pending','processing','ready');
 
+  -- Bounded lease (MNVR-033): the 5 minute claim lease is re-claimable only
+  -- within the same 3-attempt budget wl_agent_fail_incident_still applies, and
+  -- work that can never reach a recorder input fails instead of being skipped.
+  with spent as (
+    select e.id,
+           routed.ok is null as unroutable
+      from public.operations_incident_evidence e
+      left join lateral (
+        select true as ok
+          from public.cameras c
+         where c.id=e.camera_id
+           and c.tenant_id=v_agent.tenant_id
+           and c.site_id=v_agent.site_id
+           and c.recorder_id is not null
+           and nullif(btrim(c.channel),'') is not null
+      ) routed on true
+     where e.site_id=v_agent.site_id
+       and e.tenant_id=v_agent.tenant_id
+       and e.expires_at>now()
+       and (
+         e.status='pending'
+         or (
+           e.status='processing'
+           and coalesce(e.claim_expires_at,now())<=now()
+         )
+       )
+       and (
+         routed.ok is null
+         or (e.status='processing' and e.attempts>=3)
+       )
+     for update of e skip locked
+  )
+  update public.operations_incident_evidence e
+     set status='failed',
+         claimed_by_agent_id=null,
+         claim_expires_at=null,
+         error_message=case
+           when s.unroutable then
+             'WatchLog could not confirm which recorder input this camera uses, so no camera view was captured.'
+           else 'The camera view was not captured after several attempts.'
+         end,
+         completed_at=now()
+    from spent s
+   where e.id=s.id;
+
   with picked as (
     select e.id
       from public.operations_incident_evidence e
@@ -765,6 +841,7 @@ begin
        and c.tenant_id=v_agent.tenant_id
        and c.site_id=v_agent.site_id
        and c.recorder_id is not null
+       and nullif(btrim(c.channel),'') is not null
      where e.site_id=v_agent.site_id
        and e.tenant_id=v_agent.tenant_id
        and e.expires_at>now()
@@ -823,6 +900,106 @@ revoke all on function public.wl_agent_claim_incident_stills(
 grant execute on function public.wl_agent_claim_incident_stills(
   uuid,text,integer
 ) to anon,authenticated,service_role;
+
+-- ---------------------------------------------------------------------
+-- A restarted Agent releases its OWN in-flight evidence at startup instead
+-- of leaving it to the lease (MNVR-033). A clip fails exactly as the 0142
+-- finalizer fails an abandoned request (partial chunks deleted), so the owner
+-- can request it again at once; a still returns to pending within its
+-- 3-attempt budget. Only the current site Agent may release, and only rows it
+-- claimed itself; other identities' rows stay with the lease and 0142.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_agent_release_inflight_evidence(
+  p_agent_id uuid,
+  p_agent_key text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+  v_clips int := 0;
+  v_released int := 0;
+  v_failed int := 0;
+begin
+  v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent not recognised' using errcode='28000';
+  end if;
+
+  perform public.wl_assert_current_agent_authority(
+    v_agent.id,v_agent.site_id
+  );
+
+  with mine as (
+    select r.id
+      from public.incident_clip_requests r
+     where r.tenant_id=v_agent.tenant_id
+       and r.site_id=v_agent.site_id
+       and r.claimed_by_agent_id=v_agent.id
+       and r.status='processing'
+     for update
+  ), removed_chunks as (
+    delete from public.incident_clip_chunks c
+     using mine m
+     where c.request_id=m.id
+    returning c.request_id
+  ), finalized as (
+    update public.incident_clip_requests r
+       set status='failed',
+           error_message='Footage retrieval did not complete. Please retry.',
+           completed_at=now(),
+           claimed_by_agent_id=null
+      from mine m
+     where r.id=m.id
+    returning r.id
+  )
+  select count(*) into v_clips from finalized;
+
+  with mine as (
+    select e.id,e.attempts
+      from public.operations_incident_evidence e
+     where e.tenant_id=v_agent.tenant_id
+       and e.site_id=v_agent.site_id
+       and e.claimed_by_agent_id=v_agent.id
+       and e.status='processing'
+     for update
+  ), released as (
+    update public.operations_incident_evidence e
+       set status=case when m.attempts>=3 then 'failed' else 'pending' end,
+           claimed_by_agent_id=null,
+           claim_expires_at=null,
+           error_message=case
+             when m.attempts>=3
+             then 'The camera view was not captured after several attempts.'
+           end,
+           completed_at=case when m.attempts>=3 then now() end
+      from mine m
+     where e.id=m.id
+    returning e.status
+  )
+  select count(*) filter (where status='pending'),
+         count(*) filter (where status='failed')
+    into v_released,v_failed
+    from released;
+
+  return jsonb_build_object(
+    'ok',true,
+    'clips_failed',v_clips,
+    'stills_released',v_released,
+    'stills_failed',v_failed,
+    'server_time',now()
+  );
+end
+$function$;
+
+revoke all on function public.wl_agent_release_inflight_evidence(
+  uuid,text
+) from public,anon,authenticated,service_role;
+grant execute on function public.wl_agent_release_inflight_evidence(
+  uuid,text
+) to anon;
 
 -- ---------------------------------------------------------------------
 -- Analytics/config snapshot work includes recorder identity end-to-end.
