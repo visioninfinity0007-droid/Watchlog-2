@@ -34,7 +34,7 @@ from requests.auth import HTTPBasicAuth
 from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
-from drivers.dahua import DahuaDriver
+from drivers.dahua import DahuaDriver, moves_to_basic
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
@@ -81,7 +81,9 @@ def _request(driver: DahuaDriver, path: str, *, params=None, stream=False, timeo
     except requests.RequestException as error:
         raise NvrUnreachable(f"{url}: {explain(error)}") from error
 
-    if response.status_code == 401:
+    # Same rule as DahuaDriver._get: Basic only on a Basic-only challenge, never once the
+    # session is already Basic, so a Digest refusal never resends the password in the clear.
+    if moves_to_basic(driver.s, response):
         driver.s.auth = HTTPBasicAuth(driver.username, driver.password)
         # A refused streamed response (loadfile) holds its recorder session open until closed.
         try:

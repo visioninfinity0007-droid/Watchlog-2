@@ -131,9 +131,9 @@ Live events and recorder liveness:
   ISAPI calls, stills and alertStream) and the session keeps Digest. Dahua `_get` moves that
   recorder's session to Basic after a Basic-only challenge and keeps it there, because
   `snapshot.cgi` and the attach stream use the same session and a Basic-only unit must keep
-  serving both. Not yet changed: the Dahua archive reader (`dahua_archive._request`) and
-  `NativeDahuaDriver.get_clip` still switch the session to Basic on any 401, and the Hikvision
-  archive reader still keeps Basic after a Basic-only challenge.
+  serving both. The Dahua archive reader (`dahua_archive._request`) and
+  `NativeDahuaDriver.get_clip` use the same rule (`drivers.dahua.moves_to_basic`). Not yet
+  changed: the Hikvision archive reader still keeps Basic after a Basic-only challenge.
 
 Recovery:
 

@@ -20,7 +20,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 from .base import DriverError, Event, explain
-from .dahua import DahuaDriver
+from .dahua import DahuaDriver, moves_to_basic
 from .hikvision import HikvisionDriver
 
 _DAHUA_NATIVE_AI = {
@@ -130,7 +130,7 @@ class NativeDahuaDriver(DahuaDriver):
         }
         try:
             response=self.s.get(url,params=params,stream=True,timeout=(CLIP_CONNECT_TIMEOUT,CLIP_READ_TIMEOUT))
-            if response.status_code==401:
+            if moves_to_basic(self.s,response):
                 self.s.auth=HTTPBasicAuth(self.username,self.password)
                 response.close()
                 response=self.s.get(url,params=params,stream=True,timeout=(CLIP_CONNECT_TIMEOUT,CLIP_READ_TIMEOUT))
