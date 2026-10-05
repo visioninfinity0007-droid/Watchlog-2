@@ -58,6 +58,12 @@ STARTUP_DELAY_SECONDS = 30.0
 # Recorder unreachable / refusing: exponential back-off between reconnect attempts.
 BACKOFF_BASE_SECONDS = 60.0
 BACKOFF_MAX_SECONDS = 900.0
+# A refused login escalates on the collector's confirmed-auth schedule (core, 5/15/30 min),
+# entered at 15 min, so the stills never add more failed logins than the collector's own.
+AUTH_BACKOFF_SECONDS = tuple(s for s in core._AUTH_BACKOFF_SECONDS
+                             if s >= BACKOFF_MAX_SECONDS) or (BACKOFF_MAX_SECONDS,)
+# While an auth back-off runs, look this often for Setup rewriting the recorder credential.
+CREDENTIAL_CHECK_SECONDS = 5.0
 # Re-read the recorder's channel list on the open driver this often.
 REENUMERATE_SECONDS = 3600.0
 # Stop adding timed stills while this many rows wait to upload (a long cloud outage), so they
@@ -243,24 +249,35 @@ class Schedule:
 
 class Backoff:
     """Recorder-level back-off: doubles per consecutive failure, capped; an auth refusal
-    waits the maximum at once, so stills never add to a recorder lockout."""
+    waits at least the maximum and escalates (15 -> 30 min) like the collector's breaker, so
+    stills never add to a recorder lockout."""
 
     def __init__(self, base: float = BACKOFF_BASE_SECONDS, cap: float = BACKOFF_MAX_SECONDS,
                  rng: random.Random | None = None) -> None:
         self.base, self.cap = float(base), float(cap)
         self.rng = rng or random.Random()
         self.failures = 0
+        self.auth_failures = 0
+        self.auth = False
         self.until = 0.0
 
     def fail(self, now: float, *, auth: bool = False) -> float:
         self.failures += 1
-        delay = self.cap if auth else min(self.cap, self.base * (2 ** (self.failures - 1)))
+        self.auth = bool(auth)
+        if auth:
+            self.auth_failures += 1
+            step = AUTH_BACKOFF_SECONDS[min(self.auth_failures - 1, len(AUTH_BACKOFF_SECONDS) - 1)]
+            delay = max(self.cap, float(step))
+        else:
+            delay = min(self.cap, self.base * (2 ** (self.failures - 1)))
         delay *= 1.0 + self.rng.uniform(0.0, 0.1)
         self.until = now + delay
         return delay
 
     def reset(self) -> None:
         self.failures = 0
+        self.auth_failures = 0
+        self.auth = False
         self.until = 0.0
 
 
@@ -271,6 +288,17 @@ def _close(driver) -> None:
         driver.close()
     except Exception:                                       # noqa: BLE001
         pass
+
+
+def _reload_credential(cfg) -> None:
+    loader = getattr(cfg, "load_recorder_credential", None)
+    if not callable(loader):
+        return
+    try:
+        loader()
+    except (Exception, SystemExit) as error:                 # noqa: BLE001 — retry decides
+        core.log(f"periodic stills: recorder credential could not be reloaded "
+                 f"({type(error).__name__})")
 
 
 def _recorder_down(driver):
@@ -331,6 +359,8 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
     first_open = True
     restagger = True
     paused_logged = False
+    credential_gen = core._credential_generation()
+    next_credential_check = 0.0
     core.log(f"periodic stills: one still per configured camera every ~{cadence}s")
 
     try:
@@ -338,6 +368,17 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
             now = clock()
             try:
                 if now < backoff.until:
+                    if backoff.auth and now >= next_credential_check:
+                        # Setup fixed the password: retry now with it, not in 15-30 min.
+                        next_credential_check = now + CREDENTIAL_CHECK_SECONDS
+                        generation = core._credential_generation()
+                        if generation != credential_gen:
+                            credential_gen = generation
+                            core.log("periodic stills: recorder credential changed in Setup; "
+                                     "retrying now")
+                            _reload_credential(cfg)
+                            backoff.reset()
+                            continue
                     stop.wait(min(TICK_SECONDS, backoff.until - now))
                     continue
 
@@ -351,6 +392,7 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                                  f"{int(delay)}s ({nvr_health.redact(str(error))})")
                         continue
                     vendor = vendor_family(driver)
+                    credential_gen = core._credential_generation()
                     next_enumerate = 0.0
                     # Fresh connection (start, or after a back-off): spread the cameras over
                     # one cadence again instead of firing every overdue camera at once.

@@ -503,6 +503,46 @@ def test_snapshot_refused_and_recheck_refused_is_a_recorder_auth_back_off():
     assert run.driver.closed >= 1
 
 
+def test_auth_refusal_escalates_like_the_collector():
+    # PS-2: a wrong password must not cost the recorder more failed logins than the event
+    # collector's own 5/15/30-min breaker (about 6 in 2 h): 15 min, then 30 min thereafter.
+    clock = SimClock()
+    attempts = []
+
+    def opener(_cfg):
+        attempts.append(clock.t)
+        raise NvrAuthFailed("HTTP 401 — recorder rejected the username or password")
+
+    _run(2 * 3600, opener=opener, clock=clock)
+    gaps = [b - a for a, b in zip(attempts, attempts[1:])]
+    assert len(attempts) <= 5, gaps
+    assert 900 <= gaps[0] <= 990, gaps
+    assert all(1800 <= g <= 1980 for g in gaps[1:]), gaps
+
+
+def test_credential_change_in_setup_wakes_the_auth_back_off(monkeypatch):
+    # PS-2: when Setup rewrites the recorder credential the stills resume within seconds,
+    # with the new credential loaded, instead of waiting out the auth back-off.
+    clock = SimClock()
+    changed_at = clock.t + 120.0
+    monkeypatch.setattr(core, "_credential_generation",
+                        lambda: "gen-1" if clock.t >= changed_at else "gen-0")
+    attempts, reloads = [], []
+    driver = FakeDriver(clock)
+
+    def opener(_cfg):
+        attempts.append(clock.t)
+        if reloads:
+            return driver, None
+        raise NvrAuthFailed("HTTP 401 — recorder rejected the username or password")
+
+    cfg = _cfg(load_recorder_credential=lambda: reloads.append(clock.t))
+    run = _run(600, opener=opener, cfg=cfg, clock=clock, driver=driver)
+    assert len(reloads) == 1 and changed_at <= reloads[0] <= changed_at + 6, reloads
+    assert len(attempts) == 2 and attempts[1] <= changed_at + 6, attempts
+    assert run.spool.rows                                       # stills flow again
+
+
 # --- spool: survives an outage, uploads through the normal path ----------------------------
 
 def test_spool_round_trip_and_normal_upload(tmp_path):
