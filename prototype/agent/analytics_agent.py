@@ -942,6 +942,8 @@ _BOUND_RECORDER_FIELDS = (
     "nvr_url", "nvr_driver", "nvr_username", "nvr_password",
     "recorder_local_id", "recorder_cloud_id", "recorder_display_name",
     "recorder_state_dir", "spool_path", "health_store_path", "last_live_path",
+    # the credential generation the login above was loaded at (MNVR-012)
+    "credential_generation_seen",
 )
 
 

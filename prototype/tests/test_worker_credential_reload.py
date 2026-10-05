@@ -107,5 +107,23 @@ def test_recovery_worker_uses_a_login_replaced_after_start(monkeypatch, rotated)
     assert used == ["new-pw"]
 
 
+def test_the_adopted_single_recorder_config_keeps_its_login_generation():
+    """The singleton loop runs on the process config: it must carry the generation its
+    registry login was loaded at, or a rewrite before the first health cycle is missed."""
+    import analytics_agent
+
+    bound = SimpleNamespace(
+        nvr_url="http://recorder.invalid", nvr_driver="onvif", nvr_username="u",
+        nvr_password="p", recorder_local_id="local-a", recorder_cloud_id=A,
+        recorder_display_name="A", recorder_state_dir=Path("state"),
+        spool_path=Path("spool"), health_store_path=Path("health"),
+        last_live_path=Path("last_live"), credential_generation_seen="g-registry")
+    prepared = SimpleNamespace(context=SimpleNamespace(config=bound), channels=[],
+                               camera_mapping=None)
+    process_cfg = SimpleNamespace()
+    analytics_agent._adopt_single_recorder(process_cfg, prepared)
+    assert process_cfg.credential_generation_seen == "g-registry"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
