@@ -594,6 +594,10 @@ class SetupWindow(QMainWindow):
             self.login_next.setEnabled(True)
         elif self.stack.currentIndex() == 5:
             if self.installer_child:
+                # Unlike a returned failure, the timed-out finalize_install thread may
+                # still be writing credentials and the registry, and it cannot be
+                # stopped. A Retry would run a second one beside it; ending the
+                # installer-child process is the only clean stop.
                 self._terminal_installer_failure(message)
                 return
             self.progress_bar.setRange(0, 1)
@@ -617,9 +621,8 @@ class SetupWindow(QMainWindow):
             self._set_discovery_loading(False)
             QMessageBox.warning(self, "WatchLog Setup", message)
         elif self.stack.currentIndex() == 5:
-            if self.installer_child:
-                self._terminal_installer_failure(message)
-                return
+            # Retryable in installer-child mode too: the worker has returned. Only
+            # Exit/Cancel ends an installer child (non-zero; NSIS stops cleanly).
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)

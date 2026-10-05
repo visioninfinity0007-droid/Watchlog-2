@@ -285,3 +285,31 @@ def test_a_single_recorder_install_still_connects_with_a_blank_name(gui, tmp_pat
     assert started[0][2]["primary_display_name"] is None
     assert started[0][2]["additional_recorders"] is None
 
+
+def test_a_connect_failure_stays_retryable_in_installer_child_mode(gui, tmp_path):
+    window = _fresh_window(gui, tmp_path, installer_child=True)
+    window.go(5)
+
+    window._worker_error("WatchLog could not link this site's recorders. Please try again.")
+    _settle(gui, 1.7)
+
+    assert window.isVisible() and window.exit_code == 1
+    assert not window.retry_btn.isHidden()
+    assert not window.incomplete_bundle_btn.isHidden()
+    assert not window.incomplete_exit_btn.isHidden()
+    assert "could not link" in window.connect_error.text()
+
+    window.incomplete_exit_btn.clicked.emit()               # explicit Exit: NSIS stops
+    assert window.exit_code == 1 and not window.isVisible()
+
+
+def test_a_connect_watchdog_timeout_still_ends_an_installer_child(gui, tmp_path):
+    """The timed-out finalize thread cannot be stopped; only process exit stops it."""
+    window = _fresh_window(gui, tmp_path, installer_child=True)
+    window.go(5)
+    window._active_worker = 7
+
+    window._worker_timeout(7, "WatchLog could not finish the site connection.")
+    _settle(gui, 1.7)
+
+    assert window.exit_code == 2 and not window.isVisible()
