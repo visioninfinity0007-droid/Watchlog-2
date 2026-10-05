@@ -2426,6 +2426,17 @@ def cmd_probe(cfg: Config) -> None:
 LAST_LIVE_CHECKED = "last_live_checked"
 
 
+def _synced_inventory(driver) -> list:
+    """The recorder's cameras, listed for wl_sync_cameras. The numbering sent is pinned as the
+    recorder's camera identity for this process (ONVIF numbers cameras by GetProfiles position,
+    which a camera removed on the recorder would shift while the Agent runs)."""
+    chans = list(driver.list_channels())
+    pin = getattr(driver, "pin_inventory", None)
+    if callable(pin):
+        pin()
+    return chans
+
+
 def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> dict:
     """{recorder channel: cloud camera UUID} for opening and reading recovery intervals.
 
@@ -2443,7 +2454,8 @@ def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> di
     if not payload:
         driver, _info = open_driver(cfg)
         try:
-            payload = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+            payload = [{"channel": str(c.channel), "name": c.name}
+                       for c in _synced_inventory(driver)]
         finally:
             driver.close()
     if not payload:
@@ -2906,7 +2918,7 @@ def main() -> None:
         driver, device = open_driver(cfg)
         try:
             channels = [{"channel": c.channel, "name": c.name}
-                        for c in driver.list_channels()]
+                        for c in _synced_inventory(driver)]
             # Read analytics while the driver is open. Best-effort and
             # read-only; never changes a setting on the device.
             try:
