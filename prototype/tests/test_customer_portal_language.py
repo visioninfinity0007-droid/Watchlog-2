@@ -89,6 +89,85 @@ FORBIDDEN_PRODUCT_LANGUAGE = [
 ]
 
 
+# The governed customer vocabulary (AGENTS.md section 2): every pattern in it is banned from customer copy
+# on the portal too, in addition to the lists above. Parsed without a YAML dependency: each forbidden
+# entry is "- id: ..." followed by "pattern: '<single-quoted regex>'".
+VOCABULARY = ROOT / "ai-harness/core/customer-vocabulary.yaml"
+
+# Strings that are not customer copy although they contain a vocabulary word, each with its reason.
+VOCABULARY_EXEMPT = {
+    # Instruction to the report writer listing the internal terms it must NOT use; never rendered.
+    "portal/app/reports/use-report.js": ["Do not use internal terms such as canonical dataset"],
+    # Error-message matcher for a missing server function; never rendered.
+    "portal/app/control-room/legacy.js": ["|schema cache|function"],
+}
+
+
+def vocabulary_patterns():
+    text = VOCABULARY.read_text(encoding="utf-8")
+    forbidden = text[text.index("\nforbidden:"):]
+    ids = re.findall(r"(?m)^\s*- id: (\S+)\s*$", forbidden)
+    pats = [p.replace("''", "'") for p in re.findall(r"(?m)^\s*pattern: '((?:[^']|'')*)'\s*$", forbidden)]
+    if not ids or len(ids) != len(pats):
+        raise SystemExit(f"customer vocabulary: could not read every forbidden pattern ({len(ids)} ids, {len(pats)} patterns)")
+    return [(i, re.compile(p, re.I)) for i, p in zip(ids, pats)]
+
+
+def _js_strings(src):
+    """String literals of comment-stripped JS: quoted strings, and template literals split at ${...}."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c in "\"'":
+            j = i + 1
+            while j < n and src[j] != c and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            out.append(src[i + 1:j])
+            i = j + 1
+        elif c == "`":
+            j, part = i + 1, []
+            while j < n and src[j] != "`":
+                if src[j] == "\\":
+                    part.append(src[j:j + 2])
+                    j += 2
+                elif src.startswith("${", j):
+                    out.append("".join(part))
+                    part, depth, j = [], 1, j + 2
+                    while j < n and depth:
+                        depth += {"{": 1, "}": -1}.get(src[j], 0)
+                        j += 1
+                else:
+                    part.append(src[j])
+                    j += 1
+            out.append("".join(part))
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+def customer_strings(src):
+    """Text a customer can see: string literals that read as words (at least one space and a letter;
+    identifiers, RPC names, paths and keys have no space) and JSX text between tags."""
+    texts = [t for t in _js_strings(src) if " " in t.strip() and re.search(r"[A-Za-z]", t)]
+    # JSX text: after a tag's ">" (not an arrow "=>" or "->"), with no code punctuation in it.
+    texts += [m.group(1) for m in re.finditer(r"(?<![=\-])>([^<>{}=;]*[A-Za-z][^<>{}=;]*)<", src)]
+    return texts
+
+
+def vocabulary_problems(rel, src, patterns):
+    exempt = VOCABULARY_EXEMPT.get(rel, [])
+    problems = []
+    for text in customer_strings(src):
+        if any(e in text for e in exempt):
+            continue
+        for rule, rx in patterns:
+            m = rx.search(text)
+            if m:
+                problems.append(f"{rel}: customer vocabulary rule {rule!r} matched {m.group(0)!r} in {text.strip()[:80]!r}")
+    return problems
+
+
 def strip_comments(src):
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     src = re.sub(r"(?m)//.*$", "", src)
@@ -97,6 +176,13 @@ def strip_comments(src):
 
 def main():
     problems = []
+    patterns = vocabulary_patterns()
+    # Self-check: copy is caught, code identifiers and exempt strings are not.
+    probe = 'const a=rpc("wl_portal_snapshot");<div>{shot?"Captured":"Still image is shown on request."}</div><p>Recorder offline</p>'
+    if not vocabulary_problems("probe.js", probe, patterns) or len(vocabulary_problems("probe.js", probe, patterns)) != 1:
+        problems.append("customer vocabulary check must flag customer copy and ignore code identifiers")
+    if vocabulary_problems("probe.js", "<p>Recorder offline</p>", patterns):
+        problems.append("customer vocabulary check flags plain customer copy")
     corpus = _customer_corpus()
     for rel, text in corpus.items():
         # Customer-facing language only: developer comments are stripped in the production build and are
@@ -108,6 +194,11 @@ def main():
         for phrase in FORBIDDEN_PRODUCT_LANGUAGE:
             if phrase in stripped:
                 problems.append(f"{rel}: engineering/release language in customer copy: {phrase!r}")
+        problems.extend(vocabulary_problems(rel, stripped, patterns))
+    for rel, needles in VOCABULARY_EXEMPT.items():
+        for needle in needles:
+            if needle not in corpus.get(rel, ""):
+                problems.append(f"{rel}: stale customer vocabulary exemption: {needle!r}")
 
     # Required customer product language, read from the surface where the AI-first UX actually renders
     # it. Wording that evolved with the AI-first product is asserted in its current form; the intent

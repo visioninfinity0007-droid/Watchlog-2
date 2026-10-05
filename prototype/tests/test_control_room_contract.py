@@ -27,7 +27,7 @@ def main():
     require(PAGE, "continuous cloud video", "continuous-video boundary missing")
     require(PAGE, "people presence, not sales", "analytics-not-sales truth missing")
     require(PAGE, "Tiles are not live video.", "layout still/video distinction missing")
-    require(PAGE, "Still image is shown only after an explicit request.", "explicit still-request semantics missing")
+    require(PAGE, "A camera view is shown only after an explicit request.", "explicit still-request semantics missing")
     # Engineering / pilot / vertical framing must not return to customer copy.
     for banned in ("Control Room Pilot", "Pilot boundary", "pilot scope", "QSR", "surveillance wall"):
         if banned in PAGE:

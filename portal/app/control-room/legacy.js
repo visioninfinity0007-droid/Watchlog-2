@@ -644,7 +644,7 @@ export default function ControlRoom() {
                         <Status tone={stateTone}>{stateWord}</Status>
                       </div>
                       <div className={styles.tileMeta}>{camera.health?.last_activity_at ? `Last activity ${ago(camera.health.last_activity_at)}` : "No camera activity time yet"}{camera.recentCount ? ` · ${camera.recentCount} recent event${camera.recentCount === 1 ? "" : "s"}` : ""}</div>
-                      <div className={styles.tileMeta}>{shot?.capturedAt ? `Requested view captured ${ago(shot.capturedAt)}` : "Still image is shown only after an explicit request."}</div>
+                      <div className={styles.tileMeta}>{shot?.capturedAt ? `Requested view captured ${ago(shot.capturedAt)}` : "A camera view is shown only after an explicit request."}</div>
                       <div className={styles.tileAct}>
                         <select aria-label={`Camera for slot ${index + 1}`} value={cameraId} disabled={!layouts.can_manage} onChange={(event) => setLayoutSlot(index, event.target.value)}>
                           <option value="">Empty slot</option>
