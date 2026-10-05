@@ -47,8 +47,10 @@
 --                     another unit is downgraded (0149). When the identity
 --                     comes only from the current site Agent (the recorder
 --                     row reports no vendor/model) it is the model profile
---                     (wl_recorder_profile rows, no evidence_scope), which
---                     no reader may present as verified on this recorder.
+--                     with model-only FIELD_VERIFIED capped
+--                     (wl_recorder_profile_model_scoped, 0155, evidence_scope
+--                     'model'), so no reader can present another unit's field
+--                     evidence as verified on this recorder.
 --                     [] when identity is unknown; null on a multi-recorder
 --                     site.
 --   capability_known  bool   false on a multi-recorder site
@@ -175,7 +177,10 @@ begin
       -- FIELD_VERIFIED row was proven on THIS recorder.
       v_profile := coalesce(public.wl_recorder_profile_for_recorder(v_single.id),'[]'::jsonb);
     elsif v_identified then
-      v_profile := coalesce(public.wl_recorder_profile(v_vendor,v_model),'[]'::jsonb);
+      -- Identity known only from the Agent's report: the model profile with any
+      -- model-only FIELD_VERIFIED capped exactly as the recorder-scoped helper caps
+      -- it (0155 wl_recorder_profile_model_scoped, MNVR-049).
+      v_profile := coalesce(public.wl_recorder_profile_model_scoped(v_vendor,v_model),'[]'::jsonb);
     else
       v_profile := '[]'::jsonb;
     end if;
@@ -276,7 +281,7 @@ begin
         'capability_known',case
           when v_recorder_count=1 then jsonb_array_length(v_profile)>0
           when r.vendor is not null and r.model is not null then jsonb_array_length(
-            coalesce(public.wl_recorder_profile(r.vendor,r.model),'[]'::jsonb)
+            coalesce(public.wl_recorder_profile_for_recorder(r.id),'[]'::jsonb)
           )>0
           else false
         end,

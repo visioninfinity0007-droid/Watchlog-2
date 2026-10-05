@@ -200,12 +200,16 @@ def run() -> int:
                 (tb, sb),
             )
             diag_b = as_auth(ub, "select wl_my_site_diagnosis(%s)", sb)[0]
-            step(diag_b["recorder"]["identified"] is True
-                 and diag_b.get("capabilities") == model_rows,
-                 "an Agent-only identity keeps the model profile",
+            caps_b = diag_b.get("capabilities") or []
+            capped = cur.execute("select wl_recorder_profile_model_scoped(%s,%s)",
+                                 (VENDOR, MODEL)).fetchone()[0]
+            step(diag_b["recorder"]["identified"] is True and caps_b == capped
+                 and [r["capability"] for r in caps_b] == [r["capability"] for r in model_rows],
+                 "an Agent-only identity gets the model profile with model-only FIELD_VERIFIED capped (MNVR-049)",
                  json.dumps(diag_b.get("recorder"), default=str))
-            step(all("evidence_scope" not in r for r in diag_b.get("capabilities") or []),
-                 "the model profile never claims recorder scope")
+            step(all(r.get("evidence_scope") == "model" for r in caps_b)
+                 and not any(r.get("evidence_class") == "FIELD_VERIFIED" for r in caps_b),
+                 "the model profile never claims recorder scope or another unit's field evidence")
 
             # ----------------------------------------------------------
             # Faults name their camera and recorder (two recorders, both
