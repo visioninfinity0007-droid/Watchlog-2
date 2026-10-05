@@ -98,11 +98,24 @@ def test_recovery_worker_uses_a_login_replaced_after_start(monkeypatch, rotated)
 
     monkeypatch.setattr(core, "open_archive_driver", open_archive)
     spool = SimpleNamespace(pending_recovery_gap=lambda: None, count=lambda: 0)
+
+    class ClaimingCloud(Cloud):
+        # Since 5.0.28 the archive is opened only for a claimed interval.
+        def call(self, name, **kw):
+            if name == "wl_agent_claim_recorder_recovery":
+                return [{"id": "iv-1", "started_at": "2026-10-04T10:00:00Z",
+                         "ended_at": "2026-10-04T11:00:00Z", "cameras": ["cam-1"],
+                         "channels": ["1"], "status": "in_progress", "checkpoint": {},
+                         "attempts": 1}]
+            return {}
+
     cfg = _cfg(recorder_cloud_id=A, recovery_enabled=True, recovery_seconds=0.01,
                recovery_ai_enabled=False, last_live_path=Path("unused-last-live.json"),
-               recovery_threshold_seconds=180)
+               recovery_threshold_seconds=180, recovery_chunk_seconds=3600,
+               recovery_throttle_seconds=0.0, recovery_live_backlog=500,
+               recovery_ai_max_frames=40, recovery_snapshot_seconds=300)
     channels = [{"channel": "1", "camera_id": "cam-1"}]
-    core.recovery_worker(cfg, {"agent_id": "agent", "agent_key": "key"}, Cloud(), stop,
+    core.recovery_worker(cfg, {"agent_id": "agent", "agent_key": "key"}, ClaimingCloud(), stop,
                          spool, channels, {})
     assert used == ["new-pw"]
 
