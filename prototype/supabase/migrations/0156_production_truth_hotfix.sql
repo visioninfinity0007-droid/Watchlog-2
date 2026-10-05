@@ -25,6 +25,11 @@
 --    poll). wl_expire_stale_snapshot_requests closes such requests after a bounded
 --    window and records expired_at, so an expired request is never read as a
 --    delivered image. Server-side only, in the same style as 0142_stale.
+--    The manual window is 60 minutes (the clamp floor), not a day: the portal waits
+--    15 s for a manual image, and two manual requests for cameras that never return
+--    one would otherwise hold both Agent slots, so every newer restaurant request at
+--    that site would expire unserved, for the whole window. A late upload still
+--    stores the image. Fair ordering of the poll itself is not changed here.
 --
 -- 4. wl_vision_claim_snapshots_v2: production's filter excludes periodic stills of
 --    event-sampled restaurant cameras with `not (rp.sampling_mode='event' and ...)`.
@@ -90,7 +95,7 @@ comment on column public.camera_snapshot_requests.expired_at is
   'WatchLog 0156: set (with completed_at) when the request was closed because no Agent delivered an image within the expiry window. Null for delivered requests.';
 
 create or replace function public.wl_expire_stale_snapshot_requests(
-  p_manual_max_age_minutes integer default 1440,
+  p_manual_max_age_minutes integer default 60,
   p_analytics_max_age_minutes integer default 30
 ) returns integer
 language plpgsql
@@ -98,7 +103,7 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_manual integer := least(greatest(coalesce(p_manual_max_age_minutes, 1440), 60), 10080);
+  v_manual integer := least(greatest(coalesce(p_manual_max_age_minutes, 60), 60), 10080);
   v_analytics integer := least(greatest(coalesce(p_analytics_max_age_minutes, 30), 5), 1440);
   v_now timestamptz := now();
   v_count integer := 0;
@@ -127,7 +132,7 @@ end
 $$;
 
 comment on function public.wl_expire_stale_snapshot_requests(integer, integer) is
-  'WatchLog 0156: close snapshot requests no Agent completed (manual after 24h, restaurant analytics after 30 min by default) and mark them expired';
+  'WatchLog 0156: close snapshot requests no Agent completed (manual after 60 min, restaurant analytics after 30 min by default) and mark them expired';
 
 revoke all on function public.wl_expire_stale_snapshot_requests(integer, integer)
   from public, anon, authenticated;
@@ -148,7 +153,7 @@ begin
     perform cron.schedule(
       'watchlog-expire-stale-snapshot-requests',
       '*/5 * * * *',
-      'select public.wl_expire_stale_snapshot_requests(1440, 30)'
+      'select public.wl_expire_stale_snapshot_requests(60, 30)'
     );
   end if;
 exception when others then
