@@ -46,6 +46,8 @@ jobs:
         run: python tools/lint_migrations.py
       - name: Stale incident clip recovery contract (0142, applied in production)
         run: python -m pytest prototype/tests/test_incident_clip_stale_recovery.py -q
+      - name: Stale incident still recovery contract — server-side still lease schedule (0150, MNVR-033)
+        run: python -m pytest prototype/tests/test_incident_still_stale_recovery.py -q
       - name: Health Foundation schema/authz contract (Phase A)
         run: python prototype/tests/test_health_foundation_contract.py
       - name: Agent watchdog + coverage contract (Phase A)

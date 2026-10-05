@@ -15,7 +15,9 @@ Rolled back after execution. Proves:
 - a clip or still that cannot be routed (no camera, or a blank channel) is
   failed at claim time instead of being skipped or handed out;
 - with no Agent polling at all, the server-side still finalizer (0142 style,
-  service_role only, scheduled like 0142) returns a lapsed still to pending
+  service_role only; its pg_cron job is checked here when pg_cron is
+  installed, and its schedule source statically by
+  test_incident_still_stale_recovery.py) returns a lapsed still to pending
   within its budget, fails a spent one, expires in-flight stills past their
   expiry, and leaves live and ready stills alone;
 - the release RPC is Agent-facing only.
@@ -542,22 +544,14 @@ def run() -> int:
                     "where jobname='watchlog-finalize-stale-incident-stills'"
                 ).fetchone()
                 step(
-                    job is not None and "wl_finalize_stale_incident_stills" in job[1],
+                    job is not None and job[0] == "*/2 * * * *"
+                    and "wl_finalize_stale_incident_stills" in job[1],
                     "the still finalizer is scheduled with pg_cron", str(job),
                 )
             else:
-                source = (ROOT / "supabase" / "migrations"
-                          / "0150_multi_recorder_camera_job_routing.sql").read_text(
-                              encoding="utf-8")
-                step(
-                    re.search(
-                        r"cron\.schedule\(\s*'watchlog-finalize-stale-incident-stills',"
-                        r"\s*'\*/2 \* \* \* \*',\s*"
-                        r"'select public\.wl_finalize_stale_incident_stills\(\)'",
-                        source,
-                    ) is not None,
-                    "the still finalizer is scheduled like 0142 (no pg_cron here: source check)",
-                )
+                # The schedule source is a static contract
+                # (test_incident_still_stale_recovery.py, backend job).
+                print("  info  pg_cron is not installed here; schedule not checked")
 
             # ----------------------------------------------------------
             # ACL: the release RPC is Agent-facing only.
