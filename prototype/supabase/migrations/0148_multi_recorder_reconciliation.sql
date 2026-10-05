@@ -739,16 +739,18 @@ begin
       from a_sto
       order by recorder_id,effective_at desc,seq desc nulls last,ingest desc
     )
+    -- updated_at stays the connectivity report's clock (as in 0147): a
+    -- replayed storage transition must not make stale reachability look
+    -- fresh. A row created here has no reachability, so it reads unknown.
     insert into public.recorder_health as rh(
       recorder_id,agent_id,tenant_id,site_id,
       storage_state,storage_reason_code,
-      sto_observed_at,sto_observed_epoch,sto_observed_seq,sto_observed_ingest,
-      updated_at
+      sto_observed_at,sto_observed_epoch,sto_observed_seq,sto_observed_ingest
     )
     select
       l.recorder_id,v_agent.id,v_agent.tenant_id,v_agent.site_id,
       l.to_state,l.reason_code,
-      l.effective_at,l.store_epoch,l.seq,l.ingest,v_now
+      l.effective_at,l.store_epoch,l.seq,l.ingest
     from l_sto l
     on conflict (recorder_id,agent_id) do update
        set storage_state=excluded.storage_state,
@@ -756,8 +758,7 @@ begin
            sto_observed_at=excluded.sto_observed_at,
            sto_observed_epoch=excluded.sto_observed_epoch,
            sto_observed_seq=excluded.sto_observed_seq,
-           sto_observed_ingest=excluded.sto_observed_ingest,
-           updated_at=v_now
+           sto_observed_ingest=excluded.sto_observed_ingest
      where (
        excluded.sto_observed_at>coalesce(rh.sto_observed_at,'-infinity'::timestamptz)
        or (
@@ -853,16 +854,18 @@ begin
       order by effective_at desc,seq desc nulls last,ingest desc
       limit 1
     )
+    -- updated_at stays the connectivity report's clock (as in 0147): a
+    -- replayed storage transition must not make stale reachability look
+    -- fresh. A row created here has no reachability, so it reads unknown.
     insert into public.recorder_health as rh(
       recorder_id,agent_id,tenant_id,site_id,
       storage_state,storage_reason_code,
-      sto_observed_at,sto_observed_epoch,sto_observed_seq,sto_observed_ingest,
-      updated_at
+      sto_observed_at,sto_observed_epoch,sto_observed_seq,sto_observed_ingest
     )
     select
       v_legacy_recorder_id,v_agent.id,v_agent.tenant_id,v_agent.site_id,
       l.to_state,l.reason_code,
-      l.effective_at,l.store_epoch,l.seq,l.ingest,v_now
+      l.effective_at,l.store_epoch,l.seq,l.ingest
     from l_sto l
     where v_legacy_recorder_id is not null
     on conflict (recorder_id,agent_id) do update
@@ -871,8 +874,7 @@ begin
            sto_observed_at=excluded.sto_observed_at,
            sto_observed_epoch=excluded.sto_observed_epoch,
            sto_observed_seq=excluded.sto_observed_seq,
-           sto_observed_ingest=excluded.sto_observed_ingest,
-           updated_at=v_now
+           sto_observed_ingest=excluded.sto_observed_ingest
      where (
        excluded.sto_observed_at>coalesce(rh.sto_observed_at,'-infinity'::timestamptz)
        or (

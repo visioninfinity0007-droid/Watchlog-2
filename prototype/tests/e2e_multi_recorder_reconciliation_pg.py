@@ -468,6 +468,57 @@ def run() -> int:
                 msg,
             )
 
+            # recorder_health.updated_at is the connectivity report's clock: a
+            # replayed storage transition must not make a 2-hour-old
+            # reachable=true row read as freshly checked (owner card, coverage).
+            cur.execute(
+                """update recorder_health
+                      set nvr_reachable=true,nvr_auth_ok=true,
+                          updated_at=now()-interval '2 hours'
+                    where recorder_id=%s and agent_id=%s""",
+                (rec_b, agent_a),
+            )
+
+            def rec_b_clock():
+                at = cur.execute(
+                    "select updated_at from recorder_health where recorder_id=%s and agent_id=%s",
+                    (rec_b, agent_a),
+                ).fetchone()[0]
+                card = [r for r in as_auth(ua, "select wl_my_site_recorders(%s)", sa)[0]["recorders"]
+                        if str(r.get("id") or r.get("recorder_id")) == str(rec_b)]
+                return at, (card[0]["state"] if card else None)
+
+            stale_at, stale_state = rec_b_clock()
+            replay = as_anon(
+                "select wl_reconcile_recording_storage(%s,%s,%s::jsonb,300)",
+                agent_a, key_a,
+                json.dumps([{
+                    "id": f"{agent_a}:{rs_epoch}:5",
+                    "store_epoch": rs_epoch,
+                    "seq": 5,
+                    "recorder_id": str(rec_b),
+                    "layer": "nvr_storage",
+                    "entity": "nvr",
+                    "from": "fault",
+                    "to": "ok",
+                    "reason": "ok",
+                    "source": "probe",
+                    "device_ts": "2026-10-02T13:10:04Z",
+                }]),
+            )[0]
+            after_at, after_state = rec_b_clock()
+            b_storage = cur.execute(
+                "select storage_state from recorder_health where recorder_id=%s and agent_id=%s",
+                (rec_b, agent_a),
+            ).fetchone()[0]
+            step(
+                replay["transitions_applied"] == 1 and b_storage == "ok"
+                and stale_state == "unknown" and after_state == "unknown"
+                and after_at == stale_at,
+                "a storage-only replay advances storage but leaves stale reachability unknown",
+                str((stale_state, after_state, stale_at, after_at, b_storage)),
+            )
+
             # --------------------------------------------------------------
             # Tenant B: foreign recorder ID rejected per row.
             # --------------------------------------------------------------
@@ -632,6 +683,28 @@ def run() -> int:
                 "one-recorder site: storage recovery is reflected and an older replayed "
                 "fault does not regress it",
                 str((rh_state, nvr_state, owner)),
+            )
+
+            cur.execute(
+                """update recorder_health set updated_at=now()-interval '2 hours'
+                    where recorder_id=%s and agent_id=%s""", (rec_c, agent_b),
+            )
+            aged_at = cur.execute(
+                "select updated_at from recorder_health where recorder_id=%s and agent_id=%s",
+                (rec_c, agent_b),
+            ).fetchone()[0]
+            legacy_storage(7, "fault", "disk_error", "2026-10-02T14:00:05Z")
+            rh_state, owner = singleton_storage()
+            kept_at = cur.execute(
+                "select updated_at from recorder_health where recorder_id=%s and agent_id=%s",
+                (rec_c, agent_b),
+            ).fetchone()[0]
+            step(
+                rh_state == ("fault", "disk_error") and kept_at == aged_at
+                and owner == [("unknown", None)],
+                "one-recorder site: a legacy storage replay does not refresh stale "
+                "recorder connectivity",
+                str((rh_state, owner, aged_at, kept_at)),
             )
 
             # Exact execute ACLs remain the deployed surface.
