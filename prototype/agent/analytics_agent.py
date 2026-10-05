@@ -25,6 +25,7 @@ from PIL import Image
 
 import analytics
 import analytics_setup
+import credential_store
 import watchlog_agent as core
 import recorder_runtime
 import recorder_registry
@@ -34,12 +35,16 @@ import multi_recorder_fanout
 from action_runtime import ActionRuntime
 from archive_runtime import ArchiveRuntime
 from drivers import DriverError
+from drivers.base import NvrAuthFailed
 from lease_client import LeaseClient
 from runtime import AgentRuntime
 from spool import Spool
 
 from wl_version import VERSION as AGENT_VERSION  # single source of truth (was a stale 0.3.0 that overrode core)
 ANALYTICS_UPLOAD_BATCH = 500
+# Per-recorder sampler backoff after a recorder could not be opened or a sample failed
+# (MNVR-037); the last value repeats. A refused login uses the Agent's auth breaker.
+SAMPLER_RETRY_SECONDS = (15, 30, 60, 120, 300)
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
@@ -279,6 +284,165 @@ def _open_analytics_driver(cfg):
     return driver
 
 
+def _is_auth_rejection(error: Exception) -> bool:
+    return isinstance(error, NvrAuthFailed) or core._is_auth_failure(error)
+
+
+def _sampler_credential_generation(cfg, recorder_id):
+    """Generation token of the login the sampler uses for ``recorder_id`` (None if unknown)."""
+    try:
+        if recorder_id:
+            for row in recorder_registry.recorders():
+                if str(row.get("cloud_recorder_id") or "") == str(recorder_id):
+                    return credential_store.recorder_credential_generation(row["local_id"])
+            return None
+        return core._credential_generation_for_cfg(cfg)
+    except Exception:  # noqa: BLE001 — an unknown generation never wakes the breaker
+        return None
+
+
+class _SamplerDrivers:
+    """The analytics sampler's recorder transports, one per recorder (MNVR-037).
+
+    A recorder is opened on its own short-lived thread, never on the caller's: the caller
+    is the thread that refreshes the site's single-authority lease, and one recorder's
+    connect timeouts must not let that lease lapse. While a recorder is opening or backing
+    off, get() returns None and that sample is skipped. A failed open or sample closes the
+    transport and backs that recorder off (SAMPLER_RETRY_SECONDS); a refused login opens the
+    auth breaker (5, 15, 30 min) until the credential file changes. Other recorders are
+    unaffected."""
+
+    def __init__(self, opener, generation, clock=time.monotonic, log=None):
+        self._opener = opener            # recorder_id -> open transport (may block)
+        self._generation = generation    # recorder_id -> credential generation token
+        self._clock = clock
+        self._log = log or (lambda _msg: None)
+        self._lock = threading.Lock()
+        self._drivers: dict = {}
+        self._opening: set = set()
+        self._failures: dict = {}
+        self._auth_failures: dict = {}
+        self._auth_generation: dict = {}
+        self._retry_at: dict = {}
+        self._epoch = 0                  # bumped by close_all(); a stale open is discarded
+
+    def opening(self, key) -> bool:
+        with self._lock:
+            return key in self._opening
+
+    def retry_at(self, key):
+        with self._lock:
+            return self._retry_at.get(key)
+
+    def _safe_generation(self, recorder_id):
+        try:
+            return self._generation(recorder_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def get(self, key, recorder_id):
+        """The open transport for this recorder, or None (opening or backing off)."""
+        with self._lock:
+            if key in self._drivers or key in self._opening:
+                return self._drivers.get(key)
+            refused_under = self._auth_generation.get(key, False)
+        repaired = False
+        if refused_under is not False:
+            current = self._safe_generation(recorder_id)
+            repaired = current is not None and current != refused_under
+        with self._lock:
+            if key in self._drivers or key in self._opening:
+                return self._drivers.get(key)
+            if repaired:
+                # Setup replaced the refused login: reset the breaker and retry at once.
+                self._auth_generation.pop(key, None)
+                self._auth_failures.pop(key, None)
+                self._retry_at.pop(key, None)
+            retry = self._retry_at.get(key)
+            if retry is not None and self._clock() < retry:
+                return None
+            self._opening.add(key)
+            epoch = self._epoch
+        threading.Thread(target=self._open, args=(key, recorder_id, epoch), daemon=True,
+                         name=f"sampler-open-{str(key)[:8]}").start()
+        return None
+
+    def _open(self, key, recorder_id, epoch) -> None:
+        driver = error = None
+        try:
+            driver = self._opener(recorder_id)
+        except Exception as exc:  # noqa: BLE001 — recorder-local; backed off below
+            error = exc
+        stale = False
+        with self._lock:
+            self._opening.discard(key)
+            stale = epoch != self._epoch
+            if driver is not None and not stale:
+                self._drivers[key] = driver
+                self._retry_at.pop(key, None)
+        if driver is not None and stale:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if error is not None:
+            delay = self.failed(key, error, recorder_id)
+            self._log(f"analytics: sampler recorder={recorder_id or 'legacy'} unavailable: "
+                      f"{type(error).__name__}: {str(error)[:140]}; next try in {int(delay)}s")
+
+    def failed(self, key, error, recorder_id=None) -> float:
+        """Close this recorder's transport and back it off. Returns the delay in seconds."""
+        auth = _is_auth_rejection(error)
+        refused_under = self._safe_generation(recorder_id) if auth else None
+        with self._lock:
+            driver = self._drivers.pop(key, None)
+            if auth:
+                count = self._auth_failures.get(key, 0) + 1
+                self._auth_failures[key] = count
+                self._auth_generation[key] = refused_under
+                schedule = core._AUTH_BACKOFF_SECONDS
+            else:
+                count = self._failures.get(key, 0) + 1
+                self._failures[key] = count
+                schedule = SAMPLER_RETRY_SECONDS
+            delay = float(schedule[min(count - 1, len(schedule) - 1)])
+            self._retry_at[key] = self._clock() + delay
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return delay
+
+    def succeeded(self, key) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+            self._auth_failures.pop(key, None)
+            self._auth_generation.pop(key, None)
+
+    def close_all(self) -> None:
+        """Close every transport; an open still running is discarded when it finishes."""
+        with self._lock:
+            self._epoch += 1
+            drivers = list(self._drivers.values())
+            self._drivers.clear()
+        for driver in drivers:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _snapshot_requests_worker(cfg, state, requests_list) -> None:
+    """Serve configuration stills off the lease thread (they open recorders, MNVR-037)."""
+    try:
+        _service_snapshot_requests(core.Cloud(cfg.supabase_url, cfg.publishable_key),
+                                   state, cfg, None, requests_list)
+    except Exception as error:  # noqa: BLE001 — never kill the thread silently
+        core.log(f"analytics: configuration stills failed: {type(error).__name__}: "
+                 f"{str(error)[:140]}")
+
+
 def _send_bootstrap_once(cloud, state, cfg):
     """Send site/camera classifications captured by setup exactly once."""
     if cfg.analytics_bootstrap_marker.exists():
@@ -413,7 +577,12 @@ def analytics_worker(cfg: Config, state: dict, detector,
     if cached.get("config"):
         core.log(f"analytics: loaded cached config v{version}")
 
-    drivers = {}
+    drivers = _SamplerDrivers(
+        lambda recorder_id: _open_analytics_driver(
+            recorder_runtime.config_for_cloud_recorder(cfg, recorder_id)),
+        generation=lambda recorder_id: _sampler_credential_generation(cfg, recorder_id),
+        log=core.log)
+    snapshot_thread = None
     next_config = 0.0
     next_upload = 0.0
     next_status = 0.0
@@ -459,20 +628,20 @@ def analytics_worker(cfg: Config, state: dict, detector,
                         sampler.reset()
                         # Config changes may add/move cameras across recorders. Close
                         # cached transports so every next sample resolves fresh identity.
-                        for _drv in list(drivers.values()):
-                            try:
-                                _drv.close()
-                            except Exception:
-                                pass
-                        drivers.clear()
+                        drivers.close_all()
                         core.log(f"analytics: config updated to v{version}; "
                                  f"{mux.camera_count} camera(s) active")
                     snapshot_requests = payload.get("snapshot_requests") or []
-                    if snapshot_requests:
+                    if snapshot_requests and (snapshot_thread is None
+                                              or not snapshot_thread.is_alive()):
                         # Each request resolves its own recorder. A dead primary
-                        # recorder must not block a healthy secondary-recorder snapshot.
-                        _service_snapshot_requests(
-                            cloud, state, cfg, None, snapshot_requests)
+                        # recorder must not block a healthy secondary-recorder snapshot,
+                        # and opening recorders never delays this lease thread.
+                        snapshot_thread = threading.Thread(
+                            target=_snapshot_requests_worker,
+                            args=(cfg, state, list(snapshot_requests)),
+                            daemon=True, name="analytics-config-stills")
+                        snapshot_thread.start()
                 except (RuntimeError, requests.RequestException, DriverError) as error:
                     core.log("analytics: config poll failed; cached rules remain active: "
                              + str(error).splitlines()[0][:180])
@@ -505,14 +674,11 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     recorder_id, channel = mux.resolve_target(target)
                     driver_key = recorder_id or "__legacy__"
                     try:
-                        driver = drivers.get(driver_key)
-                        if driver is None:
-                            job_cfg = recorder_runtime.config_for_cloud_recorder(
-                                cfg, recorder_id
-                            )
-                            driver = _open_analytics_driver(job_cfg)
-                            drivers[driver_key] = driver
-                        raw = driver.get_snapshot(channel)
+                        # None while this recorder is opening or backing off: skip it.
+                        driver = drivers.get(driver_key, recorder_id)
+                        raw = driver.get_snapshot(channel) if driver is not None else None
+                        if driver is not None:
+                            drivers.succeeded(driver_key)
                         if raw:
                             found = detector.detect(raw)
                             if found is not None:
@@ -532,14 +698,10 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                 counters["last_sample_at"] = core.iso(when)
                     except (DriverError, requests.RequestException) as error:
                         counters["sample_errors"] += 1
+                        delay = drivers.failed(driver_key, error, recorder_id)
                         core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
-                                 f"ch{channel} failed: {str(error)[:140]}")
-                        driver = drivers.pop(driver_key, None)
-                        if driver is not None:
-                            try:
-                                driver.close()
-                            except Exception:
-                                pass
+                                 f"ch{channel} failed: {str(error)[:140]}; "
+                                 f"next try in {int(delay)}s")
                     except Exception as error:
                         counters["sample_errors"] += 1
                         core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
@@ -578,12 +740,7 @@ def analytics_worker(cfg: Config, state: dict, detector,
 
             stop.wait(0.1)
     finally:
-        for driver in list(drivers.values()):
-            try:
-                driver.close()
-            except Exception:
-                pass
-        drivers.clear()
+        drivers.close_all()
         try:
             stopped = _status_payload(version, sampler, mux.sample_plan(),
                                       spool, counters, detector)
