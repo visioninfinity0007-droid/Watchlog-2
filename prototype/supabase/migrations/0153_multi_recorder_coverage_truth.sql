@@ -272,6 +272,14 @@ $$;
 
 
 -- Internal recorder/camera coverage read model.
+--
+-- Recovered time is camera-scoped (MNVR-045): a 'recovered' recovery interval
+-- restores only the cameras listed in recovery_intervals.cameras, never every
+-- camera on that recorder. An interval that names no camera restores nothing.
+-- Per recorder, wall-clock recovered_seconds is time when every one of its
+-- cameras was recovered and unverified_seconds is time when at least one was
+-- not; live + recovered + unverified = wall. Camera-time totals are kept in
+-- their own *_camera_seconds fields, and coverage_ratio is camera-time.
 create or replace function public.wl_site_recorder_coverage_facts(
   p_site_id uuid,
   p_from timestamptz,
@@ -305,6 +313,18 @@ rec as (
   ) c on true
   where r.site_id=p_site_id
     and r.is_configured
+),
+cam as (
+  select c.id camera_id,c.recorder_id
+  from public.cameras c
+  join public.recorders r
+    on r.id=c.recorder_id
+   and r.tenant_id=c.tenant_id
+   and r.site_id=c.site_id
+  where c.site_id=p_site_id
+    and r.is_configured
+    and c.is_configured
+    and coalesce(c.is_canonical,true)
 ),
 meta as (
   select
@@ -344,30 +364,81 @@ sets0 as (
       where x.recorder_id=r.recorder_id
         and greatest(x.started_at,l.a)
             < least(coalesce(x.ended_at,l.b),l.b)
-    ),'{}'::tstzmultirange) gap_mr,
+    ),'{}'::tstzmultirange) gap_mr
+  from rec r cross join lo l
+),
+-- Each camera is recovered only by the intervals of its own recorder that
+-- name it.
+cam_sets0 as (
+  select
+    c.camera_id,
+    c.recorder_id,
+    s.gap_mr,
     coalesce((
       select range_agg(
         tstzrange(
-          greatest(ri.started_at,l.a),
-          least(ri.ended_at,l.b),
+          greatest(ri.started_at,s.a),
+          least(ri.ended_at,s.b),
           '[)'
         )
       )
       from public.recovery_intervals ri
-      where ri.recorder_id=r.recorder_id
+      where ri.recorder_id=c.recorder_id
         and ri.status='recovered'
-        and greatest(ri.started_at,l.a)<least(ri.ended_at,l.b)
+        and c.camera_id=any(ri.cameras)
+        and greatest(ri.started_at,s.a)<least(ri.ended_at,s.b)
     ),'{}'::tstzmultirange) recovered_mr
-  from rec r cross join lo l
+  from cam c
+  join sets0 s on s.recorder_id=c.recorder_id
+),
+cam_sets as (
+  select
+    x.*,
+    (x.gap_mr*x.recovered_mr) recovered_gap_mr,
+    (x.gap_mr-x.recovered_mr) unverified_mr
+  from cam_sets0 x
+),
+cam_secs as (
+  select
+    x.camera_id,
+    x.recorder_id,
+    coalesce((
+      select sum(extract(epoch from (upper(u.r)-lower(u.r))))
+      from unnest(x.recovered_gap_mr) u(r)
+    ),0)::numeric recovered_seconds,
+    coalesce((
+      select sum(extract(epoch from (upper(u.r)-lower(u.r))))
+      from unnest(x.unverified_mr) u(r)
+    ),0)::numeric unverified_seconds
+  from cam_sets x
 ),
 sets as (
   select
     s.*,
-    (s.gap_mr*s.recovered_mr) recovered_gap_mr,
-    (s.gap_mr-s.recovered_mr) unverified_mr
+    -- Wall-clock time when at least one camera of the recorder was
+    -- unverified. A recorder without configured cameras keeps its raw gap.
+    case
+      when s.camera_count>0 then coalesce((
+        select range_agg(u.r)
+        from cam_sets x
+        cross join lateral unnest(x.unverified_mr) u(r)
+        where x.recorder_id=s.recorder_id
+      ),'{}'::tstzmultirange)
+      else s.gap_mr
+    end unverified_mr,
+    coalesce((
+      select sum(cs.recovered_seconds)
+      from cam_secs cs
+      where cs.recorder_id=s.recorder_id
+    ),0)::numeric recovered_camera_seconds,
+    coalesce((
+      select sum(cs.unverified_seconds)
+      from cam_secs cs
+      where cs.recorder_id=s.recorder_id
+    ),0)::numeric unverified_camera_seconds
   from sets0 s
 ),
-per_rec as (
+per_rec0 as (
   select
     s.*,
     coalesce((
@@ -376,19 +447,21 @@ per_rec as (
     ),0)::numeric raw_gap_seconds,
     coalesce((
       select sum(extract(epoch from (upper(u.r)-lower(u.r))))
-      from unnest(s.recovered_gap_mr) u(r)
-    ),0)::numeric recovered_seconds,
-    coalesce((
-      select sum(extract(epoch from (upper(u.r)-lower(u.r))))
       from unnest(s.unverified_mr) u(r)
     ),0)::numeric unverified_seconds
   from sets s
 ),
+per_rec as (
+  select
+    p.*,
+    greatest(0,p.raw_gap_seconds-p.unverified_seconds)::numeric recovered_seconds
+  from per_rec0 p
+),
 unv_ranges as (
   select
-    p.recorder_id,p.camera_count,u.r
-  from per_rec p
-  cross join lateral unnest(p.unverified_mr) u(r)
+    x.camera_id,u.r
+  from cam_sets x
+  cross join lateral unnest(x.unverified_mr) u(r)
 ),
 bounds as (
   select a ts from lo where a<b
@@ -407,9 +480,7 @@ segments as (
   select
     s.ts started_at,
     s.nxt ended_at,
-    coalesce(sum(case
-      when u.r && tstzrange(s.ts,s.nxt,'[)') then u.camera_count
-      else 0 end),0)::int affected_camera_count
+    count(distinct u.camera_id)::int affected_camera_count
   from segments0 s
   left join unv_ranges u
     on u.r && tstzrange(s.ts,s.nxt,'[)')
@@ -420,8 +491,8 @@ site_totals as (
   select
     coalesce(sum(p.wall_seconds*p.camera_count),0)::numeric camera_time_seconds,
     coalesce(sum((p.wall_seconds-p.raw_gap_seconds)*p.camera_count),0)::numeric live_camera_seconds,
-    coalesce(sum(p.recovered_seconds*p.camera_count),0)::numeric recovered_camera_seconds,
-    coalesce(sum(p.unverified_seconds*p.camera_count),0)::numeric unverified_camera_seconds
+    coalesce(sum(p.recovered_camera_seconds),0)::numeric recovered_camera_seconds,
+    coalesce(sum(p.unverified_camera_seconds),0)::numeric unverified_camera_seconds
   from per_rec p
 ),
 impact as (
@@ -452,8 +523,18 @@ rec_json as (
         'live_seconds',round(greatest(0,p.wall_seconds-p.raw_gap_seconds),1),
         'recovered_seconds',round(p.recovered_seconds,1),
         'unverified_seconds',round(p.unverified_seconds,1),
+        'camera_time_seconds',round(p.wall_seconds*p.camera_count,1),
+        'recovered_camera_seconds',round(p.recovered_camera_seconds,1),
+        'unverified_camera_seconds',round(p.unverified_camera_seconds,1),
         'coverage_ratio',case
           when p.wall_seconds<=0 then null
+          when p.camera_count>0 then round(
+            greatest(
+              0,
+              (p.wall_seconds-p.raw_gap_seconds)*p.camera_count
+              +p.recovered_camera_seconds
+            )/(p.wall_seconds*p.camera_count),4
+          )
           else round(
             greatest(0,p.wall_seconds-p.raw_gap_seconds+p.recovered_seconds)
             /p.wall_seconds,4
@@ -559,7 +640,7 @@ select jsonb_build_object(
   'measurement_notes',jsonb_build_array(
     'Recorder coverage is tracked only from tracking_started_at; earlier time is not reconstructed.',
     'A recorder gap makes only cameras assigned to that recorder unverified.',
-    'Recovered time counts only for that recorder and never upgrades unrelated cameras.',
+    'Recovered time counts only for the cameras the recovery names and never upgrades other cameras.',
     'camera_coverage_ratio is camera-time coverage, not a count of events or people.'
   )
 )

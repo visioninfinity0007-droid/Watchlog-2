@@ -8,6 +8,7 @@ Proves:
 - healthy recorder reports close only their own coverage interval;
 - a Recorder A outage affects only Recorder A cameras;
 - recorder-specific RECOVERED restores only that recorder's camera-time;
+- RECOVERED restores only the cameras the recovery interval names (MNVR-045);
 - partial vs fully-unverified wall-clock impact is deterministic;
 - the site coverage compatibility point switches to camera-time truth;
 - customer wrapper is tenant-isolated;
@@ -418,6 +419,88 @@ def run() -> int:
                 and opens[0][1] == "nvr_unreachable",
                 "Recorder B failure opens coverage only for Recorder B",
                 str(opens),
+            )
+
+            def facts_for(a, b):
+                return cur.execute(
+                    "select wl_site_recorder_coverage_facts(%s,%s,%s)",
+                    (sa, a, b),
+                ).fetchone()[0]
+
+            def reset_window():
+                cur.execute(
+                    "update recorders set coverage_tracking_started_at=%s where site_id=%s",
+                    (start, sa),
+                )
+                cur.execute("delete from recorder_coverage_intervals where site_id=%s", (sa,))
+                cur.execute("delete from recovery_intervals where site_id=%s", (sa,))
+                cur.execute("delete from agent_unreachable_intervals where site_id=%s", (sa,))
+                cur.execute("delete from agent_coverage_gaps where site_id=%s", (sa,))
+
+            def at(hh, mm=0):
+                return datetime(2026, 10, 2, hh, mm, tzinfo=timezone.utc)
+
+            def hm(value):
+                return datetime.fromisoformat(str(value)).astimezone(
+                    timezone.utc).strftime("%H:%M")
+
+            # MNVR-045: a recorder-level RECOVERED interval restores only the
+            # cameras it names. Recorder A is down 10:00-11:00; only A1's
+            # footage for 10:30-10:45 was recovered, A2's never was.
+            reset_window()
+            cur.execute(
+                """insert into recorder_coverage_intervals(
+                     tenant_id,site_id,recorder_id,started_at,ended_at,cause,source
+                   ) values (%s,%s,%s,%s,%s,'nvr_unreachable','test')""",
+                (ta, sa, rec_a, gap_start, gap_end),
+            )
+            cur.execute(
+                """insert into recovery_intervals(
+                     tenant_id,site_id,agent_id,recorder_id,
+                     started_at,ended_at,status,cameras,recovered_count
+                   ) values (%s,%s,%s,%s,%s,%s,'recovered',%s::uuid[],1)""",
+                (ta, sa, agent_a, rec_a, rec_start, rec_end, [str(cams_a["1"])]),
+            )
+            part = facts_for(start, end)
+            step(
+                round(float(part["recovered_camera_seconds"])) == 900
+                and round(float(part["unverified_camera_seconds"])) == 6300
+                and abs(float(part["camera_coverage_ratio"]) - 0.8056) < 0.0001,
+                "MNVR-045: recovered time restores only the camera the interval names",
+                json.dumps({k: part[k] for k in (
+                    "recovered_camera_seconds", "unverified_camera_seconds",
+                    "camera_coverage_ratio")}, default=str),
+            )
+            part_a = {r["name"]: r for r in part["recorders"]}["Recorder A"]
+            step(
+                round(float(part_a["unverified_seconds"])) == 3600
+                and round(float(part_a["recovered_seconds"])) == 0
+                and abs(float(part_a["coverage_ratio"]) - 0.7083) < 0.0001,
+                "MNVR-045: Recorder A stays unverified while any of its cameras is unrecovered",
+                json.dumps(part_a, default=str),
+            )
+            step(
+                [(x["affected_camera_count"], hm(x["start"]), hm(x["end"]))
+                 for x in part["impact_windows"]]
+                == [(2, "10:00", "10:30"), (1, "10:30", "10:45"), (2, "10:45", "11:00")],
+                "MNVR-045: during the recovered window only the unrecovered camera is affected",
+                json.dumps(part["impact_windows"], default=str),
+            )
+            cur.execute("delete from recovery_intervals where site_id=%s", (sa,))
+            cur.execute(
+                """insert into recovery_intervals(
+                     tenant_id,site_id,agent_id,recorder_id,
+                     started_at,ended_at,status,cameras,recovered_count
+                   ) values (%s,%s,%s,%s,%s,%s,'recovered','{}'::uuid[],0)""",
+                (ta, sa, agent_a, rec_a, rec_start, rec_end),
+            )
+            empty = facts_for(start, end)
+            step(
+                round(float(empty["recovered_camera_seconds"])) == 0
+                and round(float(empty["unverified_camera_seconds"])) == 7200,
+                "MNVR-045: a recovered interval naming no camera restores nothing",
+                json.dumps({k: empty[k] for k in (
+                    "recovered_camera_seconds", "unverified_camera_seconds")}),
             )
 
             # Exact ACLs.
