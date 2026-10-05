@@ -501,3 +501,106 @@ def test_heartbeat_publishes_live_state_and_markers_with_recovery_off(tmp_path, 
     import recovery
     assert recovery.read_last_live(a.context.config.last_live_path) is not None
     assert recovery.read_last_live(b.context.config.last_live_path) is None
+
+
+# --- one recorder's local queue fault never stops the others ----------------------------
+
+def _corrupt_row(spool_path: Path) -> None:
+    import sqlite3
+    db = sqlite3.connect(spool_path)
+    db.execute("insert into spool (payload) values (?)", ("{not json",))
+    db.commit()
+    db.close()
+
+
+def _event(rid):
+    return {"recorder_id": rid, "channel": "1", "event_type": "test",
+            "device_ts": "2026-10-03T09:00:00Z", "agent_ts": "2026-10-03T09:00:00Z",
+            "payload": {}}
+
+
+def test_corrupt_spool_row_on_b_degrades_only_b_and_a_keeps_uploading(tmp_path, monkeypatch):
+    a_rid, b_rid = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+    a = _prepared(tmp_path, "A", a_rid, primary=True)
+    a.context.local_id = "local-a"
+    b = _prepared(tmp_path, "B", b_rid)
+    b.context.local_id = "local-b"
+    ingested, runtime_health = [], []
+
+    def idle(*_a, **_k):
+        return None
+
+    def collector(cfg, spool, stop, holder):
+        holder["recorder_live_at"] = time.monotonic()
+        if cfg.recorder_cloud_id == b_rid:
+            _corrupt_row(cfg.spool_path)        # a row no JSON parser can read
+        spool.add(_event(cfg.recorder_cloud_id))
+        stop.wait()
+
+    class Cloud:
+        def call(self, fn, **kw):
+            assert fn == "wl_ingest_events"
+            ingested.extend(ev["recorder_id"] for ev in kw["p_events"])
+            return {"received": len(kw["p_events"]), "inserted": len(kw["p_events"]),
+                    "skipped": 0}
+
+    monkeypatch.setattr(core, "collector", collector)
+    for name in ("recovery_worker", "health_worker", "command_worker", "heartbeat"):
+        monkeypatch.setattr(core, name, idle)
+    monkeypatch.setattr(core, "update_runtime_health", lambda **kw: runtime_health.append(kw))
+    monkeypatch.setattr(fanout.periodic_stills, "periodic_still_worker", idle)
+    real_sleep, ticks = time.sleep, []
+
+    def sleep(_seconds):
+        ticks.append(1)
+        if len(ticks) > 4:
+            raise KeyboardInterrupt
+        real_sleep(0.05)
+
+    monkeypatch.setattr(fanout.time, "sleep", sleep)
+    base = SimpleNamespace(recovery_enabled=False, upload_seconds=0.01, heartbeat_seconds=0.01)
+    # Before the fix the ValueError escaped run() and its finally stopped every recorder.
+    fanout.run(base, {"agent_id": "agent", "agent_key": "key"}, Cloud(), once=False,
+               prepared_recorders=[a, b], detector=None, analytics_worker=idle,
+               archive_worker=idle)
+
+    assert a_rid in ingested and b_rid not in ingested
+    assert len(ticks) > 4, "the run loop kept going after B's upload failed"
+    rows = {row["local_id"]: row for row in runtime_health[-1]["recorders"]}
+    assert rows["local-a"].get("upload") is None and rows["local-a"]["live"] is True
+    assert rows["local-b"]["upload"] == "degraded"
+    assert rows["local-b"]["upload_reason"].startswith("JSONDecodeError")
+    assert rows["local-b"]["live"] is False, "B's events are not reaching WatchLog"
+    assert runtime_health[-1]["recorders_live"] == 1
+
+
+def test_a_spool_that_cannot_open_degrades_only_that_recorder(tmp_path, monkeypatch):
+    a_rid, b_rid = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+    a = _prepared(tmp_path, "A", a_rid, primary=True)
+    a.context.local_id = "local-a"
+    b = _prepared(tmp_path, "B", b_rid)
+    b.context.local_id = "local-b"
+    real_spool = fanout.Spool
+
+    def spool(path, max_rows=0):
+        if Path(path) == b.context.config.spool_path:
+            import sqlite3
+            raise sqlite3.DatabaseError("file is not a database")
+        return real_spool(path, max_rows)
+
+    monkeypatch.setattr(fanout, "Spool", spool)
+    started, health, runtime_health = [], [], []
+    _patch_once(monkeypatch, started, health, runtime_health)
+    uploaded = []
+    monkeypatch.setattr(core, "upload_once", lambda _c, _s, sp: uploaded.append(sp.path) or 0)
+
+    fanout.run(SimpleNamespace(recovery_enabled=True), {"agent_id": "agent", "agent_key": "key"},
+               object(), once=True, prepared_recorders=[a, b], detector=None,
+               analytics_worker=lambda *_a: None, archive_worker=lambda *_a: None)
+
+    assert started == [a_rid], "B has nowhere to queue events: its collector is not started"
+    assert uploaded == [a.context.config.spool_path]
+    rows = {row["local_id"]: row for row in runtime_health[-1]["recorders"]}
+    assert rows["local-b"]["upload"] == "degraded"
+    assert rows["local-b"]["upload_reason"].startswith("DatabaseError")
+    assert rows["local-a"].get("upload") is None

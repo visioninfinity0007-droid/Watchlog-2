@@ -140,6 +140,61 @@ def _adopt_late_probe(item, holder: dict, cfg) -> None:
              "preflight finished; camera inventory ready")
 
 
+def _upload_fault(error: BaseException) -> str:
+    """A recorder's local queue fault, for the log and runtime health: the exception type
+    and its redacted first line (no address, no login)."""
+    import nvr_health
+    detail = nvr_health.redact(str(error))
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
+def _mark_upload_degraded(unit, error: BaseException) -> None:
+    """This recorder's queue could not be read or uploaded: hold it degraded, keep the others.
+
+    A corrupt queued row or a local database fault repeats every cycle, so it is logged when
+    it first appears or changes, not every time."""
+    reason = _upload_fault(error)
+    if unit.holder.get("upload_degraded") != reason:
+        core.log(f"ERROR: recorder {str(unit.cfg.recorder_cloud_id)[:8]} cannot upload its "
+                 f"queued events ({reason}); the other recorders keep uploading")
+    unit.holder["upload_degraded"] = reason
+
+
+def _upload_unit(cloud, state: dict, unit) -> None:
+    """Upload one recorder's queue. No fault in it ever leaves this function (contract §8)."""
+    if unit.spool is None:
+        return                     # its queue never opened: build_worker_sets marked it
+    try:
+        core.upload_once(cloud, state, unit.spool)
+    except (RuntimeError, requests.RequestException) as error:
+        core.log(
+            f"ERROR: recorder {str(unit.cfg.recorder_cloud_id)[:8]} "
+            "upload failed, will retry: "
+            + str(error).splitlines()[0][:180]
+        )
+        return
+    except Exception as error:  # noqa: BLE001 — a corrupt row or sqlite fault is this recorder's
+        _mark_upload_degraded(unit, error)
+        return
+    if unit.holder.pop("upload_degraded", None):
+        core.log(f"recorder {str(unit.cfg.recorder_cloud_id)[:8]} is uploading its queued "
+                 "events again")
+
+
+def _queued(units) -> int:
+    total = 0
+    for unit in units:
+        try:
+            total += unit.spool.count() if unit.spool is not None else 0
+        except Exception:  # noqa: BLE001 — a count is only reported
+            pass
+    return total
+
+
+def _idle(*_args, **_kwargs) -> None:
+    """Stands in for a worker that needs the recorder's queue when that queue cannot open."""
+
+
 def _gated(target, ready: threading.Event, stop: threading.Event):
     """Run ``target`` only once the recorder's login is readable."""
     def run(*args, **kwargs):
@@ -220,7 +275,16 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
             recovery_target = _gated(recovery_target, credential_ready, stop)
             stills_target = _gated(stills_target, credential_ready, stop)
 
-        spool = Spool(cfg.spool_path, cfg.spool_max_rows)
+        try:
+            spool = Spool(cfg.spool_path, cfg.spool_max_rows)
+        except Exception as error:  # noqa: BLE001 — one recorder's queue never stops the others
+            # Without a queue its events, recovered intervals and stills have nowhere to go:
+            # those workers stand idle and it is reported degraded; health still runs.
+            spool = None
+            holder["upload_degraded"] = _upload_fault(error)
+            core.log(f"ERROR: recorder {recorder_id[:8]} event queue cannot be opened "
+                     f"({holder['upload_degraded']}); the other recorders keep running")
+            collector_target = recovery_target = stills_target = _idle
         resume_evt = threading.Event()
         collector = threading.Thread(
             target=collector_target,
@@ -278,8 +342,7 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
         ))
 
     if len(cloud_ids) != len(set(cloud_ids)):
-        for unit in out:
-            unit.spool.close()
+        _close(out)
         raise RuntimeError("duplicate cloud recorder identity in worker fan-out")
     return out
 
@@ -299,7 +362,9 @@ def _recorder_live_state(units, clock: float, stamp: str) -> tuple[int, list[dic
     login or display name."""
     live_count, rows = 0, []
     for unit in units:
-        live = _fresh(unit.holder, clock)
+        # A recorder whose queued events cannot be uploaded is not live: its events do not
+        # reach WatchLog, so it must not advance the Repair/Upgrade proof.
+        live = _fresh(unit.holder, clock) and not unit.holder.get("upload_degraded")
         if live:
             live_count += 1
             unit.holder["live_seen_at"] = stamp
@@ -314,6 +379,9 @@ def _recorder_live_state(units, clock: float, stamp: str) -> tuple[int, list[dic
         }
         if unit.holder.get("credential_unavailable"):
             row["credential"] = "unavailable"
+        if unit.holder.get("upload_degraded"):
+            row["upload"] = "degraded"
+            row["upload_reason"] = unit.holder["upload_degraded"]
         # This recorder's own event-stream state, in the single-recorder heartbeat's shape
         # (redacted error, ONVIF counters): which recorder's stream is down, and why.
         stream = core._event_stream_health(unit.holder.get("event_stream"))
@@ -336,7 +404,8 @@ def _write_live_marker(unit) -> None:
 def _close(units) -> None:
     for unit in units:
         try:
-            unit.spool.close()
+            if unit.spool is not None:
+                unit.spool.close()
         except Exception:
             pass
         store = unit.holder.get("store")
@@ -425,13 +494,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 unit.collector.join(timeout=5)
             analytic.join(timeout=5)
             for unit in units:
-                try:
-                    core.upload_once(cloud, state, unit.spool)
-                except RuntimeError as error:
-                    core.log(
-                        f"ERROR: recorder {str(unit.cfg.recorder_cloud_id)[:8]} "
-                        f"upload failed: {error}"
-                    )
+                _upload_unit(cloud, state, unit)
                 if unit.credential_ready is None or unit.credential_ready.is_set():
                     core.health_cycle(cloud, state, unit.cfg, unit.holder)
             live_count, recorder_rows = _recorder_live_state(
@@ -492,20 +555,13 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
             if clock >= next_upload:
                 next_upload = clock + base_cfg.upload_seconds
                 if not authority.get("ok", True):
-                    queued = sum(unit.spool.count() for unit in units)
+                    queued = _queued(units)
                     core.log(
                         f"events: standby (not lease authority); holding {queued} event(s)"
                     )
                 else:
                     for unit in units:
-                        try:
-                            core.upload_once(cloud, state, unit.spool)
-                        except (RuntimeError, requests.RequestException) as error:
-                            core.log(
-                                f"ERROR: recorder {str(unit.cfg.recorder_cloud_id)[:8]} "
-                                "upload failed, will retry: "
-                                + str(error).splitlines()[0][:180]
-                            )
+                        _upload_unit(cloud, state, unit)
 
             if clock >= next_heartbeat:
                 next_heartbeat = clock + base_cfg.heartbeat_seconds
