@@ -23,7 +23,10 @@ def main() -> int:
     # use-customer-control hook. Read the real surface where the capability-aware Read/Recommend/Approve
     # UX and the tenant-guarded RPC calls are implemented. Nav registration lives in nav-config.js.
     sc = REPO / "portal" / "app" / "site-control"
-    page = (sc / "customer-workspace.js").read_text(encoding="utf-8") + "\n" + (sc / "use-customer-control.js").read_text(encoding="utf-8")
+    # recorder-control.js holds the capability labels and the per-recorder grouping (MNVR-048/049).
+    workspace = (sc / "customer-workspace.js").read_text(encoding="utf-8")
+    control = (sc / "recorder-control.js").read_text(encoding="utf-8") if (sc / "recorder-control.js").exists() else ""
+    page = workspace + "\n" + control + "\n" + (sc / "use-customer-control.js").read_text(encoding="utf-8")
     nav = (REPO / "portal" / "app" / "nav-config.js").read_text(encoding="utf-8")
 
     # driven by the capability KB + diagnosis, with tenant guard
@@ -33,8 +36,10 @@ def main() -> int:
         check(rpc in page, f"page calls {rpc}")
 
     # capability-aware treatment of every verdict x evidence
-    check('v==="supported"&&e==="FIELD_VERIFIED"' in page.replace(" ", "") and '"configure"' in page,
-          "supported+FIELD_VERIFIED is treated as configurable")
+    # MNVR-049: FIELD_VERIFIED evidence is recorded per recorder model; only evidence scoped to this
+    # recorder makes a setting configurable.
+    check('v==="supported"&&verifiedHere(cap)' in page.replace(" ", "") and '"configure"' in page,
+          "supported + verified on this recorder is treated as configurable")
     check('"Not verified"' in page or "Not verified" in page, "UNKNOWN capability is shown as 'Not verified'")
     check('v==="unsupported"' in page.replace(" ", "") and "disabled" in page,
           "UNSUPPORTED capability disables the control (with reason)")
@@ -60,6 +65,37 @@ def main() -> int:
           "wl_my_site_diagnosis is tenant-guarded")
     check("from public, anon" in sql79 and "to authenticated" in sql79,
           "wl_my_site_diagnosis is revoked from anon, granted to authenticated")
+
+    # Multi-recorder (MNVR-048/049): the page renders the recorder-aware diagnosis per recorder,
+    # keyed by camera identity, and never offers a change on model-level evidence alone.
+    check("recorderGroups(" in workspace and "key={cam.key}" in workspace,
+          "camera channels are grouped by recorder and keyed by camera identity")
+    check('(cam.channel??i)+"-"+(cam.name||"")' not in workspace,
+          "camera rows are not keyed by channel+name (collides across recorders)")
+    check("multiRecorder" in workspace and "caps.length&&!multiRecorder" in workspace.replace(" ", ""),
+          "a multi-recorder site never shows one site-wide settings list")
+    check('evidence_scope==="recorder"' in control.replace(" ", ""),
+          "'Verified on your camera system' requires recorder-scoped evidence")
+    # Per-recorder change flow: the Ask link carries the recorder and camera it is about.
+    check('"&recorder="' in workspace and '"&camera="' in workspace,
+          "the per-recorder change link sends recorder_id/camera_id")
+
+    # The diagnosis the page calls is the recorder-aware one (latest definition, 0155).
+    diag = ""
+    for path in sorted((ROOT / "supabase" / "migrations").glob("*.sql")):
+        text = path.read_text(encoding="utf-8")
+        at = text.rfind("create or replace function public.wl_my_site_diagnosis(")
+        if at >= 0:
+            diag = text[at:text.find("$function$;", at)]
+    for needle, name in (
+        ("'recorders',v_recorders", "diagnosis returns one entry per configured recorder"),
+        ("when v_recorder_count>1 then null", "diagnosis has no site-wide recorder identity on a multi-recorder site"),
+        ("coalesce(c.is_canonical,true)", "diagnosis cameras are canonical cameras only"),
+        ("'camera_id',o.camera_id", "diagnosis cameras carry camera identity"),
+    ):
+        check(needle in diag, name)
+    check("max(vendor)" not in diag and "max(device_vendor)" not in diag,
+          "recorder identity never mixes historical rows with max()")
 
     passed = sum(1 for x in OK if x)
     print(f"\n  {passed}/{len(OK)} checks passed")
