@@ -114,7 +114,9 @@ Live events and recorder liveness:
 - **MNVR-028**: recorder-level events (disks, alarm inputs, ONVIF storage faults) and camera
   alerts without a channel carry channel `null` and `payload.recorder_scoped` (or
   `channel_unknown`), never camera 1. `Event.to_json` serialises a JSON null channel;
-  `--probe` and the collectors no longer crash on or mis-attribute them.
+  `--probe` and the collectors no longer crash on or mis-attribute them. A Hikvision `IO`
+  alert, or any alert carrying `inputIOPortID`, is recorder-scoped with the port in
+  `payload.native_input`, even when it also carries a `channelID`.
 - **MNVR-001**: the ONVIF driver loads its profile/token maps on the driver `open_driver()`
   returns; events resolve to the physical camera; an unknown token is dropped and counted
   (`event_stream.dropped_unmapped`, agent log), never put on camera 1; stills use that camera's

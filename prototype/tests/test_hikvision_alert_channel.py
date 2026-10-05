@@ -66,6 +66,36 @@ def test_camera_alerts_keep_their_channel_id():
     assert ev.channel == "5"
 
 
+def test_alarm_input_alert_is_recorder_scoped_even_with_a_channel_id():
+    """An IO alert names a recorder alarm input (inputIOPortID), not a video input. With
+    channelID 1 present it was camera 1's event, and the port was dropped (MNVR-028)."""
+    ev = _parse(_alert("IO", "<channelID>1</channelID><inputIOPortID>3</inputIOPortID>"))
+    assert ev.channel is None
+    assert ev.payload["recorder_scoped"] is True
+    assert ev.payload["native_input"] == "3"
+    assert ev.payload["native_channel"] == "1"
+
+
+def test_any_alert_carrying_an_input_port_is_recorder_scoped():
+    ev = _parse(_alert("someNewInputAlarm", "<channelID>2</channelID>"
+                       "<inputIOPortID>5</inputIOPortID>"))
+    assert ev.channel is None
+    assert ev.payload["recorder_scoped"] is True
+    assert ev.payload["native_input"] == "5"
+
+
+def test_alarm_inputs_burst_separately_per_port():
+    d = NativeHikvisionDriver("http://127.0.0.1", "u", "p", timeout=1)
+    try:
+        first = d._parse_alert(_alert("IO", "<channelID>1</channelID><inputIOPortID>1</inputIOPortID>"))
+        other = d._parse_alert(_alert("IO", "<channelID>1</channelID><inputIOPortID>2</inputIOPortID>"))
+        repeat = d._parse_alert(_alert("IO", "<channelID>1</channelID><inputIOPortID>1</inputIOPortID>"))
+    finally:
+        d.close()
+    assert first is not None and other is not None
+    assert repeat is None
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

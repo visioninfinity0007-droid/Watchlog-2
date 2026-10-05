@@ -111,10 +111,11 @@ EVENT_TYPE_MAP = {
     "vehicledetection": "vehicle",
 }
 
-# Alert types that describe the recorder itself (its disks, logins and network link),
-# not a camera. A channel field on these does not name a video input (MNVR-028).
+# Alert types that describe the recorder itself (its disks, logins, network link and
+# alarm inputs), not a camera. A channel field on these does not name a video input
+# (MNVR-028). An alert that carries inputIOPortID is an alarm input whatever its type.
 RECORDER_SCOPED_TYPES = {"diskfull", "diskerror", "illaccess", "illegalaccess",
-                         "ipconflict", "nicbroken"}
+                         "ipconflict", "nicbroken", "io"}
 
 # Hikvision repeats an active alarm every second for as long as it lasts.
 # Collapsing a burst into one event is the difference between 5 rows and
@@ -649,11 +650,14 @@ class HikvisionDriver(NvrDriver):
         # (it joins no camera); the name stays in the payload only.
         scope: dict = {}
         native_channel = _text(root, "channelID") or _text(root, "dynChannelID")
-        if etype_raw.lower() in RECORDER_SCOPED_TYPES:
+        native_input = (_text(root, "inputIOPortID") or "").strip()
+        if etype_raw.lower() in RECORDER_SCOPED_TYPES or native_input:
             channel = None
             scope["recorder_scoped"] = True
             if native_channel:
                 scope["native_channel"] = native_channel
+            if native_input:
+                scope["native_input"] = native_input
         elif native_channel:
             channel = native_channel
         else:
@@ -666,7 +670,8 @@ class HikvisionDriver(NvrDriver):
         # monotonic receive clock. Comparing recorder dateTimes dropped every later event
         # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
         received_mono, received_at = self._receive_clock()
-        key = (channel if channel is not None else f"recorder:{native_channel or ''}", etype)
+        key = (channel if channel is not None
+               else f"recorder:{native_channel or ''}:{native_input}", etype)
         last = self._last_emitted.get(key)
         if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
