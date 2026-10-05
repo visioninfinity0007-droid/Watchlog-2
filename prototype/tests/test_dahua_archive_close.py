@@ -119,6 +119,25 @@ class StreamCloses(unittest.TestCase):
             da.get_clip(FakeDriver(resp), "1", START, END)
         self.assertTrue(resp.closed, "streamed response must be closed after an error body")
 
+    def test_a_login_retry_closes_the_refused_streamed_response(self):
+        # The first loadfile answer is a 401: a streamed response that is not closed before the
+        # retry holds a recorder session open.
+        refused = FakeResponse(status=401, text="Unauthorized")
+        served = FakeResponse(chunks=[DHAV])
+        drv = FakeDriver(None)
+        answers = iter([refused, served])
+        original = drv.s.get
+
+        def get(url, params=None, timeout=None, stream=False):
+            if "loadfile.cgi" in url:
+                return next(answers)
+            return original(url, params=params, timeout=timeout, stream=stream)
+
+        drv.s.get = get
+        self.assertTrue(da.get_clip(drv, "1", START, END).startswith(b"DHAV"))
+        self.assertTrue(refused.closed, "the refused response must be closed before the retry")
+        self.assertTrue(served.closed)
+
     def test_source_uses_finally_close(self):
         # Guard against a future refactor dropping the finally-close.
         src = (ROOT / "agent" / "dahua_archive.py").read_text(encoding="utf-8")

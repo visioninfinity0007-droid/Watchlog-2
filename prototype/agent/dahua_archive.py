@@ -83,6 +83,11 @@ def _request(driver: DahuaDriver, path: str, *, params=None, stream=False, timeo
 
     if response.status_code == 401:
         driver.s.auth = HTTPBasicAuth(driver.username, driver.password)
+        # A refused streamed response (loadfile) holds its recorder session open until closed.
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001 — closing must not mask the retry
+            pass
         try:
             response = driver.s.get(
                 url,
