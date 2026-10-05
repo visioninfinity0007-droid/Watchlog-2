@@ -11,7 +11,9 @@
 --     automatically promote a whole-site UNVERIFIED interval to RECOVERED;
 --   * keep pre-upgrade recovery intervals legacy (recorder_id NULL) so deployed
 --     single-recorder Agents can still claim and complete them and their
---     RECOVERED history keeps counting.
+--     RECOVERED history keeps counting;
+--   * recorder-scoped recording/storage current proof, so one recorder's
+--     proof never lands on another recorder's same-numbered cameras.
 --
 -- Deliberately deferred to the next gate:
 --   * recorder-aware durable health reconciliation / storage-transition replay;
@@ -37,6 +39,17 @@ create table if not exists public.recorder_health (
     references public.recorders(id,tenant_id,site_id)
     on delete restrict
 );
+
+-- Present-tense storage proof for this recorder: the recorder-scoped twin of
+-- nvr_health.sto_current_* (0089), written only by the current-proof RPCs.
+alter table public.recorder_health
+  add column if not exists sto_current_state text not null default 'unknown';
+alter table public.recorder_health
+  add column if not exists sto_current_reason_code text;
+alter table public.recorder_health
+  add column if not exists sto_current_at timestamptz;
+alter table public.recorder_health
+  add column if not exists sto_current_evidence text;
 
 create index if not exists recorder_health_site_agent_idx
   on public.recorder_health(site_id,agent_id,updated_at desc);
@@ -81,12 +94,15 @@ revoke all on table public.recorder_health_transitions from public,anon,authenti
 insert into public.recorder_health(
   recorder_id,agent_id,tenant_id,site_id,
   nvr_reachable,nvr_auth_ok,recording_state,storage_state,reason_code,
-  last_ok_at,last_change_at,updated_at
+  last_ok_at,last_change_at,updated_at,
+  sto_current_state,sto_current_reason_code,sto_current_at,sto_current_evidence
 )
 select
   r.id,nh.agent_id,nh.tenant_id,nh.site_id,
   nh.nvr_reachable,nh.nvr_auth_ok,nh.recording_state,nh.storage_state,nh.reason_code,
-  nh.last_ok_at,nh.last_change_at,nh.updated_at
+  nh.last_ok_at,nh.last_change_at,nh.updated_at,
+  nh.sto_current_state,nh.sto_current_reason_code,nh.sto_current_at,
+  nh.sto_current_evidence
 from public.nvr_health nh
 join public.recorders r
   on r.site_id=nh.site_id
@@ -672,6 +688,239 @@ $function$;
 revoke all on function public.wl_report_camera_health(uuid,text,jsonb)
   from public,anon,authenticated,service_role;
 grant execute on function public.wl_report_camera_health(uuid,text,jsonb)
+  to anon,authenticated;
+
+-- ---------------------------------------------------------------------
+-- Recorder-scoped recording/storage current proof (0089 contract).
+--
+-- 0089's wl_report_recording_storage_current has no recorder: it maps report
+-- channels by site+channel and writes storage onto nvr_health(agent). With two
+-- recorders sharing channel numbers, Recorder A's archive proof would mark
+-- Recorder B's channel 1 recording and the storage state would alternate
+-- between recorders. The core maps cameras by recorder+channel and keeps
+-- storage proof per recorder; the legacy RPC keeps working only while recorder
+-- identity is unambiguous.
+-- Internal: the caller has authenticated and authorized the Agent.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_report_recorder_recording_storage_current_core(
+  p_agent_id uuid,
+  p_tenant_id uuid,
+  p_site_id uuid,
+  p_recorder_id uuid,
+  p_report jsonb
+) returns jsonb
+language plpgsql
+volatile
+set search_path = public
+as $function$
+declare
+  v_now timestamptz := now();
+  v_storage_state text;
+  v_storage_reason text;
+  v_recording_evidence text := lower(coalesce(p_report->>'recording_evidence','unknown'));
+  v_count int := 0;
+begin
+  if not exists (
+    select 1 from public.recorders r
+     where r.id=p_recorder_id
+       and r.tenant_id=p_tenant_id
+       and r.site_id=p_site_id
+       and r.is_configured
+  ) then
+    raise exception 'recorder not configured for this agent site'
+      using errcode='42501';
+  end if;
+
+  v_storage_state := lower(coalesce(p_report#>>'{storage,state}','unknown'));
+  if v_storage_state not in ('ok','degraded','fault','unknown') then
+    v_storage_state := 'unknown';
+  end if;
+  v_storage_reason := lower(coalesce(p_report#>>'{storage,reason}','unknown'));
+  if v_storage_reason not in ('ok','unknown','storage_fault','disk_error','disk_full',
+                              'nvr_unreachable','nvr_auth_failed','agent_unreachable') then
+    v_storage_reason := 'unknown';
+  end if;
+
+  -- updated_at stays the connectivity report's clock: storage proof alone
+  -- must not make a stale reachability look fresh.
+  insert into public.recorder_health as rh(
+    recorder_id,agent_id,tenant_id,site_id,
+    sto_current_state,sto_current_reason_code,sto_current_at,sto_current_evidence
+  ) values (
+    p_recorder_id,p_agent_id,p_tenant_id,p_site_id,
+    v_storage_state,v_storage_reason,v_now,'vendor_status'
+  )
+  on conflict (recorder_id,agent_id) do update
+     set sto_current_state=excluded.sto_current_state,
+         sto_current_reason_code=excluded.sto_current_reason_code,
+         sto_current_at=excluded.sto_current_at,
+         sto_current_evidence=excluded.sto_current_evidence;
+
+  with raw as (
+    select r->>'channel' as channel,
+           lower(coalesce(r->>'state','unknown')) as raw_state,
+           lower(coalesce(r->>'reason','unknown')) as raw_reason
+      from jsonb_array_elements(coalesce(p_report#>'{recording,channels}','[]'::jsonb)) r
+     where coalesce(r->>'channel','') <> ''
+  ), normalized as (
+    select c.id as camera_id,
+           case
+             when not c.is_configured then 'unknown'
+             when raw.raw_state = 'recording' and v_recording_evidence <> 'archive_search' then 'unknown'
+             when raw.raw_state in ('recording','not_recording','storage_fault','unknown') then raw.raw_state
+             else 'unknown'
+           end as current_state,
+           case
+             when not c.is_configured then 'channel_disabled'
+             when raw.raw_state = 'recording' and v_recording_evidence <> 'archive_search' then 'unknown'
+             when raw.raw_reason in ('ok','unknown','not_recording','storage_fault','channel_missing',
+                                     'channel_disabled','nvr_unreachable','nvr_auth_failed',
+                                     'agent_unreachable','disk_error','disk_full') then raw.raw_reason
+             else 'unknown'
+           end as current_reason,
+           c.is_configured
+      from raw
+      join public.cameras c
+        on c.site_id = p_site_id
+       and c.tenant_id = p_tenant_id
+       and c.recorder_id = p_recorder_id
+       and c.channel = raw.channel
+  ), up as (
+    insert into public.camera_health as ch
+      (camera_id, tenant_id, site_id,
+       rec_current_state, rec_current_reason_code, rec_current_at,
+       rec_current_evidence, updated_at)
+    select n.camera_id, p_tenant_id, p_site_id,
+           n.current_state, n.current_reason, v_now,
+           case when n.is_configured then v_recording_evidence else 'inventory' end,
+           v_now
+      from normalized n
+    on conflict (camera_id) do update
+       set rec_current_state = excluded.rec_current_state,
+           rec_current_reason_code = excluded.rec_current_reason_code,
+           rec_current_at = excluded.rec_current_at,
+           rec_current_evidence = excluded.rec_current_evidence,
+           updated_at = v_now
+    returning 1
+  )
+  select count(*) into v_count from up;
+
+  update public.agents set last_seen_at = v_now where id = p_agent_id;
+
+  return jsonb_build_object('ok', true,
+                            'agent_id', p_agent_id,
+                            'site_id', p_site_id,
+                            'recorder_id', p_recorder_id,
+                            'storage_state', v_storage_state,
+                            'storage_reason', v_storage_reason,
+                            'recording_evidence', v_recording_evidence,
+                            'cameras_refreshed', v_count,
+                            'server_time', v_now);
+end
+$function$;
+
+revoke all on function public.wl_report_recorder_recording_storage_current_core(
+  uuid,uuid,uuid,uuid,jsonb
+) from public,anon,authenticated,service_role;
+
+create or replace function public.wl_report_recorder_recording_storage_current(
+  p_agent_id uuid,
+  p_agent_key text,
+  p_recorder_id uuid,
+  p_report jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+  v_result jsonb;
+begin
+  v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent not recognised' using errcode='28000';
+  end if;
+
+  perform public.wl_assert_current_agent_authority(
+    v_agent.id,v_agent.site_id
+  );
+
+  v_result := public.wl_report_recorder_recording_storage_current_core(
+    v_agent.id,v_agent.tenant_id,v_agent.site_id,p_recorder_id,p_report
+  );
+  perform public.wl_reconcile_site_faults(v_agent.site_id);
+  return v_result;
+end
+$function$;
+
+revoke all on function public.wl_report_recorder_recording_storage_current(
+  uuid,text,uuid,jsonb
+) from public,anon,authenticated,service_role;
+grant execute on function public.wl_report_recorder_recording_storage_current(
+  uuid,text,uuid,jsonb
+) to anon;
+
+-- Deployed Agent signature (0089). Keeps its not-current-Agent answer, then
+-- requires unambiguous recorder identity: on a multi-recorder site it fails
+-- closed instead of applying one recorder's proof to every same-numbered
+-- channel. nvr_health stays mirrored for the existing singleton readers.
+create or replace function public.wl_report_recording_storage_current(
+  p_agent_id uuid,
+  p_agent_key text,
+  p_report jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+  v_current uuid;
+  v_recorder_id uuid;
+  v_result jsonb;
+  v_now timestamptz := now();
+begin
+  v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent not recognised' using errcode='28000';
+  end if;
+
+  v_current := public.wl_current_site_agent(v_agent.site_id);
+  if v_current is distinct from v_agent.id then
+    return jsonb_build_object('ok', false, 'reason', 'not_current_agent',
+                              'current_agent_id', v_current);
+  end if;
+
+  v_recorder_id := public.wl_legacy_recorder_for_agent(v_agent.id);
+
+  v_result := public.wl_report_recorder_recording_storage_current_core(
+    v_agent.id,v_agent.tenant_id,v_agent.site_id,v_recorder_id,p_report
+  );
+
+  insert into public.nvr_health as nh
+    (agent_id, tenant_id, site_id,
+     sto_current_state, sto_current_reason_code, sto_current_at,
+     sto_current_evidence, updated_at)
+  values
+    (v_agent.id, v_agent.tenant_id, v_agent.site_id,
+     v_result->>'storage_state', v_result->>'storage_reason', v_now,
+     'vendor_status', v_now)
+  on conflict (agent_id) do update
+     set sto_current_state = excluded.sto_current_state,
+         sto_current_reason_code = excluded.sto_current_reason_code,
+         sto_current_at = excluded.sto_current_at,
+         sto_current_evidence = excluded.sto_current_evidence,
+         updated_at = v_now;
+
+  perform public.wl_reconcile_site_faults(v_agent.site_id);
+  return v_result;
+end
+$function$;
+
+revoke all on function public.wl_report_recording_storage_current(uuid,text,jsonb)
+  from public,anon,authenticated,service_role;
+grant execute on function public.wl_report_recording_storage_current(uuid,text,jsonb)
   to anon,authenticated;
 
 -- ---------------------------------------------------------------------
