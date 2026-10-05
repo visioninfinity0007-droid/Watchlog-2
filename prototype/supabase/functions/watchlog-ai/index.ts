@@ -1,7 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { coerceModelResult, UNREADABLE_ANSWER } from "./model_result.ts";
 import { applyCustomerVocabulary, customerCardData, harnessMessage, harnessTenantKey, modelToolView } from "./harness.ts";
-import { groundRecorderCards, recorderCardData } from "./recorder_card.ts";
+import { groundRecorderCards, recorderCardData, verifiedOnThisRecorder } from "./recorder_card.ts";
 import { siteControlTarget, targetSiteControlActions } from "./site_control_target.ts";
 import { buildProvider, legacyEnvProvider } from "./providers/registry.ts";
 import type { ChatMessage } from "./providers/types.ts";
@@ -157,7 +157,7 @@ function compactBusinessContext(bc: any) {
 function compactCapabilities(caps: any) {
   return Array.isArray(caps)
     ? caps.map((c: Json) => ({ capability: c?.capability, verdict: c?.verdict, evidence_class: c?.evidence_class,
-        ai_location: c?.ai_location, constraints: c?.constraints || undefined }))
+        evidence_scope: c?.evidence_scope ?? undefined, ai_location: c?.ai_location, constraints: c?.constraints || undefined }))
     : caps;
 }
 function compactContext(ctx: Json) {
@@ -273,11 +273,13 @@ function deterministicSetupAdvice(ctx: Json) {
     }
     const cap = profile[analytic] || { capability: analytic, verdict: "unknown", evidence_class: "UNKNOWN", write: null, safety_class: "na" };
     const verdict = cap.verdict || "unknown", evidence = cap.evidence_class || "UNKNOWN";
-    if (verdict === "supported" && evidence === "FIELD_VERIFIED" && cap.write === true && cap.safety_class === "safe_write") {
-      recommendations.push({ analytic, decision: "recorder_configure", evidence_class: evidence, rationale: "Field-verified safe recorder configuration is available for this exact model." });
+    // MNVR-049, the same rule as Site Control: only evidence proven on THIS recorder makes a recorder
+    // change configurable; a model-level FIELD_VERIFIED from another unit needs verification here.
+    if (verdict === "supported" && verifiedOnThisRecorder(cap) && cap.write === true && cap.safety_class === "safe_write") {
+      recommendations.push({ analytic, decision: "recorder_configure", evidence_class: evidence, rationale: "Field-verified safe recorder configuration is available on this recorder." });
       recorderProposals.push({ analytic, capability: analytic, safety_class: "safe_write", evidence_class: evidence, requires_approval: true });
     } else if (verdict === "supported") {
-      recommendations.push({ analytic, decision: "recorder_needs_verification", evidence_class: evidence, rationale: "Recorder support is recorded, but WatchLog will not write until the exact safe path is field-verified." });
+      recommendations.push({ analytic, decision: "recorder_needs_verification", evidence_class: evidence, rationale: "Recorder support is recorded, but WatchLog will not write until the exact safe path is field-verified on this recorder." });
     } else if (verdict === "by_camera") {
       recommendations.push({ analytic, decision: "camera_side", evidence_class: evidence, rationale: "This capability belongs to the camera rather than the recorder." });
     } else if (SOFTWARE_ANALYTICS.has(analytic)) {

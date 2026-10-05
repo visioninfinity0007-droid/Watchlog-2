@@ -45,6 +45,12 @@ def main():
     ):
         if token not in gateway:
             problems.append(f"Watch AI recorder grounding missing: {token}")
+    # MNVR-049: guided setup advice proposes a recorder change only on evidence proven on this recorder,
+    # the same rule Site Control applies (recorder_card.ts verifiedOnThisRecorder).
+    if 'verdict === "supported" && verifiedOnThisRecorder(cap)' not in gateway:
+        problems.append("setup advice must require recorder-scoped evidence before recorder_configure")
+    if 'evidence === "FIELD_VERIFIED" && cap.write === true' in gateway:
+        problems.append("setup advice must not treat model-level FIELD_VERIFIED as configurable here")
     if "data: { recorders, recommendation: tools?.setup_advisor }" in gateway:
         problems.append("multi-recorder card must not omit capability_known (renders as Checked)")
     grounded = gateway.find("groundRecorderCards(result.cards,")

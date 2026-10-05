@@ -41,6 +41,13 @@ export function recorderCardData(ctx: Json, recommendation?: unknown): Json {
   };
 }
 
+// MNVR-049, the Site Control rule: a capability counts as verified on this recorder only when its
+// field evidence was proven on this recorder (evidence_scope "recorder"). A model-level FIELD_VERIFIED
+// from another unit of the same model is not, so it is never offered as a recorder change.
+export function verifiedOnThisRecorder(cap: Json): boolean {
+  return String(cap?.evidence_class || "").toUpperCase() === "FIELD_VERIFIED" && cap?.evidence_scope === "recorder";
+}
+
 // Ground every recorder/capabilities card in the context. A multi-recorder card is rebuilt from the
 // context (a model cannot invent a site-wide recorder or support level); a single-recorder card keeps
 // its content but its capability_known is the context's, never the model's.

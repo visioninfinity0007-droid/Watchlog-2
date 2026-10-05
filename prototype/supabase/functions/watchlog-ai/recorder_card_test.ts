@@ -1,7 +1,7 @@
 // deno test prototype/supabase/functions/watchlog-ai/recorder_card_test.ts
 // MNVR-051: the Watch AI recorder card never claims support WatchLog has not confirmed.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { groundRecorderCards, recorderCardData } from "./recorder_card.ts";
+import { groundRecorderCards, recorderCardData, verifiedOnThisRecorder } from "./recorder_card.ts";
 
 const multiCtx = {
   capability_known: false,
@@ -78,4 +78,14 @@ Deno.test("a model-written single-recorder card cannot claim more than the conte
 Deno.test("grounding tolerates missing input", () => {
   assertEquals(groundRecorderCards(undefined as any, multiCtx), []);
   assertEquals(groundRecorderCards([{ type: "recorder" }], {})[0].data.capability_known, false);
+});
+
+Deno.test("only evidence proven on this recorder counts as verified here (MNVR-049)", () => {
+  const cap = { capability: "channel_title", verdict: "supported", evidence_class: "FIELD_VERIFIED", write: true, safety_class: "safe_write" };
+  assertEquals(verifiedOnThisRecorder({ ...cap, evidence_scope: "recorder" }), true);
+  for (const scope of [undefined, null, "model", "none"]) {
+    assertEquals(verifiedOnThisRecorder({ ...cap, evidence_scope: scope }), false, `scope ${scope}`);
+  }
+  assertEquals(verifiedOnThisRecorder({ ...cap, evidence_class: "OFFICIAL_DOCUMENTED", evidence_scope: "recorder" }), false);
+  assertEquals(verifiedOnThisRecorder(undefined as any), false);
 });
