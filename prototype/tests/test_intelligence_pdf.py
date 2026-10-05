@@ -95,6 +95,37 @@ class RenderHtml(unittest.TestCase):
         self.assertIn("&lt;script&gt;", h)
 
 
+class CoverageUnknown(unittest.TestCase):
+    """MNVR-046: a null coverage_ratio means coverage is UNKNOWN (for example a
+    multi-recorder window that starts before recorder tracking). It must never
+    render as 100% or as continuous monitoring."""
+
+    def unknown(self):
+        r = sample()
+        r["coverage"] = {"coverage_ratio": None, "known": False, "gaps": []}
+        return r
+
+    def test_html_states_unknown_coverage(self):
+        h = ip.render_html(self.unknown())
+        self.assertIn("Monitoring coverage", h)
+        self.assertIn("could not be confirmed", h)
+        self.assertNotIn('cov-n">100%', h)
+
+    def test_pdf_states_unknown_coverage(self):
+        h = ip.render_pdf_html(self.unknown())
+        self.assertIn("could not be confirmed", h)
+        self.assertNotIn("<b>100%</b>", h)
+
+    def test_pdf_zero_coverage_is_not_continuous(self):
+        h = ip.render_pdf_html(sample(coverage_ratio=0.0))
+        self.assertIn("not continuous", h)
+
+    def test_pdf_gap_warning_follows_the_ratio(self):
+        self.assertNotIn("not continuous", ip.render_pdf_html(sample(coverage_ratio=1.0)))
+        self.assertIn("not continuous", ip.render_pdf_html(sample(coverage_ratio=0.82)))
+        self.assertNotIn("could not be confirmed", ip.render_pdf_html(sample(coverage_ratio=0.82)))
+
+
 class PdfEngine(unittest.TestCase):
     def test_render_pdf_is_bytes_or_honest_none(self):
         out = ip.render_pdf(sample())
