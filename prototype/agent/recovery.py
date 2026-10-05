@@ -136,10 +136,10 @@ class RecoveryRunner:
             checkpoint["progress_attempt"] = progress   # the claim that last moved the cursor
         # The verdict so far, carried to the next claim: some of the interval was recovered / some
         # of it could not be. Time behind the cursor is not read again, so it is not forgotten.
-        if examined:
-            checkpoint["examined"] = True
-        if incomplete:
-            checkpoint["incomplete"] = True
+        # Both keys are always written on a checkpoint a later claim resumes from, so one written
+        # by an Agent that did not carry the verdict is told apart.
+        if status == "in_progress":
+            checkpoint["examined"], checkpoint["incomplete"] = bool(examined), bool(incomplete)
         params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key,
                       p_id=interval_id, p_status=status, p_recovered_count=recovered,
                       p_checkpoint=checkpoint)
@@ -238,6 +238,12 @@ class RecoveryRunner:
         # be fully recovered.
         examined = bool(checkpoint.get("examined"))
         incomplete = unresolved > 0 or bool(checkpoint.get("incomplete"))
+        if resume is not None and resume > _as_dt(iv["started_at"])                 and "examined" not in checkpoint and "incomplete" not in checkpoint:
+            # Written by an earlier Agent, which did not carry the verdict for the time behind its
+            # cursor: events it recovered there were sent, so the interval is not unrecoverable,
+            # but that time cannot be called examined to the end (its seen-set also held samples
+            # that failed), so it is partial at best.
+            examined, incomplete = examined or bool(seen), True
         read = []                                         # [(chunk_end, examined, incomplete)]
         recovered = 0
         failed, failed_at, failure = set(), None, None    # failed archive reads in this claim

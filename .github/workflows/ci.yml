@@ -127,7 +127,7 @@ jobs:
       - name: 0.4.4 release-defect regressions (Dahua archive response-close, build-SHA stamping)
         run: python -m pytest prototype/tests/test_dahua_archive_close.py prototype/tests/test_build_metadata.py -q
       - name: Automatic outage recovery — detection, bounded/resumable/idempotent backfill, footage AI, wiring
-        run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_recovery_hikvision_terminal.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_worker_exception_survival.py -q
+        run: python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_recovery_hikvision_terminal.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_legacy_checkpoint.py -q
       - name: Setup archive proof — recorder actually retains retrievable footage (verified/empty/unsupported/unknown)
         run: python -m pytest prototype/tests/test_archive_proof_setup.py -q
       - name: Post-install acceptance self-test — end-to-end site chain, hard/soft gating, no secret leak
