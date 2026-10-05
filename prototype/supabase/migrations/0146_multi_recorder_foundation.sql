@@ -1861,3 +1861,139 @@ $function$;
 revoke all on function public.wl_agent_push_status(uuid,text,uuid)
   from public, anon, authenticated, service_role;
 grant execute on function public.wl_agent_push_status(uuid,text,uuid) to anon;
+
+-- Owner/admin configured decision (0085). It named a camera by site+channel,
+-- which is no longer an identity: with Recorder A ch1 and Recorder B ch1 the
+-- multi-row UPDATE ... RETURNING INTO raised and neither camera could be set.
+-- The camera form names the camera by its id. The channel form stays for the
+-- deployed portal while the site has at most one configured recorder (a
+-- disabled recorder's camera on the same channel is never touched) and fails
+-- closed as ambiguous otherwise. Both forms read the caller's role in the
+-- acting account itself, not the account-blind wl_my_role().
+create or replace function public.wl_set_camera_configured(
+  p_camera_id uuid,
+  p_configured boolean,
+  p_name text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_tenant uuid := public.wl_my_tenant();
+  v_role   text;
+  v_row    public.cameras;
+begin
+  if v_tenant is null then
+    raise exception 'not a member of any account';
+  end if;
+  select m.role into v_role
+    from public.memberships m
+   where m.user_id = auth.uid()
+     and m.tenant_id = v_tenant;
+  if v_role is null or not (v_role = any(array['owner', 'admin'])) then
+    raise exception 'this needs the owner or admin role; you are %',
+      coalesce(v_role, 'not a member')
+      using errcode = '42501';
+  end if;
+
+  update public.cameras c
+     set is_configured = coalesce(p_configured, false),
+         name = case when nullif(trim(coalesce(p_name,'')), '') is not null
+                     then trim(p_name) else c.name end,
+         analytics_enabled = case when coalesce(p_configured,false)
+                                  then c.analytics_enabled else false end
+   where c.id = p_camera_id
+     and c.tenant_id = v_tenant
+  returning * into v_row;
+
+  if v_row.id is null then
+    return jsonb_build_object('ok', false, 'reason', 'unknown_camera');
+  end if;
+
+  return jsonb_build_object(
+    'ok', true, 'camera_id', v_row.id, 'site_id', v_row.site_id,
+    'recorder_id', v_row.recorder_id,
+    'channel', v_row.channel, 'name', v_row.name,
+    'is_configured', v_row.is_configured);
+end
+$function$;
+
+revoke all on function public.wl_set_camera_configured(uuid,boolean,text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.wl_set_camera_configured(uuid,boolean,text)
+  to authenticated;
+
+create or replace function public.wl_set_camera_configured(
+  p_site_id uuid,
+  p_channel text,
+  p_configured boolean,
+  p_name text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_tenant    uuid := public.wl_my_tenant();
+  v_role      text;
+  v_recorders integer;
+  v_matches   integer;
+  v_camera    uuid;
+begin
+  if v_tenant is null then
+    raise exception 'not a member of any account';
+  end if;
+  select m.role into v_role
+    from public.memberships m
+   where m.user_id = auth.uid()
+     and m.tenant_id = v_tenant;
+  if v_role is null or not (v_role = any(array['owner', 'admin'])) then
+    raise exception 'this needs the owner or admin role; you are %',
+      coalesce(v_role, 'not a member')
+      using errcode = '42501';
+  end if;
+
+  select count(*) into v_recorders
+    from public.recorders r
+   where r.tenant_id = v_tenant
+     and r.site_id = p_site_id
+     and r.is_configured;
+
+  if v_recorders > 1 then
+    raise exception 'channel % is ambiguous for a multi-recorder site; choose the camera itself', p_channel
+      using errcode = '42501';
+  end if;
+
+  select count(*), min(c.id::text)::uuid
+    into v_matches, v_camera
+    from public.cameras c
+    join public.recorders r
+      on r.id = c.recorder_id
+     and r.tenant_id = c.tenant_id
+     and r.site_id = c.site_id
+   where c.tenant_id = v_tenant
+     and c.site_id = p_site_id
+     and c.channel = p_channel
+     and (v_recorders = 0 or r.is_configured);
+
+  if v_matches = 0 then
+    return jsonb_build_object('ok', false, 'reason', 'unknown_channel');
+  end if;
+  if v_matches > 1 then
+    raise exception 'channel % is ambiguous for a multi-recorder site; choose the camera itself', p_channel
+      using errcode = '42501';
+  end if;
+
+  return public.wl_set_camera_configured(
+    p_camera_id => v_camera,
+    p_configured => p_configured,
+    p_name => p_name
+  );
+end
+$function$;
+
+revoke all on function public.wl_set_camera_configured(uuid,text,boolean,text)
+  from public, anon;
+grant execute on function public.wl_set_camera_configured(uuid,text,boolean,text)
+  to authenticated;

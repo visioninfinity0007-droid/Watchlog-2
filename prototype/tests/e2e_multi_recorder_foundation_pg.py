@@ -13,6 +13,8 @@ Proves:
 - Recorder A ch1 and Recorder B ch1 remain distinct,
 - legacy ambiguous site+channel sync fails closed once multiple recorders exist,
 - the installer analytics bootstrap is recorder-scoped and fails closed when ambiguous,
+- the owner's configured decision names a camera by id, and its channel form
+  fails closed on overlapping channels,
 - explicit recorder sync is tenant/site scoped and requires current Agent authority,
 - authenticated portal reads are tenant-isolated by RLS,
 - camera/recorder composite lineage cannot cross tenants/sites,
@@ -75,6 +77,18 @@ def run() -> int:
                     cur.execute("reset role")
                     cur.execute("release savepoint auth_sp")
                 return row
+
+            def as_authenticated_raises(uid, sql, *params):
+                cur.execute("savepoint auth_err")
+                cur.execute("select set_config('request.jwt.claims', %s, true)", (claims(uid),))
+                cur.execute("set local role authenticated")
+                raised, message = False, ""
+                try:
+                    cur.execute(sql, params or None).fetchone()
+                except psycopg.Error as exc:
+                    raised, message = True, str(exc).splitlines()[0]
+                cur.execute("rollback to savepoint auth_err")
+                return raised, message
 
             def as_anon(sql, *params):
                 cur.execute("savepoint anon_sp")
@@ -384,6 +398,44 @@ def run() -> int:
             step(raised and "not configured for this agent site" in msg.lower(),
                  "analytics bootstrap rejects a recorder outside the Agent site", msg)
 
+            # The owner's configured decision (0085) named a camera by
+            # site+channel. With A ch1 and B ch1 that is ambiguous: the channel
+            # form fails closed with a clear error and the camera form sets
+            # exactly one recorder's camera.
+            configured_before = {
+                str(r[0]): r[1] for r in cur.execute(
+                    "select id,is_configured from cameras where site_id=%s and channel='1'",
+                    (sa,),
+                ).fetchall()
+            }
+            raised, msg = as_authenticated_raises(
+                ua, "select wl_set_camera_configured(%s,'1',false,null)", sa,
+            )
+            step(raised and "ambiguous" in msg.lower(),
+                 "owner channel-keyed camera decision fails closed on overlapping channels", msg)
+            set_b = as_authenticated(
+                ua,
+                "select wl_set_camera_configured(p_camera_id=>%s,p_configured=>false)",
+                map_b["1"],
+            )[0]
+            configured_after = {
+                str(r[0]): r[1] for r in cur.execute(
+                    "select id,is_configured from cameras where site_id=%s and channel='1'",
+                    (sa,),
+                ).fetchall()
+            }
+            step(set_b.get("ok") is True
+                 and str(set_b.get("recorder_id")) == str(rec_b_id)
+                 and configured_after[str(map_b["1"])] is False
+                 and configured_after[str(map_a["1"])] == configured_before[str(map_a["1"])],
+                 "owner camera-keyed decision changes only Recorder B's ch1",
+                 json.dumps(set_b, default=str))
+            as_authenticated(
+                ua,
+                "select wl_set_camera_configured(p_camera_id=>%s,p_configured=>true)",
+                map_b["1"],
+            )
+
             # ------------------------------------------------------------------
             # Tenant/site isolation.
             # ------------------------------------------------------------------
@@ -570,6 +622,31 @@ def run() -> int:
                  and boot_names.get(str(secondary_cam)) == "Secondary C1",
                  "legacy analytics bootstrap after rollback leaves the disabled recorder's ch1 alone",
                  json.dumps(boot_names))
+
+            renamed = as_authenticated(
+                uc, "select wl_set_camera_configured(%s,'1',true,'Owner Named C1')", sc,
+            )[0]
+            owner_names = {
+                str(r[0]): r[1] for r in cur.execute(
+                    "select id,name from cameras where id in (%s,%s)",
+                    (primary_cam, secondary_cam),
+                ).fetchall()
+            }
+            step(renamed.get("ok") is True
+                 and owner_names.get(str(primary_cam)) == "Owner Named C1"
+                 and owner_names.get(str(secondary_cam)) == "Secondary C1",
+                 "owner channel-keyed decision on a single configured recorder sets only its camera",
+                 json.dumps(owner_names))
+            foreign_set = as_authenticated(
+                uc,
+                "select wl_set_camera_configured(p_camera_id=>%s,p_configured=>false)",
+                map_a["1"],
+            )[0]
+            step(foreign_set.get("ok") is False
+                 and cur.execute("select is_configured from cameras where id=%s",
+                                 (map_a["1"],)).fetchone()[0] is True,
+                 "owner camera-keyed decision cannot touch another account's camera",
+                 json.dumps(foreign_set, default=str))
 
             # Exact EXECUTE ACLs.
             def execute_grantees(sig):
