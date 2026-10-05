@@ -16,13 +16,17 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    env:
+      # The real-FFmpeg tests (clip probe, PS -> MP4 remux, frame decode) fail instead of
+      # skipping when no FFmpeg is found; imageio-ffmpeg below is where the release finds it.
+      WATCHLOG_REQUIRE_FFMPEG: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install offline test deps
-        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml
+        run: python -m pip install --quiet pillow requests numpy onnxruntime tzdata pytest xhtml2pdf cryptography pyyaml imageio-ffmpeg
       - name: Compile all Python
         run: python -m compileall -q prototype tools
       - name: Test hygiene guards (every test file runs in CI; no test writes to the real ProgramData)

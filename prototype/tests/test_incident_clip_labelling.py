@@ -9,6 +9,7 @@ with the bundled FFmpeg; a clip that cannot be made playable is never given a fa
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -100,7 +101,10 @@ def _ffmpeg():
         return shutil.which("ffmpeg")
 
 
-@pytest.mark.skipif(not _ffmpeg(), reason="no FFmpeg available")
+# CI sets WATCHLOG_REQUIRE_FFMPEG=1 and installs FFmpeg: there a missing FFmpeg fails the test
+# instead of skipping it silently.
+@pytest.mark.skipif(not _ffmpeg() and not os.environ.get("WATCHLOG_REQUIRE_FFMPEG"),
+                    reason="no FFmpeg available")
 def test_real_mpeg_ps_export_becomes_a_playable_mp4():
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "clip.mpg"

@@ -10,6 +10,7 @@ provider and sink are injected, so nothing here needs a recorder or a video deco
 from __future__ import annotations
 
 import base64
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -544,7 +545,9 @@ class RecoveredFramePosition(unittest.TestCase):
         self.assertEqual(frame, b"FRAME@" + ts.isoformat().encode())
 
 
-    @unittest.skipUnless(recovery_ai._ffmpeg_exe(), "FFmpeg not available")
+    # CI sets WATCHLOG_REQUIRE_FFMPEG=1 and installs FFmpeg: there a missing FFmpeg fails.
+    @unittest.skipUnless(recovery_ai._ffmpeg_exe() or os.environ.get("WATCHLOG_REQUIRE_FFMPEG"),
+                         "FFmpeg not available")
     def test_ffmpeg_decode_follows_the_same_rules(self):
         """The production decoder: seek inside media, nothing past its end."""
         import os
