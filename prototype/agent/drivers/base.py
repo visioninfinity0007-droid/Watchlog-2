@@ -60,7 +60,7 @@ class Event:
     wl_ingest_events(), never here, so a stale agent build cannot weaken
     it.
     """
-    channel: str
+    channel: str | None          # None: the recorder's own event (disk, alarm input), no camera
     event_type: str
     device_ts: datetime
     device_event_id: str | None = None
@@ -72,7 +72,9 @@ class Event:
 
     def to_json(self, agent_ts: datetime) -> dict:
         out = {
-            "channel": str(self.channel),
+            # A recorder-scoped event has no camera: JSON null, never the string "None",
+            # so wl_ingest_events joins no camera for it.
+            "channel": None if self.channel is None else str(self.channel),
             "event_type": self.event_type,
             "device_event_id": self.device_event_id,
             "device_ts": _iso(self.device_ts),
