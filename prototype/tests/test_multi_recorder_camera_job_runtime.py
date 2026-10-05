@@ -118,7 +118,8 @@ class _Driver:
     def get_clip(self, channel, start, end):
         if self.clip_error:
             raise self.clip_error
-        return b"clip"
+        # An MP4 container header: clips are labelled by their container, not the driver.
+        return b"\x00\x00\x00\x18ftypmp42clip"
 
     def close(self):
         self.closed = True
