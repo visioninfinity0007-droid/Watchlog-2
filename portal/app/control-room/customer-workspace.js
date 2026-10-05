@@ -22,6 +22,7 @@ import {
   ratioPct,
 } from "../owner/ui";
 import styles from "./cameras.module.css";
+import { atMostOneRecorder, latestEventFor, latestEventIndex } from "./camera-events";
 
 function human(v) {
   return String(v || "Not verified")
@@ -418,20 +419,10 @@ export default function CustomerCameraView() {
     return map;
   }, [restaurantConfig]);
 
-  // Latest camera event per camera. Camera UUID is canonical; recorder+channel
-  // is only a compatibility fallback for older cached context rows.
-  const latestEventByCamera = useMemo(() => {
-    const map = new Map();
-    for (const e of ctx?.recent_events || []) {
-      const cameraKey = e.camera_id ? "camera:" + String(e.camera_id) : "";
-      const recorderKey = e.recorder_id && e.channel != null
-        ? "recorder:" + String(e.recorder_id) + ":" + String(e.channel)
-        : "";
-      if (cameraKey && !map.has(cameraKey)) map.set(cameraKey, e);
-      if (recorderKey && !map.has(recorderKey)) map.set(recorderKey, e);
-    }
-    return map;
-  }, [ctx]);
+  // Latest camera event per camera: camera UUID first, then recorder+channel. Channel alone only
+  // for an event without either id (context before 0152) on a site with one recorder at most.
+  const latestEventByCamera = useMemo(() => latestEventIndex(ctx?.recent_events), [ctx]);
+  const channelFallback = atMostOneRecorder(recorderRows, ctx);
 
   const cameraGroups = useMemo(() => {
     if (multiRecorder) {
@@ -564,8 +555,7 @@ export default function CustomerCameraView() {
     const role = roleByCamera.get(String(c.id));
     const purpose = role ? human(role) : c.purpose ? human(c.purpose) : "Purpose not set";
     const recorderId = String(c.recorder_id || recorderByCamera.get(String(c.id)) || "");
-    const latest = latestEventByCamera.get("camera:" + String(c.id))
-      || (recorderId ? latestEventByCamera.get("recorder:" + recorderId + ":" + String(c.channel ?? "")) : null);
+    const latest = latestEventFor(latestEventByCamera, c, { recorderId, channelFallback, cameras: ctx?.cameras });
     const evidenceHref = latest?.event_id
       ? withSite("/incidents/evidence/?event=" + encodeURIComponent(latest.event_id), siteId)
       : withSite("/incidents/evidence/", siteId);

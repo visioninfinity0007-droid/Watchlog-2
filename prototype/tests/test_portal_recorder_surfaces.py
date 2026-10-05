@@ -5,6 +5,7 @@ The recorder rules live in React-free modules so they can be checked in plain no
   portal/app/site-health/recorder-impact.js    MNVR-068 recorder root cause, distinct issue count
   portal/app/site-control/recorder-control.js  MNVR-048 recorder grouping, MNVR-049 evidence labels
   portal/app/ai/recorder-card.js               MNVR-051 "Checked" only on capability_known === true
+  portal/app/control-room/camera-events.js     latest camera event per camera, by camera identity
 The static checks below make sure each surface really renders through those modules.
 """
 import shutil
@@ -19,6 +20,7 @@ MODULES = (
     APP / "site-health" / "recorder-impact.js",
     APP / "site-control" / "recorder-control.js",
     APP / "ai" / "recorder-card.js",
+    APP / "control-room" / "camera-events.js",
 )
 
 

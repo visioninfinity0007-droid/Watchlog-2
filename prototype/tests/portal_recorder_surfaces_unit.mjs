@@ -2,11 +2,13 @@
 //   argv[2] portal/app/site-health/recorder-impact.js   System Health root cause (MNVR-068)
 //   argv[3] portal/app/site-control/recorder-control.js Site Control grouping + labels (MNVR-048/049)
 //   argv[4] portal/app/ai/recorder-card.js              Watch AI recorder card (MNVR-051)
+//   argv[5] portal/app/control-room/camera-events.js    Cameras & Evidence latest event per camera
 // Run through test_portal_recorder_surfaces.py, which copies each module to an .mjs file first.
 import assert from "node:assert/strict";
 const H = await import(process.argv[2]);
 const C = await import(process.argv[3]);
 const K = await import(process.argv[4]);
+const E = await import(process.argv[5]);
 
 let passed = 0;
 const failures = [];
@@ -343,6 +345,61 @@ t("a single-recorder card says Checked only on an explicit true", () => {
   assert.equal(value({ recorder: { vendor: "X", model: "Y" }, capability_known: true }), "Checked");
   assert.equal(K.recorderCardRows({ recorder: { vendor: "X", model: "Y" } }).find(r => r.label === "System").value, "X Y");
   assert.equal(K.recorderCardRows({}).find(r => r.label === "System").value, "Not identified");
+});
+
+// --- Cameras & Evidence: latest camera event per camera ---------------------------------------
+const latestFor = (ctx, recorderRows = []) => {
+  const index = E.latestEventIndex(ctx.recent_events);
+  const channelFallback = E.atMostOneRecorder(recorderRows, ctx);
+  const recorderOf = c => String(c.recorder_id || recorderRows.find(r => (r.camera_ids || []).map(String).includes(String(c.id)))?.id || "");
+  return Object.fromEntries(ctx.cameras.map(c => [c.id, E.latestEventFor(index, c, { recorderId: recorderOf(c), channelFallback, cameras: ctx.cameras })?.event_id ?? null]));
+};
+// wl_ai_context before 0152 (0128): recent events carry no camera_id/recorder_id, cameras no recorder_id,
+// and wl_my_site_recorders does not exist yet, so the page has no recorder rows.
+const pre0152 = {
+  cameras: [
+    { id: "k1", channel: "1", name: "Floor 1", monitor: true },
+    { id: "k2", channel: "2", name: "Floor 2", monitor: true },
+    { id: "k3", channel: "3", name: "Kitchen", monitor: true },
+  ],
+  recent_events: [
+    { event_id: "e9", event_type: "visual_sample", device_ts: "2026-10-01T07:59:00Z", camera: "Floor 2", channel: "2", source: "live", recovered: false },
+    { event_id: "e8", event_type: "visual_sample", device_ts: "2026-10-01T07:58:00Z", camera: "Floor 1", channel: "1", source: "live", recovered: false },
+    { event_id: "e7", event_type: "visual_sample", device_ts: "2026-10-01T07:50:00Z", camera: "Floor 1", channel: "1", source: "live", recovered: false },
+  ],
+};
+t("pre-0152 context: a single-recorder site still shows each camera's latest event", () => {
+  assert.deepEqual(latestFor(pre0152), { k1: "e8", k2: "e9", k3: null });
+});
+
+t("pre-0152 context: a channel shared by two cameras never picks one of them", () => {
+  const ctx = { ...pre0152, cameras: [...pre0152.cameras, { id: "k4", channel: "1", name: "Camera 1", monitor: true }] };
+  const got = latestFor(ctx);
+  assert.equal(got.k1, null);
+  assert.equal(got.k4, null);
+  assert.equal(got.k2, "e9");
+});
+
+t("an id-less event is never matched by channel on a multi-recorder site", () => {
+  const ctx = { ...pre0152, cameras: pre0152.cameras.map((c, i) => ({ ...c, recorder_id: i ? "rec-b" : "rec-a" })) };
+  assert.deepEqual(latestFor(ctx), { k1: null, k2: null, k3: null });
+  const rows = [{ id: "rec-a", camera_ids: ["k1"] }, { id: "rec-b", camera_ids: ["k2", "k3"] }];
+  assert.deepEqual(latestFor(pre0152, rows), { k1: null, k2: null, k3: null });
+});
+
+t("v7 context: camera identity wins and overlapping Channel 1 stays per recorder", () => {
+  const ctx = {
+    recorders: [{ id: "rec-a" }, { id: "rec-b" }],
+    cameras: [
+      { id: "c1", recorder_id: "rec-a", channel: 1, name: "Main entrance", monitor: true },
+      { id: "c3", recorder_id: "rec-b", channel: 1, name: "Rear access", monitor: true },
+    ],
+    recent_events: [
+      { event_id: "b1", camera_id: "c3", recorder_id: "rec-b", channel: 1, event_type: "vehicle", device_ts: "2026-10-01T07:56:00Z" },
+      { event_id: "a1", camera_id: "c1", recorder_id: "rec-a", channel: 1, event_type: "person", device_ts: "2026-10-01T07:55:00Z" },
+    ],
+  };
+  assert.deepEqual(latestFor(ctx, ctx.recorders), { c1: "a1", c3: "b1" });
 });
 
 if (failures.length) {

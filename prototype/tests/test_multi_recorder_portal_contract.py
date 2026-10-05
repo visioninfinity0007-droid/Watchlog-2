@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 HEALTH=(ROOT/"portal/app/site-health/health-workspace.js").read_text(encoding="utf-8")
 CAMERAS=(ROOT/"portal/app/control-room/customer-workspace.js").read_text(encoding="utf-8")
+CAMERA_EVENTS=(ROOT/"portal/app/control-room/camera-events.js").read_text(encoding="utf-8")
 MIG=(ROOT/"prototype/supabase/migrations/0152_multi_recorder_owner_read_model.sql").read_text(encoding="utf-8")
 VISUAL_QA=(ROOT/"portal/tests/visual-qa.mjs").read_text(encoding="utf-8")
 # Context v7 is the first owner/AI context with recorder provenance (recorder rows, camera and
@@ -66,10 +67,15 @@ def main():
             raise AssertionError(f"System Health leaks recorder vendor/model detail: {unsafe}")
 
     # Camera evidence identity is camera UUID first; channel-only lookup is
-    # forbidden once recorders can both have Channel 1.
+    # forbidden once recorders can both have Channel 1. The rules live in camera-events.js
+    # (unit-checked in test_portal_recorder_surfaces.py), including the guarded channel
+    # fallback for a pre-0152 context on a site with one recorder at most.
     require(CAMERAS,"latestEventByCamera","Camera View must index recent events by camera identity")
-    require(CAMERAS,'e.camera_id ? "camera:"',"Camera View must prefer camera_id")
-    require(CAMERAS,'"recorder:" + String(e.recorder_id)',"Camera View recorder+channel fallback missing")
+    require(CAMERAS,'from "./camera-events"',"Camera View must use the camera-event identity rules")
+    require(CAMERAS,"latestEventFor(","Camera View must look events up through the identity rules")
+    require(CAMERA_EVENTS,'"camera:"+String(e.camera_id)',"Camera View must prefer camera_id")
+    require(CAMERA_EVENTS,'"recorder:"+String(e.recorder_id)',"Camera View recorder+channel fallback missing")
+    require(CAMERA_EVENTS,"onChannel===1","the channel fallback must require one camera on that channel")
     if "latestEventByChannel" in CAMERAS:
         raise AssertionError("Camera View must not use channel-only recent-event identity")
     require(CAMERAS,"multiRecorder","Camera View must detect multi-recorder sites")
