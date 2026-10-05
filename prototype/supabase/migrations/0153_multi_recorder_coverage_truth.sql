@@ -194,9 +194,13 @@ for each row execute function public.wl_recorder_coverage_registry_trigger();
 -- Silent health is unknown (MNVR-016): when a report arrives more than the
 -- 15-minute freshness window after the recorder's previous report (from any
 -- Agent), the silent stretch from previous report + 15 minutes to this report
--- is recorded as a closed 'health_stale' interval, unless an open interval
--- already covers it. The read model also treats the current silent tail as
--- unknown, so a stopped Agent or recorder thread never leaves stale LIVE.
+-- is recorded as a closed 'health_stale' interval, clipped to end where an open
+-- interval begins (an open interval that started earlier already covers it).
+-- It is never skipped just because some interval is open: a recorder disabled
+-- and re-enabled gets a fresh UNKNOWN at re-enable, and the silence before it
+-- (including the disabled stretch) must stay unknown. The read model also
+-- treats the current silent tail as unknown, so a stopped Agent or recorder
+-- thread never leaves stale LIVE.
 create or replace function public.wl_recorder_health_coverage_trigger()
 returns trigger
 language plpgsql
@@ -208,6 +212,7 @@ declare
   v_at timestamptz := coalesce(new.updated_at,now());
   v_prev_at timestamptz;
   v_stale_from timestamptz;
+  v_stale_to timestamptz;
 begin
   select max(h.updated_at)
     into v_prev_at
@@ -222,7 +227,13 @@ begin
 
   v_stale_from := v_prev_at+interval '15 minutes';
 
-  if v_stale_from<v_at
+  select least(v_at,coalesce(min(x.started_at),v_at))
+    into v_stale_to
+    from public.recorder_coverage_intervals x
+   where x.recorder_id=new.recorder_id
+     and x.ended_at is null;
+
+  if v_stale_from<v_stale_to
      and exists (
        select 1 from public.recorders r
         where r.id=new.recorder_id
@@ -230,17 +241,12 @@ begin
           and r.site_id=new.site_id
           and r.is_configured
      )
-     and not exists (
-       select 1 from public.recorder_coverage_intervals x
-        where x.recorder_id=new.recorder_id
-          and x.ended_at is null
-     )
   then
     insert into public.recorder_coverage_intervals(
       tenant_id,site_id,recorder_id,started_at,ended_at,cause,source
     ) values (
       new.tenant_id,new.site_id,new.recorder_id,
-      v_stale_from,v_at,'health_stale','recorder_health_stale'
+      v_stale_from,v_stale_to,'health_stale','recorder_health_stale'
     );
   end if;
 

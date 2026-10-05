@@ -623,6 +623,49 @@ def run() -> int:
                 json.dumps(stale["recorders"], default=str),
             )
 
+            # Disabling and re-enabling a recorder must not erase its silent
+            # stretch. Recorder B last reported 3 hours ago; it is retired and
+            # re-added (registry trigger opens a fresh UNKNOWN at re-enable),
+            # then reports healthy. Its silence from last report + 15 minutes
+            # stays unknown instead of counting as LIVE.
+            reset_window()
+            cur.execute(
+                "delete from recorder_health where recorder_id=%s and agent_id<>%s",
+                (rec_b, agent_a),
+            )
+            cur.execute(
+                """update recorder_health
+                      set nvr_reachable=true,nvr_auth_ok=true,reason_code='ok',
+                          updated_at=case when recorder_id=%s
+                                          then now()-interval '3 hours' else now() end
+                    where recorder_id in (%s,%s) and agent_id=%s""",
+                (rec_b, rec_a, rec_b, agent_a),
+            )
+            cur.execute(
+                """update recorders set coverage_tracking_started_at=now()-interval '4 hours'
+                    where site_id=%s""",
+                (sa,),
+            )
+            cur.execute("delete from recorder_coverage_intervals where site_id=%s", (sa,))
+            cur.execute("update recorders set is_configured=false where id=%s", (rec_b,))
+            cur.execute("update recorders set is_configured=true where id=%s", (rec_b,))
+            cur.execute(
+                "update recorder_health set updated_at=now() where recorder_id=%s and agent_id=%s",
+                (rec_b, agent_a),
+            )
+            readd = cur.execute(
+                """select wl_site_recorder_coverage_facts(
+                          %s,now()-interval '4 hours',now())""",
+                (sa,),
+            ).fetchone()[0]
+            readd_b = {r["name"]: r for r in readd["recorders"]}["Recorder B"]
+            step(
+                round(float(readd_b["unverified_seconds"])) == 9900
+                and "health_stale" in {g["cause"] for g in readd_b["gaps"]},
+                "a disabled and re-enabled recorder keeps its silent stretch unknown",
+                json.dumps(readd_b, default=str)[:400],
+            )
+
             # Exact ACLs.
             def execute_grantees(sig):
                 rows = cur.execute(
