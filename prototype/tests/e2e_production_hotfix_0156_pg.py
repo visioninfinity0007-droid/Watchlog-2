@@ -15,7 +15,9 @@ Proves, against the applied migration chain:
      Agent completed within a bounded window, marks them expired (never as a
      delivered image), leaves fresh requests alone, frees the camera for a new
      request, removes them from the Agent's config poll, is idempotent, and is
-     callable by service_role only.
+     callable by service_role only. The scheduled run frees the Agent's two poll
+     slots from manual requests stuck for over an hour, so a newer restaurant
+     request is not starved for a day.
 
     python prototype/tests/e2e_production_hotfix_0156_pg.py
 
@@ -301,6 +303,43 @@ def main() -> int:
         step(n_tight == 1 and state(fresh_manual) == (True, True, True)
              and state(fresh_rest)[0] is False,
              "explicit 60-minute manual window expires a 90-minute request only", f"expired {n_tight}")
+
+        # Head of line: the Agent services only the first two requests of its poll
+        # (SNAPSHOT_REQUESTS_PER_POLL), oldest first, and a request it cannot deliver
+        # stays open. Two manual requests for cameras that never return an image must
+        # not keep a newer restaurant request out of those two slots for more than
+        # about an hour. Runs the exact scheduled command when the cron shim has it.
+        q("update camera_snapshot_requests set completed_at=now() "
+          "where completed_at is null and tenant_id=%s returning id", tenant)
+        stuck_b = q("insert into camera_snapshot_requests (tenant_id, site_id, camera_id, "
+                    "requested_at, request_source) values (%s,%s,%s, now() - interval '2 hours', "
+                    "'manual') returning id", tenant, site, cam_b)[0]
+        stuck_c = q("insert into camera_snapshot_requests (tenant_id, site_id, camera_id, "
+                    "requested_at, request_source) values (%s,%s,%s, now() - interval '100 minutes', "
+                    "'manual') returning id", tenant, site, cam_c)[0]
+        rest_new = q("insert into camera_snapshot_requests (tenant_id, site_id, camera_id, "
+                     "requested_at, request_source) values (%s,%s,%s, now() - interval '10 minutes', "
+                     "'restaurant_analytics') returning id", tenant, site, cam_a)[0]
+
+        def agent_slots():
+            p = q("select wl_agent_analytics_config(%s,%s,0)", agent, key)[0]
+            return [r["request_id"] for r in p.get("snapshot_requests", [])][:2]
+
+        step(str(rest_new) not in agent_slots(),
+             "precondition: two stuck manual requests hold both Agent snapshot slots")
+        expire_sql = "select public.wl_expire_stale_snapshot_requests()"
+        if q("select to_regclass('cron.job') is not null")[0]:
+            job = q("select command from cron.job "
+                    "where jobname='watchlog-expire-stale-snapshot-requests'")
+            if job is not None and job[0]:
+                expire_sql = job[0]
+        q(expire_sql)
+        slots = agent_slots()
+        step(str(rest_new) in slots and state(stuck_b) == (True, True, True)
+             and state(stuck_c) == (True, True, True),
+             "scheduled expiry closes manual requests stuck for over an hour; "
+             "the newer restaurant request reaches an Agent slot",
+             f"command {expire_sql!r}, slots {slots}")
 
         if q("select to_regclass('cron.job') is not null")[0]:
             job = q("select schedule, command from cron.job "
