@@ -14,6 +14,9 @@ Proves:
   100%, and names recovered camera-time on a multi-recorder site (MNVR-046);
 - wl_my_daily_intelligence inherits the same effective coverage source;
 - wl_my_site_diagnosis / wl_ai_context inherit the same source;
+- wl_my_site_diagnosis is recorder-aware: no site-level recorder/capability
+  profile on a multi-recorder site, one entry per recorder with its own
+  identity and cameras, every camera labelled by recorder (MNVR-048);
 - direct coverage-classes access is tenant scoped;
 - true single-recorder sites keep the legacy classes contract.
 """
@@ -391,6 +394,70 @@ def run() -> int:
                 and float(dcov["coverage_ratio"]) < 1.0,
                 "owner diagnosis cannot report fully verified while Recorder B has a current gap",
                 json.dumps(dcov, default=str),
+            )
+
+            # MNVR-048: Recorder A is a Dahua, Recorder B a Hikvision. The site
+            # Agent row reports the primary's device. Site Control must not
+            # project one recorder's identity/capabilities onto the whole site.
+            cur.execute(
+                """update recorders set vendor='Dahua',model='DH-XVR1B08-I',firmware='4.001'
+                    where id=%s""",
+                (rec_a,),
+            )
+            cur.execute(
+                "update recorders set vendor='Hikvision',model='DS-7608NI-Q1' where id=%s",
+                (rec_b,),
+            )
+            cur.execute(
+                """update agents set device_vendor='Dahua',device_model='DH-XVR1B08-I',
+                          device_driver='dahua' where id=%s""",
+                (agent_a,),
+            )
+            diag = as_auth(ua, "select wl_my_site_diagnosis(%s)", sa)[0]
+            step(
+                diag.get("multi_recorder") is True
+                and diag.get("recorder_count") == 2
+                and diag["recorder"] is None
+                and diag["capabilities"] is None
+                and diag["capability_known"] is False,
+                "MNVR-048: a multi-recorder site has no site-level recorder or capability profile",
+                json.dumps({k: diag.get(k) for k in (
+                    "multi_recorder", "recorder_count", "recorder", "capability_known")},
+                    default=str),
+            )
+            by_rec = {r["recorder_id"]: r for r in diag.get("recorders") or []}
+            ra, rb = by_rec.get(str(rec_a), {}), by_rec.get(str(rec_b), {})
+            known_b = cur.execute(
+                "select jsonb_array_length(wl_recorder_profile('Hikvision','DS-7608NI-Q1'))>0"
+            ).fetchone()[0]
+            step(
+                set(by_rec) == {str(rec_a), str(rec_b)}
+                and (ra.get("display_name"), ra.get("vendor"), ra.get("model"), ra.get("firmware"))
+                == ("Recorder A", "Dahua", "DH-XVR1B08-I", "4.001")
+                and (rb.get("display_name"), rb.get("vendor"), rb.get("model"))
+                == ("Recorder B", "Hikvision", "DS-7608NI-Q1")
+                and ra.get("capability_known") is True
+                and rb.get("capability_known") is known_b,
+                "MNVR-048: each recorder carries its own identity and capability knowledge",
+                json.dumps(diag.get("recorders"), default=str)[:600],
+            )
+            step(
+                [c["camera_id"] for c in ra.get("cameras") or []]
+                == [str(cams_a["1"]), str(cams_a["2"])]
+                and [(c["camera_id"], c["channel"], c["name"]) for c in rb.get("cameras") or []]
+                == [(str(cams_b["1"]), "1", "B1")]
+                and ra.get("camera_count") == 2 and rb.get("camera_count") == 1,
+                "MNVR-048: cameras are grouped under their own recorder",
+            )
+            flat = diag["cameras"]
+            step(
+                len(flat) == 3
+                and len({c.get("camera_id") for c in flat}) == 3
+                and {(c.get("recorder_name"), c["channel"], c["name"]) for c in flat}
+                == {("Recorder A", "1", "A1"), ("Recorder A", "2", "A2"),
+                    ("Recorder B", "1", "B1")},
+                "MNVR-048: overlapping Channel 1 cameras are distinct and labelled by recorder",
+                json.dumps(flat, default=str)[:400],
             )
 
             daily = as_auth(
