@@ -2,7 +2,9 @@
 """Hardware-free contracts for the Hikvision ISAPI archive/download implementation."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sys
 
@@ -10,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT = ROOT / "agent"
 sys.path.insert(0, str(AGENT))
 
+import backfill  # noqa: E402
 import hikvision_archive as ha  # noqa: E402
+import recovery_ai  # noqa: E402
 from drivers.hikvision import HikvisionDriver  # noqa: E402
 
 
@@ -50,11 +54,12 @@ class Session:
     def __init__(self):
         self.calls = []
         self.auth = None
+        self.search_xml = SEARCH_XML
     def post(self, url, data=None, headers=None, stream=False, timeout=None):
         body = data.decode() if isinstance(data, bytes) else str(data or "")
         self.calls.append(("POST", url, body, bool(stream), timeout))
         if url.endswith("/ISAPI/ContentMgmt/search"):
-            return Response(SEARCH_XML)
+            return Response(self.search_xml)
         raise AssertionError(url)
     def request(self, method, url, data=None, headers=None, stream=False, timeout=None):
         body = data.decode() if isinstance(data, bytes) else str(data or "")
@@ -70,6 +75,28 @@ def driver():
     d = HikvisionDriver("http://192.168.1.64", "admin", "secret", timeout=2)
     d.s = Session()
     return d
+
+
+def last_page_driver():
+    # One complete page: the shared fixture always answers MORE, which pages forever.
+    d = driver()
+    d.s.search_xml = SEARCH_XML.replace(b"MORE", b"OK")
+    return d
+
+
+@contextmanager
+def without_media_probe():
+    # The fake recorder streams placeholder bytes, not real video, so the bundled-FFmpeg
+    # check is switched off for the transfer contracts below.
+    original = getattr(ha, "_probe_clip", None)
+    ha._probe_clip = lambda data: None
+    try:
+        yield
+    finally:
+        if original is None:
+            del ha._probe_clip
+        else:
+            ha._probe_clip = original
 
 
 def test_search_track_time_and_pagination():
@@ -98,14 +125,56 @@ def test_enumeration_is_recovery_shape():
     event = result["events"][0]
     assert event["type"] == "recorded_segment"
     assert event["channel"] == "1"
-    assert event["segment"]["playback_uri"].startswith("rtsp://")
+    assert event["segment"]["start"] == "2026-09-25T08:00:00Z"
+    assert event["segment"]["end"] == "2026-09-25T08:01:00Z"
+
+
+def test_enumerated_segments_carry_no_recorder_address():
+    d = driver()
+    start = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 25, 8, 2, tzinfo=timezone.utc)
+    row = ha.enumerate_historical_events(d, "1", start, end, None, 8)["events"][0]
+    assert row["device_event_id"].startswith("hik:")
+    assert "://" not in row["device_event_id"]
+    assert "192.168" not in json.dumps(row) and "rtsp" not in json.dumps(row)
+    again = ha.enumerate_historical_events(driver(), "1", start, end, None, 8)["events"][0]
+    assert again["device_event_id"] == row["device_event_id"], "stable dedupe key"
+
+
+def test_segments_are_not_replayed_as_recorder_events():
+    ha.install()
+    d = last_page_driver()
+    start = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 25, 8, 2, tzinfo=timezone.utc)
+    events = []
+    result = backfill.backfill_events(d, "1", start, end, on_event=events.append)
+    assert events == []
+    assert result["status"] == "unsupported"
+
+
+def test_recovered_snapshots_carry_no_recorder_address():
+    ha.install()
+    d = last_page_driver()
+    start = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 25, 8, 2, tzinfo=timezone.utc)
+    events = []
+    seen = set()
+    result = recovery_ai.backfill_intelligence(
+        d, None, "1", start, end, seen=seen, on_event=events.append,
+        frame_provider=lambda drv, ch, ts: b"\xff\xd8\xff" + b"jpeg")
+    assert result["status"] == "supported" and events
+    for event in events:
+        assert "://" not in event["device_event_id"]
+        assert "192.168" not in json.dumps(event["payload"])
+    assert not any("://" in key for key in seen), "recovery checkpoint keys stay address-free"
 
 
 def test_clip_download_is_bounded_binary_path():
     d = driver()
     start = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
     end = datetime(2026, 9, 25, 8, 0, 10, tzinfo=timezone.utc)
-    data = ha.get_clip(d, "1", start, end)
+    with without_media_probe():
+        data = ha.get_clip(d, "1", start, end)
     assert data == b"RECORDED-VIDEO"
     assert d.s.calls[0][1].endswith("/ISAPI/ContentMgmt/search")
     download = [row for row in d.s.calls if row[1].endswith("/ISAPI/ContentMgmt/download")]
@@ -120,7 +189,8 @@ def test_install_exposes_archive_to_production_driver():
     d = driver()
     assert callable(getattr(d, "get_clip"))
     assert d.historical_capability()["segments"] == "supported"
-    assert d.historical_capability()["events"] == "supported"
+    # Recording segments are not recorder events; the recorder's event log is not searched.
+    assert d.historical_capability()["events"] == "unsupported"
 
 
 if __name__ == "__main__":

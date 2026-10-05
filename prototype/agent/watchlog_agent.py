@@ -116,6 +116,15 @@ def mask(secret: str | None) -> str:
     return f"{secret[:6]}...{secret[-4:]} ({len(secret)} chars)"
 
 
+def worker_fault(worker: str, error: BaseException) -> None:
+    """Last-resort log for a background worker loop. It never raises: anything escaping a
+    worker's handler ends that thread for the life of the process, and nothing restarts it."""
+    try:
+        log(f"{worker}: {type(error).__name__}: {nvr_health.redact(str(error))}")
+    except BaseException:                              # noqa: BLE001
+        pass
+
+
 _RUNTIME_HEALTH_LOCK = threading.Lock()
 
 
@@ -544,16 +553,180 @@ def open_driver(cfg: Config):
         raise primary
 
 
-def open_archive_driver(cfg: Config):
+# ONVIF profile names of the form MediaProfile_Channel<N> are read as the recorder's own channel
+# number for that video source (the label 0117 already uses for physical_channel). ASSUMPTION,
+# IMPLEMENTED_UNVERIFIED: that ONVIF Channel<N> is the same input as native CGI/ISAPI channel N
+# has not been checked on recorder hardware. The ONVIF camera channel itself is only the order in
+# which GetProfiles listed the sources.
+_ONVIF_CHANNEL_LABEL = r"mediaprofile[_ -]*channel(\d+)"
+
+_ARCHIVE_CHANNEL_UNVERIFIED = ("WatchLog could not confirm which recorder input this camera uses, "
+                               "so recorded footage was not retrieved.")
+
+
+def _onvif_channel_labels(onvif) -> dict:
+    """{ONVIF camera channel: recorder channel labels on its profiles}. Read-only.
+
+    The camera channels and their SourceTokens come from the driver's own list_channels(), so
+    they are exactly the ids live events and the cloud use. A profile with no label adds "".
+    """
+    import re
+    channels = [str(c.channel) for c in onvif.list_channels()]
+    source_to_channel = dict(getattr(onvif, "_source_to_channel", None) or {})
+    media = getattr(onvif, "media_service", None)
+    if not media or not source_to_channel:
+        return {}
+    labels = {channel: set() for channel in channels}
+    root = onvif._call(media, "<trt:GetProfiles/>")
+    for prof in root.findall(".//Profiles"):
+        channel = source_to_channel.get(
+            (prof.findtext(".//VideoSourceConfiguration/SourceToken") or "").strip())
+        if channel not in labels:
+            continue
+        match = re.search(_ONVIF_CHANNEL_LABEL, prof.findtext("Name") or "", re.I)
+        labels[channel].add(str(int(match.group(1))) if match else "")
+    return labels
+
+
+def _consistent_native_channel_map(onvif, native) -> dict:
+    """ONVIF camera channel -> native recorder channel, only where the profile labels agree.
+
+    A camera is mapped only when every profile of its video source carries the same
+    MediaProfile_Channel<N> label, no other camera carries N on any of its profiles, and the
+    native transport lists channel N. A recorder that labels a channel 0 does not number channels
+    the way the native side does, so nothing is mapped. Everything else stays unmapped: refused,
+    never guessed. The map is label-consistent, not hardware-verified: reading Channel<N> as
+    native channel N is an assumption, IMPLEMENTED_UNVERIFIED (see _ONVIF_CHANNEL_LABEL).
+    """
+    labels = _onvif_channel_labels(onvif)
+    if any("0" in found for found in labels.values()):
+        return {}
+    single = {channel: next(iter(found)) for channel, found in labels.items()
+              if len(found) == 1 and "" not in found}
+    # Count every label of every camera, so a camera with mixed or conflicting labels still
+    # makes its N ambiguous for the others.
+    claimed = [label for found in labels.values() for label in found if label]
+    native_ids = {}
+    for row in native.list_channels():
+        raw = str(getattr(row, "channel", "") or "")
+        if raw.isdigit():
+            native_ids[str(int(raw))] = raw
+    return {channel: native_ids[label] for channel, label in single.items()
+            if claimed.count(label) == 1 and label in native_ids}
+
+
+class _MappedArchiveDriver:
+    """Vendor-native archive reader addressed by the ONVIF camera channels WatchLog uses.
+
+    Exposes only the read-only archive interface. Every call translates the camera channel
+    through the label-consistent ONVIF-to-native map; a camera without one is refused, never
+    guessed.
+    """
+
+    def __init__(self, native, channel_map: dict):
+        self._native = native
+        self.name = native.name
+        self.channel_map = dict(channel_map)
+
+    def native_channel(self, channel) -> str:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            raise DriverError(_ARCHIVE_CHANNEL_UNVERIFIED)
+        return native
+
+    def historical_capability(self) -> dict:
+        return self._native.historical_capability()
+
+    def enumerate_historical_events(self, channel, start, end, cursor=None, limit: int = 500) -> dict:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            return {"status": "unknown", "events": [], "next_cursor": None}
+        page = self._native.enumerate_historical_events(native, start, end,
+                                                        cursor=cursor, limit=limit) or {}
+        events = [dict(ev, channel=str(channel)) if isinstance(ev, dict) and "channel" in ev else ev
+                  for ev in (page.get("events") or [])]
+        return {**page, "events": events}
+
+    def get_clip(self, channel, start, end):
+        return self._native.get_clip(self.native_channel(channel), start, end)
+
+    def get_recorded_segment(self, channel, start, end) -> dict:
+        native = self.channel_map.get(str(channel))
+        if native is None:
+            return {"status": "unknown", "bytes": None}
+        return self._native.get_recorded_segment(native, start, end)
+
+    def close(self) -> None:
+        self._native.close()
+
+
+# The archive is opened every recovery cycle and for every footage request or archive-scan
+# camera. A vendor-native CGI/ISAPI that rejects the on-site credential must not be probed again
+# on each open (the drivers retry a 401 with Basic: two failed logins per probe). Confirmed auth
+# failures back off per recorder like the live collector (5 -> 15 -> 30 min); a credential change
+# in Setup clears the breaker at once.
+_NATIVE_ARCHIVE_AUTH: dict = {}
+_NATIVE_ARCHIVE_AUTH_LOCK = threading.Lock()
+
+
+def _native_archive_key(cfg: Config, native_name: str) -> tuple:
+    return (native_name, str(cfg.nvr_url or ""), str(cfg.nvr_username or ""))
+
+
+def _credential_generation():
+    try:
+        return credential_store.credential_generation()
+    except Exception:  # noqa: BLE001 — an unreadable token only means "no change seen"
+        return None
+
+
+def _native_archive_backoff(key: tuple) -> float:
+    """Seconds before a refused native archive login may be tried again (0 = probe now)."""
+    with _NATIVE_ARCHIVE_AUTH_LOCK:
+        entry = _NATIVE_ARCHIVE_AUTH.get(key)
+        if entry is None:
+            return 0.0
+        if entry["generation"] != _credential_generation():
+            _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            return 0.0
+        return max(0.0, entry["retry_at"] - time.monotonic())
+
+
+def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
+    """Record a native probe outcome: success clears the breaker, a rejected login escalates it."""
+    from drivers.base import NvrAuthFailed
+    with _NATIVE_ARCHIVE_AUTH_LOCK:
+        if error is None:
+            _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            return
+        if not (isinstance(error, NvrAuthFailed) or _is_auth_failure(error)):
+            return
+        generation = _credential_generation()
+        entry = _NATIVE_ARCHIVE_AUTH.get(key)
+        failures = entry["failures"] + 1 if entry and entry["generation"] == generation else 1
+        wait = _AUTH_BACKOFF_SECONDS[min(failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)]
+        _NATIVE_ARCHIVE_AUTH[key] = {"failures": failures, "generation": generation,
+                                     "retry_at": time.monotonic() + wait}
+
+
+def open_archive_driver(cfg: Config, *, live=None):
     """Open the best read-only recorder transport for archive/evidence work.
 
     Live monitoring may legitimately use ONVIF when that was the proven enrollment
     path. Recorded-media APIs are vendor-specific, however. When an ONVIF probe
     identifies the recorder vendor, make one bounded attempt to open the matching
-    native HTTP driver with the SAME on-site credential/address. Failure falls back
-    to the already-open ONVIF driver and therefore remains honestly unsupported.
+    native HTTP driver with the SAME on-site credential/address. The ONVIF camera
+    channel is only an enumeration ordinal, so the native reader is returned only
+    for cameras with a label-consistent ONVIF-to-native channel map (the label-to-
+    native equivalence is IMPLEMENTED_UNVERIFIED on hardware). Failure, or no
+    mapped camera, falls back to the already-open ONVIF driver and therefore
+    remains honestly unsupported.
+
+    ``live`` is an already-open live ``(driver, info)`` (acceptance, status) used instead of a
+    second recorder login. It is returned as is when it is the archive transport and is never
+    closed here: the caller still owns it.
     """
-    driver, info = open_driver(cfg)
+    driver, info = live if live is not None else open_driver(cfg)
     try:
         import dahua_archive
         import hikvision_archive
@@ -574,14 +747,21 @@ def open_archive_driver(cfg: Config):
     if not native_name:
         return driver, info
 
+    key = _native_archive_key(cfg, native_name)
+    wait = _native_archive_backoff(key)
+    if wait:
+        log(f"archive: vendor-native {native_name} rejected the recorder login; not retrying "
+            f"for {max(1, round(wait / 60))} min (keeping {driver.name})")
+        return driver, info
+
     candidate = None
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        driver.close()
-        log(f"archive: using vendor-native {native_name} transport for recorded media")
-        return candidate, native_info
+        _note_native_archive_probe(key, None)
+        channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
+        _note_native_archive_probe(key, error)
         if candidate is not None:
             try:
                 candidate.close()
@@ -591,10 +771,38 @@ def open_archive_driver(cfg: Config):
             f"keeping {driver.name} ({type(error).__name__})")
         return driver, info
 
+    if not channel_map:
+        try:
+            candidate.close()
+        except Exception:
+            pass
+        log(f"archive: no camera has a consistent ONVIF-to-{native_name} channel label; "
+            f"keeping {driver.name} (recorded media is not guessed)")
+        return driver, info
+    if live is None:
+        driver.close()
+    log(f"archive: using vendor-native {native_name} transport for recorded media "
+        f"({len(channel_map)} camera channel(s) mapped by profile label)")
+    return _MappedArchiveDriver(candidate, channel_map), native_info
+
+
+def _archive_transport(driver) -> dict | None:
+    """Which transport recorded media is read through, as reported by accept/status/recheck.
+    channel_map is the label-consistent ONVIF-to-native map (IMPLEMENTED_UNVERIFIED on hardware,
+    see _ONVIF_CHANNEL_LABEL), or None when channels are the driver's own."""
+    if driver is None:
+        return None
+    mapped = isinstance(driver, _MappedArchiveDriver)
+    return {"driver": getattr(driver, "name", None) or None,
+            "channel_map": dict(driver.channel_map) if mapped else None}
+
 
 def prove_recorder_archive(driver, channel) -> dict:
     """Run the matching vendor archive proof without guessing capabilities."""
     name = str(getattr(driver, "name", "") or "")
+    mapped = driver if isinstance(driver, _MappedArchiveDriver) else None
+    if mapped is not None and str(channel) not in mapped.channel_map:
+        return {"status": "unknown", "channel": str(channel), "detail": _ARCHIVE_CHANNEL_UNVERIFIED}
     try:
         if name == "dahua-cgi":
             import dahua_archive
@@ -603,6 +811,12 @@ def prove_recorder_archive(driver, channel) -> dict:
         if name == "hikvision-isapi":
             import hikvision_archive
             hikvision_archive.install()
+            if mapped is not None:
+                # The Hikvision proof calls the ISAPI module directly, so give it the native
+                # driver and channel and keep the camera channel in the result.
+                proof = hikvision_archive.prove_recorder_archive(mapped._native,
+                                                                 mapped.native_channel(channel))
+                return {**proof, "channel": str(channel)}
             return hikvision_archive.prove_recorder_archive(driver, channel)
     except Exception as error:  # noqa: BLE001
         return {"status": "unknown", "detail": f"archive proof failed: {type(error).__name__}"}
@@ -679,20 +893,22 @@ def _reload_credential_for_cfg(cfg) -> None:
 
 
 def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
-                    last_gen: str) -> tuple[str, str]:
+                    last_gen: str, seconds: float | None = None) -> tuple[str, str]:
     """Interruptible backoff between driver reconnects. Returns (outcome, gen).
 
     Confirmed auth failures escalate 5->15->30 min so a wrong password never
     hammers the recorder (lockout risk); everything else uses the short
-    DRIVER_RETRY_SECONDS. A credential change (Setup rewriting the DPAPI blob)
-    wakes the wait immediately, reloads the credential and lets the caller retry
-    now — never wait out 30 minutes after the operator fixes the password."""
+    DRIVER_RETRY_SECONDS, or ``seconds`` when given (the packaged collector's
+    jittered delay before reopening a dropped event stream on the same driver).
+    A credential change (Setup rewriting the DPAPI blob) wakes the wait
+    immediately, reloads the credential and lets the caller retry now — never
+    wait out 30 minutes after the operator fixes the password."""
     if auth_failures > 0:
         total = float(_AUTH_BACKOFF_SECONDS[min(auth_failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)])
         log(f"recorder authentication is failing; backing off {int(total) // 60} min "
             f"(will retry immediately if the credential is updated in Setup)")
     else:
-        total = float(DRIVER_RETRY_SECONDS)
+        total = float(DRIVER_RETRY_SECONDS if seconds is None else max(0.0, seconds))
     waited, step = 0.0, 5.0
     while waited < total:
         if stop.wait(min(step, total - waited)):
@@ -858,7 +1074,23 @@ def upload_once(cloud: Cloud, state: dict, spool) -> int:
     return res["inserted"]
 
 
-def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None) -> None:
+def _event_stream_health(stream: dict | None) -> dict | None:
+    """The recorder's event-stream state for the local health proof:
+    {connected, connected_at, last_frame_at, last_error}. connected is None when the
+    driver cannot report its stream. The error text is redacted (no URL, credential or
+    recorder address); this file stays non-secret."""
+    if not stream:
+        return None
+    import nvr_health
+    error = stream.get("last_error")
+    return {"connected": stream.get("connected"),
+            "connected_at": stream.get("connected_at"),
+            "last_frame_at": stream.get("last_frame_at"),
+            "last_error": nvr_health.redact(error) if error else None}
+
+
+def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None,
+              event_stream: dict | None = None) -> None:
     cloud.call("wl_heartbeat", p_agent_id=state["agent_id"],
                p_agent_key=state["agent_key"], p_agent_version=AGENT_VERSION,
                p_device_vendor=device.vendor if device else None,
@@ -878,6 +1110,7 @@ def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None =
         recorder_vendor=(device.vendor if device else None),
         recorder_model=(device.model if device else None),
         recorder_driver=(device.driver if device else None),
+        event_stream=_event_stream_health(event_stream),
     )
     log("heartbeat ok")
 
@@ -1287,6 +1520,17 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
             stop.wait(cfg.health_seconds + jitter)
 
 
+def _site_control_driver(cfg: Config):
+    """The recorder driver a Site Control command runs against. 'auto' (the Config default, and
+    what older installers wrote) is not a registered driver name, so resolve it the way the health
+    cycle does instead of letting build() raise KeyError after the command was claimed."""
+    if cfg.nvr_driver in ("auto", ""):
+        driver, _info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
+                                   log=lambda *a, **k: None)
+        return driver
+    return build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+
+
 def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site_control) -> None:
     """Execute one claimed Site Control command and ALWAYS complete it.
 
@@ -1300,12 +1544,7 @@ def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site
         job_cfg = recorder_runtime.config_for_cloud_recorder(
             cfg, cmd.get("recorder_id")
         )
-        driver = build(
-            job_cfg.nvr_driver,
-            job_cfg.nvr_url,
-            job_cfg.nvr_username,
-            job_cfg.nvr_password,
-        )
+        driver = _site_control_driver(job_cfg)
         try:
             res = (site_control.execute_write(driver, action, cmd.get("params"))
                    if is_write else
@@ -1322,8 +1561,8 @@ def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site
         log(f"site control: command {str(cmd.get('id'))[:8]} failed: "
             f"{type(e).__name__}: {nvr_health.redact(str(e))}")
         status, result = "failed", None
-        error = (nvr_health.redact(str(e)) if isinstance(e, DriverError)
-                 else type(e).__name__)
+        error = ((nvr_health.redact(str(e)) if isinstance(e, DriverError) else "")
+                 or type(e).__name__)
     cloud.call("wl_agent_complete_command",
                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
                p_command_id=cmd["id"], p_status=status, p_result=result, p_error=error)
@@ -1352,8 +1591,8 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
             if cmd:
                 busy = True
                 _run_claimed_command(cfg, state, cloud, cmd, site_control)
-        except Exception as e:                           # noqa: BLE001 — Site Control never disturbs the agent
-            log(f"site control: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        except BaseException as e:                       # noqa: BLE001 — Site Control never disturbs the agent
+            worker_fault("site control", e)
         if not busy:
             stop.wait(cfg.site_control_seconds)          # idle poll; drain promptly when busy
 
@@ -1687,11 +1926,21 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
         return ("pass", f"{len(chans)} camera(s)") if chans else ("blocked", "no camera channels found")
 
     def _archive_check():
-        driver = holder.get("driver")
+        live = holder.get("driver")
         chans = holder.get("channels") or []
-        if driver is None or not chans:
+        if live is None or not chans:
             return "warn", "recorder/cameras unavailable to check the archive"
         channel = chans[0].get("channel") if isinstance(chans[0], dict) else getattr(chans[0], "channel", None)
+        # Recorded media is read through open_archive_driver at runtime (incident footage,
+        # recovery), which on an ONVIF site can be the vendor-native reader. Prove THAT transport
+        # (MNVR-063), reusing the open live driver instead of logging in again.
+        try:
+            driver, _info = open_archive_driver(cfg, live=(live, holder.get("info")))
+        except Exception:  # noqa: BLE001 — soft check: an unopened archive only warns
+            return "warn", "the recorder archive could not be opened for this check"
+        if driver is not live:
+            holder["archive_driver"] = driver
+        holder["archive_transport"] = _archive_transport(driver)
         proof = archive_fn(driver, channel)
         status, _passed = acceptance.map_archive_status((proof or {}).get("status"))
         return status, (proof or {}).get("detail")
@@ -1803,6 +2052,7 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     ]
 
     report = acceptance.run_checks(checks, log=print)
+    report["archive_transport"] = holder.get("archive_transport")
     stats = report["summary"]
     print()
     if report["ready"]:
@@ -1812,12 +2062,13 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
     # Single machine-readable line for the installer status panel — contains no secrets.
     print("ACCEPTANCE_JSON " + json.dumps(report, separators=(",", ":")))
 
-    driver = holder.get("driver")
-    if driver is not None:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+    for key in ("driver", "archive_driver"):
+        driver = holder.get(key)
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
     return 0 if report["ready"] else 2
 
 
@@ -2074,18 +2325,30 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
                           state=state, running=None, last_heartbeat=None, cloud_ok=cloud_ok,
                           spool_backlog=spool_backlog, recovery_backlog=0)
 
-    # --- recorder + cameras + archive (one driver open, all guarded) ---
+    # --- recorder + cameras + archive (all guarded) ---
     driver = info = None
     try:
         driver, info = (_open_driver or open_driver)(cfg)
     except Exception:  # noqa: BLE001 — recorder unreachable is an honest state, not a crash
         driver = info = None
 
+    # Recorded media is read through open_archive_driver at runtime (incident footage, recovery),
+    # which on an ONVIF site can be the vendor-native reader: report and prove THAT transport,
+    # while recorder/cameras stay on the live driver (MNVR-063). The open live driver is reused,
+    # so a site whose live driver is already the archive transport is not logged in to twice.
+    archive_driver = None
+    if driver is not None:
+        try:
+            archive_driver, _archive_info = open_archive_driver(cfg, live=(driver, info))
+        except Exception:  # noqa: BLE001
+            archive_driver = None
+
     capability = None
     channels = []
     if driver is not None:
         try:
-            capability = driver.historical_capability() if hasattr(driver, "historical_capability") else None
+            capability = archive_driver.historical_capability() \
+                if hasattr(archive_driver, "historical_capability") else None
         except Exception:  # noqa: BLE001
             capability = None
         try:
@@ -2113,30 +2376,27 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     camera = ss.camera_view(merged, configured=configured or None, health=None)
 
     archive_status = None
-    if driver is not None and merged:
+    if archive_driver is not None and merged:
         try:
-            import dahua_archive
-            try:
-                dahua_archive.install()
-            except Exception:  # noqa: BLE001
-                pass
-            proof = (_archive or dahua_archive.prove_recorder_archive)(driver, merged[0]["channel"])
+            # The same proof acceptance and Recheck Archive run, on the runtime archive transport.
+            proof = (_archive or prove_recorder_archive)(archive_driver, merged[0]["channel"])
             archive_status = (proof or {}).get("status")
         except Exception:  # noqa: BLE001
             archive_status = None
     archive = ss.archive_view(proof_status=archive_status, last_proof_at=iso(now),
                               recovery_backlog=0)
+    archive["transport"] = _archive_transport(archive_driver)
 
     recording = ss.recording_view(camera["cameras"], recording=None)
 
     # Retention depth (P7): bounded, best-effort. Off by default so the panel refresh stays fast;
     # WATCHLOG_STATUS_RETENTION=1 (or a dedicated deep recheck) enables the archive-boundary probe.
     ret = _retention
-    if ret is None and driver is not None and merged and \
+    if ret is None and archive_driver is not None and merged and \
             os.environ.get("WATCHLOG_STATUS_RETENTION", "").strip().lower() in ("1", "true", "yes", "on"):
         try:
             import retention as _retmod
-            ret = _retmod.estimate_retention(driver, merged[0]["channel"], now=now)
+            ret = _retmod.estimate_retention(archive_driver, merged[0]["channel"], now=now)
         except Exception:  # noqa: BLE001
             ret = None
     if ret and ret.get("status") in ("measured", "at_least"):
@@ -2145,11 +2405,12 @@ def cmd_status_json(cfg: Config, *, _state=None, _open_driver=None, _cloud_facto
     else:
         storage = ss.storage_view(None)              # honest 'Not available on this recorder'
 
-    if driver is not None:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+    for opened in (driver, archive_driver if archive_driver is not driver else None):
+        if opened is not None:
+            try:
+                opened.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     snap = ss.build_snapshot(agent=agent, recorder=recorder, camera=camera, recording=recording,
                              archive=archive, storage=storage, generated_at=iso(now))
@@ -2169,7 +2430,8 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
 
     now = _now or now_utc()
     out = {"schema": "watchlog.archive_recheck.v1", "state": "ARCHIVE FAILED",
-           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": ""}
+           "checked_at": iso(now), "channel": None, "frame_decoded": None, "diagnostics": {}, "detail": "",
+           "transport": None}
     driver = None
     try:
         driver, _info = (_open_driver or open_archive_driver)(cfg)
@@ -2179,6 +2441,7 @@ def cmd_recheck_archive_json(cfg: Config, *, _open_driver=None, _archive=None, _
         out["detail"] = "recorder not reachable"
         print("ARCHIVE_JSON " + _json.dumps(out, separators=(",", ":")))
         return 0
+    out["transport"] = _archive_transport(driver)
     channel = "1"
     for prof in (getattr(cfg, "camera_profiles", None) or []):
         if prof.get("monitored", True) and prof.get("channel"):
@@ -2299,7 +2562,12 @@ def cmd_probe(cfg: Config) -> None:
 
 
 def _open_recovery_interval_for_cfg(cloud: Cloud, state: dict, cfg: Config,
-                                    started_at, ended_at, channels) -> dict:
+                                    started_at, ended_at, targets) -> dict:
+    """Open a recovery interval on the contract this recorder context speaks.
+
+    A bound recorder names its archive channels (wl_open_recorder_recovery_interval takes
+    p_channels). The recorder-less 5.0.x contract names cameras by cloud camera UUID
+    (wl_open_recovery_interval takes p_cameras uuid[]), never by recorder channel number."""
     recorder_id = getattr(cfg, "recorder_cloud_id", None)
     args = dict(
         p_agent_id=state["agent_id"],
@@ -2309,10 +2577,44 @@ def _open_recovery_interval_for_cfg(cloud: Cloud, state: dict, cfg: Config,
     )
     if recorder_id:
         args["p_recorder_id"] = recorder_id
-        args["p_channels"] = list(channels or [])
+        args["p_channels"] = list(targets or [])
         return cloud.call("wl_open_recorder_recovery_interval", **args)
-    args["p_cameras"] = list(channels or [])
+    args["p_cameras"] = list(targets or [])
     return cloud.call("wl_open_recovery_interval", **args)
+
+
+# holder flag: recovery_worker has read last_live.json while the recorder was live and holds no
+# gap the cloud has not accepted. A heartbeat that refreshes last_live must wait for it, or a
+# restart gap is overwritten before it is ever detected (or lost if the Agent restarts while held).
+LAST_LIVE_CHECKED = "last_live_checked"
+
+
+def _recovery_camera_ids(cfg: Config, state: dict, cloud: Cloud, channels) -> dict:
+    """{recorder channel: cloud camera UUID} for opening and reading recovery intervals.
+
+    wl_open_recovery_interval takes camera UUIDs (uuid[]), never recorder channel numbers. They come
+    from wl_sync_cameras with the same startup payload main() sends, which is idempotent, so a boot
+    sync that failed (network not ready) is simply retried here. With no startup inventory (recorder
+    offline at boot) the recorder is enumerated again first. Returns {} while no mapping exists, so
+    the caller defers rather than guessing."""
+    payload = []
+    for c in channels or []:
+        ch = c.get("channel") if isinstance(c, dict) else getattr(c, "channel", None)
+        if ch is not None:
+            name = c.get("name") if isinstance(c, dict) else getattr(c, "name", None)
+            payload.append({"channel": str(ch), "name": name})
+    if not payload:
+        driver, _info = open_driver(cfg)
+        try:
+            payload = [{"channel": str(c.channel), "name": c.name} for c in driver.list_channels()]
+        finally:
+            driver.close()
+    if not payload:
+        return {}
+    mapping = cloud.call(
+        "wl_sync_cameras", p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+        p_cameras=payload) or {}
+    return {c["channel"]: str(mapping[c["channel"]]) for c in payload if mapping.get(c["channel"])}
 
 
 def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event,
@@ -2322,24 +2624,43 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     intervals and backfills each from the recorder archive in bounded, resumable, idempotent
     chunks (read-only; recovered events carry recorder_archive provenance). LIVE monitoring always
     has priority (yields when the live spool has a backlog) and it is throttled. OFF only if
-    recovery_enabled=false. A failure here can never disturb events/heartbeat/health."""
+    recovery_enabled=false. A failure here can never disturb events/heartbeat/health.
+
+    The recorder-less contract names cameras by cloud camera UUID. Until the channel->camera
+    mapping exists nothing is opened or claimed: a detected gap is held, never sent with recorder
+    channel numbers or with an empty camera list. A bound recorder names its explicitly synced
+    archive channels instead, and waits for that inventory rather than guessing a channel.
+
+    Time this worker saw the recorder live in is never reopened: one cycle is longer than the
+    outage threshold, so a gap between two of its checks is only known from a last_live a
+    heartbeat kept while the recorder was live."""
     if not cfg.recovery_enabled:
         return
     import recovery as rec
     stop.wait(min(20, cfg.recovery_seconds))            # let enrollment / live settle first
+    camera_ids = {}                                     # {channel: camera UUID}; {} until synced
+    pending_gaps = []                                   # detected gaps the cloud has not accepted yet
+    seen_live_at = None                                 # this worker's last check with the recorder live
+    holder = holder if holder is not None else {}
+
     def _channel_id(item):
         if isinstance(item, dict):
             return item.get("channel")
         return getattr(item, "channel", None)
 
-    holder = holder if holder is not None else {}
-
-    def _current_channels():
+    def _synced_inventory():
+        """(archive channels, {camera UUID: channel}) of the bound recorder's synced cameras."""
         source = channels() if callable(channels) else channels
-        return [
-            str(ch) for ch in (_channel_id(c) for c in (source or []))
-            if ch is not None
-        ] or None
+        chans, cams = [], {}
+        for c in source or []:
+            ch = _channel_id(c)
+            if ch is None:
+                continue
+            chans.append(str(ch))
+            cam = c.get("camera_id") if isinstance(c, dict) else getattr(c, "camera_id", None)
+            if cam:
+                cams[str(cam)] = str(ch)
+        return chans, cams
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
     # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
@@ -2360,71 +2681,103 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return bool(seen and time.monotonic() - seen < 150.0)
 
     while not stop.is_set():
-        cams = _current_channels()
-        recorder_id = getattr(cfg, "recorder_cloud_id", None)
-        if recorder_id and not cams:
-            # Never guess a recorder channel. A recorder that was unreachable at
-            # startup waits until health enumeration has explicitly synced its
-            # camera inventory, then this same worker begins recovery automatically.
-            holder["recovery_waiting_for_inventory"] = True
-            stop.wait(min(max(5, cfg.recovery_seconds), 30))
-            continue
-        holder.pop("recovery_waiting_for_inventory", None)
-
-        # A very long Internet outage can fill the bounded local spool. trim() records
-        # exactly which local-observation interval had to be evicted; convert that durable
-        # marker into the same recorder-archive recovery pipeline once the NVR is live.
         try:
-            overflow_gap = spool.pending_recovery_gap()
-            if overflow_gap and recorder_is_live():
-                _open_recovery_interval_for_cfg(
-                    cloud, state, cfg, overflow_gap[0], overflow_gap[1], cams or []
-                )
-                if spool.clear_recovery_gap(*overflow_gap):
-                    log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
-                        "opened recorder-archive reconciliation")
-        except Exception as e:                           # noqa: BLE001
-            log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
+            recorder_id = getattr(cfg, "recorder_cloud_id", None)
+            if recorder_id:
+                cams, camera_channels = _synced_inventory()
+                if not cams:
+                    # Never guess a recorder channel. A recorder that was unreachable at
+                    # startup waits until health enumeration has explicitly synced its
+                    # camera inventory, then this same worker begins recovery automatically.
+                    holder["recovery_waiting_for_inventory"] = True
+                    stop.wait(min(max(5, cfg.recovery_seconds), 30))
+                    continue
+                holder.pop("recovery_waiting_for_inventory", None)
+            else:
+                if not camera_ids:
+                    try:
+                        camera_ids = _recovery_camera_ids(cfg, state, cloud, channels)
+                    except Exception as e:               # noqa: BLE001
+                        log(f"recovery: camera inventory not synced yet; recovery deferred: "
+                            f"{type(e).__name__}")
+                cams = list(camera_ids.values())
+                camera_channels = {cam: ch for ch, cam in camera_ids.items()}
 
-        # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
-        # interval after the recorder is live again; while it is still down there is
-        # nothing to backfill and no reason to hammer it.
-        try:
-            if recorder_is_live():
-                last_live = rec.read_last_live(cfg.last_live_path)
-                now = now_utc()
-                outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
-                if outage:
-                    _open_recovery_interval_for_cfg(
-                        cloud, state, cfg, iso(outage[0]), iso(outage[1]), cams or []
-                    )
-                    rec.persist_last_live(cfg.last_live_path, now)
-                    log(f"recovery: detected recorder gap {iso(outage[0])}..{iso(outage[1])}; "
-                        "opened resumable archive recovery")
-        except Exception as e:                           # noqa: BLE001
-            log(f"recovery: gap detector skipped: {type(e).__name__}")
-
-        try:
-            driver, _info = open_archive_driver(cfg)
+            # A very long Internet outage can fill the bounded local spool. trim() records
+            # exactly which local-observation interval had to be evicted; convert that durable
+            # marker into the same recorder-archive recovery pipeline once the NVR is live.
             try:
-                runner = rec.RecoveryRunner(
-                    cloud, state["agent_id"], state["agent_key"], driver,
-                    lambda ev: spool.add(ev),
-                    recorder_id=getattr(cfg, "recorder_cloud_id", None),
-                    chunk_seconds=cfg.recovery_chunk_seconds,
-                    throttle_seconds=cfg.recovery_throttle_seconds,
-                    live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
-                    detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
-                    snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
-                    log=log)
-                runner.run_once(limit=1)
-            finally:
+                overflow_gap = spool.pending_recovery_gap()
+                if overflow_gap and cams and recorder_is_live():
+                    _open_recovery_interval_for_cfg(
+                        cloud, state, cfg, overflow_gap[0], overflow_gap[1], cams
+                    )
+                    if spool.clear_recovery_gap(*overflow_gap):
+                        log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
+                            "opened recorder-archive reconciliation")
+            except Exception as e:                       # noqa: BLE001
+                log(f"recovery: spool-overflow reconciliation deferred: {type(e).__name__}")
+
+            # Detect BOTH restart gaps and in-process recorder/network gaps. Only open the
+            # interval after the recorder is live again; while it is still down there is
+            # nothing to backfill and no reason to hammer it. A detected gap is held until the
+            # cloud accepts it, so a deferred open neither loses the gap nor stretches it over
+            # the live time that follows.
+            try:
+                if recorder_is_live():
+                    last_live = rec.read_last_live(cfg.last_live_path)
+                    now = now_utc()
+                    if seen_live_at is not None and (last_live is None or last_live <= seen_live_at):
+                        last_live = None                # nothing later than this worker's own check
+                    outage = rec.detect_outage(last_live, now, cfg.recovery_threshold_seconds)
+                    seen_live_at = now
+                    if outage and not any(abs((g[0] - outage[0]).total_seconds()) < 5
+                                          for g in pending_gaps):
+                        pending_gaps = (pending_gaps + [outage])[-32:]
+                    # While a gap is held only in memory, last_live must keep its start for a
+                    # restart to find it again: the heartbeat may not move it on.
+                    holder[LAST_LIVE_CHECKED] = not pending_gaps
+                    while pending_gaps and cams:
+                        gap = pending_gaps[0]
+                        _open_recovery_interval_for_cfg(
+                            cloud, state, cfg, iso(gap[0]), iso(gap[1]), cams
+                        )
+                        pending_gaps.pop(0)
+                        log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
+                            "opened resumable archive recovery")
+                    if not pending_gaps:
+                        rec.persist_last_live(cfg.last_live_path, now)
+                        holder[LAST_LIVE_CHECKED] = True
+            except Exception as e:                       # noqa: BLE001
+                log(f"recovery: gap detector skipped: {type(e).__name__}")
+
+            # Claimed intervals name camera UUIDs (or a bound recorder's channels); without the
+            # inventory they cannot be read.
+            if cams:
                 try:
-                    driver.close()
-                except Exception:                        # noqa: BLE001
-                    pass
-        except Exception as e:                           # noqa: BLE001 — recovery never disturbs the agent
-            log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+                    driver, _info = open_archive_driver(cfg)
+                    try:
+                        runner = rec.RecoveryRunner(
+                            cloud, state["agent_id"], state["agent_key"], driver,
+                            lambda ev: spool.add(ev),
+                            recorder_id=recorder_id,
+                            chunk_seconds=cfg.recovery_chunk_seconds,
+                            throttle_seconds=cfg.recovery_throttle_seconds,
+                            live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
+                            detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                            snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
+                            camera_channels=camera_channels,
+                            log=log)
+                        runner.run_once(limit=1)
+                    finally:
+                        try:
+                            driver.close()
+                        except Exception:                # noqa: BLE001
+                            pass
+                except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
+                    log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
+            worker_fault("recovery", e)
         stop.wait(cfg.recovery_seconds)
 
 

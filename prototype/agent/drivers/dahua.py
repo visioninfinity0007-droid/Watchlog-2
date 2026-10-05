@@ -25,8 +25,10 @@ before trusting it.
 
 from __future__ import annotations
 
+import queue
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Iterator
 
@@ -54,6 +56,11 @@ EVENT_CODE_MAP = {
     "FaceDetection": "face",
 }
 
+# Codes whose index names a disk or an alarm input, not a video channel. They are
+# recorder-scoped: channel None plus a flag, never index+1 guessed onto a camera.
+RECORDER_SCOPED_CODES = {"AlarmLocal", "StorageNotExist", "StorageFailure",
+                         "StorageLowSpace"}
+
 # Events we subscribe to. "All" also works but floods the link with
 # heartbeats and config chatter on a busy NVR.
 SUBSCRIBE_CODES = ",".join(EVENT_CODE_MAP.keys())
@@ -79,14 +86,55 @@ def _parse_kv(text: str) -> dict[str, str]:
 class DahuaDriver(NvrDriver):
     name = "dahua-cgi"
     verified_against_hardware = False
+    # Liveness comes from the attach stream itself: last_activity_monotonic and
+    # event_stream are set only after attach answers 2xx and on every received line,
+    # heartbeats included. A getSystemInfo probe says nothing about the event stream.
+    reports_stream_activity = True
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
-        self._last_emitted: dict[tuple[str, str], datetime] = {}
+        self._last_emitted: dict[tuple[str, str], float] = {}
+        # (monotonic, wall) clock of the block being parsed, stamped by stream_events
+        # when it arrived; None outside the stream (parse time is used then).
+        self._received: tuple[float, datetime] | None = None
+        # The collector may replace event_stream with its per-recorder state dict.
+        self.last_activity_monotonic = 0.0
+        self.event_stream: dict = {"connected": False, "connected_at": None,
+                                   "last_frame_at": None, "last_error": None}
+        # The activity stamp before the current stream's 2xx, while that stream has not
+        # delivered a single chunk yet; None once it has (or outside a stream).
+        self._activity_before_up: float | None = None
+
+    # -- event-stream liveness (MNVR-008) -------------------------------
+
+    def _stream_up(self) -> None:
+        # The 2xx counts as activity only while this stream stays open: _stream_down takes
+        # it back if the stream ends before a single chunk arrives, so a recorder whose
+        # attach answers 200 and closes at once is never live, however often it is reopened.
+        self._activity_before_up = self.last_activity_monotonic
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream.update(connected=True, last_error=None,
+                                 connected_at=datetime.now(timezone.utc).isoformat())
+
+    def _stream_frame(self) -> None:
+        self._activity_before_up = None
+        self.last_activity_monotonic = time.monotonic()
+        self.event_stream["last_frame_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _stream_down(self, error: str | None) -> None:
+        if self._activity_before_up is not None:    # ended without delivering anything
+            self.last_activity_monotonic = self._activity_before_up
+            self._activity_before_up = None
+        self.event_stream["connected"] = False
+        if error:
+            self.event_stream["last_error"] = error
 
     # -- helpers --------------------------------------------------------
+
+    def _receive_clock(self) -> tuple[float, datetime]:
+        return self._received or (time.monotonic(), datetime.now(timezone.utc))
 
     def _get(self, path: str, **kw) -> str:
         url = self.base_url + path
@@ -515,6 +563,11 @@ class DahuaDriver(NvrDriver):
 
         heartbeat=5 makes the device send a keep-alive every 5s, which is
         also how we detect a silently dead link.
+
+        The body is read on its own thread so every block keeps the time it
+        ARRIVED. The collector fetches a still and runs AI for one event before
+        asking for the next; a block read only after that work would carry a
+        late device_ts (MNVR-024).
         """
         path = (f"/cgi-bin/eventManager.cgi?action=attach"
                 f"&codes=[{SUBSCRIBE_CODES}]&heartbeat=5")
@@ -522,24 +575,57 @@ class DahuaDriver(NvrDriver):
         try:
             r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
+            self._stream_down(explain(e))
             raise DriverError(f"eventManager attach: {e}") from e
         if r.status_code >= 400:
+            r.close()
+            self._stream_down(f"HTTP {r.status_code}")
             raise DriverError(f"eventManager attach: HTTP {r.status_code}")
+        self._stream_up()
 
+        blocks: queue.Queue = queue.Queue()
+        closed = threading.Event()
+
+        def _read() -> None:
+            try:
+                for raw_line in r.iter_lines(chunk_size=512):
+                    if closed.is_set():
+                        return
+                    self._stream_frame()            # heartbeats count: the stream is alive
+                    if not raw_line:
+                        continue
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if line.startswith("Code="):  # not boundary / Content-Length / heartbeat
+                        blocks.put((time.monotonic(), datetime.now(timezone.utc), line))
+                blocks.put(None)                    # the recorder ended the stream
+            except Exception as e:                  # noqa: BLE001 - raised by the consumer
+                blocks.put(e)
+
+        threading.Thread(target=_read, name="dahua-attach", daemon=True).start()
+        ended = None
         try:
-            for raw_line in r.iter_lines(chunk_size=512):
-                if stop.is_set():
-                    break
-                if not raw_line:
+            while not stop.is_set():
+                try:
+                    item = blocks.get(timeout=1.0)
+                except queue.Empty:
                     continue
-                line = raw_line.decode("utf-8", "replace").strip()
-                if not line.startswith("Code="):
-                    continue          # boundary / Content-Length / heartbeat
+                if item is None:
+                    ended = "event stream ended by the recorder"
+                    break
+                if isinstance(item, Exception):
+                    ended = (explain(item) if isinstance(item, requests.RequestException)
+                             else type(item).__name__)
+                    raise item
+                received_mono, received_at, line = item
+                self._received = (received_mono, received_at)
                 ev = self._parse_line(line)
                 if ev:
                     yield ev
         finally:
+            closed.set()
+            self._received = None
             r.close()
+            self._stream_down(ended)
 
     # -- parsing --------------------------------------------------------
 
@@ -563,18 +649,28 @@ class DahuaDriver(NvrDriver):
                 return None
             etype = code.lower() or "unknown"
 
-        # index is 0-based on the wire; channels are 1-based everywhere else.
-        try:
-            channel = str(int(fields.get("index", "0")) + 1)
-        except ValueError:
-            channel = "1"
+        scope: dict = {}
+        index = fields.get("index")
+        if code in RECORDER_SCOPED_CODES:
+            channel = None
+            scope = {"recorder_scoped": True, "native_index": index}
+        else:
+            # index is 0-based on the wire; channels are 1-based everywhere else.
+            try:
+                channel = str(int(index) + 1)
+            except (TypeError, ValueError):
+                channel = None            # no usable index: unknown, never camera 1
+                scope = {"channel_unknown": True, "native_index": index}
 
-        ts = datetime.now(timezone.utc)   # attach is live; no device clock field
-        key = (channel, etype)
+        # attach is live and carries no device clock field: the event time is when the
+        # block arrived. Repeats collapse on the monotonic receive clock, so a backward
+        # PC clock step cannot drop every later event of this type (MNVR-023).
+        received_mono, ts = self._receive_clock()
+        key = (channel if channel is not None else f"recorder:{index}", etype)
         last = self._last_emitted.get(key)
-        if last and (ts - last).total_seconds() < BURST_WINDOW_SECONDS:
+        if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
             return None
-        self._last_emitted[key] = ts
+        self._last_emitted[key] = received_mono
 
         return Event(
             channel=channel,
@@ -582,7 +678,8 @@ class DahuaDriver(NvrDriver):
             device_ts=ts,
             device_event_id=None,
             payload={"vendor": "dahua", "code": code, "action": action,
-                     "data": (data[:500] if sep else None)},
+                     "data": (data[:500] if sep else None),
+                     "clock_source": "agent_receive", **scope},
         )
 
     def close(self) -> None:
