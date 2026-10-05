@@ -70,6 +70,8 @@ jobs:
         run: python prototype/tests/test_operational_faults_contract.py
       - name: Multi-recorder current proof + fault contract (latest SQL definitions)
         run: python -m pytest prototype/tests/test_multi_recorder_fault_contract.py -q
+      - name: E2E gates test the final migration chain (no stale migration re-run)
+        run: python -m pytest prototype/tests/test_e2e_no_stale_migration_rerun.py -q
       - name: Operations Intelligence contract (0049 — generic rule/incident engine)
         run: python prototype/tests/test_operations_intelligence_contract.py
       - name: Native-NVR AI + incident-footage contract (Security Intelligence 0040/0041)
