@@ -197,9 +197,17 @@ revoke all on function public.wl_recorder_fingerprint_norm(text)
 -- continuity row takes the new local id; its UUID, cameras, history and
 -- continuity ownership stay. It fails closed (42501, nothing changes) when the
 -- payload proves otherwise (the primary's identity fingerprint is another
--- recorder of the site, or another new row carries the continuity recorder's
+-- recorder of the site, the primary's and the continuity recorder's serials are
+-- both known and differ, or another new row carries the continuity recorder's
 -- fingerprint), or when the caller is an earlier installation than the one
--- that last bound the continuity recorder. Configured secondaries the payload
+-- that last bound the continuity recorder. So re-adoption never overwrites the
+-- continuity recorder's recorded serial with a different one: it only fills an
+-- unknown serial or restates the same one. Remaining presumption: when either
+-- serial is unknown (the primary reported none, or the continuity recorder
+-- never did), nothing can disprove identity, so the re-staged primary is
+-- presumed to be the continuity recorder. Setup should therefore stage the
+-- continuity recorder as the first primary after a reinstall and send its
+-- serial whenever the recorder reports one. Configured secondaries the payload
 -- does not name are flagged readd_required_at after a re-adoption, or whenever
 -- an earlier-enrolled Agent bound them. A new local id whose identity
 -- fingerprint matches exactly one recorder of the site that the payload does
@@ -338,6 +346,12 @@ begin
               and x.site_id=v_agent.site_id
               and x.local_key=btrim(r->>'local_key')
          )
+    ) or (
+      -- Both serials known and different: a different physical recorder.
+      public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint') is not null
+      and public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint) is not null
+      and public.wl_recorder_fingerprint_norm(v_primary_item->>'identity_fingerprint')
+          <> public.wl_recorder_fingerprint_norm(v_continuity.identity_fingerprint)
     ) then
       raise exception 'recorder registry does not include this site''s continuity recorder'
         using errcode='42501';

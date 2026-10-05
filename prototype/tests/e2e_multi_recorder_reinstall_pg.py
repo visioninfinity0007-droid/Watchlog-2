@@ -17,8 +17,9 @@ rolls back. Proves:
 - re-adding that recorder with the same serial re-adopts its row and cameras;
 - the existing recorder push token is reused after the reinstall;
 - a fresh registry whose primary is provably another recorder of the site,
-  or a superseded earlier installation, fails closed (42501) and changes
-  nothing; a re-run is idempotent;
+  or whose primary's known serial differs from the continuity recorder's own
+  known serial, or a superseded earlier installation, fails closed (42501) and
+  changes nothing; a re-run is idempotent;
 - the same Agent losing its registry re-adopts deterministically too;
 - a single-recorder site reinstalled the same way keeps one recorder and its
   legacy 5.0.x camera sync keeps working.
@@ -255,6 +256,26 @@ def run() -> int:
             ])
             step(state == "42501" and recorders(site) == snapshot,
                  "a fresh primary beside a row proven to be A fails closed, nothing changes", msg)
+            # ...nor can a fresh primary whose known serial differs from A's own
+            # (a replaced NVR, or a different recorder set up first) take A's
+            # UUID, cameras, history or recorded serial.
+            def fingerprints(site_id):
+                return dict(cur.execute(
+                    "select id::text,identity_fingerprint from recorders where site_id=%s",
+                    (site_id,)).fetchall())
+            fp_before = fingerprints(site)
+            cur.execute("savepoint other_serial_sp")
+            _, state, msg = sync(agent_y, key_y, [
+                row("rec-c-new", True, "CCC333", name="Recorder C"),
+            ])
+            step(state == "42501" and recorders(site) == snapshot
+                 and fingerprints(site) == fp_before
+                 and fp_before.get(rec_a) == "serial:AAA111"
+                 and site_cameras(site) == before_cams,
+                 "a fresh primary with a different known serial fails closed: A's local id, "
+                 "serial and cameras unchanged, no recorder created",
+                 msg or json.dumps(recorders(site)))
+            cur.execute("rollback to savepoint other_serial_sp")
 
             # ----------------------------------------------------------------
             # Re-adding B under a fresh local id with the same serial.
