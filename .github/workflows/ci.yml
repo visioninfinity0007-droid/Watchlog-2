@@ -445,6 +445,8 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_reconciliation_pg.py
       - name: Multi-recorder current truth — per-recorder current proof, faults and recorder events (0147)
         run: python prototype/tests/e2e_multi_recorder_faults_pg.py
+      - name: Offline-camera fault cause — only video loss is critical, a probe timeout is not verified (0147, NEW-L4)
+        run: python prototype/tests/e2e_camera_fault_reason_pg.py
       - name: Multi-recorder capabilities — recorder-scoped overlay and site truth (0149)
         run: python prototype/tests/e2e_multi_recorder_capabilities_pg.py
       - name: Multi-recorder camera jobs — deterministic recorder routing (0150)
