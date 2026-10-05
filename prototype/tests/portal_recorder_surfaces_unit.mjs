@@ -82,12 +82,53 @@ t("a fault keyed by camera id never lands on a same-named camera of another reco
   assert.equal(r.issueCount, 1);
 });
 
-t("a name-only fault on a shared camera name goes to the offline camera", () => {
+t("a name-only fault on a shared camera name is attributed to neither camera, and counted once", () => {
   const cams = [cam("c1", "rec-a", "Camera 1", "operational"), cam("c3", "rec-b", "Camera 1", "offline")];
   const rows = [rec("rec-a", "Recorder A", "healthy", ["c1"]), rec("rec-b", "Recorder B", "healthy", ["c3"])];
-  const r = H.recorderImpact({ cams, faults: [{ camera: "Camera 1", reason: "video_loss" }], recorderRows: rows });
+  const fault = { camera: "Camera 1", reason: "video_loss" };
+  const r = H.recorderImpact({ cams, faults: [fault], recorderRows: rows });
   assert.equal(r.faultFor(cams[0]), null);
-  assert.ok(r.faultFor(cams[1]));
+  assert.equal(r.faultFor(cams[1]), null, "channel-derived names are not camera identity");
+  assert.deepEqual(r.cameraFaults, [fault], "the fault is still shown");
+  assert.ok(r.unattributedCameraIds.has("c3"));
+  assert.equal(r.issueCount, 1, "the fault and the offline camera it may be about are one item");
+});
+
+// Two recorders that both have a profile-named Channel 1: identical name-only fault rows, which Postgres
+// may return in either order. The result must not depend on that order, and a camera's fault must never
+// be handed to the other recorder's root cause.
+const sameName = () => {
+  const cams = [cam("a1", "rec-a", "Camera 1", "offline"), cam("b1", "rec-b", "Camera 1", "offline")];
+  const rows = [rec("rec-a", "Recorder A", "attention", ["a1"], "storage"), rec("rec-b", "Recorder B", "unknown", ["b1"])];
+  return { cams, rows };
+};
+const summary = r => ({
+  issueCount: r.issueCount,
+  faults: r.cameraFaults.map(f => f.reason).sort(),
+  recorderFor: ["a1", "b1"].map(id => r.recorderIssueCameraIds.has(id)),
+});
+t("name-only faults on a shared name give the same result in either row order", () => {
+  const fa = { camera: "MediaProfile_Channel1_MainStream", reason: "storage_fault" };
+  const fb = { camera: "MediaProfile_Channel1_MainStream", reason: "video_loss" };
+  const { cams, rows } = sameName();
+  const one = H.recorderImpact({ cams, faults: [fa, fb], recorderRows: rows });
+  const two = H.recorderImpact({ cams, faults: [fb, fa], recorderRows: rows });
+  assert.deepEqual(summary(one), summary(two));
+  assert.equal(one.recorderFor(cams[0]), null, "a1's video loss is not hidden behind Recorder A's storage advice");
+  assert.equal(one.issueCount, 3, "the storage issue plus the two camera faults");
+});
+
+t("faults carrying camera_id are attributed exactly, whatever the row order", () => {
+  const { cams, rows } = sameName();
+  const fa = { camera_id: "a1", recorder_id: "rec-a", camera: "MediaProfile_Channel1_MainStream", reason: "video_loss" };
+  const fb = { camera_id: "b1", recorder_id: "rec-b", camera: "MediaProfile_Channel1_MainStream", reason: "storage_fault" };
+  for (const faults of [[fa, fb], [fb, fa]]) {
+    const r = H.recorderImpact({ cams, faults, recorderRows: rows });
+    assert.equal(r.faultFor(cams[0])?.reason, "video_loss");
+    assert.equal(r.faultFor(cams[1])?.reason, "storage_fault", "Recorder B's camera fault stays on Recorder B's camera");
+    assert.equal(r.recorderFor(cams[0]), null);
+    assert.equal(r.issueCount, 3);
+  }
 });
 
 t("a recorder that needs attention takes over its cameras' advice too", () => {
@@ -162,7 +203,8 @@ t("an unmatched camera fault is still kept, under its customer name", () => {
 t("two offline cameras sharing a name: only the one on the healthy recorder is a camera item", () => {
   const cams = [cam("c1", "rec-a", "Camera 1", "offline", "unknown"), cam("c3", "rec-b", "Camera 1", "offline", "unknown")];
   const rows = [rec("rec-a", "Recorder A", "healthy", ["c1"]), rec("rec-b", "Recorder B", "offline", ["c3"], "connection")];
-  const faults = [{ camera: "MediaProfile_Channel1_MainStream", reason: "video_loss" }, { camera: "MediaProfile_Channel1_MainStream", reason: "nvr_unreachable" }];
+  // The 0157 context shape: each fault names its camera.
+  const faults = [{ camera_id: "c1", camera: "MediaProfile_Channel1_MainStream", reason: "video_loss" }, { camera_id: "c3", camera: "MediaProfile_Channel1_MainStream", reason: "nvr_unreachable" }];
   const r = H.recorderImpact({ cams, faults, recorderRows: rows });
   assert.equal(r.cameraFaults.length, 1);
   assert.equal(r.cameraFaults[0].reason, "video_loss");

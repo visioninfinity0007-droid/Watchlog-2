@@ -206,6 +206,50 @@ def run() -> int:
                  json.dumps(diag_b.get("recorder"), default=str))
             step(all("evidence_scope" not in r for r in diag_b.get("capabilities") or []),
                  "the model profile never claims recorder scope")
+
+            # ----------------------------------------------------------
+            # Faults name their camera and recorder (two recorders, both
+            # with a profile-named Channel 1, so the names are identical).
+            # ----------------------------------------------------------
+            uc, tc, sc = bootstrap("owner-truth-c@watchlog.test", "Owner Truth C", "Site C")
+            key_c = "owner-truth-agent-c"
+            agent_c = add_agent(tc, sc, key_c)
+            recs = as_anon(
+                "select wl_sync_recorders(%s,%s,%s::jsonb)",
+                agent_c, key_c, json.dumps([
+                    {"local_key": "rec-a", "display_name": "Recorder A",
+                     "is_primary": True, "is_configured": True},
+                    {"local_key": "rec-b", "display_name": "Recorder B",
+                     "is_primary": False, "is_configured": True},
+                ]),
+            )[0]
+            cams = {}
+            for name, reason in (("rec-a", "video_loss"), ("rec-b", "storage_fault")):
+                cams[name] = as_anon(
+                    "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
+                    agent_c, key_c, recs[name],
+                    json.dumps([{"channel": "1", "name": "MediaProfile_Channel1_MainStream",
+                                 "is_configured": True}]),
+                )[0]["1"]
+                cur.execute(
+                    """insert into camera_health (tenant_id,site_id,camera_id,health_state,reason_code)
+                       values (%s,%s,%s,'offline',%s)
+                       on conflict (camera_id) do update
+                         set health_state=excluded.health_state, reason_code=excluded.reason_code""",
+                    (tc, sc, cams[name], reason),
+                )
+            ctx_c = as_auth(uc, "select wl_ai_context(%s)", sc)[0]
+            faults = ctx_c.get("faults") or []
+            got = {(str(f.get("camera_id")), str(f.get("recorder_id")), f.get("reason")) for f in faults}
+            want = {(str(cams["rec-a"]), str(recs["rec-a"]), "video_loss"),
+                    (str(cams["rec-b"]), str(recs["rec-b"]), "storage_fault")}
+            step(len(faults) == 2 and got == want,
+                 "each Watch AI context fault names its camera and recorder, so same-named faults never mix",
+                 json.dumps(faults, default=str))
+            step([f.get("camera_id") for f in faults]
+                 == [f.get("camera_id") for f in as_auth(uc, "select wl_ai_context(%s)", sc)[0]["faults"]]
+                 and [str(f.get("camera_id")) for f in faults] == sorted(str(f.get("camera_id")) for f in faults),
+                 "fault order is deterministic (name, then camera id)")
         finally:
             conn.rollback()
 

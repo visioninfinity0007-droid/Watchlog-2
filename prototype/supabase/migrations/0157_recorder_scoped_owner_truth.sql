@@ -16,6 +16,14 @@
 -- on another unit of the model is downgraded there, exactly as the write path
 -- (0150) requires. wl_ai_context reads capabilities from this diagnosis, so Watch
 -- AI gets the same recorder-scoped truth. Everything else is the 0155 body.
+--
+-- wl_ai_context 'faults' (0152) carried only {camera: raw name, reason}, ordered
+-- by name. Profile-named cameras are 'Camera '||channel, so two recorders that
+-- both have channel 1 produced identical fault rows in either order, and System
+-- Health could only guess which camera (and recorder) a fault was about. Each
+-- fault now also carries camera_id and recorder_id, as the diagnosis faults do
+-- (0155), and the order is deterministic. Everything else is the 0152 body; the
+-- payload stays additive (facts_version v7).
 
 -- Site Control diagnosis is recorder-aware (MNVR-048). The portal Site Control
 -- page calls this directly and codes against this shape:
@@ -340,3 +348,172 @@ $function$;
 -- Restate the 0079 ACL: authenticated callers only, tenant-checked above.
 revoke all on function public.wl_my_site_diagnosis(uuid) from public,anon;
 grant execute on function public.wl_my_site_diagnosis(uuid) to authenticated,service_role;
+
+
+-- Owner/AI context: every fault names its camera and recorder (additive).
+create or replace function public.wl_ai_context(p_site_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_tenant uuid := wl_assert_my_site(p_site_id);
+  v_site public.sites;
+  v_diag jsonb;
+  v_ctx jsonb;
+  v_onboarding jsonb;
+  v_recent jsonb;
+  v_camera_rows jsonb;
+  v_recorders jsonb;
+  v_recorder_count int := 0;
+begin
+  select * into v_site
+    from public.sites
+   where id=p_site_id
+     and tenant_id=v_tenant;
+
+  v_diag := public.wl_my_site_diagnosis(p_site_id);
+  v_ctx := public.wl_my_site_context(p_site_id);
+  v_onboarding := public.wl_onboarding_status(p_site_id);
+  v_recorders := public.wl_my_site_recorders(p_site_id);
+  v_recorder_count := coalesce(jsonb_array_length(v_recorders->'recorders'),0);
+
+  select coalesce(
+    jsonb_agg(to_jsonb(r) order by r.device_ts desc),
+    '[]'::jsonb
+  )
+  into v_recent
+  from (
+    select
+      e.id as event_id,
+      e.camera_id,
+      e.recorder_id,
+      e.event_type,
+      e.device_ts,
+      e.received_at,
+      case
+        when c.name ~* '^(Legacy )?MediaProfile_Channel[0-9]+_(MainStream|SubStream)'
+          then 'Camera '||coalesce(c.physical_channel,c.channel)
+        else c.name
+      end as camera,
+      coalesce(c.physical_channel,c.channel) as channel,
+      coalesce(e.payload->>'source','live') as source,
+      case lower(trim(coalesce(e.payload->>'recovered','false')))
+        when 'true' then true
+        when 't' then true
+        when '1' then true
+        when 'yes' then true
+        else false
+      end as recovered
+    from public.events e
+    left join public.cameras c on c.id=e.camera_id
+    where e.site_id=p_site_id
+      and e.tenant_id=v_tenant
+    order by e.device_ts desc
+    limit 20
+  ) r;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'id',c.id,
+        'recorder_id',c.recorder_id,
+        'channel',coalesce(c.physical_channel,c.channel),
+        'name',case
+          when c.name ~* '^(Legacy )?MediaProfile_Channel[0-9]+_(MainStream|SubStream)'
+            then 'Camera '||coalesce(c.physical_channel,c.channel)
+          else c.name
+        end,
+        'purpose',c.purpose,
+        'monitor',c.is_configured,
+        'analytics_enabled',coalesce(c.analytics_enabled,false),
+        'health_state',coalesce(h.health_state::text,'unknown'),
+        'recording_state',coalesce(h.recording_state::text,'unknown')
+      )
+      order by
+        c.recorder_id,
+        case
+          when coalesce(c.physical_channel,c.channel) ~ '^[0-9]+$'
+            then coalesce(c.physical_channel,c.channel)::int
+          else 2147483647
+        end,
+        coalesce(c.physical_channel,c.channel)
+    ),
+    '[]'::jsonb
+  )
+  into v_camera_rows
+  from public.cameras c
+  join public.recorders cr
+    on cr.id=c.recorder_id
+   and cr.tenant_id=c.tenant_id
+   and cr.site_id=c.site_id
+   and cr.is_configured
+  left join public.camera_health h on h.camera_id=c.id
+  where c.site_id=p_site_id
+    and c.tenant_id=v_tenant
+    and coalesce(c.is_canonical,true);
+
+  return jsonb_build_object(
+    'facts_version','watchlog-ai-context-v7',
+    'generated_at',now(),
+    'site',jsonb_build_object(
+      'id',v_site.id,
+      'name',v_site.name,
+      'timezone',v_site.timezone
+    ),
+    'business_context',v_ctx,
+    'onboarding',v_onboarding,
+    -- Legacy recorder/capability diagnosis is only valid while recorder
+    -- identity is singleton. On a true multi-recorder site fail closed rather
+    -- than projecting one recorder's capability truth onto the whole site.
+    'recorder',case when v_recorder_count<=1 then v_diag->'recorder' else null end,
+    'recorders',coalesce(v_recorders->'recorders','[]'::jsonb),
+    'connectivity',v_diag->'connectivity',
+    'capabilities',case
+      when v_recorder_count<=1 then v_diag->'capabilities'
+      else '{}'::jsonb
+    end,
+    'capability_known',case
+      when v_recorder_count<=1 then coalesce((v_diag->>'capability_known')::boolean,false)
+      else false
+    end,
+    'cameras',v_camera_rows,
+    'faults',(
+      select coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'camera_id',c.id,
+            'recorder_id',c.recorder_id,
+            'camera',c.name,
+            'reason',coalesce(h.reason_code::text,'unknown')
+          )
+          order by c.name,c.id
+        ),
+        '[]'::jsonb
+      )
+      from public.camera_health h
+      join public.cameras c on c.id=h.camera_id
+      join public.recorders fr
+        on fr.id=c.recorder_id
+       and fr.tenant_id=c.tenant_id
+       and fr.site_id=c.site_id
+       and fr.is_configured
+      where h.site_id=p_site_id
+        and h.tenant_id=v_tenant
+        and c.is_configured
+        and coalesce(c.is_canonical,true)
+        and h.health_state::text='offline'
+    ),
+    'coverage',v_diag->'coverage',
+    'permissions',v_diag->'tiers',
+    'recent_events',v_recent,
+    'safety',jsonb_build_object(
+      'recorder_credentials_leave_site',false,
+      'recorder_writes_require_approval',true,
+      'unknown_capability_must_not_be_assumed',true
+    )
+  );
+end
+$function$;

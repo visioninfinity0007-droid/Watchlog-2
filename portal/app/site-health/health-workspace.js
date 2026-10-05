@@ -214,7 +214,7 @@ export default function HealthWorkspace(){
       recording:stale?{label:"Not verified",tone:"unknown",note:r.tone!=="unknown"?"Last known: "+r.label.toLowerCase():null}:r,
       action:failed?recorderView(failed).action:fault?faultView(fault).action:stale?"Waiting for the site to reconnect":h.tone==="bad"||h.tone==="warn"?"Check the camera's power and cable.":r.tone==="bad"||r.tone==="warn"?"Check the recording schedule on the recorder.":h.tone==="unknown"||r.tone==="unknown"?"WatchLog is still confirming":"None",
       attention:Boolean(fault||failed)||["bad","warn"].includes(h.tone)||["bad","warn"].includes(r.tone),
-      reported:Boolean(fault||failed)
+      reported:Boolean(fault||failed)||impact.unattributedCameraIds.has(String(c.id))
     };
   }).sort((a,b)=>Number(b.attention)-Number(a.attention));
   // Cameras whose own state needs checking but which have no reported fault row.

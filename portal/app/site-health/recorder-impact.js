@@ -41,36 +41,28 @@ export function recorderImpact({cams=[],faults=[],recorderRows=[]}={}){
   const issueRecorderOf=cam=>failedByCamera.get(String(cam?.id))||failedById.get(String(cam?.recorder_id??""))||null;
   const issueKinds=new Set(recorderIssues.map(issueOf));
 
-  // Which monitored camera each fault is about: camera id first, then the customer name. A fault row is
-  // only raised for an offline camera, one per camera, so faults sharing a name are paired one to one
-  // with the offline cameras of that name, a recorder-level reason going to a camera behind that issue.
+  // Which monitored camera each fault is about. A fault with a camera_id (wl_ai_context since 0157) is
+  // that camera. A name-only fault (an older context) is matched by its customer name only when exactly
+  // one monitored camera has that name. Two recorders can both have a "Camera 1", and a guess between
+  // them would hand one recorder's fault to the other recorder's root cause, so such a fault stays
+  // unattributed: it is folded only when every camera it could be about is behind a recorder issue that
+  // explains it, and otherwise kept as one item that names neither camera.
   const shown=faults.map(f=>f?.camera&&customerCameraName(f.camera)!==f.camera?{...f,camera:customerCameraName(f.camera)}:f);
-  const claimed=new Set();
-  const owned=shown.map(f=>({fault:f,cams:[]}));
-  for(const x of owned){
-    if(x.fault?.camera_id==null)continue;
-    x.cams=cams.filter(c=>String(c.id)===String(x.fault.camera_id));
-    x.cams.forEach(c=>claimed.add(c));
-  }
+  const owned=shown.map(f=>({fault:f,cams:[],candidates:[]}));
   for(const x of owned){
     const f=x.fault;
-    if(f?.camera_id!=null||!f?.camera)continue;
-    let named=cams.filter(c=>c.name===f.camera);
-    if(named.length<=1){x.cams=named;named.forEach(c=>claimed.add(c));continue}
-    const offline=named.filter(c=>low(c.health_state)==="offline");
-    if(offline.length)named=offline;
-    const free=named.filter(c=>!claimed.has(c));
-    if(free.length)named=free;
-    const kind=RECORDER_REASONS[reasonOf(f)];
-    const fits=c=>{const r=issueRecorderOf(c);return kind?Boolean(r)&&issueOf(r)===kind:!r||!blocking(r)};
-    const pick=named.find(fits)||named[0];
-    x.cams=[pick];claimed.add(pick);
+    if(f?.camera_id!=null){x.cams=cams.filter(c=>String(c.id)===String(f.camera_id));continue}
+    if(!f?.camera)continue;
+    const named=cams.filter(c=>c.name===f.camera);
+    if(named.length===1)x.cams=named;else x.candidates=named;
   }
   // A fault is folded into a recorder issue that explains it.
   const explains=(r,f)=>Boolean(r)&&(blocking(r)||RECORDER_REASONS[reasonOf(f)]===issueOf(r));
   const folded=x=>x.cams.length
     ?x.cams.every(c=>explains(issueRecorderOf(c),x.fault))
-    :Boolean(RECORDER_REASONS[reasonOf(x.fault)])&&issueKinds.has(RECORDER_REASONS[reasonOf(x.fault)]);
+    :x.candidates.length
+      ?x.candidates.every(c=>explains(issueRecorderOf(c),x.fault))
+      :Boolean(RECORDER_REASONS[reasonOf(x.fault)])&&issueKinds.has(RECORDER_REASONS[reasonOf(x.fault)]);
   const foldedCams=new Set(owned.filter(folded).flatMap(x=>x.cams));
   const kept=owned.filter(x=>!folded(x));
   const cameraFaults=kept.map(x=>x.fault);
@@ -85,13 +77,18 @@ export function recorderImpact({cams=[],faults=[],recorderRows=[]}={}){
   for(const r of recorderIssues)if(blocking(r))for(const id of r.camera_ids||[])recorderIssueCameraIds.add(String(id));
   for(const c of cams)if(recorderFor(c))recorderIssueCameraIds.add(String(c.id));
 
-  const cameraItems=cams.filter(c=>!recorderFor(c)&&!faultFor(c)&&needsAttention(c)).length;
+  // Offline cameras a kept name-only fault could be about (a fault row is raised only for an offline
+  // camera). That fault already counts them; they are not counted again or reported as fault-less.
+  const unattributedCameraIds=new Set(kept.flatMap(x=>x.candidates).filter(c=>low(c.health_state)==="offline").map(c=>String(c.id)));
+
+  const cameraItems=cams.filter(c=>!recorderFor(c)&&!faultFor(c)&&!unattributedCameraIds.has(String(c.id))&&needsAttention(c)).length;
   return{
     recorderIssues,
     recorderIssueCameraIds,
     recorderFor,
     cameraFaults,
     faultFor,
+    unattributedCameraIds,
     issueCount:recorderIssues.length+cameraFaults.length+cameraItems
   };
 }
