@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static portal contract for customer-safe multi-recorder grouping."""
 import re
+import tempfile
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -13,20 +14,32 @@ VISUAL_QA=(ROOT/"portal/tests/visual-qa.mjs").read_text(encoding="utf-8")
 RECORDER_PROVENANCE_CONTEXT=7
 
 
-def latest_definition(function):
+def latest_definition(function,migrations=ROOT/"prototype/supabase/migrations"):
     """Body of the last migration that (re)defines public.<function>, i.e. what the DB runs."""
-    marker=f"create or replace function public.{function}("
+    marker=re.compile(rf"create\s+or\s+replace\s+function\s+public\.{re.escape(function)}\s*\(",re.I)
     body=None
-    for path in sorted((ROOT/"prototype/supabase/migrations").glob("*.sql")):
+    for path in sorted(Path(migrations).glob("*.sql")):
         text=path.read_text(encoding="utf-8")
-        start=text.rfind(marker)
-        if start<0:
+        matches=list(marker.finditer(text))
+        if not matches:
             continue
+        start=matches[-1].start()
         end=text.find("$function$;",start)
         body=text[start:end if end>0 else len(text)]
     if body is None:
         raise AssertionError(f"no migration defines public.{function}")
     return body
+
+
+def check_latest_definition_lookup():
+    """The lookup must see a later redefinition whatever its keyword case (0126/0128 use upper case)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp,"0001_a.sql").write_text(
+            "create or replace function public.wl_probe(p uuid)\nas $function$ begin 'v1'; end $function$;\n",encoding="utf-8")
+        Path(tmp,"0002_b.sql").write_text(
+            "CREATE OR REPLACE FUNCTION public.wl_probe(p uuid)\nAS $function$ begin 'v2'; end $function$;\n",encoding="utf-8")
+        if "'v2'" not in latest_definition("wl_probe",tmp):
+            raise AssertionError("latest_definition skipped an upper-case redefinition")
 
 
 def require(text,needle,message):
@@ -79,6 +92,7 @@ def main():
     # prevent overlapping-channel evidence mixups.
     # Assert the version floor and the provenance/masking behaviour of the context the DB actually
     # serves (the latest wl_ai_context), not one version literal (MNVR-052).
+    check_latest_definition_lookup()
     ctx=latest_definition("wl_ai_context")
     flat=re.sub(r"\s+"," ",ctx)
     versions=re.findall(r"'facts_version',\s*'watchlog-ai-context-v(\d+)'",ctx)

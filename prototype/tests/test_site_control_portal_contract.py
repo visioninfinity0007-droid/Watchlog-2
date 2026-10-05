@@ -8,7 +8,9 @@ Read/Recommend/Approve by role, and NEVER exposes a raw recorder command or cred
 """
 from __future__ import annotations
 
+import re
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,28 @@ REPO = ROOT.parent
 OK = []
 def check(cond, name):
     OK.append(bool(cond)); print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+
+
+def latest_definition(function: str, migrations: Path = ROOT / "supabase" / "migrations") -> str:
+    """Body of the last migration that (re)defines public.<function>, i.e. what the DB runs."""
+    marker = re.compile(rf"create\s+or\s+replace\s+function\s+public\.{re.escape(function)}\s*\(", re.I)
+    body = ""
+    for path in sorted(Path(migrations).glob("*.sql")):
+        text = path.read_text(encoding="utf-8")
+        matches = list(marker.finditer(text))
+        if matches:
+            at = matches[-1].start()
+            body = text[at:text.find("$function$;", at)]
+    return body
+
+
+def latest_definition_sees_upper_case() -> bool:
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "0001_a.sql").write_text(
+            "create or replace function public.wl_probe(p uuid)\nas $function$ begin 'v1'; end $function$;\n", encoding="utf-8")
+        Path(tmp, "0002_b.sql").write_text(
+            "CREATE OR REPLACE FUNCTION public.wl_probe(p uuid)\nAS $function$ begin 'v2'; end $function$;\n", encoding="utf-8")
+        return "'v2'" in latest_definition("wl_probe", Path(tmp))
 
 
 def main() -> int:
@@ -81,12 +105,8 @@ def main() -> int:
           "the per-recorder change link sends recorder_id/camera_id")
 
     # The diagnosis the page calls is the recorder-aware one (latest definition, 0155).
-    diag = ""
-    for path in sorted((ROOT / "supabase" / "migrations").glob("*.sql")):
-        text = path.read_text(encoding="utf-8")
-        at = text.rfind("create or replace function public.wl_my_site_diagnosis(")
-        if at >= 0:
-            diag = text[at:text.find("$function$;", at)]
+    check(latest_definition_sees_upper_case(), "the diagnosis lookup sees an upper-case redefinition")
+    diag = latest_definition("wl_my_site_diagnosis")
     for needle, name in (
         ("'recorders',v_recorders", "diagnosis returns one entry per configured recorder"),
         ("when v_recorder_count>1 then null", "diagnosis has no site-wide recorder identity on a multi-recorder site"),
