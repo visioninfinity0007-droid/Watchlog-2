@@ -13,7 +13,7 @@ def main():
     owner_context = read("prototype/supabase/migrations/0152_multi_recorder_owner_read_model.sql")
 
     required = [
-        "trusted, experienced security and office manager",
+        "trusted, experienced security and operations manager",
         "natural Pakistan English",
         '"17 September 2026"',
         '"4:05 PM"',
@@ -32,6 +32,25 @@ def main():
         if token not in gateway:
             problems.append(f"Watch AI customer harness missing: {token}")
 
+
+    # MNVR-051 / per-recorder Site Control: every answer's recorder cards are grounded in the site
+    # context and every Site Control proposal carries only a validated recorder/camera target.
+    for token in (
+        'from "./recorder_card.ts"',
+        'from "./site_control_target.ts"',
+        "siteControlTarget(body?.site_control_target,",
+        "groundRecorderCards(result.cards,",
+        "targetSiteControlActions(result.proposed_actions,",
+        "data: recorderCardData(ctx, tools?.setup_advisor)",
+    ):
+        if token not in gateway:
+            problems.append(f"Watch AI recorder grounding missing: {token}")
+    if "data: { recorders, recommendation: tools?.setup_advisor }" in gateway:
+        problems.append("multi-recorder card must not omit capability_known (renders as Checked)")
+    grounded = gateway.find("groundRecorderCards(result.cards,")
+    saved = gateway.find('service.rpc("wl_ai_append_assistant_message"')
+    if grounded < 0 or saved < 0 or grounded > saved:
+        problems.append("recorder cards must be grounded before the answer is saved and returned")
 
     owner_required = [
         "'facts_version','watchlog-ai-context-v7'",
