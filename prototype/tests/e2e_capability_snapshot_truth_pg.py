@@ -7,8 +7,16 @@ site had run ONVIF since 2026-09-26 with zero native events. Proves:
 - a snapshot synced by the current Agent under its current driver is shown;
 - the same Agent switching driver in place makes the snapshot unknown, and a
   re-sync under the new driver makes it current again;
-- a snapshot older than the current Agent's enrollment is unknown (the
-  Al-Khalid shape: dahua-cgi sync, then a new ONVIF Agent);
+- the Agent's startup order (capability sync BEFORE the run's first heartbeat)
+  cannot launder a snapshot: sync -> heartbeat on another driver -> heartbeat
+  back on the original driver stays unknown (RV-L5-1);
+- a snapshot recorded by a previous Agent is unknown (the Al-Khalid shape:
+  dahua-cgi sync, then a new ONVIF Agent);
+- a sync from a stale, non-current Agent is unknown, never stamped as the
+  current Agent's work (RV-L5-2);
+- a write no Agent made (direct/service write) is unknown;
+- a snapshot older than the current Agent's enrollment is unknown, isolated
+  from the Agent-id check (RV-L5-4);
 - a snapshot with no recorded provenance (every pre-existing row) is unknown;
 - a site with more than one configured recorder never shows the site-wide
   snapshot;
@@ -126,6 +134,11 @@ def run() -> int:
                 assert row, msg
                 return row[0]
 
+            def heartbeat(agent, key, driver):
+                row, msg = as_anon("select wl_heartbeat(%s,%s,'5.0.27','Dahua',"
+                                   "'DH-XVR1B08-I',%s)", agent, key, driver)
+                assert row, msg
+
             def site_caps(uid, site):
                 rows = as_auth(uid, "select wl_capabilities()")[0] or []
                 return next((r for r in rows if str(r.get("site_id")) == str(site)), None)
@@ -166,20 +179,60 @@ def run() -> int:
             step(shown(entry), "a re-sync under the new driver is current again",
                  json.dumps(entry, default=str))
 
+            # RV-L5-1: the Agent syncs capabilities at startup BEFORE the run's
+            # first heartbeat records the run's driver. Row says 'onvif'; the
+            # Agent restarts on dahua-cgi and syncs a dahua-cgi snapshot, then
+            # heartbeats dahua-cgi; later it is switched back to ONVIF (which
+            # reports no channels, so nothing re-syncs) and heartbeats onvif.
+            cur.execute("update agents set device_driver='onvif' where id=%s", (agent_a,))
+            sync_caps(agent_a, key_a)
+            heartbeat(agent_a, key_a, "dahua-cgi")
+            entry_mid = site_caps(uid, site)
+            heartbeat(agent_a, key_a, "onvif")
+            entry = site_caps(uid, site)
+            step(hidden(entry_mid) and hidden(entry),
+                 "sync before heartbeat: a driver change and change back stays unknown",
+                 json.dumps([entry_mid, entry], default=str))
+
+            # A plain restart on the same driver keeps a truthful snapshot current.
+            sync_caps(agent_a, key_a)
+            heartbeat(agent_a, key_a, "onvif")
+            entry = site_caps(uid, site)
+            step(shown(entry), "a restart on the same driver keeps the snapshot current",
+                 json.dumps(entry, default=str))
+
+            # A write that no Agent made carries no provenance.
+            cur.execute("update sites set capabilities_at=now()-interval '1 minute' "
+                        "where id=%s", (site,))
+            entry = site_caps(uid, site)
+            step(hidden(entry), "a write no Agent made is unknown",
+                 json.dumps(entry, default=str))
+
             # Al-Khalid: a dahua-cgi snapshot, then a new ONVIF Agent enrolls.
             cur.execute("update agents set device_driver='dahua-cgi', "
                         "last_seen_at=now()-interval '9 days' where id=%s", (agent_a,))
             sync_caps(agent_a, key_a)
-            cur.execute("update sites set capabilities_at=now()-interval '11 days' where id=%s",
-                        (site,))
             key_b = "caps-agent-b"
             agent_b = add_agent(tenant, site, key_b, "onvif",
                                 "now()-interval '9 days'", "now()")
             current = one("select wl_current_site_agent(%s)", site)[0]
             entry = site_caps(uid, site)
             step(str(current) == str(agent_b) and hidden(entry),
-                 "a snapshot older than the current Agent's enrollment is unknown",
+                 "a snapshot recorded by a previous Agent is unknown",
                  json.dumps([str(current), entry], default=str))
+
+            # RV-L5-2: the old dahua-cgi Agent re-syncs while the ONVIF Agent is
+            # the current authority. Its snapshot must never be stamped as B's.
+            sync_caps(agent_a, key_a)
+            current = one("select wl_current_site_agent(%s)", site)[0]
+            prov = one("select agent_id, driver from site_capability_provenance "
+                       "where site_id=%s", site)
+            entry = site_caps(uid, site)
+            step(str(current) == str(agent_b) and hidden(entry)
+                 and (prov is None or prov[0] is None),
+                 "a stale Agent's sync is unknown, never stamped as the current Agent's",
+                 json.dumps([str(current), [str(x) for x in (prov or [])], entry],
+                            default=str))
 
             # A pre-existing snapshot carries no provenance at all.
             sync_caps(agent_b, key_b)
@@ -189,6 +242,21 @@ def run() -> int:
             entry = site_caps(uid, site)
             step(hidden(entry), "a snapshot with no recorded provenance is unknown",
                  json.dumps(entry, default=str))
+
+            # RV-L5-4: isolate the enrollment clause. The snapshot is the current
+            # Agent's own, under its own driver, but that Agent identity is
+            # (re-)enrolled after the snapshot was taken.
+            sync_caps(agent_b, key_b)
+            pre = site_caps(uid, site)
+            cur.execute("update agents set enrolled_at=now()+interval '1 second' "
+                        "where id=%s", (agent_b,))
+            current = one("select wl_current_site_agent(%s)", site)[0]
+            entry = site_caps(uid, site)
+            step(shown(pre) and str(current) == str(agent_b) and hidden(entry),
+                 "a snapshot older than the current Agent's enrollment is unknown",
+                 json.dumps([pre, str(current), entry], default=str))
+            cur.execute("update agents set enrolled_at=now()-interval '9 days' "
+                        "where id=%s", (agent_b,))
 
             # Read models that reach the AI and the portal never project the snapshot.
             sync_caps(agent_b, key_b)
