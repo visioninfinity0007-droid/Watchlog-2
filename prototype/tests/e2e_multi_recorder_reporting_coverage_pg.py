@@ -18,6 +18,9 @@ Proves:
   profile on a multi-recorder site, one entry per recorder with its own
   identity and cameras, every camera labelled by recorder (MNVR-048);
 - direct coverage-classes access is tenant scoped;
+- U-1: a server-side job carrying the service_role JWT claim (no tenant
+  member) reads multi-recorder coverage and generates the daily report; a
+  session with no JWT at all and anon both fail closed;
 - true single-recorder sites keep the legacy classes contract.
 """
 from __future__ import annotations
@@ -494,6 +497,65 @@ def run() -> int:
                 raised and ("authorized" in msg.lower() or "site" in msg.lower()),
                 "another tenant cannot read recorder-aware coverage classes",
                 msg,
+            )
+
+            # U-1: 0155's site check must not break server-side callers that
+            # carry no tenant JWT. A service_role job (the daily reporter's
+            # path through wl_generate_daily_report) is accepted for any site;
+            # tenant isolation for authenticated callers stays (above).
+            svc = as_service(
+                "select wl_site_coverage_report_classes(%s,%s,%s)",
+                sa, start, end,
+            )[0]
+            step(
+                svc["coverage_basis"] == "camera_time"
+                and svc["camera_count"] == 3,
+                "U-1: a service_role job without a tenant JWT reads multi-recorder coverage",
+                json.dumps({k: svc.get(k) for k in ("coverage_basis", "camera_count")}),
+            )
+            gen = as_service(
+                "select wl_generate_daily_report(%s,%s::date,true)",
+                sa, "2026-10-03",
+            )[0]
+            step(
+                gen["payload"]["coverage"]["coverage_basis"] == "camera_time"
+                and gen["payload"]["schema"] == "daily_intelligence.v4",
+                "U-1: a service_role job generates the multi-recorder daily report",
+                json.dumps(gen["payload"]["coverage"].get("coverage_basis")),
+            )
+            # A session with no JWT claims at all is neither a tenant member nor
+            # service_role: it fails closed (as wl_office_brief already does for
+            # the daily dataset). Server-side jobs must carry the service_role claim.
+            cur.execute("savepoint nojwt")
+            for key in ("request.jwt.claims", "request.jwt.claim.sub", "request.jwt.claim.role"):
+                cur.execute("select set_config(%s, '', true)", (key,))
+            nojwt_raised, nojwt_msg = False, ""
+            try:
+                cur.execute(
+                    "select wl_site_coverage_report_classes(%s,%s,%s)", (sa, start, end)
+                ).fetchone()
+            except psycopg.Error as exc:
+                nojwt_raised, nojwt_msg = True, str(exc).splitlines()[0]
+            cur.execute("rollback to savepoint nojwt")
+            step(
+                nojwt_raised and "not authenticated" in nojwt_msg,
+                "U-1: a session with no JWT at all fails closed",
+                nojwt_msg,
+            )
+            cur.execute("savepoint anon_cov")
+            cur.execute("set local role anon")
+            anon_raised, anon_msg = False, ""
+            try:
+                cur.execute(
+                    "select wl_site_coverage_report_classes(%s,%s,%s)", (sa, start, end)
+                ).fetchone()
+            except psycopg.Error as exc:
+                anon_raised, anon_msg = True, str(exc).splitlines()[0]
+            cur.execute("rollback to savepoint anon_cov")
+            step(
+                anon_raised and "permission denied" in anon_msg.lower(),
+                "U-1: anon cannot read coverage classes",
+                anon_msg,
             )
 
             # True singleton site remains on the exact legacy 3-class contract.

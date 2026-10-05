@@ -151,6 +151,15 @@ revoke all on function public.wl_effective_site_coverage(
 
 -- Keep the existing public/internal call point so wl_daily_intelligence and all
 -- Phase-28 period functions automatically receive effective recorder truth.
+--
+-- Callers (U-1): an authenticated tenant member gets only its own sites
+-- (wl_assert_my_site). A server-side job without a tenant JWT, such as the
+-- daily report through wl_generate_daily_report, carries the service_role JWT
+-- claim, which wl_assert_my_site (0122) accepts for any existing site. A
+-- database session with no JWT claims at all is neither and is rejected
+-- (fail closed), exactly as wl_office_brief (0129) already rejects it inside
+-- wl_daily_intelligence; such a job sets request.jwt.claims to
+-- {"role":"service_role"} for its transaction.
 create or replace function public.wl_site_coverage_report_classes(
   p_site_id uuid,
   p_from timestamptz,
