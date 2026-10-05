@@ -218,7 +218,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
             channel = str(row.get("channel") or "")
             if not request_id or not channel:
                 continue
-            driver = None
+            driver = job_cfg = None
             try:
                 # Footage/archive APIs are vendor-specific. A site's proven live path may
                 # still be ONVIF; recorded media gets one bounded native-vendor attempt without
@@ -254,7 +254,8 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     f"incident footage: uploaded {len(data) // 1024} KB for request {request_id[:8]}"
                 )
             except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error, hosts)
+                # The job ran on the recorder it names: redact that recorder's host too.
+                reason = _safe_reason(error, hosts + _recorder_hosts(job_cfg))
                 try:
                     cloud.call(
                         "wl_agent_fail_clip",
@@ -325,7 +326,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
             channel = str(row.get("channel") or "")
             if not request_id or not channel:
                 continue
-            driver = None
+            driver = job_cfg = None
             try:
                 job_cfg = recorder_runtime.config_for_cloud_recorder(
                     cfg, row.get("recorder_id")
@@ -362,7 +363,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                            p_captured_at=core.iso(core.now_utc()))
                 core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
             except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error, hosts,
+                reason = _safe_reason(error, hosts + _recorder_hosts(job_cfg),
                                       redacted="Recorder could not provide a still for this camera.")
                 try:
                     cloud.call("wl_agent_fail_incident_still",
