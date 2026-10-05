@@ -672,6 +672,174 @@ Add-Type -TypeDefinition $src -OutputAssembly $Out -OutputType ConsoleApplicatio
 '''
 
 
+_UNEXPECTED_HARNESS = r"""
+param([string]$Script, [string]$Work, [string]$Scenario)
+$ErrorActionPreference = "Stop"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+# Never run the real payload rollback here.
+$rollbackRc = if ($Scenario -eq "paused-rollback-fails") { 1 } else { 0 }
+function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) { "helper:$Stage" | Add-Content (Join-Path $Work "calls.log"); return $rollbackRc }
+$DataRoot = $Work
+$LogPath = Join-Path $Work "repair-upgrade.log"
+$ResultPath = Join-Path $Work "repair-upgrade-result.ini"
+$ConfigPath = Join-Path $Work "watchlog.ini"
+$CandidateDir = $Work
+$RegistryStepTimeoutSec = 30
+$CandidateSetupUi = Join-Path $Work "fake-setup-ui.cmd"
+$script:RecorderReport = @()
+$script:RegistryState = ""
+$script:StagedRecorderId = ""
+$script:CurrentStage = "install candidate files"
+$script:RecoveryState = "The previous WatchLog payload is backed up and can be restored automatically."
+$script:Paused = $Scenario -like "paused*"
+Stop-Unexpected "unexpected Repair/Upgrade error: boom"
+"""
+
+
+class RepairUnexpectedErrorRestoresPreviousState(unittest.TestCase):
+    """The orchestrator's catch-all used to Fail 49 without Restore-Previous: an unexpected
+    error after the pause left the Agent task disabled and the site unmonitored."""
+
+    def run_unexpected(self, scenario):
+        if not POWERSHELL:
+            self.skipTest("Windows PowerShell is required to execute the repair catch-all")
+        work = Path(tempfile.mkdtemp(prefix="wl-repair-unexpected-"))
+        self.addCleanup(shutil.rmtree, work, True)
+        harness = work / "harness.ps1"
+        harness.write_text(_UNEXPECTED_HARNESS, encoding="utf-8")
+        proc = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(harness), "-Script", str(REPAIR_PS1), "-Work", str(work),
+             "-Scenario", scenario],
+            capture_output=True, text=True, timeout=120)
+        calls = work / "calls.log"
+        log = calls.read_text(encoding="ascii").split() if calls.exists() else []
+        result = (work / "repair-upgrade-result.ini").read_text(encoding="ascii")
+        return proc.returncode, log, result
+
+    def test_an_unexpected_error_after_the_pause_restores_the_previous_watchlog(self):
+        code, calls, result = self.run_unexpected("paused")
+        self.assertEqual(code, 49)
+        self.assertEqual(calls, ["helper:rollback"])
+        self.assertIn("previous WatchLog restored", result)
+        self.assertIn("Agent restart was verified", result)
+
+    def test_an_unproven_restore_is_reported_as_such(self):
+        code, calls, result = self.run_unexpected("paused-rollback-fails")
+        self.assertEqual(code, 48)
+        self.assertEqual(calls, ["helper:rollback"])
+        self.assertIn("could not be proven running", result)
+
+    def test_before_the_pause_nothing_is_rolled_back(self):
+        code, calls, result = self.run_unexpected("not-paused")
+        self.assertEqual(code, 49)
+        self.assertEqual(calls, [])
+        self.assertIn("unexpected Repair/Upgrade error: boom", result)
+
+    def test_the_paused_flag_brackets_the_live_site_changes(self):
+        ps = REPAIR_PS1.read_text(encoding="utf-8").replace("\r\n", "\n")
+        pause = ps.index('$rc = Invoke-UpgradeHelper "preflight"')
+        paused = ps.index("$script:Paused = $true")
+        phase2 = ps.index("phase 2/2: current WatchLog paused/backed up")
+        committed = ps.index("$script:Paused = $false            # committed")
+        self.assertLess(pause, paused)
+        self.assertLess(paused, phase2)
+        self.assertGreater(committed, ps.index('Invoke-UpgradeHelper "commit"'))
+        catch_all = ps[ps.rindex("\ncatch {"):]
+        self.assertIn("Stop-Unexpected $msg", catch_all[:catch_all.index("\n}")])
+
+
+_STAGING_TIMEOUT_HARNESS = r"""
+param([string]$Script, [string]$Work)
+$ErrorActionPreference = "Stop"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+function Invoke-UpgradeHelper([string]$Stage, [string[]]$Extra = @()) { "helper:$Stage" | Add-Content (Join-Path $Work "calls.log"); return 0 }
+$DataRoot = $Work
+$LogPath = Join-Path $Work "repair-upgrade.log"
+$ResultPath = Join-Path $Work "repair-upgrade-result.ini"
+$ConfigPath = Join-Path $Work "watchlog.ini"
+$RegistryPath = Join-Path $Work "recorders.json"
+$CandidateDir = $Work
+$RegistryStepTimeoutSec = 3
+$CandidateSetupUi = Join-Path $Work "fake-setup-ui.cmd"
+$script:RecorderReport = @()
+$script:RegistryState = ""
+$script:StagedRecorderId = ""
+$script:Paused = $true
+$staged = Invoke-CandidateSetupUi @("--registry-migrate") "registry staging"
+Note-RegistryStaging $staged
+"STAGED=[$($script:StagedRecorderId)] RESULT=$([bool]$staged)"
+$ok = Restore-Previous "registry staging failed: no result"
+Write-Result "failed" 42 "automatic recovery" "x" "y"
+"RESTORED=$ok"
+"""
+
+
+class RepairTimedOutRegistryStaging(unittest.TestCase):
+    """A --registry-migrate that published the registry and was then stopped for running too
+    long returned no result, so Restore-Previous never removed what it had created."""
+
+    def test_a_timed_out_migration_is_rolled_back(self):
+        if not POWERSHELL:
+            self.skipTest("Windows PowerShell is required to execute the repair staging")
+        work = Path(tempfile.mkdtemp(prefix="wl-repair-staging-timeout-"))
+        self.addCleanup(shutil.rmtree, work, True)
+        calls = work / "calls.log"
+        registry = work / "recorders.json"
+        local_id = "aaaaaaaa-0000-4000-8000-000000000001"
+        # Stand-in for the candidate Setup UI: --registry-migrate publishes the registry and
+        # then hangs past the step timeout; --registry-rollback answers like the real one.
+        (work / "fake-setup-ui.cmd").write_text(
+            "@echo off\r\n"
+            "setlocal\r\n"
+            'set "MODE="\r\n'
+            ":next\r\n"
+            'if "%~1"=="" goto done\r\n'
+            'if "%~1"=="--result-json" set "RES=%~2"\r\n'
+            'if "%~1"=="--registry-migrate" set "MODE=migrate"\r\n'
+            'if "%~1"=="--registry-rollback" set "MODE=rollback %~2"\r\n'
+            "shift\r\n"
+            "goto next\r\n"
+            ":done\r\n"
+            f'echo setup-ui:%MODE%>> "{calls}"\r\n'
+            'if "%MODE%"=="migrate" (\r\n'
+            f'  echo {{"schema":1,"recorders":[{{"local_id":"{local_id}"}}]}}> "{registry}"\r\n'
+            '  powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20"\r\n'
+            "  exit /b 0\r\n"
+            ")\r\n"
+            'echo {"ok":true,"action":"removed"} > "%RES%"\r\n',
+            encoding="ascii")
+        harness = work / "harness.ps1"
+        harness.write_text(_STAGING_TIMEOUT_HARNESS, encoding="utf-8")
+        proc = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(harness), "-Script", str(REPAIR_PS1), "-Work", str(work)],
+            capture_output=True, text=True, timeout=120)
+        out = proc.stdout + proc.stderr
+        self.assertIn(f"STAGED=[{local_id}] RESULT=False", out)
+        self.assertIn("RESTORED=True", out)
+        log = [row.strip() for row in calls.read_text(encoding="ascii").splitlines()]
+        self.assertEqual(log, ["setup-ui:migrate", "helper:rollback",
+                               f"setup-ui:rollback {local_id}"])
+        self.assertIn("registry=staging removed",
+                      (work / "repair-upgrade-result.ini").read_text(encoding="ascii"))
+
+    def test_a_migration_that_undid_itself_is_not_rolled_back_again(self):
+        ps = REPAIR_PS1.read_text(encoding="utf-8").replace("\r\n", "\n")
+        note = ps[ps.index("function Note-RegistryStaging"):]
+        note = note[:note.index("\n}\n")]
+        self.assertIn("if ($Staged -and [bool]$Staged.undone) { return }", note)
+        staging = ps.index('$staged = Invoke-CandidateSetupUi @("--registry-migrate")')
+        self.assertLess(ps.index("Note-RegistryStaging $staged", staging),
+                        ps.index("Restore-Previous", staging))
+
+
 class UpgradeHelperSetupUiVersion(unittest.TestCase):
     """verify-version checks the Setup UI only when the caller says it replaced it.
 

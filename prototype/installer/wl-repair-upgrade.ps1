@@ -22,6 +22,8 @@
     7. Commit only after health proof; otherwise rollback (including a registry staged
        in step 4) and prove old Agent restarted. The legacy recorder settings are never
        retired here: the 5.1 runtime still runs a one-recorder site from them.
+       An unexpected error after step 4 paused WatchLog also restores the previous
+       WatchLog, and a registry staging step that timed out is rolled back too.
 #>
 [CmdletBinding()]
 param(
@@ -61,6 +63,7 @@ $script:RecorderBaseline = $null   # what must be live again for the commit gate
 $script:RecorderReport = @()       # per-recorder lines for repair-upgrade-result.ini
 $script:RegistryState = ""
 $script:StagedRecorderId = ""      # registry staged by THIS repair; undone on rollback
+$script:Paused = $false            # current WatchLog paused/backed up; restore it on any failure
 
 $PayloadFiles = @(
   "watchlog-agent.exe",
@@ -256,8 +259,38 @@ function Undo-RegistryStaging {
   $script:StagedRecorderId = ""
 }
 
+function Note-RegistryStaging($Staged) {
+  # Remember a registry THIS run's --registry-migrate created, so Restore-Previous removes it.
+  # The step undoes its own partial work when it fails, but not when it is stopped for running
+  # too long or leaves no result. The registry did not exist before the step, so a
+  # one-recorder registry present after such a step is the one it created
+  # (--registry-rollback still keeps anything that is not that untouched, unbound recorder).
+  if ($Staged -and [bool]$Staged.ok) {
+    if ([bool]$Staged.migrated) {
+      $script:StagedRecorderId = [string]$Staged.local_id
+      $script:RegistryState = "staged"
+      Write-Repair "existing recorder staged into the recorder registry; it is removed again if this update rolls back"
+    }
+    return
+  }
+  if ($Staged -and [bool]$Staged.undone) { return }
+  try {
+    if (-not (Test-Path -LiteralPath $RegistryPath)) { return }
+    $rows = @((Get-Content -LiteralPath $RegistryPath -Raw | ConvertFrom-Json).recorders | Where-Object { $null -ne $_ })
+  } catch {
+    Write-Repair "registry staging left a recorder registry that could not be read: $($_.Exception.Message)"
+    return
+  }
+  if ($rows.Count -eq 1 -and [string]$rows[0].local_id) {
+    $script:StagedRecorderId = [string]$rows[0].local_id
+    $script:RegistryState = "staged (unconfirmed)"
+    Write-Repair "registry staging gave no confirmed result but left a recorder registry; it is removed with the rollback"
+  }
+}
+
 function Restore-Previous([string]$Why) {
   $script:CurrentStage = "automatic recovery"
+  $script:Paused = $false
   Write-Repair "restoring previous WatchLog: $Why"
   $rc = Invoke-UpgradeHelper "rollback"
   Undo-RegistryStaging
@@ -269,6 +302,17 @@ function Restore-Previous([string]$Why) {
   $script:RecoveryState = "The previous WatchLog was restored and its Agent restart was verified."
   Write-Repair "previous WatchLog restored and running"
   return $true
+}
+
+function Stop-Unexpected([string]$msg) {
+  # An error none of the steps above expected. Once the current WatchLog is paused its task is
+  # disabled and its payload backed up: restore that working state, never leave it switched off.
+  if ($script:Paused) {
+    $restored = Restore-Previous $msg
+    if (-not $restored) { Fail 48 ($msg + "; previous WatchLog could not be proven running") }
+    Fail 49 ($msg + "; previous WatchLog restored")
+  }
+  Fail 49 $msg
 }
 
 function Run-Candidate-AsSystem {
@@ -537,6 +581,7 @@ try {
   if ($rc -ne 0) {
     Fail 23 "candidate passed passive checks, but current WatchLog could not be safely paused/unlocked; no payload files were replaced"
   }
+  $script:Paused = $true
 
   $script:RecoveryState = "The previous WatchLog payload is backed up and can be restored automatically."
   $script:CurrentStage = "recorder and channel validation"
@@ -576,16 +621,12 @@ try {
     $script:CurrentStage = "recorder registry staging"
     Write-Repair "staging the existing recorder into the recorder registry; legacy recorder settings are kept"
     $staged = Invoke-CandidateSetupUi @("--registry-migrate") "registry staging"
+    Note-RegistryStaging $staged
     if (-not $staged -or -not [bool]$staged.ok) {
       $detail = if ($staged -and $staged.error) { [string]$staged.error } else { "registry staging failed or returned no valid result" }
       $restored = Restore-Previous ("registry staging failed: " + $detail)
       if (-not $restored) { Fail 43 "registry staging failed AND previous WatchLog could not be proven running" }
       Fail 42 "the existing recorder could not be prepared for this release; previous WatchLog restored"
-    }
-    if ([bool]$staged.migrated) {
-      $script:StagedRecorderId = [string]$staged.local_id
-      $script:RegistryState = "staged"
-      Write-Repair "existing recorder staged into the recorder registry; it is removed again if this update rolls back"
     }
   }
 
@@ -635,6 +676,7 @@ try {
     if (-not $restored) { Fail 41 "commit failed AND rollback could not be proven" }
     Fail 40 "final verification failed; previous WatchLog restored"
   }
+  $script:Paused = $false            # committed: the new WatchLog is the working state now
 
   $script:CurrentStage = "complete"
   $script:RecoveryState = "WatchLog $ExpectedVersion is installed and healthy."
@@ -650,7 +692,7 @@ try {
 }
 catch {
   $msg = "unexpected Repair/Upgrade error: " + $_.Exception.Message
-  Fail 49 $msg
+  Stop-Unexpected $msg
 }
 finally {
   try { Remove-Item -LiteralPath $PreflightResult -Force -ErrorAction SilentlyContinue } catch {}
