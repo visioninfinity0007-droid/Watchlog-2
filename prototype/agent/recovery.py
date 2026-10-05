@@ -208,9 +208,11 @@ class RecoveryRunner:
         the recorder answers again, as when the worker used to skip the cycle."""
         kept = dict(checkpoint)
         kept["progress_attempt"] = progress + 1
-        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id,
-                        p_agent_key=self.agent_key, p_id=iv["id"], p_status="pending",
-                        p_recovered_count=0, p_checkpoint=kept)
+        params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key, p_id=iv["id"],
+                      p_status="pending", p_recovered_count=0, p_checkpoint=kept)
+        if self.recorder_id:
+            params["p_recorder_id"] = self.recorder_id     # the claim was the recorder's
+        self.cloud.call(self._complete_rpc(), **params)
         return {"id": iv["id"], "status": "pending", "recovered": 0, "yielded": False,
                 "error": failure}
 
