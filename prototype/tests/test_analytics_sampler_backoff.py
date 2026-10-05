@@ -246,5 +246,114 @@ def test_an_open_that_exits_backs_off_instead_of_sticking():
     assert pool.retry_at(A) is not None
 
 
+
+# --- a recorder that answers a still with nothing, or not at all -------------------------
+
+def _run_sampler(tmp_path, monkeypatch, driver, seconds, poll_seconds=0.05):
+    """Run the real analytics sampler loop on one camera of recorder A for ``seconds``.
+    Returns (lease poll times, final status document)."""
+    import json
+    stop = threading.Event()
+    polls = []
+
+    class Cloud:
+        def call(self, name, **kw):
+            if name == "wl_agent_analytics_config":
+                polls.append(time.monotonic())
+                return {"changed": False, "multi_agent_enabled": False}
+            return {}
+
+    class Mux:
+        camera_count = 1
+
+        def __init__(self, **_kw):
+            pass
+
+        def configure(self, _config):
+            pass
+
+        def sample_plan(self):
+            return [("target-a", 0.05)]
+
+        def resolve_target(self, _target):
+            return A, "1"
+
+        def on_frame(self, *_a):
+            return []
+
+    monkeypatch.setattr(aa.core, "Cloud", lambda url, key: Cloud())
+    monkeypatch.setattr(aa.core, "log", lambda _m: None)
+    monkeypatch.setattr(aa.recorder_analytics, "RecorderAnalyticsMux", Mux)
+    monkeypatch.setattr(aa.recorder_runtime, "config_for_cloud_recorder", lambda cfg, _r: cfg)
+    monkeypatch.setattr(aa, "_open_analytics_driver", lambda _cfg: driver)
+    cfg = SimpleNamespace(
+        analytics_enabled=True, supabase_url="https://cloud.invalid", publishable_key="pk",
+        analytics_spool_path=tmp_path / "analytics.sqlite",
+        analytics_config_path=tmp_path / "analytics_config.json",
+        analytics_status_path=tmp_path / "analytics_status.json",
+        analytics_bootstrap_marker=tmp_path / "bootstrap.json",
+        bootstrap_site_type="", bootstrap_camera_profiles=[],
+        analytics_poll_seconds=poll_seconds, analytics_upload_seconds=1000,
+        analytics_max_fps=30.0,
+    )
+    detector = SimpleNamespace(available=True, detect=lambda _raw: None)
+    worker = threading.Thread(target=aa.analytics_worker, args=(cfg, {
+        "agent_id": "agent", "agent_key": "key"}, detector, stop, {"ok": True}))
+    worker.start()
+    try:
+        time.sleep(seconds)
+    finally:
+        stop.set()
+        worker.join(10)
+    assert not worker.is_alive()
+    return polls, json.loads(cfg.analytics_status_path.read_text(encoding="utf-8"))
+
+
+def test_a_still_answered_with_nothing_is_a_failed_sample(tmp_path, monkeypatch):
+    """Dahua and ONVIF drivers return None when the still times out. That is no sample: it
+    must back the channel off like any failure, not count as a success and be retried at
+    once on every pass."""
+    shots = []
+
+    class Driver:
+        def get_snapshot(self, channel):
+            shots.append(channel)
+            return None
+
+        def close(self):
+            pass
+
+    _polls, status = _run_sampler(tmp_path, monkeypatch, Driver(), 1.0)
+    assert len(shots) == 1, f"an empty still was retried {len(shots)} times without backoff"
+    assert status["sample_errors"] == 1 and status["samples_ok"] == 0
+
+
+def test_a_stalled_recorder_does_not_delay_the_lease_refresh(tmp_path, monkeypatch):
+    """A powered-off recorder can hold a still request for 10-25 s before answering None.
+    The sampler waits a bounded time for it, so the lease keeps being refreshed, and the
+    stalled recorder is not asked again while its earlier request is still running."""
+    monkeypatch.setattr(aa, "SAMPLER_SNAPSHOT_WAIT_SECONDS", 0.2, raising=False)
+    release = threading.Event()
+    shots = []
+
+    class Driver:
+        def get_snapshot(self, channel):
+            shots.append(channel)
+            release.wait(5)
+            return None
+
+        def close(self):
+            pass
+
+    try:
+        polls, status = _run_sampler(tmp_path, monkeypatch, Driver(), 1.5)
+    finally:
+        release.set()
+    gaps = [later - earlier for earlier, later in zip(polls, polls[1:])]
+    assert len(polls) >= 8, f"only {len(polls)} lease poll(s) while one recorder stalled"
+    assert max(gaps) < 1.0, f"the lease thread was held {max(gaps):.2f}s by a stalled still"
+    assert len(shots) == 1, "the stalled recorder was asked again before it answered"
+    assert status["sample_errors"] == 1 and status["samples_ok"] == 0
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

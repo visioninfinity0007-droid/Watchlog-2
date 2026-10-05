@@ -49,6 +49,10 @@ SAMPLER_RETRY_SECONDS = (15, 30, 60, 120, 300)
 # Consecutive failed samples of one channel, with no success in between, that back the
 # whole recorder off (two different channels newly failing in a row also do).
 SAMPLER_RECORDER_FAILURE_STREAK = 3
+# How long the sampler (the site lease thread) waits for one still. Dahua and ONVIF drivers
+# hold a request to a powered-off recorder for 10-25 s before answering None; the still
+# keeps running on that recorder's own thread, and the recorder is skipped until it ends.
+SAMPLER_SNAPSHOT_WAIT_SECONDS = 5.0
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
@@ -335,6 +339,7 @@ class _SamplerDrivers:
         self._channel_failures: dict = {}   # (key, channel) -> consecutive failed samples
         self._channel_retry_at: dict = {}   # (key, channel) -> monotonic retry time
         self._streak: dict = {}             # key -> [failures, {channels}] since a success
+        self._sampling: set = set()         # keys with a still request still running
         self._epoch = 0                  # bumped by close_all(); a stale open is discarded
 
     def opening(self, key) -> bool:
@@ -424,6 +429,40 @@ class _SamplerDrivers:
             except Exception:  # noqa: BLE001
                 pass
         return delay
+
+    def sampling(self, key) -> bool:
+        """True while this recorder's previous still request has not returned yet."""
+        with self._lock:
+            return key in self._sampling
+
+    def snapshot(self, key, driver, channel, timeout: float):
+        """One still from this recorder, taken on its own thread; wait at most ``timeout``.
+
+        The caller is the lease thread, so a recorder that stalls cannot hold it longer than
+        ``timeout``: the request then fails as a sample (DriverError) while it keeps running,
+        and sampling() skips the recorder until it ends. Returns the driver's answer (None
+        or empty when it had no image) or raises the driver's own error."""
+        done, box = threading.Event(), {}
+        with self._lock:
+            self._sampling.add(key)
+
+        def take():
+            try:
+                box["raw"] = driver.get_snapshot(channel)
+            except BaseException as exc:  # noqa: BLE001 — handed to the caller below
+                box["error"] = exc
+            finally:
+                with self._lock:
+                    self._sampling.discard(key)
+                done.set()
+
+        threading.Thread(target=take, daemon=True,
+                         name=f"sampler-still-{str(key)[:8]}").start()
+        if not done.wait(timeout):
+            raise DriverError(f"the recorder did not return a still within {timeout:g}s")
+        if "error" in box:
+            raise box["error"]
+        return box.get("raw")
 
     def channel_waiting(self, key, channel) -> bool:
         """True while this one channel is backing off after its own failed sample."""
@@ -744,12 +783,18 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     recorder_id, channel = mux.resolve_target(target)
                     driver_key = recorder_id or "__legacy__"
                     try:
-                        # None while this channel or its recorder is opening or backing
-                        # off: skip it.
-                        driver = (None if drivers.channel_waiting(driver_key, channel)
+                        # None while this channel or its recorder is opening, backing off
+                        # or still answering an earlier still: skip it.
+                        driver = (None if (drivers.channel_waiting(driver_key, channel)
+                                           or drivers.sampling(driver_key))
                                   else drivers.get(driver_key, recorder_id))
-                        raw = driver.get_snapshot(channel) if driver is not None else None
+                        raw = None
                         if driver is not None:
+                            raw = drivers.snapshot(driver_key, driver, channel,
+                                                   SAMPLER_SNAPSHOT_WAIT_SECONDS)
+                            if not raw:
+                                # Dahua/ONVIF answer a timed-out still with None: no sample.
+                                raise DriverError("the recorder returned no still")
                             drivers.succeeded(driver_key, channel)
                         if raw:
                             found = detector.detect(raw)
