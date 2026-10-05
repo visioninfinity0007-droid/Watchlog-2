@@ -364,7 +364,6 @@ function Set-RecorderReport($Registry) {
       local_id = [string]$r.local_id
       continuity = [bool]$r.continuity_owner
       credential = [string]$r.credential
-      live_marker = [string]$r.live_marker
       before = $before
       after = "not checked"
     }
@@ -375,32 +374,35 @@ function Set-RecorderBaseline($Registry) {
   # The commit gate compares the new runtime with this: the continuity recorder plus
   # every recorder that answered the candidate's probe before anything was replaced.
   $script:RecorderBaseline = $null
+  # The proof is each recorder's row in the protected runtime-health file, which the
+  # multi-recorder runtime writes at every heartbeat whether recovery is on or off.
   $rows = @($Registry.recorders | Where-Object { $null -ne $_ })
   if ($rows.Count -le 1) { return }
-  if (-not [bool]$Registry.live_markers) {
-    Write-Repair "per-recorder live proof unavailable (recovery disabled); the commit gate requires every recorder"
-    return
-  }
   $script:RecorderBaseline = @(foreach ($r in $rows) {
     [pscustomobject]@{
       local_id = [string]$r.local_id
       required = ([bool]$r.continuity_owner -or [bool]$r.live)
-      live_marker = [string]$r.live_marker
     }
   })
   $required = @($script:RecorderBaseline | Where-Object { $_.required }).Count
   Write-Repair "recorder baseline: $required of $($rows.Count) recorder(s) must be live again after the update"
 }
 
-function Read-LiveMarker([string]$Path) {
-  # The runtime's per-recorder last-live marker (written at each heartbeat while that
-  # recorder's own transport is live).
-  try {
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
-    $m = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    if (-not $m.last_live) { return $null }
-    return [DateTimeOffset]::Parse([string]$m.last_live).UtcDateTime
-  } catch { return $null }
+function Get-RuntimeRecorderRow($h, [string]$LocalId) {
+  # This recorder's row in the protected runtime-health file (Secrets ACL), matched by
+  # local id. The last_live.json markers under ProgramData are not used: a standard user
+  # can create files there, so they are no proof.
+  foreach ($row in @($h.recorders | Where-Object { $null -ne $_ })) {
+    if ([string]$row.local_id -eq $LocalId) { return $row }
+  }
+  return $null
+}
+
+function Get-RuntimeRecorderSeen($h, [string]$LocalId) {
+  # When the new runtime last saw this recorder's own event stream live, or $null.
+  $row = Get-RuntimeRecorderRow $h $LocalId
+  if ($null -eq $row -or -not $row.last_live_at) { return $null }
+  try { return [DateTimeOffset]::Parse([string]$row.last_live_at).UtcDateTime } catch { return $null }
 }
 
 function Test-RecorderProof($h, [datetime]$StartedAtUtc) {
@@ -408,15 +410,17 @@ function Test-RecorderProof($h, [datetime]$StartedAtUtc) {
   $recorder = if ($h.recorder_seen_at) { [DateTimeOffset]::Parse([string]$h.recorder_seen_at).UtcDateTime } else { $null }
   if ($recorder -and $recorder -ge $StartedAtUtc) { return $true }
   # Multi-recorder: the continuity recorder plus every recorder that answered before the
-  # upgrade must be live again. A recorder already offline before is reported, never a
-  # reason for a site-wide rollback. The protected live count bounds the markers.
+  # upgrade must be live again, each by its own protected runtime-health row. A recorder
+  # already offline before is reported, never a reason for a site-wide rollback.
   if ($null -eq $script:RecorderBaseline -or -not [bool]$h.multi_recorder) { return $false }
   $required = @($script:RecorderBaseline | Where-Object { $_.required })
-  if ($required.Count -eq 0 -or [int]$h.recorders_live -lt $required.Count) { return $false }
-  # A marker dated in the future is not proof of anything that happened after the start.
+  if ($required.Count -eq 0) { return $false }
+  # A time in the future is not proof of anything that happened after the start.
   $latest = [DateTime]::UtcNow.AddMinutes(5)
   foreach ($r in $required) {
-    $seen = Read-LiveMarker $r.live_marker
+    $row = Get-RuntimeRecorderRow $h $r.local_id
+    $seen = Get-RuntimeRecorderSeen $h $r.local_id
+    if ($null -eq $row -or -not [bool]$row.live) { return $false }
     if (-not $seen -or $seen -lt $StartedAtUtc -or $seen -gt $latest) { return $false }
   }
   return $true
@@ -424,14 +428,17 @@ function Test-RecorderProof($h, [datetime]$StartedAtUtc) {
 
 function Update-RecorderReportAfter([datetime]$StartedAtUtc) {
   $allLive = $false
+  $h = $null
   try {
-    $h = Get-Content -LiteralPath $HealthPath -Raw | ConvertFrom-Json
-    $seen = if ($h.recorder_seen_at) { [DateTimeOffset]::Parse([string]$h.recorder_seen_at).UtcDateTime } else { $null }
-    $allLive = [bool]([string]$h.agent_version -eq $ExpectedVersion -and $seen -and $seen -ge $StartedAtUtc)
+    $read = Get-Content -LiteralPath $HealthPath -Raw | ConvertFrom-Json
+    if ([string]$read.agent_version -eq $ExpectedVersion) { $h = $read }
+    $seen = if ($h -and $h.recorder_seen_at) { [DateTimeOffset]::Parse([string]$h.recorder_seen_at).UtcDateTime } else { $null }
+    $allLive = [bool]($seen -and $seen -ge $StartedAtUtc)
   } catch {}
+  $latest = [DateTime]::UtcNow.AddMinutes(5)
   foreach ($r in @($script:RecorderReport | Where-Object { $null -ne $_ })) {
-    $marker = Read-LiveMarker $r.live_marker
-    $r.after = if ($allLive -or ($marker -and $marker -ge $StartedAtUtc)) { "live" } else { "not seen since the update" }
+    $own = if ($h) { Get-RuntimeRecorderSeen $h $r.local_id } else { $null }
+    $r.after = if ($allLive -or ($own -and $own -ge $StartedAtUtc -and $own -le $latest)) { "live" } else { "not seen since the update" }
     Write-Repair "  recorder '$($r.name)' before=$($r.before) after=$($r.after)"
   }
 }

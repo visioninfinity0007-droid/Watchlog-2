@@ -2268,8 +2268,12 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
 
             base = backend.core.Config(Path(config_path), read_only_credentials=True)
             contexts = {ctx.local_id: ctx for ctx in recorder_runtime.load_contexts(base)}
-            # The runtime writes each recorder's last-live marker only with recovery on.
-            result["live_markers"] = bool(getattr(base, "recovery_enabled", False))
+            # Each recorder's last-live marker is kept by the multi-recorder runtime whether
+            # recovery is on or off (MNVR-040); a single-recorder runtime keeps it only with
+            # recovery on. Repair/Upgrade's commit gate reads the protected runtime-health
+            # rows, not these files; they are reported for diagnosis only.
+            result["live_markers"] = (bool(getattr(base, "recovery_enabled", False))
+                                      or len(report) > 1)
             for entry in report:
                 entry["live_marker"] = str(contexts[entry["local_id"]].config.last_live_path)
             if mode == "recorder":

@@ -351,30 +351,40 @@ class RepairRecorderGate(unittest.TestCase):
         result = (self.work / "repair-upgrade-result.ini").read_text(encoding="ascii")
         return proc.stdout.strip().splitlines()[-1], result
 
-    def two_recorders(self, *, a_marker, b_marker, b_live_before, live_markers=True):
+    A = "aaaaaaaa-0000-4000-8000-000000000001"
+    B = "bbbbbbbb-0000-4000-8000-000000000002"
+
+    def two_recorders(self, *, b_live_before, a_marker=None, b_marker=None,
+                      live_markers=True):
+        # live_markers / live_marker are what Setup's preflight reports; the gate no longer
+        # reads the marker files (a standard user can write them), only protected rows.
         return {"ok": True, "registry": "present", "live_markers": live_markers,
                 "recorders": [
-                    {"local_id": "aaaaaaaa-0000-4000-8000-000000000001",
+                    {"local_id": self.A,
                      "display_name": "Primary Recorder", "continuity_owner": True,
                      "credential": "ok", "live": True, "detail": "8 channel(s)",
-                     "live_marker": self.marker("a", a_marker)},
-                    {"local_id": "bbbbbbbb-0000-4000-8000-000000000002",
+                     "live_marker": self.marker("a", a_marker or self.stale)},
+                    {"local_id": self.B,
                      "display_name": "Warehouse", "continuity_owner": False,
                      "credential": "ok", "live": b_live_before,
                      "detail": "4 channel(s)" if b_live_before else "web_unreachable",
-                     "live_marker": self.marker("b", b_marker)},
+                     "live_marker": self.marker("b", b_marker or self.stale)},
                 ]}
 
-    def multi_health(self, live):
-        # Fan-out advances recorder_seen_at only when EVERY recorder is live.
+    def multi_health(self, *, a=(False, None), b=(False, None)):
+        """The new runtime's protected runtime-health: one row per recorder (live, last_live_at).
+        Fan-out advances recorder_seen_at only when EVERY recorder is live."""
+        rows = [{"local_id": local_id, "recorder_id": f"cloud-{local_id[:8]}",
+                 "live": live, "last_live_at": seen}
+                for local_id, (live, seen) in ((self.A, a), (self.B, b))]
         return {"recorder_seen_at": self.stale, "multi_recorder": True,
-                "recorders_total": 2, "recorders_live": live}
+                "recorders_total": 2, "recorders_live": sum(1 for r in rows if r["live"]),
+                "recorders": rows}
 
     def test_secondary_already_offline_before_upgrade_does_not_force_rollback(self):
         gate, result = self.run_gate(
-            health=self.multi_health(1),
-            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.stale,
-                                        b_live_before=False))
+            health=self.multi_health(a=(True, self.fresh)),
+            registry=self.two_recorders(b_live_before=False))
         self.assertEqual(gate, "GATE=PASS")
         self.assertIn("[recorders]", result)
         self.assertIn("not_live_after=1", result)
@@ -384,51 +394,61 @@ class RepairRecorderGate(unittest.TestCase):
         self.assertIn("before=offline (web_unreachable) | after=not seen since the update",
                       result)
 
+    def test_recovery_off_secondary_offline_before_does_not_force_rollback(self):
+        """With recovery off, Setup reported live_markers=False and the gate fell back to
+        requiring every recorder, so one recorder already offline rolled the site back."""
+        gate, _ = self.run_gate(
+            health=self.multi_health(a=(True, self.fresh)),
+            registry=self.two_recorders(b_live_before=False, live_markers=False))
+        self.assertEqual(gate, "GATE=PASS")
+
     def test_secondary_live_before_and_dead_after_rolls_back(self):
         gate, result = self.run_gate(
-            health=self.multi_health(1),
-            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.stale,
-                                        b_live_before=True))
+            health=self.multi_health(a=(True, self.fresh), b=(False, self.stale)),
+            registry=self.two_recorders(b_live_before=True))
         self.assertEqual(gate, "GATE=ROLLBACK")
         self.assertIn("before=live | after=not seen since the update", result)
 
     def test_continuity_recorder_must_be_live_again(self):
         gate, _ = self.run_gate(
-            health=self.multi_health(1),
-            registry=self.two_recorders(a_marker=self.stale, b_marker=self.fresh,
-                                        b_live_before=False))
+            health=self.multi_health(a=(False, self.stale), b=(True, self.fresh)),
+            registry=self.two_recorders(b_live_before=False))
         self.assertEqual(gate, "GATE=ROLLBACK")
 
-    def test_markers_cannot_outvote_the_protected_live_count(self):
+    def test_a_forged_marker_and_a_returning_recorder_are_not_continuity_proof(self):
+        """The count of live recorders was not tied to which recorders were live, and the
+        rest of the proof was last_live.json under ProgramData, which a standard user can
+        write. Down continuity recorder A + returning B made recorders_live=1 >= 1 required,
+        and a fresh A marker committed the upgrade."""
+        gate, result = self.run_gate(
+            health=self.multi_health(a=(False, self.stale), b=(True, self.fresh)),
+            registry=self.two_recorders(b_live_before=False, a_marker=self.fresh))
+        self.assertEqual(gate, "GATE=ROLLBACK")
+        self.assertIn("Primary Recorder | id=aaaaaaaa-0000-4000-8000-000000000001 | "
+                      "continuity=yes | credential=ok | before=live | "
+                      "after=not seen since the update", result)
+
+    def test_markers_cannot_stand_in_for_a_protected_row(self):
         gate, _ = self.run_gate(
-            health=self.multi_health(1),
+            health=self.multi_health(a=(True, self.fresh)),
             registry=self.two_recorders(a_marker=self.fresh, b_marker=self.fresh,
                                         b_live_before=True))
         self.assertEqual(gate, "GATE=ROLLBACK")
 
-    def test_a_future_dated_marker_is_not_proof(self):
+    def test_a_future_dated_row_is_not_proof(self):
         future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
         gate, _ = self.run_gate(
-            health=self.multi_health(1),
-            registry=self.two_recorders(a_marker=future, b_marker=self.stale,
-                                        b_live_before=False))
+            health=self.multi_health(a=(True, future)),
+            registry=self.two_recorders(b_live_before=False))
         self.assertEqual(gate, "GATE=ROLLBACK")
 
     def test_every_recorder_live_still_passes(self):
-        gate, result = self.run_gate(
-            health={"recorder_seen_at": self.fresh, "multi_recorder": True,
-                    "recorders_total": 2, "recorders_live": 2},
-            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.fresh,
-                                        b_live_before=True))
+        health = self.multi_health(a=(True, self.fresh), b=(True, self.fresh))
+        health["recorder_seen_at"] = self.fresh
+        gate, result = self.run_gate(health=health,
+                                     registry=self.two_recorders(b_live_before=True))
         self.assertEqual(gate, "GATE=PASS")
         self.assertIn("not_live_after=0", result)
-
-    def test_without_per_recorder_proof_every_recorder_is_required(self):
-        gate, _ = self.run_gate(
-            health=self.multi_health(1),
-            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.stale,
-                                        b_live_before=False, live_markers=False))
-        self.assertEqual(gate, "GATE=ROLLBACK")
 
     def test_single_recorder_site_keeps_the_recorder_seen_rule(self):
         self.assertEqual(self.run_gate(health={"recorder_seen_at": self.fresh})[0], "GATE=PASS")
@@ -437,11 +457,9 @@ class RepairRecorderGate(unittest.TestCase):
         self.assertNotIn("[recorders]", result)
 
     def test_old_runtime_health_never_counts(self):
-        gate, _ = self.run_gate(
-            health={**self.multi_health(2), "agent_version": "5.0.27",
-                    "recorder_seen_at": self.fresh},
-            registry=self.two_recorders(a_marker=self.fresh, b_marker=self.fresh,
-                                        b_live_before=True))
+        health = self.multi_health(a=(True, self.fresh), b=(True, self.fresh))
+        health.update({"agent_version": "5.0.27", "recorder_seen_at": self.fresh})
+        gate, _ = self.run_gate(health=health, registry=self.two_recorders(b_live_before=True))
         self.assertEqual(gate, "GATE=ROLLBACK")
 
 
