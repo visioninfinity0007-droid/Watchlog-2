@@ -100,7 +100,9 @@ def main():
                 "prototype/tests/test_existing_site_repair.py",
                 "prototype/tests/test_setup_registry_selftest.py",
                 "prototype/tests/test_setup_gui_elevation.py",
-                "prototype/tests/test_pilot_hardening.py::UpgradeAndUninstallLifecycleTests"))
+                "prototype/tests/test_pilot_hardening.py"))
+            # the whole file, UpgradeAndUninstallLifecycleTests included, not one class of it
+            and "test_pilot_hardening.py::" not in setup_ui_job
             and "python -m pytest" in setup_ui_job,
         "CI compiles the Repair/Upgrade NSIS, not only at release time":
             'Copy-Item prototype\\installer\\nsis\\watchlog-repair.nsi' in installer_job
