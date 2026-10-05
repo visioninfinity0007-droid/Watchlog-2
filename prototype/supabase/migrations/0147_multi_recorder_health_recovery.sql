@@ -758,6 +758,18 @@ begin
     return jsonb_build_object('ok',false,'reason','empty_interval');
   end if;
 
+  -- A recorder interval must name the channels it covers. Without them the
+  -- Agent would have to guess the archive target, so refuse (and let the
+  -- Agent keep its gap) rather than store a camera-less interval.
+  if coalesce(cardinality(p_channels),0)=0
+     or exists (
+       select 1 from unnest(p_channels) x where coalesce(btrim(x),'')=''
+     )
+  then
+    raise exception 'recovery interval needs at least one recorder channel'
+      using errcode='22023';
+  end if;
+
   select coalesce(array_agg(c.id order by c.channel),'{}'::uuid[]), count(*)
     into v_cameras,v_channel_count
     from public.cameras c

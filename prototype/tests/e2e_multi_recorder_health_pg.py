@@ -339,6 +339,24 @@ def run() -> int:
             step(raised and "does not belong" in msg.lower(),
                  "recovery refuses channel not owned by recorder", msg)
 
+            # MNVR-045: a recorder interval with no channel would make the
+            # Agent guess the archive target, so it is refused outright.
+            for label, channels_sql in (
+                ("an empty", "array[]::text[]"),
+                ("a NULL", "null::text[]"),
+                ("a NULL-element", "array[null]::text[]"),
+                ("a blank-element", "array['']::text[]"),
+            ):
+                raised, msg = as_anon_raises(
+                    "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,"
+                    + channels_sql + ")",
+                    agent_a, key_a, rec_a,
+                    datetime(2026, 10, 2, 10, 10, tzinfo=timezone.utc),
+                    datetime(2026, 10, 2, 10, 15, tzinfo=timezone.utc),
+                )
+                step(raised and "at least one recorder channel" in msg.lower(),
+                     f"recorder recovery refuses {label} channel list", msg)
+
             claimed_a = as_anon(
                 "select wl_agent_claim_recorder_recovery(%s,%s,%s,1,900)",
                 agent_a, key_a, rec_a,
