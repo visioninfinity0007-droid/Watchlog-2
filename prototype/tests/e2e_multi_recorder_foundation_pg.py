@@ -12,6 +12,7 @@ Proves:
 - the upgraded Agent can adopt the legacy default recorder and add another,
 - Recorder A ch1 and Recorder B ch1 remain distinct,
 - legacy ambiguous site+channel sync fails closed once multiple recorders exist,
+- the installer analytics bootstrap is recorder-scoped and fails closed when ambiguous,
 - explicit recorder sync is tenant/site scoped and requires current Agent authority,
 - authenticated portal reads are tenant-isolated by RLS,
 - camera/recorder composite lineage cannot cross tenants/sites,
@@ -182,6 +183,16 @@ def run() -> int:
                  and mirrored is not None,
                  "legacy capability sync mirrors effective capabilities to the single recorder")
 
+            boot_single = as_anon(
+                "select wl_agent_bootstrap_analytics(%s,%s,'office',%s::jsonb)",
+                agent_a, key_a,
+                json.dumps([{"channel": "1", "name": "Camera 1",
+                             "purpose": "entrance", "analytics_enabled": True}]),
+            )[0]
+            step(boot_single.get("ok") is True and boot_single.get("updated_cameras") == 1,
+                 "legacy analytics bootstrap still applies on a true single-recorder site",
+                 json.dumps(boot_single, default=str))
+
             # Upgrade the legacy singleton identity and add a second recorder.
             mapping = as_anon(
                 "select wl_sync_recorders(%s,%s,%s::jsonb)",
@@ -326,6 +337,52 @@ def run() -> int:
             )
             step(raised and "ambiguous" in msg.lower(),
                  "legacy capability sync fails closed on multi-recorder site", msg)
+
+            # The installer analytics bootstrap names cameras by channel. Without
+            # a recorder it must fail closed instead of renaming/disabling every
+            # recorder's ch1; with one it touches only that recorder's camera.
+            def ch1_profiles():
+                return {
+                    str(r[0]): (r[1], r[2], r[3])
+                    for r in cur.execute(
+                        """select recorder_id,name,purpose,analytics_enabled
+                             from cameras where site_id=%s and channel='1'""",
+                        (sa,),
+                    ).fetchall()
+                }
+
+            before_boot = ch1_profiles()
+            raised, msg = as_anon_raises(
+                "select wl_agent_bootstrap_analytics(%s,%s,'office',%s::jsonb)",
+                agent_a, key_a,
+                json.dumps([{"channel": "1", "name": "Front Door",
+                             "purpose": "entrance", "analytics_enabled": False}]),
+            )
+            step(raised and "ambiguous" in msg.lower() and ch1_profiles() == before_boot,
+                 "legacy analytics bootstrap fails closed on multi-recorder site", msg)
+
+            boot_b = as_anon(
+                "select wl_agent_bootstrap_analytics(%s,%s,'office',%s::jsonb)",
+                agent_a, key_a,
+                json.dumps([{"recorder_id": str(rec_b_id), "channel": "1",
+                             "name": "Front Door", "purpose": "entrance",
+                             "analytics_enabled": False}]),
+            )[0]
+            after_boot = ch1_profiles()
+            step(boot_b.get("updated_cameras") == 1
+                 and after_boot[str(rec_b_id)] == ("Front Door", "entrance", False)
+                 and after_boot[str(rec_a_id)] == before_boot[str(rec_a_id)],
+                 "recorder-scoped analytics bootstrap changes only that recorder's camera",
+                 json.dumps(after_boot, default=str))
+
+            raised, msg = as_anon_raises(
+                "select wl_agent_bootstrap_analytics(%s,%s,'office',%s::jsonb)",
+                agent_a, key_a,
+                json.dumps([{"recorder_id": "00000000-0000-0000-0000-000000000000",
+                             "channel": "1", "name": "Nope"}]),
+            )
+            step(raised and "not configured for this agent site" in msg.lower(),
+                 "analytics bootstrap rejects a recorder outside the Agent site", msg)
 
             # ------------------------------------------------------------------
             # Tenant/site isolation.
@@ -496,6 +553,23 @@ def run() -> int:
                 and str(secondary_truth[1]) == str(secondary_cam),
                 "disabled secondary preserves recorder/camera history and restores legacy singleton path",
             )
+
+            as_anon(
+                "select wl_agent_bootstrap_analytics(%s,%s,'office',%s::jsonb)",
+                agent_c, key_c,
+                json.dumps([{"channel": "1", "name": "Restored Entrance",
+                             "purpose": "entrance", "analytics_enabled": False}]),
+            )
+            boot_names = {
+                str(r[0]): r[1] for r in cur.execute(
+                    "select id,name from cameras where id in (%s,%s)",
+                    (primary_cam, secondary_cam),
+                ).fetchall()
+            }
+            step(boot_names.get(str(primary_cam)) == "Restored Entrance"
+                 and boot_names.get(str(secondary_cam)) == "Secondary C1",
+                 "legacy analytics bootstrap after rollback leaves the disabled recorder's ch1 alone",
+                 json.dumps(boot_names))
 
             # Exact EXECUTE ACLs.
             def execute_grantees(sig):
