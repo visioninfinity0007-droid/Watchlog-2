@@ -145,6 +145,7 @@ declare
   v_missing int := 0;
   v_disabled int := 0;
   v_unknown int := 0;
+  v_unconfigured int := 0;
   v_unmapped jsonb;
 begin
   if not exists (
@@ -231,8 +232,10 @@ begin
     select (v_reachable is true and v_auth_ok is true and v_enumerated) as ok
   ),
   derived as (
-    select cm.id as camera_id, cm.channel,
+    select cm.id as camera_id, cm.channel, cm.is_configured,
            case
+             -- 0085: a slot the operator declared empty stays disabled.
+             when not cm.is_configured then 'disabled'
              when not (select ok from det) then 'unknown'
              when exists(select 1 from rep x where x.channel=cm.channel and not x.enabled)
                then 'disabled'
@@ -299,8 +302,9 @@ begin
     count(*) filter(where state='present'),
     count(*) filter(where state='missing'),
     count(*) filter(where state='disabled'),
-    count(*) filter(where state='unknown')
-  into v_present,v_missing,v_disabled,v_unknown
+    count(*) filter(where state='unknown'),
+    count(*) filter(where not is_configured)
+  into v_present,v_missing,v_disabled,v_unknown,v_unconfigured
   from derived;
 
   select coalesce(jsonb_agg(x.channel),'[]'::jsonb)
@@ -335,6 +339,7 @@ begin
     'missing',v_missing,
     'disabled',v_disabled,
     'unknown',v_unknown,
+    'not_configured',v_unconfigured,
     'unmapped',v_unmapped,
     'server_time',v_now
   );

@@ -280,6 +280,46 @@ def run() -> int:
                 agent_a, key_a, rec_a, json.dumps(health_a),
             )
 
+            # MNVR-066: a slot the operator declared empty (is_configured=false)
+            # stays 'disabled' in inventory whatever the recorder reports (0085).
+            empty_slot = cur.execute(
+                """insert into cameras(tenant_id,site_id,recorder_id,channel,name,is_configured)
+                   values (%s,%s,%s,'2','Empty slot 2',false) returning id""",
+                (ta, sa, rec_a),
+            ).fetchone()[0]
+            both_reported = json.loads(json.dumps(health_a))
+            both_reported["channels"]["reported"] = [
+                {"channel": "1", "enabled": True}, {"channel": "2", "enabled": True},
+            ]
+            rep2 = as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(both_reported),
+            )[0]
+            slot_inv = cur.execute(
+                "select inventory_state,reason_code from camera_inventory where camera_id=%s",
+                (empty_slot,),
+            ).fetchone()
+            step(slot_inv == ("disabled", "channel_disabled")
+                 and rep2.get("present") == 1 and rep2.get("disabled") == 1
+                 and rep2.get("not_configured") == 1,
+                 "an unconfigured camera stays disabled even when its channel is reported",
+                 str((slot_inv, rep2)))
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(unknown_auth_report),
+            )
+            slot_inv = cur.execute(
+                "select inventory_state from camera_inventory where camera_id=%s",
+                (empty_slot,),
+            ).fetchone()[0]
+            step(slot_inv == "disabled",
+                 "an unconfigured camera stays disabled when the recorder cannot be verified",
+                 str(slot_inv))
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(health_a),
+            )
+
             rows = cur.execute(
                 """select recorder_id,nvr_reachable,nvr_auth_ok
                      from recorder_health
