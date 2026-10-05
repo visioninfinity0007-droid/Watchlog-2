@@ -83,6 +83,10 @@ class FakeDriver:
         self.still = still
         self.calls: list[tuple[float, str]] = []
         self.closed = 0
+        # driver.probe(): None = recorder healthy; an exception (or a callable returning one)
+        # = the recorder itself is down / refusing.
+        self.probe_error = None
+        self.probes: list[float] = []
 
     def list_channels(self):
         return self.channels
@@ -94,6 +98,13 @@ class FakeDriver:
         if isinstance(still, Exception):
             raise still
         return still
+
+    def probe(self):
+        self.probes.append(self.clock.t)
+        error = self.probe_error() if callable(self.probe_error) else self.probe_error
+        if isinstance(error, Exception):
+            raise error
+        return SimpleNamespace(vendor="x", model=None)
 
     def close(self):
         self.closed += 1
@@ -143,6 +154,8 @@ def _no_env(monkeypatch):
     monkeypatch.delenv("WATCHLOG_PERIODIC_STILLS", raising=False)
     monkeypatch.delenv("WATCHLOG_PERIODIC_STILL_SECONDS", raising=False)
     monkeypatch.setattr(core, "log", lambda _m: None)
+    # Never read the real credential store under ProgramData from a unit test.
+    monkeypatch.setattr(core, "_credential_generation", lambda: "gen-0")
 
 
 # --- contract ------------------------------------------------------------------------------
@@ -346,6 +359,7 @@ def test_recorder_dropping_mid_run_closes_the_driver_and_backs_off():
         return NvrUnreachable("connection timed out") if state["down"] else JPEG
 
     driver = FakeDriver(clock, still=still)
+    driver.probe_error = lambda: NvrUnreachable("connection timed out") if state["down"] else None
     opens = []
 
     def opener(_cfg):
@@ -403,6 +417,90 @@ def test_after_a_back_off_cameras_are_restaggered_not_burst():
     times = [t for t, _ in driver.calls[:8]]
     assert len(times) == 8
     assert all(b - a >= 30 for a, b in zip(times, times[1:])), times
+
+
+def _per_channel(run):
+    times: dict[str, list[float]] = {}
+    for t, ch in run.driver.calls:
+        times.setdefault(ch, []).append(t)
+    rows: dict[str, int] = {}
+    for r in run.spool.rows:
+        rows[r["channel"]] = rows.get(r["channel"], 0) + 1
+    return times, rows
+
+
+def test_one_camera_refusing_or_timing_out_never_starves_the_others():
+    # PS-1: one channel's still timing out (NvrUnreachable) and another's refused (403 for an
+    # account without preview rights on that channel) while driver.probe() proves the recorder
+    # healthy are camera faults: every other camera keeps one still per cadence.
+    clock = SimClock()
+
+    def still(ch):
+        if ch == "3":
+            return NvrUnreachable("http://recorder.test/ISAPI/Streaming/channels/301/picture: "
+                                  "timed out")
+        if ch == "6":
+            return NvrAuthFailed("http://recorder.test/ISAPI/Streaming/channels/601/picture: "
+                                 "HTTP 403 — recorder rejected the username or password")
+        return JPEG
+
+    run = _run(4 * 3600, driver=FakeDriver(clock, still=still), clock=clock)
+    times, rows = _per_channel(run)
+    assert len(run.opens) == 1, run.opens                       # never treated as the recorder
+    assert run.driver.probes, "the recorder was never re-checked"
+    for ch in [str(i) for i in range(1, 9)]:
+        gaps = [b - a for a, b in zip(times[ch], times[ch][1:])]
+        assert gaps and min(gaps) >= 300 * (1 - ps.JITTER_FRACTION) - 1, (ch, min(gaps))
+        if ch in ("3", "6"):
+            assert ch not in rows                               # no still -> no event
+        else:
+            assert 46 <= rows.get(ch, 0) <= 49, (ch, rows)      # ~4 h / 300 s
+
+
+def test_recorder_flapping_mid_round_still_rotates_through_every_camera():
+    # PS-1: a recorder that drops ~100 s after every reconnect (genuinely down: the recheck
+    # fails too) must not restagger from the head of the list each time, or cameras late in
+    # the list never get a turn. Rotation: the camera waiting longest goes first.
+    clock = SimClock()
+    state = {"up_until": 0.0}
+
+    def down():
+        return clock.t > state["up_until"]
+
+    driver = FakeDriver(clock, still=lambda _ch: NvrUnreachable("timed out") if down() else JPEG)
+    driver.probe_error = lambda: NvrUnreachable("timed out") if down() else None
+
+    def opener(_cfg):
+        state["up_until"] = clock.t + 100.0
+        return driver, None
+
+    import random
+    spool = ListSpool()
+    ps.periodic_still_worker(_cfg(), spool, SimStop(clock, 4 * 3600), None, open_driver=opener,
+                             clock=clock, wall=clock.wall, rng=random.Random(5))
+    _times, rows = _per_channel(SimpleNamespace(driver=driver, spool=spool))
+    assert sorted(rows, key=int) == [str(i) for i in range(1, 9)], rows
+    assert min(rows.values()) >= 20, rows
+    stills: dict[str, list[datetime]] = {}
+    for r in spool.rows:
+        stills.setdefault(r["channel"], []).append(
+            datetime.fromisoformat(r["device_ts"].replace("Z", "+00:00")))
+    for ch, ts in stills.items():                               # stills, not failed attempts
+        gaps = [(b - a).total_seconds() for a, b in zip(ts, ts[1:])]
+        assert min(gaps) >= 300 * (1 - ps.JITTER_FRACTION) - 1, (ch, min(gaps))
+
+
+def test_snapshot_refused_and_recheck_refused_is_a_recorder_auth_back_off():
+    clock = SimClock()
+    refused = NvrAuthFailed("HTTP 401 — recorder rejected the username or password")
+    driver = FakeDriver(clock, still=refused)
+    driver.probe_error = refused
+    run = _run(1800, driver=driver, clock=clock)
+    assert run.spool.rows == []
+    first = run.driver.calls[0][0]
+    assert run.driver.probes and run.driver.probes[0] >= first   # the recorder was re-checked
+    assert len(run.opens) == 2 and run.opens[1] - first >= ps.BACKOFF_MAX_SECONDS, run.opens
+    assert run.driver.closed >= 1
 
 
 # --- spool: survives an outage, uploads through the normal path ----------------------------

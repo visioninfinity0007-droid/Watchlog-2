@@ -190,14 +190,27 @@ class Schedule:
                      restagger: bool = False) -> None:
         channels = list(dict.fromkeys(str(c) for c in channels))
         if restagger:
+            # Spread the cameras over one cadence again, by rotation rather than list order:
+            # the camera waiting longest goes first (never sampled before all), so a recorder
+            # that drops again partway through a round never starves the end of the list. A
+            # camera keeps its own due time when that is later than its slot, so restaggering
+            # never samples a camera sooner than its own interval.
+            previous = self.next_due
+            order = sorted(channels, key=lambda c: previous.get(c, -math.inf))
+            base = now if start is None else start
+            spacing = self.cadence / len(order) if order else 0.0
             self.next_due = {}
+            for index, channel in enumerate(order):
+                slot = base + index * spacing
+                self.next_due[channel] = max(slot, previous.get(channel, slot))
+            return
         for old in list(self.next_due):
             if old not in channels:
                 del self.next_due[old]
         new = [c for c in channels if c not in self.next_due]
         if not new:
             return
-        if restagger or not self.next_due:
+        if not self.next_due:
             base = now if start is None else start
             spacing = self.cadence / len(new)
             for index, channel in enumerate(new):
@@ -258,6 +271,16 @@ def _close(driver) -> None:
         driver.close()
     except Exception:                                       # noqa: BLE001
         pass
+
+
+def _recorder_down(driver):
+    """Re-check the recorder after a camera's still failed: the error when the recorder itself
+    is unreachable or refusing (or cannot be proven healthy), None when it answered."""
+    try:
+        driver.probe()
+    except Exception as error:                              # noqa: BLE001 — not proven healthy
+        return error
+    return None
 
 
 def _list_channels(driver):
@@ -373,15 +396,25 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                 try:
                     raw = driver.get_snapshot(channel)
                 except (NvrUnreachable, NvrAuthFailed, requests.RequestException) as error:
-                    schedule.done(channel, now)
-                    delay = backoff.fail(now, auth=isinstance(error, NvrAuthFailed)
-                                         or core._is_auth_failure(error))
-                    core.log(f"periodic stills: recorder stopped answering (ch{channel}); "
-                             f"next try in {int(delay)}s ({nvr_health.redact(str(error))})")
-                    _close(driver)
-                    driver = None
-                    camera_failures = 0
-                    continue
+                    # One camera timing out or refused (an account without preview rights on
+                    # that channel) is a camera fault unless a recorder re-check fails too,
+                    # the same rule as camera_health.classify_snapshot_probe.
+                    upper = _recorder_down(driver)
+                    if upper is not None:
+                        # Not this camera's fault and no still: it keeps its due time, so it is
+                        # first in the rotation when the recorder is back.
+                        schedule.last_request = now
+                        delay = backoff.fail(now, auth=isinstance(upper, NvrAuthFailed)
+                                             or core._is_auth_failure(upper))
+                        core.log(f"periodic stills: recorder stopped answering (ch{channel}); "
+                                 f"next try in {int(delay)}s ({nvr_health.redact(str(upper))})")
+                        _close(driver)
+                        driver = None
+                        camera_failures = 0
+                        continue
+                    raw = None
+                    core.log(f"periodic stills: ch{channel} gave no still "
+                             f"({type(error).__name__}: {nvr_health.redact(str(error))})")
                 except Exception as error:                  # noqa: BLE001 — camera-level
                     raw = None
                     core.log(f"periodic stills: ch{channel} gave no still "
