@@ -124,18 +124,26 @@ class DahuaDriver(NvrDriver):
 
     def _get(self, path: str, **kw) -> str:
         url = self.base_url + path
+        timeout = kw.pop("timeout", self.timeout)
         try:
-            r = self.s.get(url, timeout=kw.pop("timeout", self.timeout), **kw)
+            r = self.s.get(url, timeout=timeout, **kw)
         except requests.RequestException as e:
             raise NvrUnreachable(f"{url}: {explain(e)}") from e
-        # Digest is the norm; some Dahua-derived units answer Basic. Retry ONCE
-        # with Basic before deciding the credentials are actually wrong.
-        if r.status_code == 401:
-            self.s.auth = HTTPBasicAuth(self.username, self.password)
-            try:
-                r = self.s.get(url, timeout=self.timeout, **kw)
-            except requests.RequestException as e:
-                raise NvrUnreachable(f"{url}: {explain(e)}") from e
+        # Digest is the norm; some Dahua-derived units only do Basic. The session moves to
+        # Basic only when the recorder's challenge offers Basic and not Digest: a wrong
+        # password or a stray 401 from a Digest unit never sends the password in the clear,
+        # costs no second login attempt and leaves the session on Digest. The switch is kept
+        # for this recorder because snapshot.cgi and the attach stream use the same session
+        # (a Basic-only unit would otherwise fail every still and every attach).
+        if r.status_code == 401 and not isinstance(self.s.auth, HTTPBasicAuth):
+            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+            if "basic" in challenge and "digest" not in challenge:
+                r.close()
+                self.s.auth = HTTPBasicAuth(self.username, self.password)
+                try:
+                    r = self.s.get(url, timeout=timeout, **kw)
+                except requests.RequestException as e:
+                    raise NvrUnreachable(f"{url}: {explain(e)}") from e
         # Reachable but the recorder rejected the login: a credentials fault, not "offline".
         if r.status_code in (401, 403):
             raise NvrAuthFailed(

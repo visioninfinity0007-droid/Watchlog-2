@@ -26,6 +26,7 @@ except ImportError:                                   # pragma: no cover - path 
     import backfill
 
 SUPPORTED = backfill.SUPPORTED
+PARTIAL = "partial"                  # a search that served rows, then stopped short of the end
 DEFAULT_PROBE_DAYS = (1, 2, 3, 5, 7, 10, 14, 21, 30, 45, 60, 90)
 _PROBE_WINDOW_SECONDS = 900          # 15-min window at each probe point — bounded, one page each
 
@@ -36,11 +37,18 @@ def _as_dt(v) -> datetime:
     return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
 
 
-def _has_footage(driver, channel, at: datetime) -> bool:
-    """Bounded: is there any recorded segment in a small window at `at`? Enumerate one page only."""
+def _has_footage(driver, channel, at: datetime):
+    """Bounded: is there any recorded segment in a small window at `at`? Enumerate one page only.
+    None when the archive could not say (unknown, refused or cut-short answer without rows): that
+    is never proof that nothing is recorded there."""
     end = at + timedelta(seconds=_PROBE_WINDOW_SECONDS)
     res = driver.enumerate_historical_events(channel, at, end, cursor=None, limit=1) or {}
-    return res.get("status") == SUPPORTED and bool(res.get("events"))
+    status = res.get("status")
+    if res.get("events") and status in (SUPPORTED, PARTIAL):
+        return True                 # rows served, even by a search that then stopped short
+    if status == SUPPORTED:
+        return False
+    return None
 
 
 def estimate_retention(driver, channel, *, now=None, probe_days=DEFAULT_PROBE_DAYS) -> dict:
@@ -69,7 +77,12 @@ def estimate_retention(driver, channel, *, now=None, probe_days=DEFAULT_PROBE_DA
         for d in sorted(set(int(x) for x in probe_days)):
             at = now - timedelta(days=d)
             probes += 1
-            if _has_footage(driver, channel, at):
+            found = _has_footage(driver, channel, at)
+            if found is None:
+                # The archive could not say: honest-unknown, never 'empty' or a guessed boundary.
+                result["probes"] = probes
+                return result
+            if found:
                 deepest_hit = d
             else:
                 # once a probe point has no footage, deeper points won't either (retention is a

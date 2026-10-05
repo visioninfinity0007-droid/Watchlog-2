@@ -112,14 +112,14 @@ def test_storage_failure_is_recorder_scoped_never_a_camera_channel(driver):
     ev = events[0]
     assert ev.event_type == "disk_error"
     assert ev.channel is None
-    assert ev.payload.get("recorder_scope") is True
+    assert ev.payload.get("recorder_scoped") is True
     assert driver.dropped_unmapped == 0
 
 
 def test_storage_topic_without_state_is_recorder_scoped(driver):
     events = _events(driver, fx.notification(STORAGE, "2026-10-04T10:00:00Z",
                                              {}, {}, operation=None))
-    assert [(e.channel, e.event_type, e.payload.get("recorder_scope")) for e in events] == [
+    assert [(e.channel, e.event_type, e.payload.get("recorder_scoped")) for e in events] == [
         (None, "disk_error", True)]
 
 
@@ -145,8 +145,8 @@ def test_collector_keeps_a_storage_fault_off_every_camera(monkeypatch):
     assert len(spool.rows) == 1
     row = spool.rows[0]
     assert row["event_type"] == "disk_error"
-    assert row["channel"] not in {str(n) for n in range(1, fx.CAMERAS + 1)}
-    assert row["payload"]["recorder_scope"] is True
+    assert row["channel"] is None          # JSON null: no camera, never the string "None"
+    assert row["payload"]["recorder_scoped"] is True
     assert "snapshot_b64" not in row
     assert rec.calls_of("GetSnapshotUri") == []
 

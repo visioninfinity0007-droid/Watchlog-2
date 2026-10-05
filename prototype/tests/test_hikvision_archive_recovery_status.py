@@ -7,8 +7,8 @@ judge the interval by the footage backfill alone: full visual recovery ends 'rec
 did before the capability change), and a visual backfill that decodes nothing never does.
 
 This drives the real RecoveryRunner over the installed Hikvision archive with a fake recorder.
-It stays red until recovery.py stops counting the absent event-replay leg as a failure (WP-1),
-so the archive change cannot ship without that follow-up and move recovered time to unverified.
+recovery.py no longer counts the absent event-replay leg of a footage recorder as a failure, so
+the archive change does not move recovered time to unverified; this keeps it that way.
 """
 from __future__ import annotations
 

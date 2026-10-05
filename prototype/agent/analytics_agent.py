@@ -26,6 +26,7 @@ from PIL import Image
 import analytics
 import analytics_setup
 import credential_store
+import periodic_stills
 import watchlog_agent as core
 import recorder_runtime
 import recorder_registry
@@ -95,7 +96,8 @@ def _recorder_stream_live(holder: dict, clock: float) -> bool:
 
     Hikvision and Dahua drivers stamp last_activity_monotonic on every frame, keep-alives
     included, and on a 2xx answer only while that stream stays open (a 200 that ends before
-    any chunk is taken back); the collector carries the last activity into recorder_live_at
+    any chunk is taken back); the ONVIF driver on every PullMessages response that comes
+    back, empty pulls included, never on a failed one; the collector carries the last activity into recorder_live_at
     when it drops a driver. A recorder whose probe
     answers while its event stream is down is therefore NOT live: recorder_seen_at (the
     Repair/Upgrade proof) does not advance. Drivers that cannot report their stream keep
@@ -1376,6 +1378,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     health = threading.Thread(target=core.health_worker,
                               args=(cfg, state, cloud, holder, stop, resume_evt),
                               daemon=True, name="health")
+    # Timed still per configured camera (~300 s), spooled like every other event (NEW-L2).
+    stills = threading.Thread(target=periodic_stills.periodic_still_worker,
+                              args=(cfg, spool, stop, channels),
+                              daemon=True, name="periodic-stills")
     collector.start()
     analytic.start()
 
@@ -1400,6 +1406,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     archive.start()   # background historical scan; lower priority, run mode only
     recovery.start()  # automatic LIVE-gap reconciliation from recorder archive
     health.start()    # Phase-A camera/NVR health probing on its own thread
+    stills.start()    # periodic stills; run mode only
     sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
                                daemon=True, name="sitecontrol")
     sitectl.start()   # Site Control read plane (H6); thread exits at once unless enabled
@@ -1467,6 +1474,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         archive.join(timeout=5)
         recovery.join(timeout=5)
         health.join(timeout=5)
+        stills.join(timeout=5)
         sitectl.join(timeout=5)
         if recorder_check.is_alive():
             recorder_check.join(timeout=5)

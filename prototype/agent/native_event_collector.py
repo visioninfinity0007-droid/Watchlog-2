@@ -20,10 +20,10 @@ import native_verification
 import nvr_health
 from drivers import DriverError
 
-# A Hikvision/Dahua event stream that drops (EOF, read timeout, reset) is reopened on the
-# SAME driver after a short jittered delay, not after DRIVER_RETRY_SECONDS plus a full
-# re-probe: alertStream/attach has no replay, so every second it is closed no event can
-# arrive. The delay doubles per consecutive failed reopen; after STREAM_REOPEN_MAX_ATTEMPTS
+# A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
+# reopened on the SAME driver after a short jittered delay, not after DRIVER_RETRY_SECONDS plus
+# a full re-probe: alertStream/attach/a new pull point has no replay, so every second it is
+# closed no event can arrive. The delay doubles per consecutive failed reopen; after STREAM_REOPEN_MAX_ATTEMPTS
 # the collector falls back to the full re-probe path.
 STREAM_REOPEN_BASE_SECONDS = 0.5
 STREAM_REOPEN_MAX_ATTEMPTS = 5
@@ -115,7 +115,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
     monitor so a camera drop is reflected without waiting for the next probe.
 
     Recorder liveness is event-stream liveness. A driver that reports its stream
-    (Hikvision, Dahua) is live only on stream activity, never because its probe answered;
+    (Hikvision, Dahua, ONVIF) is live only on stream activity, never because its probe answered;
     one per-recorder ``event_stream`` state survives driver re-opens for the heartbeat."""
     detector = core.vision.build(cfg, core.log)
     auth_failures = 0
@@ -131,6 +131,10 @@ def collector(cfg, spool, stop, holder=None) -> None:
         auth_error = False
         try:
             driver, info = core.open_driver(cfg)
+            if hasattr(driver, "log"):
+                # The ONVIF driver's diagnostics (unmapped Source tokens, recorder clock
+                # skew) are a no-op until a log hook is set.
+                driver.log = lambda message: core.log(message)
             reports_stream = bool(getattr(driver, "reports_stream_activity", False))
             if reports_stream:
                 stream["connected"] = False

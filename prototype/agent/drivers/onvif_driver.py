@@ -82,9 +82,10 @@ TOPIC_MAP = [
 ]
 
 # Event types that belong to the recorder, not to a camera. They carry no
-# video source, so they are emitted with channel None and a recorder_scope
-# flag; putting them on a channel would turn a recorder HDD fault into a
-# fault on whichever camera that channel happens to be.
+# video source, so they are emitted with channel None and a recorder_scoped
+# flag (the key the Hikvision and Dahua drivers use); putting them on a
+# channel would turn a recorder HDD fault into a fault on whichever camera
+# that channel happens to be.
 RECORDER_SCOPED_TYPES = {"disk_error"}
 
 # Data items that carry the state of a property event; false on one of them
@@ -122,6 +123,9 @@ RENEW_MARGIN_SECONDS = 120         # renew this long before the grant runs out
 UNSUBSCRIBE_TIMEOUT = 5            # best effort; a dead link must not stall close()
 
 WSN_ACTION = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/"
+
+# _call prefixes its errors with the endpoint URL; the event-stream state keeps the reason only.
+_URL_PREFIX = re.compile(r"^\S+://\S*?:\s+")
 
 
 def _strip_ns(elem: ET.Element) -> ET.Element:
@@ -178,6 +182,11 @@ def _security_header(user: str, password: str) -> str:
 class OnvifDriver(NvrDriver):
     name = "onvif"
     verified_against_hardware = False
+    # Liveness comes from the pull-point subscription itself: last_activity_monotonic and
+    # event_stream move only when a PullMessages response comes back, empty pulls included
+    # (the long-poll is the stream's keep-alive). A failed pull, subscribe or renew never
+    # counts. A GetDeviceInformation probe that answers says nothing about the event stream.
+    reports_stream_activity = True
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
@@ -209,6 +218,11 @@ class OnvifDriver(NvrDriver):
         # Diagnostics hook, a no-op until the caller sets it (as autodetect's
         # `log`). Lines carry tokens and counts only: no address, no secret.
         self.log = lambda m: None
+        # The collector may replace event_stream with its per-recorder state dict.
+        self.last_activity_monotonic = 0.0
+        self.event_stream: dict = {"connected": False, "connected_at": None,
+                                   "last_frame_at": None, "last_error": None}
+        self._pulled = False         # a pull on the current subscription has answered
 
     # -- SOAP -----------------------------------------------------------
 
@@ -426,6 +440,7 @@ class OnvifDriver(NvrDriver):
         if addr is None or not addr.text:
             raise DriverError("CreatePullPointSubscription returned no address")
         self._sub_address = self._rehost(addr.text.strip())
+        self._pulled = False
         self._schedule_renewal(root)
 
     def _schedule_renewal(self, root: ET.Element) -> None:
@@ -481,7 +496,39 @@ class OnvifDriver(NvrDriver):
             raise DriverError("device returned no ONVIF media profiles; "
                               "events cannot be attributed to cameras")
 
+    # -- event-stream liveness (MNVR-005 / MNVR-008) ----------------------
+
+    def _stream_pulled(self) -> None:
+        """A PullMessages response came back: the subscription is delivering."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.last_activity_monotonic = time.monotonic()
+        if not self._pulled:         # the first answered pull of this subscription
+            self._pulled = True
+            self.event_stream.update(connected=True, connected_at=now, last_error=None)
+        self.event_stream["last_frame_at"] = now
+
+    def _stream_down(self, error: str | None) -> None:
+        self._pulled = False
+        self.event_stream["connected"] = False
+        if error:
+            self.event_stream["last_error"] = error
+
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
+        ended = "event subscription ended"
+        try:
+            yield from self._pull_events(stop)
+            ended = None                 # stopped by the caller
+        except GeneratorExit:            # the collector stopped reading
+            ended = None
+            raise
+        except Exception as e:
+            reason = _URL_PREFIX.sub("", str(e)).strip() if isinstance(e, DriverError) else ""
+            ended = reason[:200] or type(e).__name__
+            raise
+        finally:
+            self._stream_down(ended)
+
+    def _pull_events(self, stop: threading.Event) -> Iterator[Event]:
         self._require_profiles()
         self._subscribe()
         action = ("http://www.onvif.org/ver10/events/wsdl/"
@@ -505,6 +552,10 @@ class OnvifDriver(NvrDriver):
                 f"</tev:PullMessages>",
                 action=action, to=self._sub_address,
                 timeout=self.timeout + 40)
+            if root.find(".//PullMessagesResponse") is None:
+                # Delivered nothing. Pulling again at once would spin on the device.
+                raise DriverError("PullMessages answered without a PullMessagesResponse")
+            self._stream_pulled()
             # One receive time for the batch, read before anything is yielded:
             # the consumer fetches a still per event, so a clock read per
             # message would drift later and later through the batch.
@@ -553,11 +604,13 @@ class OnvifDriver(NvrDriver):
         # then kept in the payload rather than silently replaced.
         received = received or datetime.now(timezone.utc)
         stamped = _xs_datetime(inner.get("UtcTime"))
-        ts, skew = received, None
+        ts, skew, clock_source = received, None, "agent_receive"
         if stamped is not None:
             offset = (stamped - received).total_seconds()
+            # The recorder clock as last measured, for the heartbeat's event_stream block.
+            self.event_stream["last_clock_skew_s"] = round(offset)
             if abs(offset) <= CLOCK_SKEW_TOLERANCE_SECONDS:
-                ts = stamped
+                ts, clock_source = stamped, "recorder"
             else:
                 skew = round(offset)
 
@@ -582,6 +635,9 @@ class OnvifDriver(NvrDriver):
                 # burst window swallow another's events.
                 self.dropped_unmapped += 1
                 self.last_unmapped_source = source
+                # Per recorder, across reconnects: the collector shares one event_stream.
+                self.event_stream["dropped_unmapped"] = (
+                    int(self.event_stream.get("dropped_unmapped") or 0) + 1)
                 items = ", ".join(f"{k}={v}" for k, v in source.items())
                 self._report(self.dropped_unmapped,
                              f"onvif: dropped {etype} event ({topic[:80]}): "
@@ -598,10 +654,12 @@ class OnvifDriver(NvrDriver):
             return None
         self._last_emitted[key] = now
 
+        # clock_source names the clock that stamped device_ts, with the same values as the
+        # Hikvision and Dahua drivers: footage lookups need to know which clock it was.
         payload = {"vendor": "onvif", "topic": topic,
-                   "source": source, "data": data}
+                   "source": source, "data": data, "clock_source": clock_source}
         if channel is None:
-            payload["recorder_scope"] = True
+            payload["recorder_scoped"] = True
         if skew is not None:
             payload["device_utc"] = (stamped.astimezone(timezone.utc).isoformat()
                                      .replace("+00:00", "Z"))
