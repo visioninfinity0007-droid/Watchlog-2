@@ -272,8 +272,29 @@ def run() -> int:
             step(out is None and "field-verified" in err.lower(),
                  "a different recorder identity drops write eligibility",
                  err or json.dumps(out[0] if out else None, default=str))
+            # An identity or firmware that is no longer known (cleared, as a
+            # recorder sync must do when the unit stops reporting it) never
+            # matches the old evidence: unknown stays unknown.
+            for column in ("identity_fingerprint", "firmware"):
+                cur.execute(
+                    "update recorders set firmware='fw-a', identity_fingerprint='fp-a' "
+                    "where id=%s", (rec_a,),
+                )
+                cur.execute(f"update recorders set {column}=null where id=%s", (rec_a,))
+                cap, cap_err = try_sql(
+                    "select wl_recorder_capability_for_recorder(%s,'channel_title')", rec_a
+                )
+                out, err = as_auth_try(uid, rename, site, rename_params(cams["a"]), "recommend")
+                step(
+                    out is None and "field-verified" in err.lower()
+                    and cap is not None and cap[0]["evidence_class"] != "FIELD_VERIFIED"
+                    and cap[0]["field_write_verified"] is False,
+                    f"an unknown recorder {column} drops write eligibility",
+                    cap_err or err or json.dumps(out[0] if out else None, default=str),
+                )
             cur.execute(
-                "update recorders set identity_fingerprint='fp-a' where id=%s", (rec_a,)
+                "update recorders set firmware='fw-a', identity_fingerprint='fp-a' where id=%s",
+                (rec_a,),
             )
 
             _, err = add_evidence("TEST-ELIG-A-READ", rec_a, "time_ntp_config",
