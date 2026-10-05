@@ -340,15 +340,30 @@ class Config:
         every launch context (SYSTEM task, terminal, --probe) resolves it
         identically. Called at startup and whenever Setup changes it (the
         interruptible auth breaker). A corrupt or foreign-machine store is fatal
-        — never a plaintext fallback."""
+        — never a plaintext fallback.
+
+        On a site whose recorders.json configures recorders, every recorder logs in with
+        its own credential and this legacy one is only the continuity recorder's mirror.
+        Its failure then leaves this Config's login empty and names it in
+        ``legacy_credential_error`` (open_driver refuses such a Config) instead of
+        stopping every recorder."""
         if os.name != "nt":
             return  # dev/lean builds use the env/ini values already set
         try:
             cred = credential_store.load_nvr_credential(self._ini_path)
         except credential_store.SecretError as exc:
-            raise SystemExit(
-                "FATAL: the recorder credential could not be read (corrupt, or a "
-                f"blob copied from another machine). Repair WatchLog.\n  {exc}")
+            if not _registry_configures_recorders():
+                raise SystemExit(
+                    "FATAL: the recorder credential could not be read (corrupt, or a "
+                    f"blob copied from another machine). Repair WatchLog.\n  {exc}")
+            self.nvr_password = ""
+            self.legacy_credential_error = type(exc).__name__
+            log("WARNING: the legacy recorder credential on this PC could not be read "
+                f"({type(exc).__name__}); each configured recorder uses its own login, so "
+                "only a recorder whose own login is unreadable stays unverified. "
+                "Repair WatchLog to restore it.")
+            return
+        self.legacy_credential_error = None
         if cred:
             self.nvr_username = cred.get("username") or self.nvr_username
             self.nvr_password = cred.get("password") or ""
@@ -541,6 +556,11 @@ def open_driver(cfg: Config):
 
 def _open_driver_unverified(cfg: Config):
     cfg.require_nvr()
+    if getattr(cfg, "legacy_credential_error", None) and not getattr(cfg, "recorder_local_id", None):
+        # A registry site's legacy login could not be read (Config.load_recorder_credential):
+        # signing in with an empty login would only be a false "wrong password".
+        raise DriverError("the legacy recorder login on this PC cannot be read; "
+                          "Repair WatchLog to restore it")
     # Primary attempt: exactly the configured driver/URL — unchanged behaviour. When it
     # works (the normal case) nothing below runs.
     try:
@@ -729,6 +749,41 @@ def _continuity_recorder_at(cfg) -> str | None:
     except Exception:  # noqa: BLE001 — unknown registry: the legacy token, as before
         return None
     return rows[0]["local_id"] if url and len(rows) == 1 else None
+
+
+def _registry_configures_recorders() -> bool:
+    """True when recorders.json configures at least one recorder; an absent or unreadable
+    registry is not a configured one (an unreadable registry holds in enhanced_cmd_run)."""
+    try:
+        import recorder_registry
+        return any(row.get("is_configured") for row in recorder_registry.recorders())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _boot_probe_config(cfg):
+    """The Config main() identifies the recorder with before the run loop, or None to skip.
+
+    With no configured registry: ``cfg`` itself, the 5.0.x singleton probe and camera sync.
+    With one configured recorder: that recorder's own registry Config (its address, its own
+    login and its saved identity), never the legacy ini recorder and login. With several, or
+    a registry that cannot be read: None. Each recorder is then identified and synced only
+    by its own recorder check (multi_recorder_orchestrator), so the legacy probe neither
+    contacts a recorder without an identity check nor sends a site-level camera sync."""
+    try:
+        import recorder_registry
+        rows = [row for row in recorder_registry.recorders() if row.get("is_configured")]
+    except Exception:  # noqa: BLE001 — the runtime holds for Setup; nothing to probe here
+        return None
+    if not rows:
+        return cfg
+    if len(rows) > 1:
+        return None
+    try:
+        (ctx,) = recorder_runtime.load_contexts(cfg, degrade_credential_errors=True)
+    except Exception:  # noqa: BLE001 — the recorder check reports the registry fault
+        return None
+    return None if ctx.credential_error else ctx.config
 
 
 def _credential_generation(cfg):
@@ -3485,36 +3540,41 @@ def main() -> None:
     # camera sync and the heartbeat all want it, and probing four times
     # on every start is noise on the wire and in the log.
     device, channels, capabilities = None, [], None
-    try:
-        driver, device = open_driver(cfg)
+    boot_cfg = _boot_probe_config(cfg)
+    if boot_cfg is None:
+        log("recorder: the configured recorders are identified by their own recorder "
+            "check; skipping the legacy startup probe")
+    else:
         try:
-            channels = [{"channel": c.channel, "name": c.name}
-                        for c in _synced_inventory(driver)]
-            # Read analytics while the driver is open. Best-effort and
-            # read-only; never changes a setting on the device.
+            driver, device = open_driver(boot_cfg)
             try:
-                capabilities = driver.capabilities()
-            except Exception:                    # noqa: BLE001
-                capabilities = None
-        finally:
-            driver.close()
-    except (DriverError, SystemExit) as e:
-        for line in str(e).splitlines():
-            if line.strip():
-                log(f"WARNING: NVR not identified: {line.strip()[:200]}")
-        # Run the scan automatically, once, at startup. Telling someone to
-        # "go and run --probe" assumes they will read the log, be at that
-        # machine, and try again. They usually just run it the same way
-        # again, and we learn nothing. Fifteen seconds spent here answers
-        # the question the first time.
-        if cfg.nvr_url:
-            try:
-                host = discover.host_of(cfg.nvr_url)
-                discover.report(host,
-                                discover.scan(cfg.nvr_url, log=log),
-                                log=log)
-            except Exception as se:                    # noqa: BLE001
-                log(f"scan failed: {type(se).__name__}: {se}")
+                channels = [{"channel": c.channel, "name": c.name}
+                            for c in _synced_inventory(driver)]
+                # Read analytics while the driver is open. Best-effort and
+                # read-only; never changes a setting on the device.
+                try:
+                    capabilities = driver.capabilities()
+                except Exception:                    # noqa: BLE001
+                    capabilities = None
+            finally:
+                driver.close()
+        except (DriverError, SystemExit) as e:
+            for line in str(e).splitlines():
+                if line.strip():
+                    log(f"WARNING: NVR not identified: {line.strip()[:200]}")
+            # Run the scan automatically, once, at startup. Telling someone to
+            # "go and run --probe" assumes they will read the log, be at that
+            # machine, and try again. They usually just run it the same way
+            # again, and we learn nothing. Fifteen seconds spent here answers
+            # the question the first time.
+            if boot_cfg.nvr_url:
+                try:
+                    host = discover.host_of(boot_cfg.nvr_url)
+                    discover.report(host,
+                                    discover.scan(boot_cfg.nvr_url, log=log),
+                                    log=log)
+                except Exception as se:                    # noqa: BLE001
+                    log(f"scan failed: {type(se).__name__}: {se}")
 
     if state:
         log(f"already enrolled as {state['agent_id']} - skipping enrollment")
