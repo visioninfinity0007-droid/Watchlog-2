@@ -197,10 +197,18 @@ class RecoveryRunner:
         """(archive channels, unresolved cameras) for a recorder-aware claim.
 
         Recorder-aware claims expose explicit archive channels. Never fall back to canonical
-        camera UUIDs or guess channel 1 on this path: missing channels mean the archive target
-        is unknown, so the interval completes as unrecoverable instead of querying the wrong
-        recorder channel."""
-        return list(iv.get("channels") or []), 0
+        camera UUIDs or guess channel 1 on this path: a camera the claim gives no channel for
+        stays unread, so the interval is never recovered, and with no channel at all it
+        completes as unrecoverable. An interval with neither cameras nor channels is a
+        whole-site interval opened before this recorder was bound (a legacy row of a
+        one-recorder site): like a recorder-less whole-site interval it covers every camera
+        this recorder knows, and with no known inventory nothing is read."""
+        cameras = {str(c) for c in (iv.get("cameras") or []) if c}
+        channels = list(dict.fromkeys(
+            str(c).strip() for c in (iv.get("channels") or []) if str(c or "").strip()))
+        if not cameras and not channels:
+            return list(dict.fromkeys(self.camera_channels.values())), 0
+        return channels, max(0, len(cameras) - len(channels))
 
     def _recover_interval(self, iv) -> dict:
         checkpoint = iv.get("checkpoint") or {}
