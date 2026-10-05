@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import base64
 import configparser
+import hashlib
 import json
 import os
 import platform
@@ -665,7 +666,9 @@ class _MappedArchiveDriver:
 # on each open (the drivers retry a 401 with Basic: two failed logins per probe). Confirmed auth
 # failures back off per recorder like the live collector (5 -> 15 -> 30 min); a credential change
 # in Setup clears the breaker at once. The recovery thread's primary logins use the same breaker
-# under their own key (_recovery_login).
+# under their own key (_recovery_login). It is also kept beside the Agent state
+# (_auth_breaker_path): --status-json, --accept and --recheck-archive-json are fresh processes
+# and would otherwise probe the vendor-native login again on every run.
 _NATIVE_ARCHIVE_AUTH: dict = {}
 _NATIVE_ARCHIVE_AUTH_LOCK = threading.Lock()
 
@@ -681,33 +684,93 @@ def _credential_generation():
         return None
 
 
-def _native_archive_backoff(key: tuple) -> float:
-    """Seconds before a refused native archive login may be tried again (0 = probe now)."""
+def _auth_breaker_path(cfg) -> Path | None:
+    """Where the auth breaker is kept beside the Agent state, so that short-lived processes
+    (--status-json from the Site Status panel, --accept, --recheck-archive-json) and the running
+    Agent all respect a refusal any of them saw. None without an Agent state path."""
+    state_path = getattr(cfg, "state_path", None)
+    return Path(state_path).parent / "recorder_auth_backoff.json" if state_path else None
+
+
+def _auth_breaker_id(key: tuple) -> str:
+    return hashlib.sha256("|".join(str(k) for k in key).encode("utf-8")).hexdigest()[:24]
+
+
+def _read_auth_breaker(path: Path) -> dict:
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8")).get("entries")
+    except Exception:  # noqa: BLE001 — absent or unreadable: nothing persisted
+        return {}
+    return entries if isinstance(entries, dict) else {}
+
+
+def _write_auth_breaker(path: Path, entries: dict) -> None:
+    try:
+        if not path.parent.is_dir():
+            return
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"entries": entries}), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — the in-memory breaker still holds for this process
+        pass
+
+
+def _native_archive_backoff(key: tuple, path: Path | None = None) -> float:
+    """Seconds before a refused native archive login may be tried again (0 = probe now).
+    With ``path`` a refusal persisted by another process counts too (wall clock, capped at the
+    longest back-off so a clock step cannot hold the recorder back for longer)."""
     with _NATIVE_ARCHIVE_AUTH_LOCK:
+        wait = 0.0
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
-        if entry is None:
-            return 0.0
-        if entry["generation"] != _credential_generation():
-            _NATIVE_ARCHIVE_AUTH.pop(key, None)
-            return 0.0
-        return max(0.0, entry["retry_at"] - time.monotonic())
+        if entry is not None:
+            if entry["generation"] != _credential_generation():
+                _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            else:
+                wait = entry["retry_at"] - time.monotonic()
+        if path is not None:
+            entries = _read_auth_breaker(path)
+            saved = entries.get(_auth_breaker_id(key))
+            if isinstance(saved, dict):
+                if saved.get("generation") != _credential_generation():
+                    entries.pop(_auth_breaker_id(key), None)
+                    _write_auth_breaker(path, entries)
+                else:
+                    remaining = float(saved.get("retry_at") or 0) - time.time()
+                    wait = max(wait, min(remaining, float(max(_AUTH_BACKOFF_SECONDS))))
+        return max(0.0, wait)
 
 
-def _note_native_archive_probe(key: tuple, error: Exception | None) -> None:
-    """Record a native probe outcome: success clears the breaker, a rejected login escalates it."""
+def _note_native_archive_probe(key: tuple, error: Exception | None,
+                               path: Path | None = None) -> None:
+    """Record a native probe outcome: success clears the breaker, a rejected login escalates it.
+    With ``path`` the outcome is also persisted for the Agent's other processes."""
     from drivers.base import NvrAuthFailed
     with _NATIVE_ARCHIVE_AUTH_LOCK:
+        entries = _read_auth_breaker(path) if path is not None else {}
+        ident = _auth_breaker_id(key)
         if error is None:
             _NATIVE_ARCHIVE_AUTH.pop(key, None)
+            if entries.pop(ident, None) is not None:
+                _write_auth_breaker(path, entries)
             return
         if not (isinstance(error, NvrAuthFailed) or _is_auth_failure(error)):
             return
         generation = _credential_generation()
+        prior = 0
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
-        failures = entry["failures"] + 1 if entry and entry["generation"] == generation else 1
+        if entry and entry["generation"] == generation:
+            prior = entry["failures"]
+        saved = entries.get(ident)
+        if isinstance(saved, dict) and saved.get("generation") == generation:
+            prior = max(prior, int(saved.get("failures") or 0))
+        failures = prior + 1
         wait = _AUTH_BACKOFF_SECONDS[min(failures - 1, len(_AUTH_BACKOFF_SECONDS) - 1)]
         _NATIVE_ARCHIVE_AUTH[key] = {"failures": failures, "generation": generation,
                                      "retry_at": time.monotonic() + wait}
+        if path is not None:
+            entries[ident] = {"failures": failures, "generation": generation,
+                              "retry_at": time.time() + wait}
+            _write_auth_breaker(path, entries)
 
 
 def open_archive_driver(cfg: Config, *, live=None):
@@ -749,7 +812,8 @@ def open_archive_driver(cfg: Config, *, live=None):
         return driver, info
 
     key = _native_archive_key(cfg, native_name)
-    wait = _native_archive_backoff(key)
+    breaker = _auth_breaker_path(cfg)
+    wait = _native_archive_backoff(key, breaker)
     if wait:
         log(f"archive: vendor-native {native_name} rejected the recorder login; not retrying "
             f"for {max(1, round(wait / 60))} min (keeping {driver.name})")
@@ -759,10 +823,10 @@ def open_archive_driver(cfg: Config, *, live=None):
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        _note_native_archive_probe(key, None)
+        _note_native_archive_probe(key, None, breaker)
         channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
-        _note_native_archive_probe(key, error)
+        _note_native_archive_probe(key, error, breaker)
         if candidate is not None:
             try:
                 candidate.close()
@@ -2437,16 +2501,17 @@ def _recovery_login(cfg: Config, opener):
     a credential change in Setup clears it at once. Raises NvrAuthFailed while backed off."""
     from drivers.base import NvrAuthFailed
     key = _native_archive_key(cfg, "recorder-login")
-    wait = _native_archive_backoff(key)
+    breaker = _auth_breaker_path(cfg)
+    wait = _native_archive_backoff(key, breaker)
     if wait:
         raise NvrAuthFailed(f"recorder login refused earlier; not retried for "
                             f"{max(1, round(wait / 60))} min")
     try:
         result = opener()
     except Exception as error:  # noqa: BLE001 — recorded, then raised to the caller as before
-        _note_native_archive_probe(key, error)
+        _note_native_archive_probe(key, error, breaker)
         raise
-    _note_native_archive_probe(key, None)
+    _note_native_archive_probe(key, None, breaker)
     return result
 
 

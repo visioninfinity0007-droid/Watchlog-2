@@ -11,6 +11,7 @@ the breaker at once. Hermetic: no recorder, no network.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -127,6 +128,102 @@ class ArchiveProbeAuthBackoff(unittest.TestCase):
         self.error = NvrUnreachable("http://192.0.2.10/cgi-bin/magicBox.cgi: timed out")
         self._open()
         self._open()
+        self.assertEqual(len(self.probes), 2)
+
+
+
+class BackoffAcrossProcesses(unittest.TestCase):
+    """--status-json (the Site Status panel: open, Refresh, Test recorder, Rediscover cameras,
+    Recheck recording), --accept and --recheck-archive-json each run in a fresh process and call
+    open_archive_driver. With an in-memory breaker only, every run on an ONVIF-live Dahua or
+    Hikvision site probed the vendor-native login again with the shared account. The breaker is
+    now kept next to the Agent state, so a refusal seen by any process holds for all of them."""
+
+    def setUp(self):
+        core._NATIVE_ARCHIVE_AUTH.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(core._NATIVE_ARCHIVE_AUTH.clear)
+        self.mono, self.wall = [1000.0], [1_800_000_000.0]
+        self.generation = ["gen-1"]
+        self.probes = []
+        self.refuse = [True]
+        info = DeviceInfo(vendor="Dahua", model="DH-XVR1B08-I", driver="onvif")
+        error = NvrAuthFailed("http://192.0.2.10/cgi-bin/magicBox.cgi: HTTP 401")
+
+        class _Native(_RefusingNative):
+            def probe(native):
+                if self.refuse[0]:
+                    return _RefusingNative.probe(native)
+                self.probes.append(1)
+                return DeviceInfo(vendor="Dahua", model="DH-XVR1B08-I", driver="dahua-cgi")
+
+        patches = [
+            mock.patch.object(core, "open_driver", lambda _cfg: (_Onvif(), info)),
+            mock.patch.object(core, "build", lambda *_a, **_k: _Native(self.probes, error)),
+            mock.patch.object(core, "log", lambda *_a, **_k: None),
+            mock.patch.object(core.time, "monotonic", lambda: self.mono[0]),
+            mock.patch.object(core.time, "time", lambda: self.wall[0]),
+            mock.patch.object(core.credential_store, "credential_generation",
+                              lambda: self.generation[0]),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.cfg = SimpleNamespace(nvr_url="http://192.0.2.10", nvr_username="local-user",
+                                   nvr_password="local-password",
+                                   state_path=Path(self.tmp.name) / "agent_state.json")
+
+    def _run_cli(self):
+        """One short-lived process (--status-json / --accept): fresh memory, same disk."""
+        core._NATIVE_ARCHIVE_AUTH.clear()
+        live = core.open_driver(self.cfg)
+        driver, _info = core.open_archive_driver(self.cfg, live=live)
+        self.assertEqual(driver.name, "onvif")
+
+    def test_a_refused_login_is_not_retried_by_the_next_process(self):
+        for _ in range(5):                                # five panel clicks
+            self._run_cli()
+        self.assertEqual(len(self.probes), 1)
+
+    def test_the_running_agent_respects_a_refusal_seen_by_the_panel(self):
+        self._run_cli()
+        core._NATIVE_ARCHIVE_AUTH.clear()
+        core.open_archive_driver(self.cfg)                # the Agent's next recovery cycle
+        self.assertEqual(len(self.probes), 1)
+
+    def test_the_persisted_backoff_runs_out_and_escalates(self):
+        self._run_cli()
+        self.wall[0] += 301
+        self._run_cli()
+        self.assertEqual(len(self.probes), 2)
+        self.wall[0] += 899
+        self._run_cli()
+        self.assertEqual(len(self.probes), 2, "the second refusal backs off 15 min")
+        self.wall[0] += 2
+        self._run_cli()
+        self.assertEqual(len(self.probes), 3)
+
+    def test_a_credential_change_clears_the_persisted_backoff(self):
+        self._run_cli()
+        self.generation[0] = "gen-2"
+        self._run_cli()
+        self.assertEqual(len(self.probes), 2)
+
+    def test_a_successful_login_clears_the_persisted_backoff(self):
+        self._run_cli()
+        self.wall[0] += 301
+        self.refuse[0] = False
+        self._run_cli()                                   # accepted: breaker cleared
+        self.refuse[0] = True
+        self._run_cli()
+        self._run_cli()
+        self.assertEqual(len(self.probes), 3)
+
+    def test_without_an_agent_state_path_the_breaker_stays_in_memory(self):
+        del self.cfg.state_path
+        self._run_cli()
+        self._run_cli()
         self.assertEqual(len(self.probes), 2)
 
 

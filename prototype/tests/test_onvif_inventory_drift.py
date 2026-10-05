@@ -125,8 +125,8 @@ class InventoryDrift(unittest.TestCase):
         cloud = SimpleNamespace(call=lambda fn, **kw: {c["channel"]: f"cam-{c['channel']}"
                                                        for c in kw["p_cameras"]})
         with mock.patch.object(core, "open_driver", lambda _cfg: (driver, None)):
-            ids = core._recovery_camera_ids(SimpleNamespace(), {"agent_id": "a",
-                                                                "agent_key": "k"}, cloud, [])
+            cfg = SimpleNamespace(nvr_url=URL, nvr_username="local-user")
+            ids = core._recovery_camera_ids(cfg, {"agent_id": "a", "agent_key": "k"}, cloud, [])
         self.assertEqual(ids, {"1": "cam-1", "2": "cam-2", "3": "cam-3"})
         self.assertEqual([c.channel for c in _onvif(AC).list_channels()], ["1", "3"])
 
