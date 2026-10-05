@@ -519,9 +519,91 @@ def test_bound_row_keeps_monitoring_when_watchlog_cannot_be_reached(monkeypatch,
         assert rr.recorder(local_id)["cloud_recorder_id"] == SITE_RECORDER
 
 
-def test_unbound_row_still_stops_when_watchlog_cannot_be_reached(monkeypatch):
+@pytest.mark.parametrize("error", TRANSIENT)
+def test_unbound_single_row_keeps_monitoring_when_watchlog_cannot_be_reached(monkeypatch,
+                                                                             error):
+    """Repair/Upgrade, Setup and Manage Recorders stage the legacy recorder as one
+    unbound row, and a database without recorders can never bind it. Booting with
+    the network down (or during a WatchLog outage, or on a standby PC) must keep
+    collecting and queueing events, as 5.0.x did, instead of exiting FATAL until
+    WatchLog answers: nothing recorder-scoped exists without a cloud identity, so
+    the one recorder runs unbound and the recorder check finishes in the background."""
+    with _Env() as env:
+        local_id = _stage_one_unbound_row()
+        cfg = _base_cfg(env.root)
+        cfg.nvr_url = "http://192.0.2.99"          # stale legacy ini address
+        cfg.site_control_enabled = False
+        opened = []
+        _patch_recorder_io(monkeypatch, opened)
+        monkeypatch.setattr(core, "open_driver", lambda run_cfg: (
+            opened.append(run_cfg) or _LiveDriver(run_cfg),
+            DeviceInfo(vendor="Hikvision", model="DS-TEST", driver="hikvision")))
+        monkeypatch.setattr(core, "health_cycle", lambda *a, **k: None)
+        monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.3)
+        monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
+        spools = []
+
+        class _Tracked(Spool):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                spools.append(self)
+
+        monkeypatch.setattr(analytics_agent, "Spool", _Tracked)
+        cloud = _Unreachable(error)
+
+        try:
+            analytics_agent.enhanced_cmd_run(cfg, STATE, cloud, once=True)
+        except (requests.RequestException, RuntimeError):
+            pass      # a one-shot run still reports its failed upload or heartbeat
+        try:
+            _ids, queued = spools[0].take(10) if spools else ([], [])
+        finally:
+            for queue in spools:
+                queue.close()
+
+        assert cloud.names()[0] == "wl_multi_recorder_agent_contract"
+        assert getattr(cfg, "recorder_cloud_id", None) is None
+        assert cfg.recorder_local_id == local_id
+        assert cfg.nvr_url == "http://192.0.2.10"
+        assert (cfg.nvr_username, cfg.nvr_password) == ("registry-user", "registry-pw")
+        assert opened and opened[0].nvr_url == "http://192.0.2.10"
+        assert len(queued) == 1 and not queued[0].get("recorder_id")
+        assert rr.recorder(local_id)["cloud_recorder_id"] is None
+
+
+def test_unbound_single_row_offline_start_rechecks_the_contract(monkeypatch):
+    """The unbound offline start owes the recorder check: once WatchLog answers with
+    the recorder contract, the run loop restarts so the recorder is bound."""
     with _Env() as env:
         _stage_one_unbound_row()
+        cfg = _base_cfg(env.root)
+        cfg.site_control_enabled = False
+        _patch_recorder_io(monkeypatch, [])
+
+        def idle(*_a, **_k):
+            return None
+
+        for name in ("collector", "recovery_worker", "health_worker", "command_worker"):
+            monkeypatch.setattr(core, name, idle)
+        monkeypatch.setattr(analytics_agent, "analytics_worker", idle)
+        monkeypatch.setattr(analytics_agent, "archive_worker", idle)
+        monkeypatch.setattr(core.vision, "build", lambda *_a, **_k: None)
+        monkeypatch.setattr(analytics_agent, "RECORDER_RECHECK_SECONDS", (0.01,))
+        real_sleep = time.sleep
+        monkeypatch.setattr(analytics_agent.time, "sleep", lambda _s: real_sleep(0.01))
+        cloud = _ComesBack(outage=1)
+
+        with pytest.raises(SystemExit, match="restarting WatchLog to bind"):
+            analytics_agent.enhanced_cmd_run(cfg, STATE, cloud, once=False)
+
+        assert getattr(cfg, "recorder_cloud_id", None) is None
+
+
+def test_several_unbound_rows_still_stop_when_watchlog_cannot_be_reached(monkeypatch):
+    with _Env() as env:
+        _stage_one_unbound_row()
+        rr.add_recorder(display_name="Second", url="http://192.0.2.20", driver="dahua-cgi",
+                        username="b", password="b-pw")
         _patch_recorder_io(monkeypatch, [])
         offline = _Unreachable(lambda name: requests.ConnectionError("network not ready"))
         with pytest.raises(SystemExit, match="preflight did not complete"):

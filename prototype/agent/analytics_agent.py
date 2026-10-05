@@ -1223,8 +1223,9 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     recorders at all, which runs on the legacy recorder-less RPCs. A single recorder
     whose cloud identity is already saved keeps monitoring under it when the cloud
     cannot be reached (or this PC is a standby) and finishes the check in the
-    background; an unbound row or a definitive refusal still fails closed. The same
-    holds for several recorders when every one of them is already bound (MNVR-009).
+    background; a single unbound row then runs unbound on the legacy RPCs until
+    WatchLog answers, and a definitive refusal still fails closed. Several recorders
+    keep monitoring that way only when every one of them is already bound (MNVR-009).
     A recorder whose login cannot be read on this PC is held UNVERIFIED while the
     others run; a site whose only recorder has no readable login holds until Setup
     repairs it.
@@ -1263,6 +1264,18 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                 recheck = "contract"
                 core.log("recorder: this WatchLog site has no recorder-aware backend yet; "
                          "single-recorder runtime without recorder identity")
+            elif (len(configured_recorders) == 1
+                  and not configured_recorders[0].get("cloud_recorder_id")
+                  and _preflight_transient(error)):
+                # The same one-recorder situation while WatchLog cannot answer: the row
+                # has no cloud identity to run under, and nothing recorder-scoped can
+                # exist without one, so keep monitoring unbound (as 5.0.x did at boot)
+                # and restart to bind once WatchLog offers the recorder contract.
+                _adopt_registry_recorder_unbound(cfg)
+                recheck = "contract"
+                core.log("recorder: WatchLog did not answer the recorder check "
+                         f"({type(error).__name__}); single-recorder runtime without "
+                         "recorder identity, retrying in the background")
             else:
                 # Network not ready at boot, an outage or a standby PC says nothing
                 # about the recorders: when every configured recorder is already bound
