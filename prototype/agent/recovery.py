@@ -95,9 +95,14 @@ class RecoveryRunner:
                  live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
                  snapshot_interval_seconds=recovery_ai.DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
                  camera_channels=None, max_attempts=DEFAULT_MAX_ATTEMPTS,
-                 max_error_attempts=DEFAULT_MAX_ERROR_ATTEMPTS, log=print):
+                 max_error_attempts=DEFAULT_MAX_ERROR_ATTEMPTS, driver_factory=None, log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
         self.driver, self.on_event = driver, on_event
+        # With no open driver, ``driver_factory()`` opens the archive the first time a claimed
+        # interval needs reading, and run_once closes it again: an idle cycle never logs in to
+        # the recorder.
+        self.driver_factory = driver_factory
+        self._opened = False
         # {cloud camera UUID: recorder channel}. Intervals name cameras by UUID
         # (recovery_intervals.cameras is uuid[]); the archive driver reads channels.
         self.camera_channels = {str(k): str(v) for k, v in (camera_channels or {}).items()}
@@ -145,6 +150,21 @@ class RecoveryRunner:
         """Complete an interval that will not be read (further), saying why."""
         self._complete(iv["id"], status, 0, seen, cursor, detail={"reason": reason})
         return {"id": iv["id"], "status": status, "recovered": 0, "yielded": False, "reason": reason}
+
+    def _open_archive(self):
+        if self.driver is None and self.driver_factory is not None:
+            self.driver = self.driver_factory()
+            self._opened = True
+        return self.driver
+
+    def _close_archive(self):
+        if self._opened:
+            self._opened = False
+            driver, self.driver = self.driver, None
+            try:
+                driver.close()
+            except Exception:               # noqa: BLE001 — closing never masks the outcome
+                pass
 
     def _segments_capability(self):
         """Whether the recorder offers searchable recorded footage; None when it cannot be told."""
@@ -217,12 +237,18 @@ class RecoveryRunner:
                            progress=attempts if moved else progress,
                            examined=seen_part, incomplete=missed_part)
 
+        try:
+            self._open_archive()
+        except Exception as e:              # noqa: BLE001 — an archive that cannot be opened is a failed read
+            failed_at, failure = start, type(e).__name__
+            self._log(f"recovery: recorder archive could not be opened: {failure}")
         # A recorder whose recorded footage is searchable (Hikvision, Dahua) but whose own event
         # log is not is judged by its footage: the event replay it cannot offer is not a part of
         # the interval that went unrecovered.
-        footage = self._segments_capability()
+        footage = self._segments_capability() if failed_at is None else None
 
-        for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
+        chunks = () if failed_at is not None else backfill._windows(start, end, self.chunk_seconds)
+        for chunk_start, chunk_end in chunks:
             if self.live_pending():
                 if failed_at is not None and errors + 1 >= self.max_error_attempts:
                     break                   # out of retries: settle below instead of yielding
@@ -302,7 +328,10 @@ class RecoveryRunner:
             return []                  # never start recovery while live work is pending
         claimed = self.cloud.call("wl_agent_claim_recovery", p_agent_id=self.agent_id,
                                   p_agent_key=self.agent_key, p_limit=limit) or []
-        return [self._recover_interval(iv) for iv in claimed]
+        try:
+            return [self._recover_interval(iv) for iv in claimed]
+        finally:
+            self._close_archive()
 
 
 __all__ = ["detect_outage", "persist_last_live", "read_last_live", "RecoveryRunner",

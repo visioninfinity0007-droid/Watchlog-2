@@ -94,6 +94,9 @@ def _recovery_cfg(tmp_name="last_live.json"):
 
 
 class _RecoveryCloud:
+    """Hands out an interval on every claim: the recorder archive is opened only for claimed work,
+    so each cycle must have some for the injected recorder fault to fire again."""
+
     def __init__(self):
         self.calls = []
 
@@ -102,7 +105,10 @@ class _RecoveryCloud:
         if fn == "wl_sync_cameras":
             return {"1": "11111111-1111-4111-8111-111111111111"}
         if fn == "wl_agent_claim_recovery":
-            return []
+            return [{"id": "iv-1", "started_at": "2026-06-01T17:00:00+00:00",
+                     "ended_at": "2026-06-01T18:00:00+00:00",
+                     "cameras": ["11111111-1111-4111-8111-111111111111"],
+                     "checkpoint": {}, "attempts": 1}]
         return {}
 
 

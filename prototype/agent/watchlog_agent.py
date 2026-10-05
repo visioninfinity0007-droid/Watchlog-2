@@ -2542,27 +2542,23 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             except Exception as e:                       # noqa: BLE001
                 log(f"recovery: gap detector skipped: {type(e).__name__}")
 
-            # Claimed intervals carry camera UUIDs; without the mapping they cannot be read.
+            # Claimed intervals carry camera UUIDs; without the mapping they cannot be read. The
+            # recorder archive is opened (and closed) by the runner only for a claimed interval
+            # that needs reading, so an idle cycle never logs in to the recorder.
             if camera_ids:
                 try:
-                    driver, _info = open_archive_driver(cfg)
-                    try:
-                        runner = rec.RecoveryRunner(
-                            cloud, state["agent_id"], state["agent_key"], driver,
-                            lambda ev: spool.add(ev),
-                            chunk_seconds=cfg.recovery_chunk_seconds,
-                            throttle_seconds=cfg.recovery_throttle_seconds,
-                            live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
-                            detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
-                            snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
-                            camera_channels={cam: ch for ch, cam in camera_ids.items()},
-                            log=log)
-                        runner.run_once(limit=1)
-                    finally:
-                        try:
-                            driver.close()
-                        except Exception:                # noqa: BLE001
-                            pass
+                    runner = rec.RecoveryRunner(
+                        cloud, state["agent_id"], state["agent_key"], None,
+                        lambda ev: spool.add(ev),
+                        chunk_seconds=cfg.recovery_chunk_seconds,
+                        throttle_seconds=cfg.recovery_throttle_seconds,
+                        live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
+                        detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
+                        snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
+                        camera_channels={cam: ch for ch, cam in camera_ids.items()},
+                        driver_factory=lambda: open_archive_driver(cfg)[0],
+                        log=log)
+                    runner.run_once(limit=1)
                 except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
                     log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
         except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
