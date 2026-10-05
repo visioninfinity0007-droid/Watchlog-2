@@ -432,10 +432,11 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
 
 
 def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor=None, limit: int = 500) -> dict:
-    """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end) become
-    recoverable intelligence (each recorded segment is a recovered evidence window). Honest
-    status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
-    with empty data, and never masquerading as live). Read-only.
+    """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end), for
+    recovery's footage backfill (each recorded segment is a recovered evidence window; the rows are
+    footage, not recorder events). Honest status: an unreachable/ambiguous recorder returns
+    'unknown' (never a fabricated 'supported' with empty data, and never masquerading as live).
+    Read-only.
 
     ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC on the agent
     clock: recorder wall time minus the offset from the same clock reading that built the search
@@ -485,8 +486,10 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
 
 def historical_capability(driver: DahuaDriver = None) -> dict:
     """Dahua archive: segment enumeration + bounded clip retrieval are supported (validated on the
-    Cooper-I pilot path); snapshot-at-timestamp is not exposed on the validated path."""
-    return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
+    Cooper-I pilot path); snapshot-at-timestamp is not exposed on the validated path. The search
+    answers with recording files only: a recording segment is footage, not a recorder event, and
+    the recorder's own event log is not searched, so historical events are unsupported."""
+    return {"events": "unsupported", "snapshots": "unsupported", "segments": "supported"}
 
 
 ARCHIVE_PROOF_WINDOW = 1800          # default recent window (30 min) for a setup-time archive proof

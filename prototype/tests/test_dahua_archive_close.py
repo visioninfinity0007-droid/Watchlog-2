@@ -140,9 +140,10 @@ class EnumerateHistorical(unittest.TestCase):
         self.assertEqual(ev["channel"], "1")
         self.assertIn("segment", ev)
 
-    def test_capability_reports_supported(self):
+    def test_capability_reports_segments_not_events(self):
+        # The rows are recording files (footage), not recorder events (MNVR-061).
         cap = da.historical_capability()
-        self.assertEqual(cap["events"], "supported")
+        self.assertEqual(cap["events"], "unsupported")
         self.assertEqual(cap["segments"], "supported")
 
     def test_unreachable_is_unknown_not_fabricated(self):
