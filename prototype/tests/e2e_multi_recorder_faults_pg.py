@@ -9,6 +9,11 @@ channel 1. Proves:
 - the legacy site-scoped current-proof RPC fails closed on a multi-recorder
   site and still works, mirrored to the recorder, on a one-recorder site;
 - only the current site Agent can write recorder current proof;
+- operational faults are recorder-aware (MNVR-014): an unplugged recorder
+  raises 'nvr:<recorder>:...' faults, camera faults follow their own
+  recorder's observability, and a missing or frozen nvr_health row neither
+  suppresses nor freezes faults; a one-recorder site keeps its Agent-keyed
+  fault identity; the cron sweep reaches recorder-health-only sites;
 - exact EXECUTE ACLs of the current-proof RPCs.
 """
 from __future__ import annotations
@@ -210,6 +215,98 @@ def run() -> int:
                  and recorder_storage(rec_a, agent_a)[0] == "ok",
                  "a stale Agent cannot write recorder current proof", msg)
 
+            # ---------------- recorder-aware operational faults (MNVR-014) ----------------
+            def report_health(agent_id, key, recorder_id, reachable, auth_ok, reason):
+                verified = bool(reachable and auth_ok)
+                body = {"nvr": {"reachable": reachable, "auth_ok": auth_ok, "reason": reason},
+                        "channels": {"enumerated": verified,
+                                     "reported": [{"channel": "1", "enabled": True}]
+                                     if verified else []}}
+                row, msg = as_anon("select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                                   agent_id, key, recorder_id, json.dumps(body))
+                assert row, msg
+
+            def camera_offline(recorder_id):
+                row, msg = as_anon(
+                    "select wl_report_recorder_camera_health(%s,%s,%s,%s::jsonb)",
+                    agent_a, key_a, recorder_id,
+                    json.dumps({"cameras": [{"channel": "1", "health": "offline",
+                                             "reason": "video_loss"}]}))
+                assert row, msg
+
+            def open_faults(site):
+                return {r[0]: (r[1], str(r[2]) if r[2] else None, str(r[3]) if r[3] else None)
+                        for r in cur.execute(
+                            """select dedupe_key,reason_code,agent_id,camera_id
+                                 from operational_faults
+                                where site_id=%s and state<>'resolved'""",
+                            (site,)).fetchall()}
+
+            def reconcile(site):
+                return one("select wl_reconcile_site_faults(%s)", site)[0]
+
+            report_health(agent_a, key_a, rec_a, True, True, "ok")
+            report_health(agent_a, key_a, rec_b, False, None, "nvr_unreachable")
+            camera_offline(rec_a)
+            camera_offline(rec_b)
+            no_mirror = one("select count(*) from nvr_health where agent_id=%s", agent_a)[0]
+            reconcile(sa)
+            faults = open_faults(sa)
+            b_down = f"nvr:{rec_b}:unreachable"
+            step(no_mirror == 0 and b_down in faults
+                 and faults[b_down] == ("nvr_unreachable", str(agent_a), None),
+                 "an unplugged Recorder B raises its own recorder fault with no nvr_health row",
+                 str(sorted(faults)))
+            step(f"camera:{cam_a}:offline" in faults
+                 and f"camera:{cam_b}:offline" not in faults
+                 and f"camera:{cam_b}:recording" not in faults
+                 and not any(k.startswith(f"nvr:{agent_a}") for k in faults),
+                 "camera faults follow their own recorder's observability: A's open, B's "
+                 "are withheld while B cannot be observed",
+                 str(sorted(faults)))
+
+            # A row left in nvr_health from before the cut-over must neither raise
+            # a fault nor hide the cameras of an observable recorder.
+            cur.execute("""insert into nvr_health(agent_id,tenant_id,site_id,
+                                                  nvr_reachable,nvr_auth_ok,reason_code)
+                           values (%s,%s,%s,false,null,'nvr_unreachable')""",
+                        (agent_a, ta, sa))
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(f"nvr:{agent_a}:unreachable" not in faults
+                 and f"camera:{cam_a}:offline" in faults and b_down in faults,
+                 "a frozen nvr_health row neither raises nor suppresses multi-recorder faults",
+                 str(sorted(faults)))
+
+            report_health(agent_a, key_a, rec_b, True, True, "ok")
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(b_down not in faults
+                 and f"camera:{cam_b}:offline" in faults
+                 and faults.get(f"nvr:{rec_b}:storage", (None,))[0] == "storage_fault"
+                 and f"camera:{cam_b}:recording" in faults
+                 and f"nvr:{rec_a}:storage" not in faults,
+                 "Recorder B back: its outage resolves and its own storage and camera "
+                 "faults open on B only",
+                 str(sorted(faults)))
+
+            report_health(agent_a, key_a, rec_a, True, False, "nvr_auth_failed")
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(f"nvr:{rec_a}:auth" in faults and f"camera:{cam_a}:offline" not in faults
+                 and f"camera:{cam_b}:offline" in faults,
+                 "Recorder A sign-in failure raises A's auth fault and withholds only A's cameras",
+                 str(sorted(faults)))
+
+            cur.execute("""insert into agent_unreachable_intervals(
+                             tenant_id,site_id,agent_id,started_at)
+                           values (%s,%s,%s,now())""", (ta, sa, agent_a))
+            reconcile(sa)
+            faults = open_faults(sa)
+            step(set(faults) == {f"agent:{agent_a}:unreachable"},
+                 "an unreachable Agent raises one Agent fault and withholds every recorder fault",
+                 str(sorted(faults)))
+
             # ---------------- tenant isolation + one-recorder site ----------------
             ub, tb, sb = bootstrap("faults-b@watchlog.test", "Faults B", "Retail B")
             key_b = "faults-agent-b"
@@ -244,6 +341,65 @@ def run() -> int:
                  "legacy current-proof RPC still works on a one-recorder site and is "
                  "mirrored to its recorder",
                  msg or str((single and single[0], nvr, recorder_storage(rec_c, agent_b))))
+
+            # One-recorder site: faults keep their historical Agent-keyed identity,
+            # and a bound Agent that reports through the recorder RPC (no
+            # nvr_health mirror) is not hidden behind a stale nvr_health row.
+            def legacy_health(reachable):
+                row, msg = as_anon(
+                    "select wl_report_health(%s,%s,%s::jsonb)", agent_b, key_b,
+                    json.dumps({"nvr": {"reachable": reachable, "auth_ok": True if reachable
+                                        else None,
+                                        "reason": "ok" if reachable else "nvr_unreachable"},
+                                "channels": {"enumerated": reachable,
+                                             "reported": [{"channel": "1", "enabled": True}]
+                                             if reachable else []}}))
+                assert row, msg
+
+            legacy_health(False)
+            reconcile(sb)
+            faults = open_faults(sb)
+            step(f"nvr:{agent_b}:unreachable" in faults
+                 and not any(str(rec_c) in k for k in faults),
+                 "one-recorder site keeps the Agent-keyed recorder fault identity",
+                 str(sorted(faults)))
+            legacy_health(True)
+            reconcile(sb)
+            faults = open_faults(sb)
+            step(f"nvr:{agent_b}:unreachable" not in faults
+                 and faults.get(f"nvr:{agent_b}:storage", (None,))[0] == "disk_full",
+                 "one-recorder site: recovery resolves it and storage proof raises its fault",
+                 str(sorted(faults)))
+            report_health(agent_b, key_b, rec_c, False, None, "nvr_unreachable")
+            reconcile(sb)
+            faults = open_faults(sb)
+            step(f"nvr:{agent_b}:unreachable" in faults,
+                 "one-recorder site: a recorder-RPC outage report is not hidden by a stale "
+                 "nvr_health row",
+                 str(sorted(faults)))
+
+            # The cron sweep must also reach a site whose only health rows are
+            # recorder_health (multi-recorder Agent, no camera reported yet).
+            ud, td, sd = bootstrap("faults-d@watchlog.test", "Faults D", "Depot D")
+            key_d = "faults-agent-d"
+            agent_d = add_agent(td, sd, key_d, "d")
+            recs_d, msg = as_anon("select wl_sync_recorders(%s,%s,%s::jsonb)", agent_d, key_d,
+                                  json.dumps([
+                                      {"local_key": "rec-d1", "display_name": "Recorder D1",
+                                       "is_primary": True, "is_configured": True},
+                                      {"local_key": "rec-d2", "display_name": "Recorder D2",
+                                       "is_primary": False, "is_configured": True},
+                                  ]))
+            assert recs_d, msg
+            report_health(agent_d, key_d, recs_d[0]["rec-d2"], False, None, "nvr_unreachable")
+            only_recorder_rows = one(
+                """select (select count(*) from nvr_health where site_id=%s)
+                        + (select count(*) from camera_health where site_id=%s)""", sd, sd)[0]
+            one("select wl_sweep_faults()")
+            step(only_recorder_rows == 0
+                 and f"nvr:{recs_d[0]['rec-d2']}:unreachable" in open_faults(sd),
+                 "the fault sweep reaches a site that only has recorder health",
+                 str(sorted(open_faults(sd))))
 
             # ---------------- exact EXECUTE ACLs ----------------
             def execute_grantees(sig):

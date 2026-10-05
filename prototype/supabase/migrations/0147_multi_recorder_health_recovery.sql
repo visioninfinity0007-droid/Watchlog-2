@@ -13,7 +13,9 @@
 --     single-recorder Agents can still claim and complete them and their
 --     RECOVERED history keeps counting;
 --   * recorder-scoped recording/storage current proof, so one recorder's
---     proof never lands on another recorder's same-numbered cameras.
+--     proof never lands on another recorder's same-numbered cameras;
+--   * recorder-aware operational faults, so an unplugged recorder raises a
+--     fault and a missing or frozen nvr_health row hides nothing.
 --
 -- Deliberately deferred to the next gate:
 --   * recorder-aware durable health reconciliation / storage-transition replay;
@@ -922,6 +924,257 @@ revoke all on function public.wl_report_recording_storage_current(uuid,text,json
   from public,anon,authenticated,service_role;
 grant execute on function public.wl_report_recording_storage_current(uuid,text,jsonb)
   to anon,authenticated;
+
+-- ---------------------------------------------------------------------
+-- Recorder-aware operational faults (replaces the 0089 body).
+--
+-- 0089 derived every recorder fault, and the gate that lets camera faults
+-- open, from one nvr_health(agent) row. The recorder RPCs write only
+-- recorder_health, so on a multi-recorder site that row is missing (every
+-- camera fault suppressed) or frozen at its last singleton value (a permanent
+-- false fault, or nothing when Recorder B is unplugged). Now every configured
+-- recorder is judged from its own recorder_health row of the current Agent:
+--   * multi-recorder site: recorder faults are keyed 'nvr:'||recorder_id and
+--     a camera's faults open only while its own recorder is observable;
+--   * one-recorder site: the historical 'nvr:'||agent_id keys are kept, so
+--     open faults and acknowledgements survive the deploy; recorder_health is
+--     preferred and nvr_health is only the fallback for a recorder with no row;
+--   * storage: the newest current proof (recorder_health, and nvr_health on a
+--     one-recorder site), fresh within 15 minutes, as in 0089.
+-- UNKNOWN never opens a fault; MISSING/DISABLED cameras stay inventory.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_reconcile_site_faults(p_site_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_tenant uuid;
+  v_now timestamptz := now();
+  v_fresh_cut timestamptz := v_now - interval '15 minutes';
+  v_current_agent uuid := public.wl_current_site_agent(p_site_id);
+  v_configured int := 0;
+  v_desired jsonb;
+  v_opened int := 0;
+  v_resolved int := 0;
+  v_open_total int := 0;
+begin
+  select tenant_id into v_tenant from public.sites where id = p_site_id;
+  if v_tenant is null then
+    return jsonb_build_object('ok', false, 'reason', 'unknown_site');
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('wl_reconcile_site_faults'), hashtext(p_site_id::text));
+
+  select count(*) into v_configured
+    from public.recorders r
+   where r.site_id = p_site_id
+     and r.tenant_id = v_tenant
+     and r.is_configured;
+
+  with agent_state as (
+    select v_current_agent as agent_id,
+           exists (select 1 from public.agent_unreachable_intervals aui
+                    where aui.agent_id = v_current_agent
+                      and aui.ended_at is null) as agent_down,
+           (exists (select 1 from public.nvr_health nh
+                     where nh.site_id = p_site_id
+                       and nh.agent_id = v_current_agent)
+            or exists (select 1 from public.recorder_health rh
+                        where rh.site_id = p_site_id
+                          and rh.agent_id = v_current_agent)) as reported
+     where v_current_agent is not null
+  ), legacy as (
+    -- The Agent-wide row is attributable only while the site has at most
+    -- one configured recorder.
+    select nh.nvr_reachable, nh.nvr_auth_ok,
+           nh.sto_current_state, nh.sto_current_at
+      from public.nvr_health nh
+     where nh.site_id = p_site_id
+       and nh.agent_id = v_current_agent
+       and v_configured <= 1
+  ), base as (
+    select r.id as recorder_id,
+           case when v_configured = 1 then 'nvr:' || v_current_agent::text
+                else 'nvr:' || r.id::text end as key_prefix,
+           case when rh.recorder_id is not null then rh.nvr_reachable
+                else (select l.nvr_reachable from legacy l) end as nvr_reachable,
+           case when rh.recorder_id is not null then rh.nvr_auth_ok
+                else (select l.nvr_auth_ok from legacy l) end as nvr_auth_ok,
+           rh.sto_current_state as rh_storage_state,
+           rh.sto_current_at as rh_storage_at
+      from public.recorders r
+      left join public.recorder_health rh
+        on rh.recorder_id = r.id
+       and rh.agent_id = v_current_agent
+     where r.site_id = p_site_id
+       and r.tenant_id = v_tenant
+       and r.is_configured
+       and v_current_agent is not null
+    union all
+    -- No configured recorder: the historical Agent-wide row is all there is.
+    select null::uuid, 'nvr:' || v_current_agent::text,
+           l.nvr_reachable, l.nvr_auth_ok, null::text, null::timestamptz
+      from legacy l
+     where v_configured = 0
+  ), obs as (
+    select b.recorder_id, b.key_prefix, b.nvr_reachable, b.nvr_auth_ok,
+           ev.storage_state, ev.storage_observed_at
+      from base b
+      left join lateral (
+        select x.storage_state, x.storage_observed_at
+          from (
+            select b.rh_storage_state as storage_state,
+                   b.rh_storage_at as storage_observed_at
+             where b.rh_storage_at is not null
+            union all
+            select l.sto_current_state, l.sto_current_at
+              from legacy l
+             where l.sto_current_at is not null
+          ) x
+         order by x.storage_observed_at desc
+         limit 1
+      ) ev on true
+  ), desired as (
+    select 'agent:' || a.agent_id::text || ':unreachable' as dedupe_key,
+           'agent' as fault_domain, 'agent_unreachable' as fault_type,
+           'critical' as severity, 'agent_unreachable' as reason_code,
+           null::uuid as camera_id, a.agent_id
+      from agent_state a where a.agent_down and a.reported
+    union all
+    select o.key_prefix || ':unreachable',
+           'nvr_connectivity', 'nvr_unreachable', 'critical',
+           'nvr_unreachable', null::uuid, a.agent_id
+      from obs o cross join agent_state a
+     where not a.agent_down and o.nvr_reachable is false
+    union all
+    select o.key_prefix || ':auth',
+           'nvr_auth', 'nvr_auth_failed', 'critical',
+           'nvr_auth_failed', null::uuid, a.agent_id
+      from obs o cross join agent_state a
+     where not a.agent_down and o.nvr_reachable is true and o.nvr_auth_ok is false
+    union all
+    select o.key_prefix || ':storage', 'storage',
+           case when o.storage_state = 'fault' then 'storage_fault' else 'storage_degraded' end,
+           case when o.storage_state = 'fault' then 'critical' else 'warning' end,
+           case when o.storage_state = 'fault' then 'storage_fault' else 'disk_full' end,
+           null::uuid, a.agent_id
+      from obs o cross join agent_state a
+     where not a.agent_down
+       and o.nvr_reachable is true
+       and o.nvr_auth_ok is not false
+       and o.storage_observed_at >= v_fresh_cut
+       and o.storage_state in ('fault','degraded')
+    union all
+    select 'camera:' || ch.camera_id::text || ':offline',
+           'camera', 'camera_offline', 'critical', 'video_loss',
+           ch.camera_id, null::uuid
+      from public.camera_health ch
+      left join public.camera_inventory ci on ci.camera_id = ch.camera_id
+      join public.cameras c on c.id = ch.camera_id
+      join obs o on (o.recorder_id = c.recorder_id or o.recorder_id is null)
+      cross join agent_state a
+     where ch.site_id = p_site_id
+       and c.is_configured
+       and ch.health_state = 'offline'
+       and coalesce(ci.inventory_state,'present') not in ('missing','disabled')
+       and not a.agent_down and o.nvr_reachable is true and o.nvr_auth_ok is true
+    union all
+    select 'camera:' || ch.camera_id::text || ':recording',
+           'recording',
+           case when ch.rec_current_state = 'storage_fault'
+                then 'recording_storage_fault' else 'not_recording' end,
+           'warning',
+           case when ch.rec_current_state = 'storage_fault'
+                then 'storage_fault' else 'not_recording' end,
+           ch.camera_id, null::uuid
+      from public.camera_health ch
+      left join public.camera_inventory ci on ci.camera_id = ch.camera_id
+      join public.cameras c on c.id = ch.camera_id
+      join obs o on (o.recorder_id = c.recorder_id or o.recorder_id is null)
+      cross join agent_state a
+     where ch.site_id = p_site_id
+       and c.is_configured
+       and ch.rec_current_at >= v_fresh_cut
+       and ch.rec_current_state in ('not_recording','storage_fault')
+       and coalesce(ci.inventory_state,'present') not in ('missing','disabled')
+       and not a.agent_down and o.nvr_reachable is true and o.nvr_auth_ok is true
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'dedupe_key',dedupe_key,'fault_domain',fault_domain,
+           'fault_type',fault_type,'severity',severity,'reason_code',reason_code,
+           'camera_id',camera_id,'agent_id',agent_id)),'[]'::jsonb)
+    into v_desired from desired;
+
+  with d as (
+    select * from jsonb_to_recordset(v_desired) as x(
+      dedupe_key text, fault_domain text, fault_type text,
+      severity text, reason_code text, camera_id uuid, agent_id uuid)
+  ), ins as (
+    insert into public.operational_faults
+      (tenant_id,site_id,camera_id,agent_id,fault_domain,fault_type,
+       severity,state,reason_code,dedupe_key,opened_at)
+    select v_tenant,p_site_id,d.camera_id,d.agent_id,d.fault_domain,d.fault_type,
+           d.severity,'open',d.reason_code,d.dedupe_key,v_now from d
+    on conflict (dedupe_key) where state <> 'resolved' do nothing
+    returning 1
+  ) select count(*) into v_opened from ins;
+
+  with res as (
+    update public.operational_faults f
+       set state='resolved', resolved_at=v_now
+     where f.site_id=p_site_id and f.state<>'resolved'
+       and not exists(select 1 from jsonb_to_recordset(v_desired) as x(dedupe_key text)
+                      where x.dedupe_key=f.dedupe_key)
+    returning 1
+  ) select count(*) into v_resolved from res;
+
+  select count(*) into v_open_total
+    from public.operational_faults where site_id=p_site_id and state<>'resolved';
+
+  return jsonb_build_object('ok',true,'site_id',p_site_id,
+                            'current_agent_id',v_current_agent,
+                            'configured_recorders',v_configured,
+                            'evaluated_at',v_now,'opened',v_opened,
+                            'resolved',v_resolved,'open_total',v_open_total);
+end
+$function$;
+
+revoke all on function public.wl_reconcile_site_faults(uuid)
+  from public,anon,authenticated;
+
+-- The cron sweep also visits sites whose only health rows are recorder_health
+-- (a multi-recorder Agent that has not reported a camera yet).
+create or replace function public.wl_sweep_faults()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  r record;
+  res jsonb;
+  v_sites int := 0; v_opened int := 0; v_resolved int := 0;
+begin
+  perform pg_advisory_xact_lock(hashtext('wl_sweep_faults'));
+  for r in select distinct site_id from (
+             select site_id from public.nvr_health
+             union
+             select site_id from public.camera_health
+             union
+             select site_id from public.recorder_health) s loop
+    res := public.wl_reconcile_site_faults(r.site_id);
+    v_sites := v_sites + 1;
+    v_opened := v_opened + coalesce((res->>'opened')::int, 0);
+    v_resolved := v_resolved + coalesce((res->>'resolved')::int, 0);
+  end loop;
+  return jsonb_build_object('ok', true, 'evaluated_at', now(),
+    'sites', v_sites, 'opened', v_opened, 'resolved', v_resolved);
+end
+$function$;
+
+revoke all on function public.wl_sweep_faults() from public,anon,authenticated;
 
 -- ---------------------------------------------------------------------
 -- Recorder-scoped recovery identity.

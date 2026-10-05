@@ -8,6 +8,9 @@ identity fails here before it reaches the Postgres gates
 
 - MNVR-013: recording/storage current proof is recorder-scoped; the legacy
   site-scoped RPC resolves the singleton recorder (fails closed on multi).
+- MNVR-014: wl_reconcile_site_faults reads recorder_health, keys recorder
+  faults 'nvr:'||recorder_id on multi-recorder sites, gates camera faults on
+  the camera's own recorder; the sweep visits recorder_health sites.
 """
 from __future__ import annotations
 
@@ -57,6 +60,22 @@ class RecorderCurrentProofContract(unittest.TestCase):
             re.search(r"c\.site_id\s*=\s*v_agent\.site_id\s+and\s+c\.channel", legacy),
             "the legacy RPC must not map cameras by site+channel",
         )
+
+
+class RecorderAwareFaultContract(unittest.TestCase):
+    def test_reconcile_reads_recorder_health_and_keys_by_recorder(self):
+        _, rec = latest_body("wl_reconcile_site_faults")
+        self.assertIn("public.recorder_health", rec)
+        self.assertRegex(rec, r"'nvr:'\s*\|\|\s*r\.id::text",
+                         "multi-recorder faults are keyed by recorder")
+        self.assertRegex(rec, r"o\.recorder_id\s*=\s*c\.recorder_id",
+                         "camera faults are gated by the camera's own recorder")
+        self.assertIn("security definer", rec.lower())
+        self.assertIn("set search_path = public", rec)
+
+    def test_sweep_visits_recorder_health_sites(self):
+        _, sweep = latest_body("wl_sweep_faults")
+        self.assertIn("recorder_health", sweep)
 
 
 if __name__ == "__main__":
