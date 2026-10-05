@@ -606,6 +606,8 @@ class OnvifDriver(NvrDriver):
         ts, skew, clock_source = received, None, "agent_receive"
         if stamped is not None:
             offset = (stamped - received).total_seconds()
+            # The recorder clock as last measured, for the heartbeat's event_stream block.
+            self.event_stream["last_clock_skew_s"] = round(offset)
             if abs(offset) <= CLOCK_SKEW_TOLERANCE_SECONDS:
                 ts, clock_source = stamped, "recorder"
             else:
@@ -632,6 +634,9 @@ class OnvifDriver(NvrDriver):
                 # burst window swallow another's events.
                 self.dropped_unmapped += 1
                 self.last_unmapped_source = source
+                # Per recorder, across reconnects: the collector shares one event_stream.
+                self.event_stream["dropped_unmapped"] = (
+                    int(self.event_stream.get("dropped_unmapped") or 0) + 1)
                 items = ", ".join(f"{k}={v}" for k, v in source.items())
                 self._report(self.dropped_unmapped,
                              f"onvif: dropped {etype} event ({topic[:80]}): "

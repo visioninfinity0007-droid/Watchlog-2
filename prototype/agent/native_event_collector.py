@@ -131,6 +131,10 @@ def collector(cfg, spool, stop, holder=None) -> None:
         auth_error = False
         try:
             driver, info = core.open_driver(cfg)
+            if hasattr(driver, "log"):
+                # The ONVIF driver's diagnostics (unmapped Source tokens, recorder clock
+                # skew) are a no-op until a log hook is set.
+                driver.log = lambda message: core.log(message)
             reports_stream = bool(getattr(driver, "reports_stream_activity", False))
             if reports_stream:
                 stream["connected"] = False

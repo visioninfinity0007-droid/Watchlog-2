@@ -1061,15 +1061,22 @@ def _event_stream_health(stream: dict | None) -> dict | None:
     """The recorder's event-stream state for the local health proof:
     {connected, connected_at, last_frame_at, last_error}. connected is None when the
     driver cannot report its stream. The error text is redacted (no URL, credential or
-    recorder address); this file stays non-secret."""
+    recorder address); this file stays non-secret. An ONVIF stream adds dropped_unmapped
+    (events whose camera token matched no camera) and last_clock_skew_s (recorder clock
+    minus this PC's, in seconds) when it has measured them: integers only."""
     if not stream:
         return None
     import nvr_health
     error = stream.get("last_error")
-    return {"connected": stream.get("connected"),
-            "connected_at": stream.get("connected_at"),
-            "last_frame_at": stream.get("last_frame_at"),
-            "last_error": nvr_health.redact(error) if error else None}
+    out = {"connected": stream.get("connected"),
+           "connected_at": stream.get("connected_at"),
+           "last_frame_at": stream.get("last_frame_at"),
+           "last_error": nvr_health.redact(error) if error else None}
+    for key in ("dropped_unmapped", "last_clock_skew_s"):
+        value = stream.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[key] = value
+    return out
 
 
 def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None = None,
