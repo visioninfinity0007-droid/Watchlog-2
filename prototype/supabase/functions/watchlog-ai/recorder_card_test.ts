@@ -113,3 +113,17 @@ Deno.test("a model-written single-recorder card cannot invent a recorder, a reco
   assertEquals(confirmed.data.recorder, singleCtx.recorder);
   assertEquals(confirmed.data.capabilities, customerCardData(singleCtx.capabilities), "the context's rows, in customer words");
 });
+
+Deno.test("recorder card data sent to the browser never carries the recorder driver (not displayed)", () => {
+  const ctx = { ...singleCtx, recorder: { vendor: "Hikvision", model: "NVR", driver: "hikvision-isapi", firmware: "V4.1", identified: true } };
+  const advice = { advisor_version: "v2", recorder: { vendor: "Hikvision", model: "NVR", driver: "hikvision-isapi" }, recommendations: [] };
+  const data = recorderCardData(ctx, advice);
+  assert(!("driver" in data.recorder), "no driver on the card's recorder");
+  assertEquals(data.recorder, { vendor: "Hikvision", model: "NVR", firmware: "V4.1", identified: true });
+  assert(!("driver" in data.recommendation.recorder), "no driver in the recommendation either");
+  assertEquals(data.recommendation.recorder, { vendor: "Hikvision", model: "NVR" });
+  assertEquals(ctx.recorder.driver, "hikvision-isapi", "the context itself is not mutated");
+  const [card] = groundRecorderCards([{ type: "recorder", title: "Recorder", data: { recommendation: advice } }], ctx);
+  assert(!JSON.stringify(card.data).includes("hikvision-isapi"), JSON.stringify(card.data));
+  assert(!JSON.stringify(recorderCardData(multiCtx, advice)).includes("driver"));
+});

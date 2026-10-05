@@ -14,11 +14,25 @@ function siteRecorders(ctx: Json): Json[] {
   return Array.isArray(ctx?.recorders) ? ctx.recorders : [];
 }
 
+// The recorder driver says how WatchLog talks to the recorder. No card shows it, so no card carries it
+// to the browser: not on the recorder, not on the setup advice passed along as the recommendation.
+function withoutDriver(recorder: unknown): unknown {
+  if (!recorder || typeof recorder !== "object" || Array.isArray(recorder)) return recorder;
+  const { driver: _driver, ...rest } = recorder as Json;
+  return rest;
+}
+
+function cardRecommendation(recommendation: unknown): unknown {
+  if (!recommendation || typeof recommendation !== "object" || Array.isArray(recommendation)) return recommendation;
+  const r = recommendation as Json;
+  return "recorder" in r ? { ...r, recorder: withoutDriver(r.recorder) } : r;
+}
+
 // Card data built from the site context only. One row per recorder on a multi-recorder site, carrying
 // just what the card renders (no ids, no camera lists).
 export function recorderCardData(ctx: Json, recommendation?: unknown): Json {
   const recorders = siteRecorders(ctx);
-  const extra = recommendation === undefined ? {} : { recommendation };
+  const extra = recommendation === undefined ? {} : { recommendation: cardRecommendation(recommendation) };
   if (recorders.length > 1) {
     return {
       capability_known: false,
@@ -35,7 +49,7 @@ export function recorderCardData(ctx: Json, recommendation?: unknown): Json {
     };
   }
   return {
-    recorder: ctx?.recorder || {},
+    recorder: withoutDriver(ctx?.recorder || {}),
     capabilities: ctx?.capabilities || [],
     capability_known: ctx?.capability_known === true,
     ...extra,
