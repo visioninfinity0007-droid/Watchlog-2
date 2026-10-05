@@ -338,6 +338,7 @@ declare
   v_status text;
   v_id uuid;
   v_params jsonb;
+  v_role text;
 begin
   select tenant_id into v_tenant
     from public.sites
@@ -351,8 +352,20 @@ begin
       raise exception 'not authorised for this site' using errcode='42501';
     end if;
     -- The recommend tier wl_my_site_diagnosis advertises is enforced here:
-    -- a viewer cannot propose a recorder write (MNVR-050).
-    perform public.wl_require_role(array['owner','admin','manager']);
+    -- a viewer cannot propose a recorder write (MNVR-050). The role is the
+    -- one held in THIS site's account, read the way wl_my_site_diagnosis
+    -- reads it; wl_my_role() is account-blind and may return a role the
+    -- caller holds in another account.
+    select m.role
+      into v_role
+      from public.memberships m
+     where m.user_id=auth.uid()
+       and m.tenant_id=v_tenant;
+    if v_role is null or not (v_role = any(array['owner','admin','manager'])) then
+      raise exception 'this needs the owner or admin or manager role; you are %',
+        coalesce(v_role,'not a member')
+        using errcode='42501';
+    end if;
   end if;
 
   if p_action ~* '(firmware|format|factory|reset|reboot|deleterec|delete_rec|adduser|user_|network_|password|wipe|erase)' then
@@ -474,6 +487,7 @@ as $function$
 declare
   v_cmd public.site_commands;
   v_capjson jsonb;
+  v_role text;
 begin
   select *
     into v_cmd
@@ -488,7 +502,18 @@ begin
     if v_cmd.tenant_id is distinct from public.wl_my_tenant() then
       raise exception 'not authorised' using errcode='42501';
     end if;
-    perform public.wl_require_role(array['owner','admin']);
+    -- The role held in the command's own account (never an account-blind
+    -- wl_my_role() that may come from another membership).
+    select m.role
+      into v_role
+      from public.memberships m
+     where m.user_id=auth.uid()
+       and m.tenant_id=v_cmd.tenant_id;
+    if v_role is null or not (v_role = any(array['owner','admin'])) then
+      raise exception 'this needs the owner or admin role; you are %',
+        coalesce(v_role,'not a member')
+        using errcode='42501';
+    end if;
   end if;
 
   if v_cmd.status<>'proposed' then

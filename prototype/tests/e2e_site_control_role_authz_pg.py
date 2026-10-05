@@ -7,6 +7,9 @@ wl_my_site_diagnosis advertises are enforced by the database itself:
 - a viewer cannot approve a proposed write, and the command stays proposed;
 - an admin can propose, and an owner or admin can approve;
 - another tenant's owner still cannot approve;
+- with memberships in several accounts, the role that counts is the one held
+  in the site's account: a viewer here who owns another account can neither
+  propose nor approve, and an admin here who is a viewer elsewhere can do both;
 - the propose/approve EXECUTE ACLs stay authenticated-facing.
 """
 from __future__ import annotations
@@ -83,6 +86,20 @@ def run() -> int:
                 cur.execute("rollback to savepoint auth_err")
                 cur.execute("reset role")
                 return raised, message
+
+            def as_auth_try(uid, sql, *params):
+                cur.execute("savepoint auth_try")
+                cur.execute("select set_config('request.jwt.claims', %s, true)", (claims(uid),))
+                cur.execute("set local role authenticated")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                    cur.execute("reset role")
+                    cur.execute("release savepoint auth_try")
+                    return row, ""
+                except psycopg.Error as exc:
+                    cur.execute("rollback to savepoint auth_try")
+                    cur.execute("reset role")
+                    return None, str(exc).splitlines()[0]
 
             def as_anon(sql, *params):
                 cur.execute("savepoint anon_sp")
@@ -230,6 +247,93 @@ def run() -> int:
             approved = as_auth(admin, "select wl_site_command_approve(%s,'admin')", second["id"])[0]
             step(approved.get("ok") is True, "admin can approve a proposed write",
                  json.dumps(approved, default=str))
+
+            # ----------------------------------------------------------
+            # Memberships in several accounts: only the role held in the
+            # site's account counts, never a role from another account.
+            # ----------------------------------------------------------
+            def other_account(account_id, name):
+                return cur.execute(
+                    "insert into tenants(id,name,account_status) values (%s,%s,'active') "
+                    "returning id",
+                    (account_id, name),
+                ).fetchone()[0]
+
+            # The other accounts get the lowest ids and their memberships are
+            # written first, so an account-blind role lookup meets them first
+            # whether it scans the table or the (user_id, tenant_id) key.
+            owned_elsewhere = other_account(
+                "00000000-0000-0000-0000-0000000000b1", "Authz Owned Elsewhere"
+            )
+            viewed_elsewhere = other_account(
+                "00000000-0000-0000-0000-0000000000c1", "Authz Viewed Elsewhere"
+            )
+            multi_viewer = new_user("authz-multi-viewer@watchlog.test")
+            multi_admin = new_user("authz-multi-admin@watchlog.test")
+            cur.execute(
+                "insert into memberships(user_id,tenant_id,role) values (%s,%s,'owner')",
+                (multi_viewer, owned_elsewhere),
+            )
+            cur.execute(
+                "insert into memberships(user_id,tenant_id,role) values (%s,%s,'viewer')",
+                (multi_admin, viewed_elsewhere),
+            )
+            # Their membership of the site's account is the oldest, so it is
+            # the account they act in (wl_my_tenant).
+            for uid, role in ((multi_viewer, "viewer"), (multi_admin, "admin")):
+                cur.execute(
+                    "insert into memberships(user_id,tenant_id,role,created_at) "
+                    "values (%s,%s,%s,now()-interval '30 days')",
+                    (uid, tenant, role),
+                )
+            acting = {
+                name: as_auth(uid, "select wl_my_tenant()::text, wl_my_role()")
+                for name, uid in (("viewer-here", multi_viewer), ("admin-here", multi_admin))
+            }
+            print(f"  info  wl_my_tenant/wl_my_role: {acting}")
+            step(
+                all(t == str(tenant) for t, _ in acting.values()),
+                "multi-account users act in the site's account",
+                str(acting),
+            )
+
+            for mode in ("recommend", "managed"):
+                raised, msg = as_auth_raises(multi_viewer, propose_sql, site, params, mode)
+                step(
+                    raised and "role" in msg.lower(),
+                    f"a viewer here who owns another account cannot propose ({mode})",
+                    msg,
+                )
+
+            waiting = as_auth(admin, propose_sql, site, params, "recommend")[0]
+            raised, msg = as_auth_raises(
+                multi_viewer, "select wl_site_command_approve(%s,'multi-viewer')",
+                waiting["id"],
+            )
+            status = cur.execute(
+                "select status from site_commands where id=%s", (waiting["id"],)
+            ).fetchone()[0]
+            step(
+                raised and "role" in msg.lower() and status == "proposed",
+                "a viewer here who owns another account cannot approve; it stays proposed",
+                f"{msg} / status={status}",
+            )
+
+            row, err = as_auth_try(multi_admin, propose_sql, site, params, "recommend")
+            step(
+                row is not None and row[0].get("status") == "proposed",
+                "an admin here who is a viewer elsewhere can propose",
+                err or json.dumps(row[0], default=str),
+            )
+            row, err = as_auth_try(
+                multi_admin, "select wl_site_command_approve(%s,'multi-admin')",
+                waiting["id"],
+            )
+            step(
+                row is not None and row[0].get("ok") is True,
+                "an admin here who is a viewer elsewhere can approve",
+                err or json.dumps(row[0], default=str),
+            )
 
             # ----------------------------------------------------------
             # ACLs stay authenticated-facing (no anon).
