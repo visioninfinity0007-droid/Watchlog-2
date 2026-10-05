@@ -50,6 +50,14 @@ CIVIL_UTC_OFFSETS_MINUTES = (
     720, 765, 780, 825, 840)
 AGENT_CLOCK, RECORDER_CLOCK = "agent", "recorder"
 
+# HTTP answers that mean "busy or failing right now": worth asking again later.
+TRANSIENT_HTTP = (408, 429)
+
+
+class RecorderBusy(DriverError):
+    """The recorder answered with a transient HTTP error (5xx, 408, 429): retry later."""
+
+
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
 _FOUND_RE = re.compile(r"^\s*found\s*=\s*(\d+)", re.IGNORECASE | re.MULTILINE)
 _TIME_FORMATS = (
@@ -94,7 +102,9 @@ def _request(driver: DahuaDriver, path: str, *, params=None, stream=False, timeo
             detail = response.text[:160]
         except Exception:  # noqa: BLE001
             detail = ""
-        raise DriverError(f"{url}: HTTP {response.status_code} {detail}".strip())
+        transient = response.status_code >= 500 or response.status_code in TRANSIENT_HTTP
+        raise (RecorderBusy if transient else DriverError)(
+            f"{url}: HTTP {response.status_code} {detail}".strip())
     return response
 
 
@@ -434,9 +444,10 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
 def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor=None, limit: int = 500) -> dict:
     """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end), for
     recovery's footage backfill (each recorded segment is a recovered evidence window; the rows are
-    footage, not recorder events). Honest status: an unreachable/ambiguous recorder returns
-    'unknown' (never a fabricated 'supported' with empty data, and never masquerading as live).
-    Read-only.
+    footage, not recorder events). Honest status, never a fabricated 'supported' with empty data
+    and never masquerading as live: a refused login or an ambiguous clock/search answer returns
+    'unknown'; an unreachable or busy recorder raises (NvrUnreachable / RecorderBusy), so the
+    caller keeps the window retryable instead of ending it on one failed attempt. Read-only.
 
     ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC on the agent
     clock: recorder wall time minus the offset from the same clock reading that built the search
@@ -474,7 +485,9 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
                 "channel": str(channel),
                 "segment": {"start": st, "end": et, "path": path},
             })
-    except (NvrUnreachable, NvrAuthFailed):
+    except (NvrUnreachable, RecorderBusy):
+        raise                       # transient: the same search may well succeed later
+    except NvrAuthFailed:
         return {"status": "unknown", "events": [], "next_cursor": None}
     except DriverError:
         # An ambiguous clock/search response failed closed upstream — unknown, not unsupported.
@@ -574,4 +587,4 @@ def install() -> None:
 
 __all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
            "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install",
-           "AGENT_CLOCK", "RECORDER_CLOCK"]
+           "AGENT_CLOCK", "RECORDER_CLOCK", "RecorderBusy"]

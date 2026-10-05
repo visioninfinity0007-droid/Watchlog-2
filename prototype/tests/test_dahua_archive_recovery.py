@@ -82,5 +82,108 @@ class FootageNotEvents(unittest.TestCase):
         self.assertEqual(final["p_status"], "unrecoverable")
 
 
+class _Ledger:
+    """0098 recovery ledger: a claim takes pending or (stale) in_progress rows and adds an attempt."""
+
+    def __init__(self):
+        self.iv = dict(_interval(), attempts=0, detail={})
+        self.completes = []
+
+    def call(self, fn, **kw):
+        if fn == "wl_agent_claim_recovery":
+            if self.iv["status"] not in ("pending", "in_progress"):
+                return []
+            self.iv["status"], self.iv["attempts"] = "in_progress", self.iv["attempts"] + 1
+            return [{k: self.iv[k] for k in ("id", "started_at", "ended_at", "cameras",
+                                             "checkpoint", "attempts")}]
+        if fn == "wl_complete_recovery":
+            self.completes.append(kw)
+            self.iv["status"], self.iv["checkpoint"] = kw["p_status"], kw["p_checkpoint"]
+            self.iv["detail"].update(kw.get("p_detail") or {})
+            return {"ok": True}
+        raise AssertionError(fn)
+
+
+class _Answers:
+    """A recorder session that answers every CGI call the same way."""
+
+    def __init__(self, answer):
+        self.answer, self.auth, self.calls = answer, None, 0
+
+    def get(self, url, params=None, timeout=None, stream=False):
+        self.calls += 1
+        return self.answer()
+
+
+class _Status:
+    def __init__(self, status, text="Error"):
+        self.status_code, self.text = status, text
+
+    def close(self):
+        pass
+
+
+def _offline():
+    import requests
+    raise requests.ConnectionError("recorder offline")
+
+
+class TransientArchiveErrors(unittest.TestCase):
+    """An unreachable or busy recorder is retried later, like the Hikvision archive; a refused login
+    or an answer that cannot be read ends the interval on the claim that saw it."""
+
+    def setUp(self):
+        da.install()
+
+    def _claims(self, answer, claims=5):
+        drv = FakeDahua(FakeRecorder(PC_NOW))
+        drv.s = _Answers(answer)
+        ledger = _Ledger()
+        runner = recovery.RecoveryRunner(ledger, "agent", "key", drv, [].append,
+                                         frame_provider=lambda d, c, ts: JPEG,
+                                         log=lambda *a: None)
+        for n in range(1, claims + 1):
+            runner.run_once()
+            if ledger.iv["status"] not in ("pending", "in_progress"):
+                return ledger, n
+        return ledger, None
+
+    def test_transient_failures_raise_from_the_search(self):
+        from drivers.base import NvrUnreachable
+        for answer, error in ((_offline, NvrUnreachable), (lambda: _Status(503), da.RecorderBusy),
+                              (lambda: _Status(429), da.RecorderBusy)):
+            drv = FakeDahua(FakeRecorder(PC_NOW))
+            drv.s = _Answers(answer)
+            with self.assertRaises(error):
+                da.enumerate_historical_events(drv, "1", G0, G1)
+
+    def test_an_unreachable_recorder_backs_off_instead_of_ending(self):
+        ledger, _ = self._claims(_offline, claims=1)
+        self.assertEqual(ledger.iv["status"], "in_progress")
+        self.assertEqual(ledger.iv["checkpoint"]["cursor"], G0.isoformat())
+        self.assertEqual(ledger.iv["checkpoint"].get("errors"), 1)
+
+    def test_a_busy_recorder_backs_off_then_ends_after_bounded_claims(self):
+        ledger, claims = self._claims(lambda: _Status(503))
+        self.assertEqual(claims, recovery.DEFAULT_MAX_ERROR_ATTEMPTS)
+        self.assertEqual(ledger.iv["status"], "unrecoverable")
+        self.assertEqual(ledger.iv["detail"].get("reason"), "archive_error")
+
+    def test_a_refused_login_ends_on_the_first_claim(self):
+        ledger, claims = self._claims(lambda: _Status(401))
+        self.assertEqual((claims, ledger.iv["status"]), (1, "unrecoverable"))
+
+    def test_an_unreadable_recorder_clock_ends_on_the_first_claim(self):
+        ledger, claims = self._claims(lambda: _Status(200, "result=not-a-time"))
+        self.assertEqual((claims, ledger.iv["status"]), (1, "unrecoverable"))
+
+    def test_setup_proof_and_retention_still_report_unknown(self):
+        import retention
+        drv = FakeDahua(FakeRecorder(PC_NOW))
+        drv.s = _Answers(_offline)
+        self.assertEqual(da.prove_recorder_archive(drv, "1")["status"], "unknown")
+        self.assertEqual(retention.estimate_retention(drv, "1")["status"], "unknown")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

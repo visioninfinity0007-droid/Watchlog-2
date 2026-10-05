@@ -146,7 +146,9 @@ class EnumerateHistorical(unittest.TestCase):
         self.assertEqual(cap["events"], "unsupported")
         self.assertEqual(cap["segments"], "supported")
 
-    def test_unreachable_is_unknown_not_fabricated(self):
+    def test_unreachable_raises_not_fabricated(self):
+        # Never a fake 'supported'. Unreachable is transient, so it raises (like the Hikvision
+        # archive) and recovery backs off and reads the window again later (MNVR-059).
         class Dead:
             def get(self, url, params=None, timeout=None, stream=False):
                 import requests as _r
@@ -154,9 +156,9 @@ class EnumerateHistorical(unittest.TestCase):
         class DeadDriver(FakeDriver):
             def __init__(self):
                 super().__init__(FakeResponse()); self.s = Dead()
-        res = da.enumerate_historical_events(DeadDriver(), "1", START, END)
-        self.assertEqual(res["status"], "unknown")      # honest: unknown, not a fake 'supported'
-        self.assertEqual(res["events"], [])
+        from drivers.base import NvrUnreachable
+        with self.assertRaises(NvrUnreachable):
+            da.enumerate_historical_events(DeadDriver(), "1", START, END)
 
 
 if __name__ == "__main__":
