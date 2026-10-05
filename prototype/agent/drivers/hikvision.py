@@ -30,10 +30,12 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
+from urllib.parse import urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
+from . import alarm_parsing
 from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
                    NvrDriver, NvrUnreachable, explain)
 
@@ -93,39 +95,24 @@ def _stated_utc_offset(local_time: str | None, zone: str | None,
     return offset if m.group(1) == "-" else -offset
 
 
-# Hikvision eventType values worth keeping, mapped to our vocabulary.
-EVENT_TYPE_MAP = {
-    "vmd": "motion",
-    "motiondetection": "motion",
-    "linedetection": "line_crossing",
-    "fielddetection": "intrusion",
-    "regionexiting": "region_exit",
-    "regionentrance": "region_entry",
-    "tamperdetection": "tamper",
-    "shelteralarm": "tamper",
-    "videoloss": "video_loss",
-    "diskfull": "disk_full",
-    "diskerror": "disk_error",
-    "facedetection": "face",
-    "peopledetection": "person",
-    "vehicledetection": "vehicle",
-}
+# One event-type map, channel rule, keep-alive filter and burst rule shared with the
+# push bridge, so an alarm means the same thing on both paths (MNVR-026).
+EVENT_TYPE_MAP = alarm_parsing.HIK_EVENT_TYPE_MAP
 
 # Alert types that describe the recorder itself (its disks, logins, network link and
 # alarm inputs), not a camera. A channel field on these does not name a video input
 # (MNVR-028). An alert that carries inputIOPortID is an alarm input whatever its type.
-RECORDER_SCOPED_TYPES = {"diskfull", "diskerror", "illaccess", "illegalaccess",
-                         "ipconflict", "nicbroken", "io"}
+RECORDER_SCOPED_TYPES = alarm_parsing.HIK_RECORDER_SCOPED_TYPES
 
 # Hikvision repeats an active alarm every second for as long as it lasts.
 # Collapsing a burst into one event is the difference between 5 rows and
 # 500 for a single person walking past a camera. The window is timed on the
 # agent's monotonic receive clock, never on the recorder's dateTime.
-BURST_WINDOW_SECONDS = 30
+BURST_WINDOW_SECONDS = alarm_parsing.BURST_WINDOW_SECONDS
 
 # A recorder stamp further than this from the time the alert arrived is kept but
 # flagged on the event (clock_skew_seconds) rather than trusted silently.
-CLOCK_SKEW_FLAG_SECONDS = 300
+CLOCK_SKEW_FLAG_SECONDS = alarm_parsing.CLOCK_SKEW_FLAG_SECONDS
 # How long a stated UTC offset is trusted before it is read again (a DST change moves it),
 # and how long a recorder that did not state one waits before being asked again.
 CLOCK_OFFSET_RETRY_SECONDS = 600
@@ -134,9 +121,29 @@ CLOCK_OFFSET_RETRY_SECONDS = 600
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 
-# Archive search/download helpers share the driver's requests.Session. Serialize
-# those bounded HTTP operations so one session is never mutated concurrently.
-HIKVISION_HTTP_LOCK = threading.RLock()
+# Archive search/download helpers share the driver's requests.Session, and one recorder
+# serves one export at a time. Serialize those bounded HTTP operations PER RECORDER: two
+# transports to the same recorder take turns, but recorder A's slow export never holds
+# recorder B's (MNVR-025). Keyed by scheme, host and port of the recorder address.
+_HTTP_LOCKS: dict[tuple, threading.RLock] = {}
+_HTTP_LOCKS_GUARD = threading.Lock()
+
+
+def recorder_http_lock(base_url: str) -> threading.RLock:
+    """The archive HTTP lock of the recorder at ``base_url``."""
+    parsed = urlparse(str(base_url or ""))
+    scheme = (parsed.scheme or "http").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    key = (scheme, (parsed.hostname or "").lower(),
+           port or (443 if scheme == "https" else 80))
+    with _HTTP_LOCKS_GUARD:
+        lock = _HTTP_LOCKS.get(key)
+        if lock is None:
+            lock = _HTTP_LOCKS[key] = threading.RLock()
+        return lock
 
 
 
@@ -152,7 +159,7 @@ class HikvisionDriver(NvrDriver):
         super().__init__(*a, **kw)
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
-        self._last_emitted: dict[tuple[str, str], float] = {}
+        self._burst = alarm_parsing.BurstFilter(BURST_WINDOW_SECONDS)
         # (monotonic, wall) clock of the alert being parsed, stamped by stream_events
         # when its bytes arrived; None outside the stream (parse time is used then).
         self._received: tuple[float, datetime] | None = None
@@ -618,117 +625,30 @@ class HikvisionDriver(NvrDriver):
     # -- parsing --------------------------------------------------------
 
     def _parse_alert(self, raw: bytes) -> Event | None:
-        try:
-            root = _strip_ns(ET.fromstring(raw))
-        except ET.ParseError:
+        alarm = alarm_parsing.parse_hikvision_alert(raw)
+        if alarm is None:
             return None
-
-        etype_raw = (_text(root, "eventType") or "").strip()
-        state = (_text(root, "eventState") or "").lower()
-        if state == "inactive":
-            return None
-
-        # Hikvision keeps alertStream warm by emitting videoloss with
-        # activePostCount 0 whenever nothing is happening. A genuine
-        # video-loss alarm carries a non-zero count.
-        #
-        # Both naive options are wrong: dropping all videoloss hides a
-        # real fault on a security system, and keeping all of it fills
-        # the database with heartbeats and makes every fault report
-        # meaningless. The count is the discriminator.
-        active_post = (_text(root, "activePostCount") or "").strip()
-        if etype_raw.lower() == "videoloss" and active_post in ("0", ""):
-            return None
-
-        if not etype_raw:
-            return None
-
-        etype = EVENT_TYPE_MAP.get(etype_raw.lower()) or etype_raw.lower()
-
-        # A recorder-level alert, or a camera alert without a channel id, has channel
-        # None plus a flag. Never camera "1", and never the camera NAME as a channel id
-        # (it joins no camera); the name stays in the payload only.
-        scope: dict = {}
-        native_channel = _text(root, "channelID") or _text(root, "dynChannelID")
-        native_input = (_text(root, "inputIOPortID") or "").strip()
-        if etype_raw.lower() in RECORDER_SCOPED_TYPES or native_input:
-            channel = None
-            scope["recorder_scoped"] = True
-            if native_channel:
-                scope["native_channel"] = native_channel
-            if native_input:
-                scope["native_input"] = native_input
-        elif native_channel:
-            channel = native_channel
-        else:
-            channel = None
-            scope["channel_unknown"] = True
-            if _text(root, "channelName"):
-                scope["channelName"] = _text(root, "channelName")
 
         # Collapse the once-per-second repeat of a continuing alarm on the agent's
         # monotonic receive clock. Comparing recorder dateTimes dropped every later event
         # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
         received_mono, received_at = self._receive_clock()
-        key = (channel if channel is not None
-               else f"recorder:{native_channel or ''}:{native_input}", etype)
-        last = self._last_emitted.get(key)
-        if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
+        if not self._burst.admit(alarm.burst_key, received_mono):
             return None
-        self._last_emitted[key] = received_mono
 
         # Which clock stamped this event is explicit (MNVR-024). A naive dateTime is the
         # recorder's local time: localise it with the offset the recorder states, or, when
         # it states none, use the time the alert arrived and keep the recorder's text.
-        clock = {}
-        raw_time = _text(root, "dateTime")
-        ts = _parse_ts(raw_time)
-        clock_source = "recorder"
-        if ts is not None and ts.tzinfo is None:
-            offset = self._recorder_utc_offset(received_mono)
-            if offset is not None:
-                ts, clock_source = ts.replace(tzinfo=timezone(offset)), "recorder_local"
-            else:
-                ts = None
-        if ts is None:
-            ts, clock_source = received_at, "agent_receive"
-            if raw_time:
-                clock["device_time_raw"] = raw_time
-        else:
-            skew = (ts - received_at).total_seconds()
-            if abs(skew) > CLOCK_SKEW_FLAG_SECONDS:
-                clock["clock_skew_seconds"] = int(round(skew))
-        clock["clock_source"] = clock_source
-
-        targets = []
-        for node in root.iter():
-            tag = node.tag.lower()
-            text = (node.text or "").strip().lower()
-            if "targettype" in tag or tag in ("objecttype", "targetclass"):
-                for raw_target in re.split(r"[,;|\s]+", text):
-                    if raw_target in ("human", "person", "pedestrian"):
-                        targets.append("human")
-                    elif raw_target in ("vehicle", "car", "motorvehicle"):
-                        targets.append("vehicle")
-        targets = sorted(set(targets))
-
-        smart_native = etype_raw.lower() in {
-            "linedetection", "fielddetection", "regionexiting", "regionentrance",
-            "facedetection", "peopledetection", "vehicledetection"
-        } or bool(targets)
+        ts, clock = alarm_parsing.resolve_event_time(
+            alarm.raw_time, received_at, receive_source="agent_receive",
+            naive_offset=lambda: self._recorder_utc_offset(received_mono))
 
         return Event(
-            channel=channel,
-            event_type=etype,
+            channel=alarm.channel,
+            event_type=alarm.event_type,
             device_ts=ts,
             device_event_id=None,     # ISAPI alerts carry no stable id
-            payload={"vendor": "hikvision", "eventType": etype_raw,
-                     "native_code": etype_raw,
-                     "native_ai": smart_native,
-                     "targets": targets,
-                     "eventDescription": _text(root, "eventDescription"),
-                     "activePostCount": _text(root, "activePostCount"),
-                     **clock, **scope},
+            payload={**alarm.payload, **clock},
         )
 
     def close(self) -> None:

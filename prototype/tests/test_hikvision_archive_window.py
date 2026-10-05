@@ -99,7 +99,7 @@ def driver(session) -> HikvisionDriver:
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
-    monkeypatch.setattr(ha, "HIKVISION_HTTP_LOCK", threading.RLock())
+    monkeypatch.setattr(sys.modules["drivers.hikvision"], "_HTTP_LOCKS", {})
     monkeypatch.setattr(ha, "_probe_clip", lambda data: None, raising=False)
 
 
@@ -207,7 +207,7 @@ def test_real_probe_reads_video_and_duration(monkeypatch):
 @needs_ffmpeg
 def test_real_probe_rejects_a_whole_segment_and_keeps_a_bounded_clip(monkeypatch):
     monkeypatch.undo()
-    monkeypatch.setattr(ha, "HIKVISION_HTTP_LOCK", threading.RLock())
+    monkeypatch.setattr(sys.modules["drivers.hikvision"], "_HTTP_LOCKS", {})
     rows = [("2026-09-25T07:30:00Z", "2026-09-25T07:50:00Z", SEGMENT_URI)]
     start = datetime(2026, 9, 25, 7, 40, tzinfo=timezone.utc)
     bounded = _synth_mp4(10)

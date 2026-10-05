@@ -33,7 +33,16 @@ create table if not exists spool_recovery_gap (
   started_at  text not null,
   ended_at    text not null
 );
+create table if not exists spool_recorder_stamp (
+  singleton    integer primary key check(singleton=1),
+  recorder_id  text not null,
+  through_id   integer not null
+);
 """
+
+# Recorder stamping reads queued rows (inline stills included) this many at a time, so a
+# long outage's backlog never has to fit in memory at once (MNVR-020).
+STAMP_BATCH_ROWS = 32
 
 
 class Spool:
@@ -75,6 +84,85 @@ class Spool:
             self.db.execute(
                 f"delete from spool where id in ({','.join('?' * len(ids))})",
                 ids)
+
+    def stamp_missing_recorder_id(self, recorder_id: str) -> int:
+        """Attach recorder identity to legacy queued events atomically.
+
+        Used at every multi-recorder start for the original/primary spool. Every
+        row is parsed before any write. If one row is malformed, or belongs to
+        another recorder, nothing is changed and the cutover must stop before
+        secondary cloud recorders are created.
+
+        The spool is read in bounded batches and never held in memory at once. A
+        marker remembers the last row already checked for this recorder, so a later
+        start reads only rows queued since then (MNVR-020).
+        """
+        rid = str(recorder_id or "").strip()
+        if not rid:
+            raise ValueError("recorder_id is required")
+
+        with self._lock:
+            marker = self.db.execute(
+                "select recorder_id, through_id from spool_recorder_stamp where singleton=1"
+            ).fetchone()
+            after = int(marker[1]) if marker and marker[0] == rid else 0
+
+            # Pass 1, read-only: validate every new row; keep only the ids to stamp.
+            pending: list[int] = []
+            through = after
+            while True:
+                rows = self.db.execute(
+                    "select id,payload from spool where id > ? order by id limit ?",
+                    (through, STAMP_BATCH_ROWS),
+                ).fetchall()
+                if not rows:
+                    break
+                for row_id, raw in rows:
+                    payload = json.loads(raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("spool payload must be an object")
+                    existing = payload.get("recorder_id")
+                    if existing:
+                        if str(existing) != rid:
+                            raise ValueError("spool contains event for another recorder")
+                    else:
+                        pending.append(row_id)
+                through = rows[-1][0]
+
+            if not pending and through == after:
+                return 0
+
+            # Pass 2: stamp the validated rows, batch by batch, in one transaction.
+            try:
+                self.db.execute("begin immediate")
+                for offset in range(0, len(pending), STAMP_BATCH_ROWS):
+                    ids = pending[offset:offset + STAMP_BATCH_ROWS]
+                    rows = self.db.execute(
+                        f"select id,payload from spool where id in ({','.join('?' * len(ids))})",
+                        ids,
+                    ).fetchall()
+                    updates = []
+                    for row_id, raw in rows:
+                        payload = json.loads(raw)
+                        payload["recorder_id"] = rid
+                        updates.append((json.dumps(payload), row_id))
+                    self.db.executemany(
+                        "update spool set payload=? where id=?", updates
+                    )
+                self.db.execute(
+                    "insert into spool_recorder_stamp(singleton,recorder_id,through_id) "
+                    "values(1,?,?) on conflict(singleton) do update set "
+                    "recorder_id=excluded.recorder_id, through_id=excluded.through_id",
+                    (rid, through),
+                )
+                self.db.execute("commit")
+            except Exception:
+                try:
+                    self.db.execute("rollback")
+                except Exception:
+                    pass
+                raise
+            return len(pending)
 
     def trim(self) -> int:
         """Bound disk usage without turning overflow into permanent data loss.

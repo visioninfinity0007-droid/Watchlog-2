@@ -64,6 +64,55 @@ If old Agent restart cannot be proven:
 - reboot once if required by the support procedure;
 - investigate before any new install attempt.
 
+## Deliberate downgrade from 5.1.0 to 5.0.x
+
+A deliberate downgrade installs a 5.0.x build (for example the 5.0.28 Repair/Upgrade) over a
+site running the 5.1.0 multi-recorder Agent. It is not the automatic rollback above, which
+only ever restores the payload the same Repair/Upgrade run replaced.
+
+**Allowed only when the recorder registry has exactly one configured recorder.** 5.0.x has
+no recorder registry: it runs the legacy singleton recorder from `watchlog.ini` with the
+legacy `nvr_credential.dpapi`, which 5.1.0 keeps as the continuity recorder's own settings.
+
+Before starting:
+
+1. Open Manage Recorders and count the enabled recorders. The only one that may remain is
+   the site's original (continuity) recorder; Manage Recorders never offers to disable it.
+2. If more than one recorder is enabled, disable every extra recorder in Manage Recorders
+   first and wait for each change to complete. Disabling tells WatchLog first, uploads that
+   recorder's queued activity, keeps its history, and only then changes this PC.
+   Do not downgrade while more than one recorder is configured: with database contract v4
+   the 5.0.x legacy calls (camera sync, health, events, recovery) are refused with SQLSTATE
+   `42501` ("legacy recorder path is ambiguous for multi-recorder site") while the 5.0.x
+   heartbeat keeps the Agent looking online. The site would look monitored and report
+   nothing.
+3. Confirm the legacy recorder login is readable. 5.1.0 keeps running when
+   `nvr_credential.dpapi` is unreadable (each recorder uses its own login), but 5.0.x exits
+   at start without it. Run Repair first if the 5.1.0 log shows "the legacy recorder
+   credential on this PC could not be read".
+
+What carries over, and what does not:
+
+- **Health ledger keys behave as they do.** In the shared `health.sqlite`, 5.1.0 keys the
+  continuity recorder's last known states as `<recorder_id>:<layer>:<entity>` and leaves the
+  5.0.x `<layer>:<entity>` keys as they were at the last cutover. 5.0.x compares against
+  those older keys, so its first health cycle reports a transition for every camera or
+  recorder whose state changed while 5.1.0 ran; it may repeat a state WatchLog already
+  holds. Transitions 5.0.x records carry no recorder id. If 5.1.0 is installed again it
+  attributes them to the continuity recorder and takes the newer 5.0.x state for every
+  entity 5.0.x moved.
+- **Disabled recorders stay on this PC.** `recorders.json`, their credentials and any
+  retained queue under `ProgramData\WatchLog\recorders\` are not used by 5.0.x and are not
+  deleted. They upload only if 5.1.0 is reinstalled and the recorder is re-enabled.
+
+After the downgrade, accept it with the same success criteria as an upgrade, and check the
+Agent log for `42501`: a heartbeat alone does not prove events and health are arriving.
+
+The 5.0.28 Repair/Upgrade will carry a guard that refuses a recorder registry with more than
+one configured recorder; that guard is being added on the 5.0.28 branch separately. Until a
+release carrying it is recorded in `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`, the
+one-recorder check above is manual.
+
 ## Required logs
 
 Primary installer/update log:

@@ -58,14 +58,16 @@ from pathlib import Path
 import requests
 
 import discover
-import nvr_health
+import nvr_health   # module scope: every worker except-handler redacts through it
 import recorder_probe
 import setup_wizard
 import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
+from drivers.base import RecorderIdentityMismatch
 
 import credential_store
+import recorder_runtime
 from wl_version import VERSION as AGENT_VERSION  # single source of truth
 
 HEARTBEAT_SECONDS = 60
@@ -338,15 +340,30 @@ class Config:
         every launch context (SYSTEM task, terminal, --probe) resolves it
         identically. Called at startup and whenever Setup changes it (the
         interruptible auth breaker). A corrupt or foreign-machine store is fatal
-        — never a plaintext fallback."""
+        — never a plaintext fallback.
+
+        On a site whose recorders.json configures recorders, every recorder logs in with
+        its own credential and this legacy one is only the continuity recorder's mirror.
+        Its failure then leaves this Config's login empty and names it in
+        ``legacy_credential_error`` (open_driver refuses such a Config) instead of
+        stopping every recorder."""
         if os.name != "nt":
             return  # dev/lean builds use the env/ini values already set
         try:
             cred = credential_store.load_nvr_credential(self._ini_path)
         except credential_store.SecretError as exc:
-            raise SystemExit(
-                "FATAL: the recorder credential could not be read (corrupt, or a "
-                f"blob copied from another machine). Repair WatchLog.\n  {exc}")
+            if not _registry_configures_recorders():
+                raise SystemExit(
+                    "FATAL: the recorder credential could not be read (corrupt, or a "
+                    f"blob copied from another machine). Repair WatchLog.\n  {exc}")
+            self.nvr_password = ""
+            self.legacy_credential_error = type(exc).__name__
+            log("WARNING: the legacy recorder credential on this PC could not be read "
+                f"({type(exc).__name__}); each configured recorder uses its own login, so "
+                "only a recorder whose own login is unreadable stays unverified. "
+                "Repair WatchLog to restore it.")
+            return
+        self.legacy_credential_error = None
         if cred:
             self.nvr_username = cred.get("username") or self.nvr_username
             self.nvr_password = cred.get("password") or ""
@@ -502,8 +519,48 @@ def _connect_recorder(cfg: Config, base_url: str):
     return driver, driver.probe()
 
 
+def _fingerprint_serial(identity_fingerprint) -> str | None:
+    text = str(identity_fingerprint or "").strip()
+    if not text.lower().startswith("serial:"):
+        return None
+    return text[len("serial:"):].strip().upper() or None
+
+
+def require_recorder_identity(cfg, info) -> None:
+    """Refuse a device whose serial differs from the one saved for this recorder.
+
+    The recorder's address is operational configuration, not its identity (contract
+    sections 3, 8, 12): after an address swap another recorder that accepts the same login
+    can answer there. Unknown stays unknown: with no saved or no reported serial nothing
+    is refused."""
+    expected = _fingerprint_serial(getattr(cfg, "recorder_identity_fingerprint", None))
+    observed = str(getattr(info, "serial", "") or "").strip().upper() or None
+    if expected and observed and expected != observed:
+        raise RecorderIdentityMismatch(
+            "the device at this recorder's address reports a different serial number than "
+            "the saved recorder; it is not monitored until Setup confirms the recorder")
+
+
 def open_driver(cfg: Config):
+    driver, info = _open_driver_unverified(cfg)
+    try:
+        require_recorder_identity(cfg, info)
+    except RecorderIdentityMismatch:
+        try:
+            driver.close()
+        except Exception:                                       # noqa: BLE001
+            pass
+        raise
+    return driver, info
+
+
+def _open_driver_unverified(cfg: Config):
     cfg.require_nvr()
+    if getattr(cfg, "legacy_credential_error", None) and not getattr(cfg, "recorder_local_id", None):
+        # A registry site's legacy login could not be read (Config.load_recorder_credential):
+        # signing in with an empty login would only be a false "wrong password".
+        raise DriverError("the legacy recorder login on this PC cannot be read; "
+                          "Repair WatchLog to restore it")
     # Primary attempt: exactly the configured driver/URL — unchanged behaviour. When it
     # works (the normal case) nothing below runs.
     try:
@@ -677,9 +734,70 @@ def _native_archive_key(cfg: Config, native_name: str) -> tuple:
     return (native_name, str(cfg.nvr_url or ""), str(cfg.nvr_username or ""))
 
 
-def _credential_generation():
+def _continuity_recorder_at(cfg) -> str | None:
+    """The registry's continuity recorder when ``cfg`` is main()'s base Config pointed at its
+    address, else None. That Config logs in with the legacy singleton credential, which on a
+    registry site is the continuity recorder's own login mirrored (replace_recorder_credential
+    with mirror_legacy). Another recorder's login is never assumed; no or an unreadable
+    registry keeps the 5.0.x singleton."""
     try:
-        return credential_store.credential_generation()
+        import recorder_registry
+        url = str(getattr(cfg, "nvr_url", "") or "").rstrip("/")
+        rows = [row for row in recorder_registry.recorders()
+                if row.get("continuity_owner") and row.get("is_configured")
+                and str(row.get("url") or "").strip().rstrip("/") == url]
+    except Exception:  # noqa: BLE001 — unknown registry: the legacy token, as before
+        return None
+    return rows[0]["local_id"] if url and len(rows) == 1 else None
+
+
+def _registry_configures_recorders() -> bool:
+    """True when recorders.json configures at least one recorder; an absent or unreadable
+    registry is not a configured one (an unreadable registry holds in enhanced_cmd_run)."""
+    try:
+        import recorder_registry
+        return any(row.get("is_configured") for row in recorder_registry.recorders())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _boot_probe_config(cfg):
+    """The Config main() identifies the recorder with before the run loop, or None to skip.
+
+    With no configured registry: ``cfg`` itself, the 5.0.x singleton probe and camera sync.
+    With one configured recorder: that recorder's own registry Config (its address, its own
+    login and its saved identity), never the legacy ini recorder and login. With several, or
+    a registry that cannot be read: None. Each recorder is then identified and synced only
+    by its own recorder check (multi_recorder_orchestrator), so the legacy probe neither
+    contacts a recorder without an identity check nor sends a site-level camera sync."""
+    try:
+        import recorder_registry
+        rows = [row for row in recorder_registry.recorders() if row.get("is_configured")]
+    except Exception:  # noqa: BLE001 — the runtime holds for Setup; nothing to probe here
+        return None
+    if not rows:
+        return cfg
+    if len(rows) > 1:
+        return None
+    try:
+        (ctx,) = recorder_runtime.load_contexts(cfg, degrade_credential_errors=True)
+    except Exception:  # noqa: BLE001 — the recorder check reports the registry fault
+        return None
+    return None if ctx.credential_error else ctx.config
+
+
+def _credential_generation(cfg):
+    """The change token of the credential this recorder logs in with: its own DPAPI blob for a
+    registry recorder, the legacy singleton credential otherwise. The base Config of
+    --status-json/--accept/--recheck-archive-json pointed at the continuity recorder resolves
+    to that recorder's own token, the one its running Agent persisted (RV-AF2-01): a refusal
+    one of them saw then holds back the other instead of being deleted as stale."""
+    try:
+        if not getattr(cfg, "recorder_local_id", None):
+            local_id = _continuity_recorder_at(cfg)
+            if local_id:
+                return credential_store.recorder_credential_generation(local_id)
+        return _credential_generation_for_cfg(cfg)
     except Exception:  # noqa: BLE001 — an unreadable token only means "no change seen"
         return None
 
@@ -715,7 +833,7 @@ def _write_auth_breaker(path: Path, entries: dict) -> None:
         pass
 
 
-def _native_archive_backoff(key: tuple, path: Path | None = None) -> float:
+def _native_archive_backoff(key: tuple, cfg, path: Path | None = None) -> float:
     """Seconds before a refused native archive login may be tried again (0 = probe now).
     With ``path`` a refusal persisted by another process counts too (wall clock, capped at the
     longest back-off so a clock step cannot hold the recorder back for longer)."""
@@ -723,7 +841,7 @@ def _native_archive_backoff(key: tuple, path: Path | None = None) -> float:
         wait = 0.0
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
         if entry is not None:
-            if entry["generation"] != _credential_generation():
+            if entry["generation"] != _credential_generation(cfg):
                 _NATIVE_ARCHIVE_AUTH.pop(key, None)
             else:
                 wait = entry["retry_at"] - time.monotonic()
@@ -731,7 +849,7 @@ def _native_archive_backoff(key: tuple, path: Path | None = None) -> float:
             entries = _read_auth_breaker(path)
             saved = entries.get(_auth_breaker_id(key))
             if isinstance(saved, dict):
-                if saved.get("generation") != _credential_generation():
+                if saved.get("generation") != _credential_generation(cfg):
                     entries.pop(_auth_breaker_id(key), None)
                     _write_auth_breaker(path, entries)
                 else:
@@ -740,7 +858,7 @@ def _native_archive_backoff(key: tuple, path: Path | None = None) -> float:
         return max(0.0, wait)
 
 
-def _note_native_archive_probe(key: tuple, error: Exception | None,
+def _note_native_archive_probe(key: tuple, error: Exception | None, cfg,
                                path: Path | None = None) -> None:
     """Record a native probe outcome: success clears the breaker, a rejected login escalates it.
     With ``path`` the outcome is also persisted for the Agent's other processes."""
@@ -755,7 +873,7 @@ def _note_native_archive_probe(key: tuple, error: Exception | None,
             return
         if not (isinstance(error, NvrAuthFailed) or _is_auth_failure(error)):
             return
-        generation = _credential_generation()
+        generation = _credential_generation(cfg)
         prior = 0
         entry = _NATIVE_ARCHIVE_AUTH.get(key)
         if entry and entry["generation"] == generation:
@@ -813,7 +931,7 @@ def open_archive_driver(cfg: Config, *, live=None):
 
     key = _native_archive_key(cfg, native_name)
     breaker = _auth_breaker_path(cfg)
-    wait = _native_archive_backoff(key, breaker)
+    wait = _native_archive_backoff(key, cfg, breaker)
     if wait:
         log(f"archive: vendor-native {native_name} rejected the recorder login; not retrying "
             f"for {max(1, round(wait / 60))} min (keeping {driver.name})")
@@ -823,10 +941,10 @@ def open_archive_driver(cfg: Config, *, live=None):
     try:
         candidate = build(native_name, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
         native_info = candidate.probe()
-        _note_native_archive_probe(key, None, breaker)
+        _note_native_archive_probe(key, None, cfg, breaker)
         channel_map = _consistent_native_channel_map(driver, candidate)
     except Exception as error:  # noqa: BLE001 — live ONVIF path stays untouched
-        _note_native_archive_probe(key, error, breaker)
+        _note_native_archive_probe(key, error, cfg, breaker)
         if candidate is not None:
             try:
                 candidate.close()
@@ -940,6 +1058,50 @@ def _is_auth_failure(err: Exception) -> bool:
             or "sender not authorized" in s)
 
 
+def _credential_generation_for_cfg(cfg) -> str:
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if local_id:
+        return credential_store.recorder_credential_generation(local_id)
+    return credential_store.credential_generation()
+
+
+def _reload_credential_for_cfg(cfg) -> None:
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if local_id:
+        cred = credential_store.load_recorder_credential(local_id)
+        cfg.nvr_username = cred.get("username") or ""
+        cfg.nvr_password = cred.get("password") or ""
+        return
+    cfg.load_recorder_credential()
+
+
+def _reload_credential_if_changed(cfg) -> bool:
+    """Reload this recorder's login if Setup rewrote it since this config last loaded it.
+
+    The health and recovery workers call this every cycle, so a repaired password reaches
+    them without an Agent restart (MNVR-012). Only a changed credential file is decrypted
+    again; an unreadable new one keeps the current login and is retried next cycle."""
+    try:
+        generation = _credential_generation_for_cfg(cfg)
+    except Exception:                                   # noqa: BLE001
+        return False
+    seen = getattr(cfg, "credential_generation_seen", None)
+    if seen is None:
+        cfg.credential_generation_seen = generation     # baseline: the login loaded at start
+        return False
+    if generation == seen:
+        return False
+    try:
+        _reload_credential_for_cfg(cfg)
+    except (Exception, SystemExit) as e:                # noqa: BLE001 — keep the current login
+        # (a legacy config's load_recorder_credential exits on an unreadable store)
+        log(f"recorder credential changed in Setup but could not be read yet: {type(e).__name__}")
+        return False
+    cfg.credential_generation_seen = generation
+    log("recorder credential changed in Setup; health and recovery now use it")
+    return True
+
+
 def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
                     last_gen: str, seconds: float | None = None) -> tuple[str, str]:
     """Interruptible backoff between driver reconnects. Returns (outcome, gen).
@@ -958,14 +1120,27 @@ def _reconnect_wait(stop: threading.Event, cfg: "Config", auth_failures: int,
     else:
         total = float(DRIVER_RETRY_SECONDS if seconds is None else max(0.0, seconds))
     waited, step = 0.0, 5.0
+    unreadable_gen = None
     while waited < total:
         if stop.wait(min(step, total - waited)):
             return "stop", last_gen
         waited += step
-        gen = credential_store.credential_generation()
+        try:
+            gen = _credential_generation_for_cfg(cfg)
+        except Exception:                               # noqa: BLE001 — unknown: poll again
+            continue
         if gen != last_gen:
+            try:
+                _reload_credential_for_cfg(cfg)
+            except (Exception, SystemExit) as e:        # noqa: BLE001 — keep the current login
+                # A missing, mid-replace or unreadable blob must not end the collector thread
+                # (nothing restarts it). last_gen is kept, so the next poll tries again.
+                if gen != unreadable_gen:
+                    log("recorder credential changed in Setup but could not be read yet: "
+                        f"{type(e).__name__}; keeping the current login")
+                    unreadable_gen = gen
+                continue
             log("recorder credential changed in Setup; reloading and retrying now")
-            cfg.load_recorder_credential()
             return "reload", gen
     return "timeout", last_gen
 
@@ -976,7 +1151,7 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
     # seconds, and a flapping NVR must not re-pay that on every retry.
     detector = vision.build(cfg, log)
     auth_failures = 0
-    last_gen = credential_store.credential_generation()
+    last_gen = _credential_generation_for_cfg(cfg)
     while not stop.is_set():
         driver = None
         auth_error = False
@@ -999,6 +1174,9 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             for ev in driver.stream_events(stop):
                 if stop.is_set():
                     break
+                recorder_id = getattr(cfg, "recorder_cloud_id", None)
+                if recorder_id:
+                    ev = ev.with_recorder_id(recorder_id)
                 if holder is not None:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = now_utc()
@@ -1194,16 +1372,19 @@ def persist_health(holder: dict, state: dict, cfg: Config, cam: dict, assessment
         return
     try:
         device_ts = iso(datetime.now(timezone.utc))
+        recorder_id = holder.get("recorder_cloud_id") or getattr(cfg, "recorder_cloud_id", None)
         for c in cam.get("cameras", []):
             ch = c.get("channel")
             if ch is None:
                 continue
             store.observe("camera", str(ch), c.get("health", "unknown"),
-                          c.get("reason", "unknown"), c.get("source", "probe"), device_ts)
+                          c.get("reason", "unknown"), c.get("source", "probe"), device_ts,
+                          recorder_id=recorder_id)
         # checkpoint: proof local monitoring continued this cycle (no raw probe/image data)
         store.checkpoint(device_ts,
                          nvr_state=(assessment.get("nvr") or {}).get("state", "unknown"),
-                         cameras_observed=len(cam.get("cameras", [])), cycle_ok=True)
+                         cameras_observed=len(cam.get("cameras", [])), cycle_ok=True,
+                         recorder_id=recorder_id)
         store.compact()
     except Exception as e:                              # noqa: BLE001
         log(f"health persist skipped: {type(e).__name__}")
@@ -1220,14 +1401,17 @@ def persist_recording_storage(holder: dict, state: dict, rs: dict) -> None:
         return
     try:
         device_ts = iso(datetime.now(timezone.utc))
+        recorder_id = holder.get("recorder_cloud_id")
         for c in (rs.get("recording") or {}).get("channels", []):
             ch = c.get("channel")
             if ch is not None:
                 store.observe("camera_recording", str(ch), c.get("state", "unknown"),
-                              c.get("reason", "unknown"), "probe", device_ts)
+                              c.get("reason", "unknown"), "probe", device_ts,
+                              recorder_id=recorder_id)
         st = rs.get("storage") or {}
         store.observe("nvr_storage", str(state["agent_id"]), st.get("state", "unknown"),
-                      st.get("reason", "unknown"), "probe", device_ts)
+                      st.get("reason", "unknown"), "probe", device_ts,
+                      recorder_id=recorder_id)
     except Exception as e:                              # noqa: BLE001
         log(f"recording/storage persist skipped: {type(e).__name__}")
 
@@ -1236,8 +1420,11 @@ def persist_recording_storage(holder: dict, state: dict, rs: dict) -> None:
 # STRUCTURAL poison can never become valid on a resend, so it is quarantined AT ONCE (observable);
 # anything else — notably unmapped_channel, where the camera may simply not be enrolled YET — is
 # retried under a bounded policy (health_store.defer_transitions), then quarantined if it never maps.
-_PERMANENT_REJECTIONS = frozenset({"missing_id", "wrong_layer", "missing_state",
-                                   "invalid_timestamp", "invalid_sequence"})
+_PERMANENT_REJECTIONS = frozenset({
+    "missing_id", "wrong_layer", "missing_state",
+    "invalid_timestamp", "invalid_sequence",
+    "invalid_recorder_id", "missing_recorder",
+})
 
 
 _TX_DISPOSITION_KEYS = ("accepted_ids", "duplicate_ids", "rejected")
@@ -1348,6 +1535,91 @@ def reconcile_health(holder: dict, state: dict, cloud: Cloud) -> None:
         store.mark_transitions_uploaded(uploaded)
 
 
+def _retry_recorder_cloud_inventory(cloud: Cloud, state: dict, cfg: Config,
+                                    holder: dict, assessment: dict, driver) -> None:
+    """Bind camera inventory/capabilities after a recorder recovers post-preflight.
+
+    Preflight may legitimately see an unreachable recorder. Multi-recorder runtime
+    must not require an Agent restart when it later comes back. This helper retries
+    only after authenticated channel enumeration succeeds and caches the channel
+    signature so steady-state health cycles do not churn the DB.
+
+    Failure is recorder-local and best-effort; callers still report recorder health.
+    """
+    recorder_id = str(getattr(cfg, "recorder_cloud_id", "") or "").strip()
+    channels_block = assessment.get("channels") or {}
+    if not recorder_id or driver is None or not channels_block.get("enumerated"):
+        return
+
+    reported = [
+        row for row in (channels_block.get("reported") or [])
+        if isinstance(row, dict) and row.get("channel") is not None
+    ]
+    channels = sorted({str(row["channel"]) for row in reported})
+    if not channels:
+        return
+
+    signature = tuple(channels)
+    mapping = holder.get("camera_mapping")
+    if holder.get("camera_sync_signature") == signature and isinstance(mapping, dict) and mapping:
+        return
+
+    payload = [
+        {
+            "channel": ch,
+            "name": next(
+                (
+                    str(row.get("name"))
+                    for row in reported
+                    if str(row.get("channel")) == ch and row.get("name")
+                ),
+                f"Camera {ch}",
+            ),
+        }
+        for ch in channels
+    ]
+    mapping = cloud.call(
+        "wl_sync_recorder_cameras",
+        p_agent_id=state["agent_id"],
+        p_agent_key=state["agent_key"],
+        p_recorder_id=recorder_id,
+        p_cameras=payload,
+    )
+    if not isinstance(mapping, dict):
+        raise RuntimeError("recorder camera retry returned no mapping")
+    if not set(channels).issubset({str(k) for k in mapping}):
+        raise RuntimeError("recorder camera retry mapping is incomplete")
+    # Pin what WatchLog accepted, as main() does (_synced_inventory): this recorder's ONVIF
+    # cameras then keep their synced channels while the Agent runs.
+    pin = getattr(driver, "pin_inventory", None)
+    if callable(pin):
+        pin()
+
+    holder["camera_mapping"] = {str(k): str(v) for k, v in mapping.items()}
+    holder["camera_sync_signature"] = signature
+    holder["synced_channels"] = [
+        {
+            "channel": ch,
+            "camera_id": str(mapping[ch]),
+        }
+        for ch in channels
+        if ch in mapping
+    ]
+
+    try:
+        capabilities = driver.capabilities()
+    except Exception:
+        capabilities = None
+    if isinstance(capabilities, dict):
+        cloud.call(
+            "wl_sync_recorder_capabilities",
+            p_agent_id=state["agent_id"],
+            p_agent_key=state["agent_key"],
+            p_recorder_id=recorder_id,
+            p_capabilities=capabilities,
+        )
+
+
 def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     """One combined recorder assessment feeding BOTH reports:
       * NVR connectivity/auth + channel inventory (increment 3), and
@@ -1362,21 +1634,48 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     import nvr_health
     driver = None
     try:
+        _reload_credential_if_changed(cfg)
         try:
             if cfg.nvr_driver in ("auto", ""):
                 driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
                                        cfg.nvr_password, log=lambda *a, **k: None)
             else:
                 driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
-            assessment = nvr_health.assess_nvr_health(driver)
+            refused = []
+
+            def _verify(info):
+                try:
+                    require_recorder_identity(cfg, info)
+                except RecorderIdentityMismatch:
+                    refused.append(True)
+                    raise
+            assessment = nvr_health.assess_nvr_health(driver, verify=_verify)
+            if refused:
+                # Another recorder answered at this address: none of its cameras, recording
+                # state or channels are this recorder's. Its cameras stay UNKNOWN.
+                log("recorder identity mismatch: the device at this recorder's address is a "
+                    "different recorder; not monitoring it until Setup confirms the recorder")
+                try:
+                    driver.close()
+                except Exception:                      # noqa: BLE001
+                    pass
+                driver = None
         except DriverError as e:
             assessment = nvr_health.assess_from_error(e)   # still report the classified state
             driver = None
 
         # --- NVR connectivity/auth + inventory (increment 3) ---
         try:
-            res = cloud.call("wl_report_health", p_agent_id=state["agent_id"],
-                             p_agent_key=state["agent_key"], p_report=assessment)
+            recorder_id = getattr(cfg, "recorder_cloud_id", None)
+            health_rpc = "wl_report_recorder_health" if recorder_id else "wl_report_health"
+            health_args = dict(
+                p_agent_id=state["agent_id"],
+                p_agent_key=state["agent_key"],
+                p_report=assessment,
+            )
+            if recorder_id:
+                health_args["p_recorder_id"] = recorder_id
+            res = cloud.call(health_rpc, **health_args)
             log(f"health reported: nvr={assessment['nvr'].get('state')} "
                 f"present={res.get('present')} missing={res.get('missing')} "
                 f"disabled={res.get('disabled')} unknown={res.get('unknown')}")
@@ -1386,6 +1685,21 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
         # --- camera hybrid health (increment 4), reusing THIS assessment + driver ---
         chans = [str(c["channel"]) for c in assessment.get("channels", {}).get("reported", [])
                  if c.get("channel")]
+
+        # A recorder may have been unreachable during startup preflight. Once
+        # authenticated enumeration succeeds, bind its cameras/capabilities here
+        # so live events, health and recovery no longer require an Agent restart.
+        if recorder_id:
+            try:
+                _retry_recorder_cloud_inventory(
+                    cloud, state, cfg, holder, assessment, driver
+                )
+            except Exception as e:                      # noqa: BLE001
+                log(
+                    "recorder inventory sync deferred: "
+                    f"{type(e).__name__}: {nvr_health.redact(str(e))}"
+                )
+
         mon = holder.get("monitor")
         if mon is None and chans:
             mon = camera_health.CameraHealthMonitor(
@@ -1400,8 +1714,18 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
             # increment 5: persist transitions + checkpoint LOCALLY first — survives an outage.
             persist_health(holder, state, cfg, cam, assessment)
             try:
-                cr = cloud.call("wl_report_camera_health", p_agent_id=state["agent_id"],
-                                p_agent_key=state["agent_key"], p_report=cam)
+                camera_health_rpc = (
+                    "wl_report_recorder_camera_health"
+                    if recorder_id else "wl_report_camera_health"
+                )
+                camera_health_args = dict(
+                    p_agent_id=state["agent_id"],
+                    p_agent_key=state["agent_key"],
+                    p_report=cam,
+                )
+                if recorder_id:
+                    camera_health_args["p_recorder_id"] = recorder_id
+                cr = cloud.call(camera_health_rpc, **camera_health_args)
                 log(f"camera health: op={cr.get('operational')} deg={cr.get('degraded')} "
                     f"off={cr.get('offline')} unk={cr.get('unknown')}")
             except Exception as e:                      # noqa: BLE001
@@ -1442,10 +1766,15 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
     event upload. Jittered interval so a fleet does not probe in lockstep. When the main loop
     signals a resume (site PC woke from sleep), reconcile IMMEDIATELY instead of waiting a full
     interval — so a camera that failed while the PC was asleep is caught right away (the H2
-    recorder-state reconciliation runs inside health_cycle)."""
+    recorder-state reconciliation runs inside health_cycle). Like the recovery and Site Control
+    threads it outlives any fault: the fan-out runs one per recorder, and nothing restarts a
+    thread that has ended."""
     stop.wait(min(10, cfg.health_seconds))              # let enrollment/sync settle first
     while not stop.is_set():
-        health_cycle(cloud, state, cfg, holder)
+        try:
+            health_cycle(cloud, state, cfg, holder)
+        except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
+            worker_fault("health", e)
         jitter = random.uniform(0, max(1.0, cfg.health_seconds * 0.2))
         if resume_evt is not None:
             if resume_evt.wait(cfg.health_seconds + jitter):
@@ -1457,12 +1786,66 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
 def _site_control_driver(cfg: Config):
     """The recorder driver a Site Control command runs against. 'auto' (the Config default, and
     what older installers wrote) is not a registered driver name, so resolve it the way the health
-    cycle does instead of letting build() raise KeyError after the command was claimed."""
+    cycle does instead of letting build() raise KeyError after the command was claimed.
+
+    The device must still be the recorder the command names: after an address swap another
+    recorder that accepts the same login can answer there (contract section 13). Where a serial
+    is saved for this recorder, the device's reported serial is checked before any command
+    runs (a RecorderIdentityMismatch then fails the claimed command); with none saved nothing
+    extra is probed and nothing is refused."""
     if cfg.nvr_driver in ("auto", ""):
-        driver, _info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
-                                   log=lambda *a, **k: None)
-        return driver
-    return build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+        driver, info = autodetect(cfg.nvr_url, cfg.nvr_username, cfg.nvr_password,
+                                  log=lambda *a, **k: None)
+    else:
+        driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
+        info = None
+    try:
+        if _fingerprint_serial(getattr(cfg, "recorder_identity_fingerprint", None)):
+            require_recorder_identity(cfg, info if info is not None else driver.probe())
+    except BaseException:
+        try:
+            driver.close()
+        except Exception:                                       # noqa: BLE001
+            pass
+        raise
+    return driver
+
+
+def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site_control) -> None:
+    """Execute one claimed Site Control command and ALWAYS complete it.
+
+    The command is already 'claimed' in the cloud. A recorder-routing, driver or
+    executor failure therefore completes it as failed (same sanitised error shape as
+    site_control: a redacted DriverError line, otherwise only the exception type)
+    instead of escaping and leaving it claimed forever."""
+    action = cmd.get("action")
+    is_write = action in site_control.WRITE_ACTIONS
+    try:
+        job_cfg = recorder_runtime.config_for_cloud_recorder(
+            cfg, cmd.get("recorder_id")
+        )
+        driver = _site_control_driver(job_cfg)
+        try:
+            res = (site_control.execute_write(driver, action, cmd.get("params"))
+                   if is_write else
+                   site_control.execute_read(driver, action, cmd.get("params")))
+        finally:
+            try:
+                driver.close()
+            except Exception:                    # noqa: BLE001
+                pass
+        status = "succeeded" if res.get("ok") else "failed"
+        # Writes carry before/after/verified (transactional audit); reads carry 'data'.
+        result, error = (res if is_write else res.get("data")), res.get("error")
+    except Exception as e:                       # noqa: BLE001 — complete it, never strand it
+        log(f"site control: command {str(cmd.get('id'))[:8]} failed: "
+            f"{type(e).__name__}: {nvr_health.redact(str(e))}")
+        status, result = "failed", None
+        error = ((nvr_health.redact(str(e)) if isinstance(e, DriverError) else "")
+                 or type(e).__name__)
+    cloud.call("wl_agent_complete_command",
+               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+               p_command_id=cmd["id"], p_status=status, p_result=result, p_error=error)
 
 
 def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
@@ -1487,32 +1870,7 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
             cmd = (claimed or {}).get("command")
             if cmd:
                 busy = True
-                action = cmd.get("action")
-                is_write = action in site_control.WRITE_ACTIONS
-                try:
-                    driver = _site_control_driver(cfg)
-                except Exception as e:                   # noqa: BLE001
-                    # The command is already claimed: answer it as failed instead of leaving
-                    # it claimed until it expires. The error is redacted (no recorder address).
-                    driver, res = None, {"action": action, "ok": False,
-                                         "error": nvr_health.redact(str(e)) or type(e).__name__}
-                if driver is not None:
-                    try:
-                        res = (site_control.execute_write(driver, action, cmd.get("params"))
-                               if is_write else
-                               site_control.execute_read(driver, action, cmd.get("params")))
-                    finally:
-                        try:
-                            driver.close()
-                        except Exception:                # noqa: BLE001
-                            pass
-                # Writes carry before/after/verified (transactional audit); reads carry 'data'.
-                cloud.call("wl_agent_complete_command",
-                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                           p_command_id=cmd["id"],
-                           p_status=("succeeded" if res.get("ok") else "failed"),
-                           p_result=(res if is_write else res.get("data")),
-                           p_error=res.get("error"))
+                _run_claimed_command(cfg, state, cloud, cmd, site_control)
         except BaseException as e:                       # noqa: BLE001 — Site Control never disturbs the agent
             worker_fault("site control", e)
         if not busy:
@@ -1720,8 +2078,99 @@ def cmd_existing_site_preflight(cfg: Config, *, result_path: str | None = None,
     return 0 if result["ok"] else 2
 
 
+# The database's own 42501 text for a site-level push token on a multi-recorder site
+# (0146 wl_push_recorder_for_site). Shown verbatim when WatchLog offers no recorder-
+# scoped push, so the local refusal and the database refusal read the same.
+MULTI_RECORDER_PUSH_REFUSED = (
+    "recorder push is not available for a site with more than one recorder")
+
+
+def _recorder_push_absent(error: Exception) -> bool:
+    """True only when the database definitively has no recorder-scoped push token RPC
+    (wl_agent_issue_push_token(agent, key, recorder) does not exist there)."""
+    return (isinstance(error, CloudError)
+            and getattr(error, "fn", "") == "wl_agent_issue_push_token"
+            and (getattr(error, "code", None) == "PGRST202"
+                 or getattr(error, "status", None) == 404))
+
+
+def _push_refusal(error: Exception) -> str | None:
+    """The database's refusal text for a 42501 from the push token RPC, else None."""
+    if isinstance(error, CloudError) and getattr(error, "code", None) == "42501":
+        return str(getattr(error, "message", "") or "")[:200] or None
+    return None
+
+
+def _issue_push_token(cloud, state: dict, recorder_id: str | None) -> str | None:
+    """One push token: recorder-scoped when ``recorder_id`` is given (the answer must
+    name that recorder), otherwise the 5.0.x site-level form."""
+    params = {"p_agent_id": state["agent_id"], "p_agent_key": state["agent_key"]}
+    if recorder_id:
+        params["p_recorder_id"] = recorder_id
+    issued = cloud.call("wl_agent_issue_push_token", **params)
+    if not isinstance(issued, dict):
+        return None
+    if recorder_id and str(issued.get("recorder_id") or "") != str(recorder_id):
+        return None                     # never point a recorder at another one's token
+    return issued.get("token") or None
+
+
+def _configure_recorder_push(driver_cfg, open_fn, url: str) -> dict:
+    """Point one recorder (opened from its own config) at its push URL."""
+    driver = open_fn(driver_cfg)
+    try:
+        configure = getattr(driver, "configure_push", None)
+        if configure is None:
+            return {"configured": False, "verified": False,
+                    "detail": "this recorder model does not support recorder-push"}
+        out = configure(url) or {}
+        return {"configured": bool(out.get("applied")),
+                "verified": bool(out.get("verified")),
+                "detail": str(out.get("detail") or "")}
+    finally:
+        try:
+            close = getattr(driver, "close", None)
+            if close is not None:
+                close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _recorder_push_token(cloud, state: dict, ctx, multi: bool) -> tuple:
+    """(token or None, refusal detail) for one RecorderContext.
+
+    Raises _NoRecorderScopedPush on a multi-recorder registry when the database has no
+    recorder-scoped form; any other unexpected failure propagates."""
+    def legacy():
+        try:
+            return _issue_push_token(cloud, state, None), ""
+        except CloudError as exc:
+            if _push_refusal(exc) is None:
+                raise
+            return None, _push_refusal(exc)
+
+    if not ctx.cloud_recorder_id:
+        if multi:
+            return None, "this recorder is not linked to WatchLog yet"
+        return legacy()                # one recorder WatchLog has no identity for
+    try:
+        return _issue_push_token(cloud, state, ctx.cloud_recorder_id), ""
+    except CloudError as exc:
+        if _recorder_push_absent(exc):
+            if multi:
+                raise _NoRecorderScopedPush() from exc
+            return legacy()
+        if _push_refusal(exc) is not None:
+            return None, _push_refusal(exc)
+        raise
+
+
+class _NoRecorderScopedPush(Exception):
+    """WatchLog offers no recorder-scoped push token on a multi-recorder site."""
+
+
 def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
-                       _open_driver=None) -> int:
+                       _open_driver=None, _contexts=None) -> int:
     """Point the RECORDER at WatchLog so the site reports with no PC running.
 
     RUNS AS ITS OWN PROCESS, deliberately. The setup wizard used to do this inline, and
@@ -1734,48 +2183,94 @@ def cmd_configure_push(cfg: Config, *, _state=None, _cloud_factory=None,
     It also means the recorder still gets configured even when the wizard dies, because
     the background agent can run this on its own schedule with no installer present.
 
-    Prints a single machine-readable PUSH_JSON line. Exit 0 = the recorder confirmed it.
+    Push identity is per RECORDER (MNVR-011): the token names the recorder, and WatchLog
+    resolves the recorder from it before any channel. With a recorder registry every
+    configured recorder runs from its own RecorderContext, with its own token from
+    wl_agent_issue_push_token(agent, key, p_recorder_id), its own driver and its own push
+    URL. On a multi-recorder registry it refuses unless WatchLog offers recorder-scoped
+    push, and never falls back to a site-level token there. A single recorder on a
+    database without the recorder form, and the 5.0.x singleton (no registry), keep the
+    site-level form, which the database itself refuses on a multi-recorder site.
+
+    Prints a single machine-readable PUSH_JSON line (never a token). Exit 0 = every
+    recorder confirmed it.
     """
     result = {"configured": False, "verified": False, "detail": ""}
+
+    def report(res: dict, code: int) -> int:
+        print("PUSH_JSON " + json.dumps(res), flush=True)
+        return code
+
     try:
         base = (cfg.push_bridge_url or "").strip().rstrip("/")
         if not base:
             result["detail"] = "no push bridge configured in this build"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+            return report(result, 2)
 
         state = _state if _state is not None else load_state(cfg.state_path)
         if not state or not state.get("agent_id") or not state.get("agent_key"):
             result["detail"] = "this site is not enrolled yet"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+            return report(result, 2)
 
+        contexts = list((_contexts or recorder_runtime.load_contexts)(cfg) or [])
         cloud = (_cloud_factory or (lambda: Cloud(cfg.supabase_url, cfg.publishable_key)))()
-        issued = cloud.call("wl_agent_issue_push_token",
-                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
-        token = (issued or {}).get("token") if isinstance(issued, dict) else None
-        if not token:
-            result["detail"] = "WatchLog did not issue a push token"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+        open_fn = _open_driver or open_driver
 
-        driver = (_open_driver or open_driver)(cfg)
-        configure = getattr(driver, "configure_push", None)
-        if configure is None:
-            result["detail"] = "this recorder model does not support recorder-push"
-            print("PUSH_JSON " + json.dumps(result), flush=True)
-            return 2
+        if not contexts:
+            # 5.0.x singleton runtime: the site-level form, guarded by the database.
+            try:
+                token = _issue_push_token(cloud, state, None)
+            except CloudError as exc:
+                if _push_refusal(exc) is None:
+                    raise
+                result["detail"] = _push_refusal(exc)
+                return report(result, 2)
+            if not token:
+                result["detail"] = "WatchLog did not issue a push token"
+                return report(result, 2)
+            result = _configure_recorder_push(cfg, open_fn, f"{base}/push/{token}")
+            log(f"recorder push: configured={result['configured']} "
+                f"verified={result['verified']} {result['detail']}")
+            return report(result, 0 if result["verified"] else 2)
 
-        out = configure(f"{base}/push/{token}") or {}
-        result = {"configured": bool(out.get("applied")),
-                  "verified": bool(out.get("verified")),
-                  "detail": str(out.get("detail") or "")}
-        print("PUSH_JSON " + json.dumps(result), flush=True)
-        log(f"recorder push: configured={result['configured']} "
-            f"verified={result['verified']} {result['detail']}")
-        return 0 if result["verified"] else 2
+        # Every token is issued before any recorder is touched, so a refusal for the
+        # whole site leaves every recorder exactly as it was.
+        multi = len(contexts) > 1
+        planned = []
+        try:
+            for ctx in contexts:
+                token, detail = _recorder_push_token(cloud, state, ctx, multi)
+                if token is None and not detail:
+                    detail = "WatchLog did not issue a push token"
+                planned.append((ctx, token, detail))
+        except _NoRecorderScopedPush:
+            result["detail"] = MULTI_RECORDER_PUSH_REFUSED
+            return report(result, 2)
+
+        rows = []
+        for ctx, token, detail in planned:
+            row = {"recorder": ctx.display_name, "configured": False,
+                   "verified": False, "detail": detail}
+            if token:
+                try:
+                    row.update(_configure_recorder_push(ctx.config, open_fn,
+                                                        f"{base}/push/{token}"))
+                except Exception as exc:  # noqa: BLE001 - one recorder never sinks the rest
+                    row["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+                log(f"recorder push [{ctx.display_name}]: configured={row['configured']} "
+                    f"verified={row['verified']} {row['detail']}")
+            rows.append(row)
+
+        result = {"configured": all(r["configured"] for r in rows),
+                  "verified": all(r["verified"] for r in rows),
+                  "detail": (rows[0]["detail"] if not multi else
+                             "; ".join(f"{r['recorder']}: {r['detail'] or 'ok'}"
+                                       for r in rows)),
+                  "recorders": rows}
+        return report(result, 0 if result["verified"] else 2)
     except Exception as exc:  # noqa: BLE001 - a bonus layer never fails loudly
-        result["detail"] = f"could not configure recorder push ({type(exc).__name__})"
+        result = {"configured": False, "verified": False,
+                  "detail": f"could not configure recorder push ({type(exc).__name__})"}
         try:
             print("PUSH_JSON " + json.dumps(result), flush=True)
         except Exception:  # noqa: BLE001
@@ -2485,6 +2980,28 @@ def cmd_probe(cfg: Config) -> None:
     print()
 
 
+def _open_recovery_interval_for_cfg(cloud: Cloud, state: dict, cfg: Config,
+                                    started_at, ended_at, targets) -> dict:
+    """Open a recovery interval on the contract this recorder context speaks.
+
+    A bound recorder names its archive channels (wl_open_recorder_recovery_interval takes
+    p_channels). The recorder-less 5.0.x contract names cameras by cloud camera UUID
+    (wl_open_recovery_interval takes p_cameras uuid[]), never by recorder channel number."""
+    recorder_id = getattr(cfg, "recorder_cloud_id", None)
+    args = dict(
+        p_agent_id=state["agent_id"],
+        p_agent_key=state["agent_key"],
+        p_started_at=started_at,
+        p_ended_at=ended_at,
+    )
+    if recorder_id:
+        args["p_recorder_id"] = recorder_id
+        args["p_channels"] = list(targets or [])
+        return cloud.call("wl_open_recorder_recovery_interval", **args)
+    args["p_cameras"] = list(targets or [])
+    return cloud.call("wl_open_recovery_interval", **args)
+
+
 # holder flag: recovery_worker has read last_live.json while the recorder was live and holds no
 # gap the cloud has not accepted. A heartbeat that refreshes last_live must wait for it, or a
 # restart gap is overwritten before it is ever detected (or lost if the Agent restarts while held).
@@ -2502,16 +3019,16 @@ def _recovery_login(cfg: Config, opener):
     from drivers.base import NvrAuthFailed
     key = _native_archive_key(cfg, "recorder-login")
     breaker = _auth_breaker_path(cfg)
-    wait = _native_archive_backoff(key, breaker)
+    wait = _native_archive_backoff(key, cfg, breaker)
     if wait:
         raise NvrAuthFailed(f"recorder login refused earlier; not retried for "
                             f"{max(1, round(wait / 60))} min")
     try:
         result = opener()
     except Exception as error:  # noqa: BLE001 — recorded, then raised to the caller as before
-        _note_native_archive_probe(key, error, breaker)
+        _note_native_archive_probe(key, error, cfg, breaker)
         raise
-    _note_native_archive_probe(key, None, breaker)
+    _note_native_archive_probe(key, None, cfg, breaker)
     return result
 
 
@@ -2564,9 +3081,10 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     has priority (yields when the live spool has a backlog) and it is throttled. OFF only if
     recovery_enabled=false. A failure here can never disturb events/heartbeat/health.
 
-    Intervals name cameras by cloud camera UUID. Until the channel->camera mapping exists nothing
-    is opened or claimed: a detected gap is held, never sent with recorder channel numbers or with
-    an empty camera list.
+    The recorder-less contract names cameras by cloud camera UUID. Until the channel->camera
+    mapping exists nothing is opened or claimed: a detected gap is held, never sent with recorder
+    channel numbers or with an empty camera list. A bound recorder names its explicitly synced
+    archive channels instead, and waits for that inventory rather than guessing a channel.
 
     Time this worker saw the recorder live in is never reopened: one cycle is longer than the
     outage threshold, so a gap between two of its checks is only known from a last_live a
@@ -2581,6 +3099,26 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     pending_gaps = []                                   # detected gaps the cloud has not accepted yet
     seen_live_at = None                                 # this worker's last check with the recorder live
     holder = holder if holder is not None else {}
+
+    def _channel_id(item):
+        if isinstance(item, dict):
+            return item.get("channel")
+        return getattr(item, "channel", None)
+
+    def _bound_inventory():
+        """(archive channels, {camera UUID: channel}) of the bound recorder's synced cameras.
+        (Not the module-level _synced_inventory(driver), which enumerates and pins a driver.)"""
+        source = channels() if callable(channels) else channels
+        chans, cams = [], {}
+        for c in source or []:
+            ch = _channel_id(c)
+            if ch is None:
+                continue
+            chans.append(str(ch))
+            cam = c.get("camera_id") if isinstance(c, dict) else getattr(c, "camera_id", None)
+            if cam:
+                cams[str(cam)] = str(ch)
+        return chans, cams
 
     # Build the on-site detector ONCE (same packaged AI as the live path) so deep recovery can run
     # WatchLog analysis over recovered footage. A missing runtime/model just means recorder-native
@@ -2621,13 +3159,27 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
 
     while not stop.is_set():
         try:
-            if not camera_ids:
-                try:
-                    camera_ids = _recovery_camera_ids(cfg, state, cloud, channels)
-                except Exception as e:                   # noqa: BLE001
-                    log(f"recovery: camera inventory not synced yet; recovery deferred: "
-                        f"{type(e).__name__}")
-            cams = list(camera_ids.values())
+            _reload_credential_if_changed(cfg)
+            recorder_id = getattr(cfg, "recorder_cloud_id", None)
+            if recorder_id:
+                cams, camera_channels = _bound_inventory()
+                if not cams:
+                    # Never guess a recorder channel. A recorder that was unreachable at
+                    # startup waits until health enumeration has explicitly synced its
+                    # camera inventory, then this same worker begins recovery automatically.
+                    holder["recovery_waiting_for_inventory"] = True
+                    stop.wait(min(max(5, cfg.recovery_seconds), 30))
+                    continue
+                holder.pop("recovery_waiting_for_inventory", None)
+            else:
+                if not camera_ids:
+                    try:
+                        camera_ids = _recovery_camera_ids(cfg, state, cloud, channels)
+                    except Exception as e:               # noqa: BLE001
+                        log(f"recovery: camera inventory not synced yet; recovery deferred: "
+                            f"{type(e).__name__}")
+                cams = list(camera_ids.values())
+                camera_channels = {cam: ch for ch, cam in camera_ids.items()}
 
             # A very long Internet outage can fill the bounded local spool. trim() records
             # exactly which local-observation interval had to be evicted; convert that durable
@@ -2635,10 +3187,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             try:
                 overflow_gap = spool.pending_recovery_gap()
                 if overflow_gap and cams and recorder_is_live():
-                    cloud.call("wl_open_recovery_interval",
-                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_started_at=overflow_gap[0], p_ended_at=overflow_gap[1],
-                               p_cameras=cams)
+                    _open_recovery_interval_for_cfg(
+                        cloud, state, cfg, overflow_gap[0], overflow_gap[1], cams
+                    )
                     if spool.clear_recovery_gap(*overflow_gap):
                         log(f"recovery: spool overflow {overflow_gap[0]}..{overflow_gap[1]}; "
                             "opened recorder-archive reconciliation")
@@ -2670,9 +3221,9 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                     holder[LAST_LIVE_CHECKED] = not pending_gaps
                     while pending_gaps and cams:
                         gap = pending_gaps[0]
-                        cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"],
-                                   p_agent_key=state["agent_key"], p_started_at=iso(gap[0]),
-                                   p_ended_at=iso(gap[1]), p_cameras=cams)
+                        _open_recovery_interval_for_cfg(
+                            cloud, state, cfg, iso(gap[0]), iso(gap[1]), cams
+                        )
                         pending_gaps.pop(0)
                         log(f"recovery: detected recorder gap {iso(gap[0])}..{iso(gap[1])}; "
                             "opened resumable archive recovery")
@@ -2682,21 +3233,23 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
             except Exception as e:                       # noqa: BLE001
                 log(f"recovery: gap detector skipped: {type(e).__name__}")
 
-            # Claimed intervals carry camera UUIDs; without the mapping they cannot be read. The
-            # recorder archive is opened (and closed) by the runner only for a claimed interval
-            # that needs reading, so an idle cycle never logs in to the recorder. An archive that
-            # cannot be opened hands the claim back as pending, its retry budgets untouched.
-            if camera_ids:
+            # Claimed intervals name camera UUIDs (or a bound recorder's channels); without the
+            # inventory they cannot be read. The recorder archive is opened (and closed) by the
+            # runner only for a claimed interval that needs reading, so an idle cycle never logs
+            # in to the recorder. An archive that cannot be opened hands the claim back as
+            # pending, its retry budgets untouched.
+            if cams:
                 try:
                     runner = rec.RecoveryRunner(
                         cloud, state["agent_id"], state["agent_key"], None,
                         lambda ev: spool.add(ev),
+                        recorder_id=recorder_id,
                         chunk_seconds=cfg.recovery_chunk_seconds,
                         throttle_seconds=cfg.recovery_throttle_seconds,
                         live_pending=lambda: spool.count() > cfg.recovery_live_backlog,
                         detector=detector, ai_max_frames=cfg.recovery_ai_max_frames,
                         snapshot_interval_seconds=cfg.recovery_snapshot_seconds,
-                        camera_channels={cam: ch for ch, cam in camera_ids.items()},
+                        camera_channels=camera_channels,
                         driver_factory=lambda: _recovery_login(
                             cfg, lambda: open_archive_driver(cfg))[0],
                         log=log)
@@ -3008,36 +3561,41 @@ def main() -> None:
     # camera sync and the heartbeat all want it, and probing four times
     # on every start is noise on the wire and in the log.
     device, channels, capabilities = None, [], None
-    try:
-        driver, device = open_driver(cfg)
+    boot_cfg = _boot_probe_config(cfg)
+    if boot_cfg is None:
+        log("recorder: the configured recorders are identified by their own recorder "
+            "check; skipping the legacy startup probe")
+    else:
         try:
-            channels = [{"channel": c.channel, "name": c.name}
-                        for c in _synced_inventory(driver)]
-            # Read analytics while the driver is open. Best-effort and
-            # read-only; never changes a setting on the device.
+            driver, device = open_driver(boot_cfg)
             try:
-                capabilities = driver.capabilities()
-            except Exception:                    # noqa: BLE001
-                capabilities = None
-        finally:
-            driver.close()
-    except (DriverError, SystemExit) as e:
-        for line in str(e).splitlines():
-            if line.strip():
-                log(f"WARNING: NVR not identified: {line.strip()[:200]}")
-        # Run the scan automatically, once, at startup. Telling someone to
-        # "go and run --probe" assumes they will read the log, be at that
-        # machine, and try again. They usually just run it the same way
-        # again, and we learn nothing. Fifteen seconds spent here answers
-        # the question the first time.
-        if cfg.nvr_url:
-            try:
-                host = discover.host_of(cfg.nvr_url)
-                discover.report(host,
-                                discover.scan(cfg.nvr_url, log=log),
-                                log=log)
-            except Exception as se:                    # noqa: BLE001
-                log(f"scan failed: {type(se).__name__}: {se}")
+                channels = [{"channel": c.channel, "name": c.name}
+                            for c in _synced_inventory(driver)]
+                # Read analytics while the driver is open. Best-effort and
+                # read-only; never changes a setting on the device.
+                try:
+                    capabilities = driver.capabilities()
+                except Exception:                    # noqa: BLE001
+                    capabilities = None
+            finally:
+                driver.close()
+        except (DriverError, SystemExit) as e:
+            for line in str(e).splitlines():
+                if line.strip():
+                    log(f"WARNING: NVR not identified: {line.strip()[:200]}")
+            # Run the scan automatically, once, at startup. Telling someone to
+            # "go and run --probe" assumes they will read the log, be at that
+            # machine, and try again. They usually just run it the same way
+            # again, and we learn nothing. Fifteen seconds spent here answers
+            # the question the first time.
+            if boot_cfg.nvr_url:
+                try:
+                    host = discover.host_of(boot_cfg.nvr_url)
+                    discover.report(host,
+                                    discover.scan(boot_cfg.nvr_url, log=log),
+                                    log=log)
+                except Exception as se:                    # noqa: BLE001
+                    log(f"scan failed: {type(se).__name__}: {se}")
 
     if state:
         log(f"already enrolled as {state['agent_id']} - skipping enrollment")

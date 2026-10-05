@@ -200,5 +200,39 @@ def test_reconnect_wait_honours_a_short_wait_and_a_credential_change(monkeypatch
     assert outcome == "reload" and gen == "gen-2" and Cfg.reloaded
 
 
+def test_an_unreadable_changed_credential_does_not_end_the_reconnect_wait(monkeypatch):
+    """A registry recorder's blob that is missing, mid-replace or briefly unreadable reads as
+    generation "absent"/"unknown". The reload then raised out of _reconnect_wait, which both
+    collectors call outside their try block, so the recorder's collector thread died for good.
+    """
+    stop = threading.Event()
+    logs = []
+
+    class Cfg:
+        recorder_local_id = "5e1f0000-0000-4000-8000-0000000000aa"
+        nvr_username = "admin"
+        nvr_password = "old"
+
+    def unreadable(_local_id):
+        raise core.credential_store.SecretError("recorder credential missing for x")
+
+    monkeypatch.setattr(core, "log", logs.append)
+    monkeypatch.setattr(core.credential_store, "recorder_credential_generation",
+                        lambda _local_id: "unknown")
+    monkeypatch.setattr(core.credential_store, "load_recorder_credential", unreadable)
+    cfg = Cfg()
+    outcome, gen = core._reconnect_wait(stop, cfg, 0, "gen-1", seconds=0.2)
+    assert (outcome, gen) == ("timeout", "gen-1"), "last_gen is kept so the reload is retried"
+    assert cfg.nvr_password == "old", "the current login is kept"
+    assert any("could not be read yet" in line for line in logs)
+
+    monkeypatch.setattr(core.credential_store, "recorder_credential_generation",
+                        lambda _local_id: "gen-2")
+    monkeypatch.setattr(core.credential_store, "load_recorder_credential",
+                        lambda _local_id: {"username": "admin", "password": "new"})
+    outcome, gen = core._reconnect_wait(stop, cfg, 0, "gen-1", seconds=0.2)
+    assert (outcome, gen) == ("reload", "gen-2") and cfg.nvr_password == "new"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

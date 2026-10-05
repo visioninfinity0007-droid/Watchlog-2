@@ -30,6 +30,11 @@ def main():
     build_ui = text("prototype/agent/build_setup_gui.ps1")
     release = text("tools/build_windows_release.ps1")
     release_workflow = text(".github/workflows/windows-release.yml")
+    ci = text(".github/workflows/ci.yml")
+    security_gate = text(".github/workflows/windows-security-gate.yml")
+    setup_ui_job = ci[ci.index("\n  setup-ui-build:"):ci.index("\n  installer-contract:")]
+    installer_job = ci[ci.index("\n  installer-contract:"):ci.index("\n  integration:")]
+    gate_triggers = security_gate[security_gate.index("\non:"):security_gate.index("\njobs:")]
 
     checks = {
         "GUI is real PySide6": "from PySide6" in gui,
@@ -67,11 +72,54 @@ def main():
         "interruptible auth breaker (5/15/30, wake on cred change)": "_reconnect_wait" in agent and "credential_generation" in agent and "_AUTH_BACKOFF_SECONDS" in agent,
         "NSIS packages setup UI": 'File "watchlog-setup-ui.exe"' in nsis,
         "NSIS launches branded setup": 'watchlog-setup-ui.exe' in nsis,
+        "installed product exposes Site Status directly":
+            'WatchLog Site Status.lnk' in nsis and '--status --config' in nsis,
+        "installed product exposes Manage Recorders directly":
+            'WatchLog Manage Recorders.lnk' in nsis and '--manage-recorders --config' in nsis,
+        "uninstall removes multi-recorder shortcuts":
+            'Delete "${STARTMENU}\\WatchLog Site Status.lnk"' in nsis
+            and 'Delete "${STARTMENU}\\WatchLog Manage Recorders.lnk"' in nsis,
         "NSIS no longer launches agent --setup": 'watchlog-agent.exe\" --setup' not in nsis,
+        "Setup / Site Status / Manage Recorders request elevation before Secrets or task work":
+            "ctypes.windll.shell32.IsUserAnAdmin()" in gui
+            and '"runas"' in gui
+            and "ADMIN_REQUIRED_EXIT" in gui
+            and "if not _is_elevated():" in gui
+            and gui.index("if not _is_elevated():", gui.index("def main() -> int:"))
+            < gui.index("if args.status:", gui.index("def main() -> int:"))
+            < gui.index("if args.manage_recorders:", gui.index("def main() -> int:")),
         "release packages setup UI": "watchlog-setup-ui.exe" in release,
         "release rejects small setup UI": "setupUiBytes -lt 5MB" in release,
         "release workflow verifies setup UI": "Verified setup UI" in release_workflow and "--migrate-only" in release_workflow,
+        "CI runs the FROZEN setup UI through the recorder registry + per-recorder DPAPI selftest":
+            "'--registry-selftest'" in setup_ui_job
+            and "Start-Process" in setup_ui_job
+            and "$body.ok" in setup_ui_job,
+        "CI runs the Repair/Upgrade, registry preflight/staging and elevation tests on Windows":
+            all(name in setup_ui_job for name in (
+                "prototype/tests/test_existing_site_repair.py",
+                "prototype/tests/test_setup_registry_selftest.py",
+                "prototype/tests/test_setup_gui_elevation.py",
+                "prototype/tests/test_pilot_hardening.py"))
+            # the whole file, UpgradeAndUninstallLifecycleTests included, not one class of it
+            and "test_pilot_hardening.py::" not in setup_ui_job
+            and "python -m pytest" in setup_ui_job,
+        "CI compiles the Repair/Upgrade NSIS, not only at release time":
+            'Copy-Item prototype\\installer\\nsis\\watchlog-repair.nsi' in installer_job
+            and 'Copy-Item prototype\\installer\\wl-repair-upgrade.ps1' in installer_job
+            and '"watchlog-repair.nsi"' in installer_job
+            and "WatchLog-Repair-Upgrade.exe" in installer_job,
+        "Windows security gate runs on pull requests to main":
+            "pull_request:" in gate_triggers and "branches: [main]" in gate_triggers,
         "uninstall removes the encrypted Secrets store": "RMDir /r" in nsis and "Secrets" in nsis,
+        "uninstall removes the recorder registry and per-recorder state with the identity":
+            all(target in nsis.split('Section "Uninstall"')[-1] for target in (
+                'Delete "${DATAROOT}\\recorders.json"',
+                'Delete "${DATAROOT}\\recorders.json.tmp"',
+                'RMDir /r "${DATAROOT}\\Secrets\\recorders"',
+                'RMDir /r "${DATAROOT}\\recorders"'))
+            and nsis.index('Delete "${DATAROOT}\\recorders.json"')
+            < nsis.index('RMDir /r "${DATAROOT}\\Secrets"'),
         "setup sidebar uses customer language": "SITE CONNECTION SETUP" in gui and "SITE AGENT SETUP" not in gui,
         "setup does not expose DPAPI terminology": "Protected with Windows DPAPI" not in gui,
         "setup does not expose engineering validation labels": "field-validated driver" not in gui and "model still needs field acceptance" not in gui,

@@ -109,7 +109,7 @@ def driver(session: Session) -> HikvisionDriver:
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     # A private lock per test, and no FFmpeg probe: these fakes are not real media.
-    monkeypatch.setattr(ha, "HIKVISION_HTTP_LOCK", threading.RLock())
+    monkeypatch.setattr(sys.modules["drivers.hikvision"], "_HTTP_LOCKS", {})
     monkeypatch.setattr(ha, "_probe_clip", lambda data: None, raising=False)
 
 
@@ -154,7 +154,7 @@ def test_lock_wait_does_not_spend_the_download_budget(monkeypatch):
     held = threading.Event()
 
     def holder():
-        with ha.HIKVISION_HTTP_LOCK:     # e.g. recovery or the archive scan mid-download
+        with ha.recorder_http_lock("http://192.168.1.64"):     # e.g. recovery or the archive scan mid-download
             held.set()
             time.sleep(1.5)
 
@@ -172,7 +172,7 @@ def test_lock_wait_is_bounded_and_reported_as_a_retryable_timeout(monkeypatch):
     held, release = threading.Event(), threading.Event()
 
     def holder():
-        with ha.HIKVISION_HTTP_LOCK:
+        with ha.recorder_http_lock("http://192.168.1.64"):
             held.set()
             release.wait(3)
 

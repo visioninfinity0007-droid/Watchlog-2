@@ -69,6 +69,10 @@ class Event:
     # event. Kept off the driver so a slow or broken camera snapshot can
     # never delay or lose the event itself.
     snapshot_b64: str | None = None
+    # Cloud recorder UUID assigned by wl_sync_recorders. Drivers never invent
+    # this; the Agent stamps it at the RecorderContext boundary. Kept after the
+    # historical fields so older positional Event(...) constructors stay valid.
+    recorder_id: str | None = None
 
     def to_json(self, agent_ts: datetime) -> dict:
         out = {
@@ -81,9 +85,14 @@ class Event:
             "agent_ts": _iso(agent_ts),
             "payload": self.payload,
         }
+        if self.recorder_id:
+            out["recorder_id"] = str(self.recorder_id)
         if self.snapshot_b64:
             out["snapshot_b64"] = self.snapshot_b64
         return out
+
+    def with_recorder_id(self, recorder_id: str | None) -> "Event":
+        return replace(self, recorder_id=str(recorder_id)) if recorder_id else self
 
     def with_snapshot(self, b64: str | None) -> "Event":
         return replace(self, snapshot_b64=b64) if b64 else self
@@ -109,6 +118,13 @@ class NvrAuthFailed(DriverError):
     """The recorder answered but rejected our credentials (HTTP 401/403). Distinct from
     unreachable: the box is there, the username/password is wrong — so this must read as
     a recorder-auth fault, never as a camera being offline or 'cameras could not be added'."""
+
+
+class RecorderIdentityMismatch(DriverError):
+    """A device answered at this recorder's address, but it reports a different serial
+    number than the recorder saved for it (an address swap, a replaced unit). Its cameras
+    and events are not this recorder's, so nothing is collected or synced from it; what
+    the saved recorder's cameras are doing is unknown until Setup confirms the recorder."""
 
 
 def explain(e: Exception) -> str:

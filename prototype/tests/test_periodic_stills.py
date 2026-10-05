@@ -155,7 +155,7 @@ def _no_env(monkeypatch):
     monkeypatch.delenv("WATCHLOG_PERIODIC_STILL_SECONDS", raising=False)
     monkeypatch.setattr(core, "log", lambda _m: None)
     # Never read the real credential store under ProgramData from a unit test.
-    monkeypatch.setattr(core, "_credential_generation", lambda: "gen-0")
+    monkeypatch.setattr(core, "_credential_generation", lambda _cfg: "gen-0")
 
 
 # --- contract ------------------------------------------------------------------------------
@@ -526,7 +526,7 @@ def test_credential_change_in_setup_wakes_the_auth_back_off(monkeypatch):
     clock = SimClock()
     changed_at = clock.t + 120.0
     monkeypatch.setattr(core, "_credential_generation",
-                        lambda: "gen-1" if clock.t >= changed_at else "gen-0")
+                        lambda _cfg: "gen-1" if clock.t >= changed_at else "gen-0")
     attempts, reloads = [], []
     driver = FakeDriver(clock)
 

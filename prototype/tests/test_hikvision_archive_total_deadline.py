@@ -100,7 +100,9 @@ class RealSocketDeadline(unittest.TestCase):
         self.drv = HikvisionDriver(f"http://127.0.0.1:{self.server.server_address[1]}", "u", "p",
                                    timeout=5)
         self.drv.s.trust_env = False                # never send loopback traffic through a proxy
-        patcher = mock.patch.object(ha, "HIKVISION_HTTP_LOCK", threading.RLock())
+        # A lock of this test's own: archive work is serialised per recorder.
+        lock = threading.RLock()
+        patcher = mock.patch.object(ha, "_http_lock", lambda _driver: lock)
         patcher.start()
         self.addCleanup(patcher.stop)
 

@@ -36,7 +36,9 @@ jobs:
       - name: Repair downgrade guard (5.0.28 Repair refuses a multi-recorder site; reader runs under pwsh)
         run: python -m pytest prototype/tests/test_repair_multi_recorder_guard.py -q
       - name: Agent identity + camera enrollment tests
-        run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py -q
+        run: python -m pytest prototype/tests/test_camera_enrollment.py prototype/tests/test_credential_store.py prototype/tests/test_recorder_registry.py prototype/tests/test_recorder_runtime.py prototype/tests/test_multi_recorder_event_identity.py prototype/tests/test_multi_recorder_health_store.py prototype/tests/test_multi_recorder_runtime_adapters.py prototype/tests/test_multi_recorder_cloud_binding.py prototype/tests/test_multi_recorder_camera_job_runtime.py prototype/tests/test_multi_recorder_analytics_runtime.py prototype/tests/test_multi_recorder_fanout.py prototype/tests/test_multi_recorder_continuity.py prototype/tests/test_recorder_manager.py prototype/tests/test_legacy_credential_registry_site.py -q
+      - name: Multi-recorder first install (Setup add-another path, per-recorder rows, credentials, binding and cameras; Manage Recorders kept events; installer-child wiring; unknown vendor/model stays unknown)
+        run: python -m pytest prototype/tests/test_multi_recorder_initial_install.py prototype/tests/test_setup_gui_multi_recorder_flow.py prototype/tests/test_manage_recorders_retained_events.py prototype/tests/test_installer_child_wiring.py prototype/tests/test_setup_unknown_recorder_identity.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
         run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py prototype/tests/test_reconcile_split.py prototype/tests/test_fault_model.py prototype/tests/test_apply_migrations.py -q
       - name: WordPress PHP syntax
@@ -52,13 +54,21 @@ jobs:
           python prototype/tests/test_agent_run_dispatch.py
           python prototype/tests/test_native_nvr_incident_evidence.py
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
+      - name: Multi-recorder Agent with the 5.0.28 live-site fixes (worker survival, last_live, stream liveness, recovery claims, redaction, singleton worker survival, recovery RPC contract, per-recorder periodic stills and ONVIF stream reporting)
+        run: python -m pytest prototype/tests/test_fanout_stream_last_live.py prototype/tests/test_health_worker_survival.py prototype/tests/test_recorder_recovery_rules.py prototype/tests/test_incident_routed_recorder_redaction.py prototype/tests/test_fanout_recovery_worker_survival.py prototype/tests/test_fanout_quiet_stream_liveness.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_recorder_release.py prototype/tests/test_fanout_periodic_stills.py prototype/tests/test_fanout_onvif_stream_liveness.py -q
+      - name: Multi-recorder registry trust, same-site reinstall, secondary disable, single-recorder job routing, claimed-command completion
+        run: python -m pytest prototype/tests/test_registry_trust.py prototype/tests/test_recorder_registry_reinstall.py prototype/tests/test_disable_secondary_runtime.py prototype/tests/test_single_recorder_job_routing.py prototype/tests/test_claimed_command_completion.py -q
+      - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write, busy registry during binding, address-swap identity refusal, channel-keyed analytics profile)
+        run: python -m pytest prototype/tests/test_multi_recorder_spool_stamp_bounded.py prototype/tests/test_incident_footage_recorder_isolation.py prototype/tests/test_analytics_sampler_backoff.py prototype/tests/test_recording_current_multi_recorder.py prototype/tests/test_worker_credential_reload.py prototype/tests/test_analytics_sampler_channel_isolation.py prototype/tests/test_incident_footage_claim_backlog.py prototype/tests/test_multi_recorder_identity_write_race.py prototype/tests/test_recorder_identity_address_swap.py prototype/tests/test_analytics_bootstrap_multi_recorder.py prototype/tests/test_registry_busy_during_binding.py -q
+      - name: Recorder push per recorder, Agent/bridge alarm parity, Site Control recorder routing and read catalog
+        run: python -m pytest prototype/tests/test_recorder_push_scoped.py prototype/tests/test_recorder_push_setup.py prototype/tests/test_push_bridge.py prototype/tests/test_push_bridge_dahua.py prototype/tests/test_site_control.py prototype/tests/test_site_control_recorder_routing.py -q
       - name: Agent 5.0.28 live-site gates (ONVIF driver, incident evidence, event streams, recovery wiring)
         run: |
           python -m pytest prototype/tests/test_onvif_*.py prototype/tests/test_incident_*.py -q
           python -m pytest prototype/tests/test_event_stream_liveness.py prototype/tests/test_shipped_last_live.py prototype/tests/test_native_collector_reconnect.py prototype/tests/test_shipped_spool_cap.py prototype/tests/test_collector_recorder_scope.py prototype/tests/test_event_json_channel.py prototype/tests/test_probe_recorder_scoped_event.py -q
-          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
-          python -m pytest prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_hikvision_terminal.py -q
-          python -m pytest prototype/tests/test_periodic_stills.py -q
+          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_alarm_input_scope.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
+          python -m pytest prototype/tests/test_recovery_hikvision_terminal.py -q
+          python -m pytest prototype/tests/test_periodic_stills.py prototype/tests/test_periodic_stills_recorder_identity.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
       - name: Stale incident clip recovery contract (0142, applied in production)
@@ -277,6 +287,9 @@ jobs:
           # signature raised TypeError). Pure protect/unprotect, no DACL/elevation.
           python -c "from windows_secret import protect_bytes, unprotect_bytes; b=b'recorder-test-secret'; assert unprotect_bytes(protect_bytes(b)) == b; print('DPAPI round trip OK')"
           if ($LASTEXITCODE -ne 0) { throw "DPAPI round trip failed: $LASTEXITCODE" }
+          # Multi-recorder credential helper uses one independent DPAPI blob per recorder.
+          python -c "import uuid, credential_store as c; rid=str(uuid.uuid4()); c.save_recorder_credential(rid,'ci-user','ci-recorder-pw'); x=c.load_recorder_credential(rid); assert x['username']=='ci-user' and x['password']=='ci-recorder-pw' and x['local_id']==rid; c.delete_recorder_credential(rid); print('per-recorder DPAPI round trip OK')"
+          if ($LASTEXITCODE -ne 0) { throw "per-recorder DPAPI helper failed: $LASTEXITCODE" }
           # Real migration: seed a legacy watchlog.env in an isolated ProgramData and
           # prove the frozen setup UI migrates it into the encrypted split store
           # (a blank config would be a no-op that proves nothing about the store).
@@ -299,6 +312,55 @@ jobs:
           if (Test-Path (Join-Path $wl "watchlog.env")) { throw "legacy watchlog.env not removed after migration" }
           Remove-Item $pd -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "DPAPI round trip + real legacy migration verified."
+      - name: Exercise the frozen recorder registry selftest
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The PACKAGED exe migrates a legacy singleton into recorders.json + a per-recorder
+          # DPAPI blob, adds an independent second recorder, loads contexts with the Agent's
+          # own loader and rolls the unbound one back, inside a private temporary ProgramData
+          # it creates itself. No window. Start-Process -Wait: & does not wait for GUI exes.
+          $result = Join-Path $env:RUNNER_TEMP "wl-registry-selftest.json"
+          if (Test-Path $result) { Remove-Item $result -Force }
+          $rp = Start-Process -FilePath (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path -ArgumentList @('--registry-selftest','--result-json',"`"$result`"") -Wait -PassThru
+          if (-not (Test-Path $result)) { throw "frozen registry selftest wrote no result (exit $($rp.ExitCode))" }
+          $body = Get-Content $result -Raw | ConvertFrom-Json
+          $body.checks | Format-List | Out-String | Write-Host
+          if ($rp.ExitCode -ne 0 -or -not $body.ok) { throw "frozen registry selftest failed (exit $($rp.ExitCode)): $($body.error)" }
+          Write-Host "Frozen recorder registry + per-recorder DPAPI selftest PASSED."
+      - name: Exercise the frozen setup UI selftest (standalone and installer child)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The PACKAGED window runs its own flow checks, including the multi-recorder first
+          # install: Add another recorder before Connect, one login and one name per recorder,
+          # cameras grouped by recorder with shared channel numbers. Standalone keeps the
+          # retryable login timeout; installer-child mode must close itself for NSIS.
+          # Start-Process -Wait: & does not wait for GUI-subsystem exes.
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $exe = (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path
+          foreach ($mode in @('--ui-selftest', '--ui-selftest --installer-child')) {
+            $started = Get-Date
+            $p = Start-Process -FilePath $exe -ArgumentList $mode -Wait -PassThru
+            $elapsed = ((Get-Date) - $started).TotalSeconds
+            Write-Host "frozen setup UI selftest ($mode): exit $($p.ExitCode), $([math]::Round($elapsed,1))s"
+            if ($p.ExitCode -ne 0) { throw "frozen setup UI selftest ($mode) failed with exit $($p.ExitCode)" }
+            # Hang guard, not a speed target: the time includes the one-file exe unpacking itself
+            # (about 259 MB) on the runner's disk. 15 s measured 15.2 s and under 15 s on GitHub
+            # for the same commit; a stuck installer-child window never exits at all.
+            if ($elapsed -gt 30) { throw "frozen setup UI selftest ($mode) took $([math]::Round($elapsed,1))s" }
+          }
+          Write-Host "Frozen setup UI selftest PASSED (standalone and installer child)."
+      - name: Repair/Upgrade, registry preflight/staging and elevation tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # They drive the real Repair/Upgrade orchestrator and upgrade helper through Windows
+          # PowerShell, so they need this Windows job (the Linux backend job cannot run them).
+          python -m pip install --disable-pip-version-check --quiet pytest pillow
+          if ($LASTEXITCODE -ne 0) { throw "test dependency install failed ($LASTEXITCODE)" }
+          python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py
+          if ($LASTEXITCODE -ne 0) { throw "Repair/Upgrade, registry and elevation tests failed ($LASTEXITCODE)" }
       - name: Repair downgrade guard under Windows PowerShell 5.1 (whole orchestrator, sandbox ProgramData)
         shell: powershell
         run: |
@@ -325,6 +387,8 @@ jobs:
           Copy-Item prototype\installer\register-service.ps1 (Join-Path $stage "register-service.ps1")
           Copy-Item prototype\installer\apply-remote-update.ps1 (Join-Path $stage "apply-remote-update.ps1")
           Copy-Item prototype\installer\nsis\wl-upgrade.ps1 (Join-Path $stage "wl-upgrade.ps1")
+          Copy-Item prototype\installer\nsis\watchlog-repair.nsi (Join-Path $stage "watchlog-repair.nsi")
+          Copy-Item prototype\installer\wl-repair-upgrade.ps1 (Join-Path $stage "wl-repair-upgrade.ps1")
           Copy-Item "prototype\installer\READ ME FIRST.txt" (Join-Path $stage "READ ME FIRST.txt")
           Copy-Item prototype\installer\setup.ico (Join-Path $stage "setup.ico")
           # Syntax contract only: the real release workflow separately builds
@@ -346,6 +410,17 @@ jobs:
           Pop-Location
           if ($rc -ne 0) { throw "makensis failed with exit $rc" }
           if (-not (Test-Path (Join-Path $stage "WatchLog-Setup.exe"))) { throw "NSIS output missing" }
+          # Repair/Upgrade used to be compiled only by the release build, so a script
+          # regression merged green. Same zero-warning rule as the release build.
+          Push-Location $stage
+          $repairOut = & $makensis "/DICON=setup.ico" "watchlog-repair.nsi" 2>&1 | Out-String
+          $repairRc = $LASTEXITCODE
+          Pop-Location
+          Write-Host $repairOut
+          if ($repairRc -ne 0) { throw "repair makensis failed with exit $repairRc" }
+          if (-not (Test-Path (Join-Path $stage "WatchLog-Repair-Upgrade.exe"))) { throw "Repair/Upgrade NSIS output missing" }
+          $repairWarnings = ($repairOut -split "`r?`n") | Where-Object { $_ -match 'warning \d+:' }
+          if ($repairWarnings) { throw "Repair NSIS emitted warnings:`n$($repairWarnings -join "`n")" }
       - name: Transactional upgrade helper tests (locked-EXE gate, version truth, rollback, targeted kill)
         shell: powershell
         run: |
@@ -469,6 +544,19 @@ jobs:
         run: python prototype/tests/e2e_recovery_agent_payload_pg.py
       - name: Recorder-scoped live events ingest with no camera — JSON null channel, flag kept
         run: python prototype/tests/e2e_recorder_scoped_ingest_pg.py
+      - name: Setup recorder disable + same-site reinstall against the recorder registry contract (needs 0146-0155)
+        run: |
+          # The multi-recorder migrations ship on mr/db-contracts; a tree without them has no
+          # recorder registry contract to run these against.
+          if ls prototype/supabase/migrations/0154_multi_recorder_continuity_owner.sql >/dev/null 2>&1; then
+            python prototype/tests/e2e_setup_recorder_disable_pg.py
+            python prototype/tests/e2e_setup_recorder_reinstall_pg.py
+          else
+            # Not run here: this is no lineage proof for this tree. Say so on the run page.
+            msg="NOT RUN: e2e_setup_recorder_disable_pg.py and e2e_setup_recorder_reinstall_pg.py need migrations 0146-0156 (DB contract v4, mr/db-contracts), which are not in this tree; recorder add/disable/re-add lineage is unproven for this commit"
+            echo "::warning title=Recorder lineage e2e not run::$msg"
+            echo "$msg" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
       - name: Recovered intelligence ingests with recovered provenance — historical device_ts, snapshot, idempotent
         run: python prototype/tests/e2e_recovery_ingest_pg.py
       - name: Agent periodic stills reach ingest and the visual-review consumer (0125/0126) — production contract

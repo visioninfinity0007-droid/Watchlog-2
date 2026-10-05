@@ -10,27 +10,57 @@ import base64
 from datetime import datetime
 import hashlib
 import os
+import queue
 import re
 import subprocess
 import tempfile
 import threading
+import time
 from urllib.parse import urlparse
 
 import requests
 
 import recovery_ai
 import watchlog_agent as core
+import recorder_registry
+import recorder_runtime
 from drivers import DriverError, NvrDriver
 
 POLL_SECONDS = 15
+# Claimed clip requests fetched at once or waiting on this PC. Each recorder's clips are
+# fetched by that recorder's own worker, so a slow export on one recorder never delays
+# another's (MNVR-034). A claimed request is 'processing' and is not handed back if the Agent
+# stops, so claiming keeps the 5.0.28 pacing for each recorder: a request is claimed only
+# while nothing is held, or while a known recorder of the site is idle and fewer than
+# FOOTAGE_MAX_IN_FLIGHT recorders are busy. A single-recorder or legacy site therefore holds
+# one request at a time. Requests are claimed oldest first for the whole site, so an idle
+# recorder's request may sit behind another recorder's backlog: claiming then continues, up
+# to FOOTAGE_MAX_CLAIMED.
+FOOTAGE_MAX_IN_FLIGHT = 4
+FOOTAGE_MAX_CLAIMED = 12
+SITE_RECORDERS_REFRESH_SECONDS = 60
+FOOTAGE_CAPACITY_WAIT_SECONDS = 1.0
 BACKEND_MISSING_RETRY_SECONDS = 300
 CHUNK_BYTES = 512 * 1024
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 STILL_POLL_SECONDS = 15
 STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
+# Stills, like clips, are taken by each recorder's own worker, so an unreachable recorder's
+# connect timeouts never delay another recorder's still (contract sections 8 and 12). A claimed
+# still is reclaimable after 0058's 5-minute lease, so fewer wait here than clips.
+STILL_MAX_IN_FLIGHT = 4
+STILL_MAX_CLAIMED = 6
+# After a recorder could not be opened for a still, its next stills within this window fail
+# straight away (retryable under 0058's attempt budget) instead of each paying the timeout again.
+STILL_RECORDER_RETRY_SECONDS = 30
 REMUX_TIMEOUT_SECONDS = 60
 UNSUPPORTED_FOOTAGE = ("This recorder does not expose on-demand incident footage through the "
                        "validated WatchLog path.")
+# Customer-visible clip outcomes for failures that are not the recorder's own answer. Exception
+# names, local recorder ids and routing or credential text are not customer language; the
+# detail goes to the agent log.
+FOOTAGE_FAILED = "Recorder could not provide this footage."
+RECORDER_UNAVAILABLE = "This recorder is not available to WatchLog on the site PC right now."
 # Customer-visible still outcomes. Driver and library text (endpoints, HTTP codes, exception
 # names) is not customer language, so a failed still is always one of these; the detail goes
 # to the agent log.
@@ -77,17 +107,15 @@ def _recorder_hosts(cfg) -> tuple:
 
 def _safe_reason(error: Exception, hosts=(),
                  redacted: str = "Recorder could not export the requested footage window.") -> str:
+    if not isinstance(error, DriverError):
+        return UNSUPPORTED_FOOTAGE if _is_unsupported(error) else FOOTAGE_FAILED
     lines = str(error).splitlines()
-    first = lines[0] if lines else ""
-    if isinstance(error, DriverError):
-        text = first[:220]
-    else:
-        text = f"{type(error).__name__}: {first[:180]}" if first else ""
+    text = (lines[0] if lines else "")[:220]
     # Do not leak local recorder URLs, host names or LAN addresses in cloud-visible error text.
     low = text.lower()
     if _RECORDER_ADDRESS.search(text) or any(host.lower() in low for host in hosts if host):
         return redacted
-    return text or "Recorder could not provide this footage."
+    return text or FOOTAGE_FAILED
 
 
 def _is_unsupported(error: Exception) -> bool:
@@ -249,96 +277,251 @@ def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> Non
     )
 
 
-def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
-    cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
-    hosts = _recorder_hosts(cfg)
-    missing_backend_logged = False
-    while not stop.is_set():
-        try:
-            requests_list = cloud.call(
-                "wl_agent_claim_clip_requests",
+def _serve_clip_request(cloud, state: dict, cfg, hosts: tuple, row: dict) -> None:
+    """Fetch and upload one claimed clip request on the recorder it names."""
+    request_id = str(row.get("request_id") or "")
+    channel = str(row.get("channel") or "")
+    driver = job_cfg = None
+    try:
+        # Footage/archive APIs are vendor-specific. A site's proven live path may
+        # still be ONVIF; recorded media gets one bounded native-vendor attempt without
+        # changing the live monitoring driver or exporting credentials.
+        job_cfg = recorder_runtime.config_for_cloud_recorder(
+            cfg, row.get("recorder_id")
+        )
+        driver, info = core.open_archive_driver(job_cfg)
+        start = _parse_time(row["start_at"])
+        end = _parse_time(row["end_at"])
+        core.log(
+            f"incident footage: retrieving {int((end-start).total_seconds())}s "
+            f"from ch{channel} via {driver.name}"
+        )
+        data = _get_clip(driver, row, channel, start, end)
+        if not data:
+            unsupported, reason = _no_footage_outcome(driver, info)
+            cloud.call(
+                "wl_agent_fail_clip",
                 p_agent_id=state["agent_id"],
                 p_agent_key=state["agent_key"],
-                p_limit=1,
-            ) or []
-            missing_backend_logged = False
-        except (RuntimeError, requests.RequestException) as error:
-            if _backend_missing(error):
-                if not missing_backend_logged:
-                    core.log("incident footage: backend 0040 not deployed; worker idle")
-                    missing_backend_logged = True
-                stop.wait(BACKEND_MISSING_RETRY_SECONDS)
-            else:
-                core.log("incident footage: request poll failed; will retry: "
-                         + str(error).splitlines()[0][:160])
-                stop.wait(POLL_SECONDS)
-            continue
-
-        if not requests_list:
-            stop.wait(POLL_SECONDS)
-            continue
-
-        for row in requests_list:
-            request_id = str(row.get("request_id") or "")
-            channel = str(row.get("channel") or "")
-            if not request_id or not channel:
-                continue
-            driver = None
+                p_request_id=request_id,
+                p_reason=reason,
+                p_unsupported=unsupported,
+            )
+            core.log(
+                f"incident footage: {info.vendor} {info.model or ''} returned no footage via "
+                f"{driver.name} ({'unsupported' if unsupported else 'failed'})"
+            )
+            return
+        _upload(cloud, state, request_id, data, driver.name)
+        core.log(
+            f"incident footage: uploaded {len(data) // 1024} KB for request {request_id[:8]}"
+        )
+    except Exception as error:  # noqa: BLE001
+        if job_cfg is None:
+            # The request could not be routed to a usable local recorder (no single mapping,
+            # unreadable credential, untrusted registry): internal detail, local log only.
+            reason = RECORDER_UNAVAILABLE
+        else:
+            # The job ran on the recorder it names: redact that recorder's host too.
+            reason = _safe_reason(error, hosts + _recorder_hosts(job_cfg))
+        try:
+            cloud.call(
+                "wl_agent_fail_clip",
+                p_agent_id=state["agent_id"],
+                p_agent_key=state["agent_key"],
+                p_request_id=request_id,
+                p_reason=reason,
+                p_unsupported=_is_unsupported(error),
+            )
+        except Exception:
+            pass
+        detail = getattr(error, "detail", "")
+        core.log(
+            f"incident footage: request {request_id[:8]} failed: "
+            f"{type(error).__name__}: {str(error)[:140]}" + (f" [{detail}]" if detail else "")
+        )
+    finally:
+        if driver is not None:
             try:
-                # Footage/archive APIs are vendor-specific. A site's proven live path may
-                # still be ONVIF; recorded media gets one bounded native-vendor attempt without
-                # changing the live monitoring driver or exporting credentials.
-                driver, info = core.open_archive_driver(cfg)
-                start = _parse_time(row["start_at"])
-                end = _parse_time(row["end_at"])
-                core.log(
-                    f"incident footage: retrieving {int((end-start).total_seconds())}s "
-                    f"from ch{channel} via {driver.name}"
-                )
-                data = _get_clip(driver, row, channel, start, end)
-                if not data:
-                    unsupported, reason = _no_footage_outcome(driver, info)
-                    cloud.call(
-                        "wl_agent_fail_clip",
-                        p_agent_id=state["agent_id"],
-                        p_agent_key=state["agent_key"],
-                        p_request_id=request_id,
-                        p_reason=reason,
-                        p_unsupported=unsupported,
-                    )
-                    core.log(
-                        f"incident footage: {info.vendor} {info.model or ''} returned no footage via "
-                        f"{driver.name} ({'unsupported' if unsupported else 'failed'})"
-                    )
-                    continue
-                _upload(cloud, state, request_id, data, driver.name)
-                core.log(
-                    f"incident footage: uploaded {len(data) // 1024} KB for request {request_id[:8]}"
-                )
-            except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error, hosts)
-                try:
-                    cloud.call(
-                        "wl_agent_fail_clip",
-                        p_agent_id=state["agent_id"],
-                        p_agent_key=state["agent_key"],
-                        p_request_id=request_id,
-                        p_reason=reason,
-                        p_unsupported=_is_unsupported(error),
-                    )
-                except Exception:
-                    pass
-                detail = getattr(error, "detail", "")
-                core.log(
-                    f"incident footage: request {request_id[:8]} failed: "
-                    f"{type(error).__name__}: {str(error)[:140]}" + (f" [{detail}]" if detail else "")
-                )
+                driver.close()
+            except Exception:
+                pass
+
+
+class _RecorderWorkers:
+    """One worker thread per recorder, each with its own queue (MNVR-034).
+
+    ``serve(cloud, row)`` handles one claimed row on its recorder's thread."""
+
+    def __init__(self, cfg, stop: threading.Event, serve, label: str):
+        self._cfg, self._stop, self._serve, self._label = cfg, stop, serve, label
+        self._lock = threading.Lock()
+        self._queues: dict[str, queue.Queue] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._in_flight = 0
+        self._busy: dict[str, int] = {}      # recorder key -> requests held for it
+        self._closed = threading.Event()
+
+    def in_flight(self) -> int:
+        with self._lock:
+            return self._in_flight
+
+    def busy_recorders(self) -> set:
+        """Cloud recorder ids with a clip being fetched or waiting."""
+        with self._lock:
+            return {key for key, count in self._busy.items() if count > 0}
+
+    def submit(self, row: dict) -> None:
+        key = str(row.get("recorder_id") or "")
+        with self._lock:
+            self._in_flight += 1
+            self._busy[key] = self._busy.get(key, 0) + 1
+            work = self._queues.get(key)
+            if work is None:
+                work = self._queues[key] = queue.Queue()
+                worker = threading.Thread(
+                    target=self._run, args=(work, key), daemon=True,
+                    name=f"{self._label.replace(' ', '-')}-{key[:8] or 'site'}")
+                self._threads[key] = worker
+                worker.start()
+        work.put(row)
+
+    def _run(self, work: queue.Queue, key: str) -> None:
+        # Each worker has its own cloud session; claimed work is still finished after a
+        # stop, so a request this PC claimed is not left waiting for nothing.
+        cloud = core.Cloud(self._cfg.supabase_url, self._cfg.publishable_key)
+        while True:
+            try:
+                row = work.get(timeout=0.2)
+            except queue.Empty:
+                if self._stop.is_set() or self._closed.is_set():
+                    return
+                continue
+            try:
+                self._serve(cloud, row)
+            except BaseException as error:  # noqa: BLE001 — this recorder's worker must live on
+                core.worker_fault(self._label, error)
             finally:
-                if driver is not None:
-                    try:
-                        driver.close()
-                    except Exception:
-                        pass
+                with self._lock:
+                    self._in_flight -= 1
+                    self._busy[key] = self._busy.get(key, 1) - 1
+
+    def close(self) -> None:
+        """Let each worker finish the requests already handed to it, then end it."""
+        self._closed.set()
+        for worker in list(self._threads.values()):
+            worker.join()
+
+
+def _site_recorder_ids() -> set:
+    """Cloud ids of this site's configured recorders (empty when unknown or legacy)."""
+    try:
+        return {str(row["cloud_recorder_id"]) for row in recorder_registry.recorders()
+                if row.get("is_configured") and row.get("cloud_recorder_id")}
+    except Exception:  # noqa: BLE001 — unknown: claim as a single-recorder site would
+        return set()
+
+
+class _RegistryHold:
+    """Claim nothing while the recorder registry this Agent runs from does not load.
+
+    A job claimed then could only fail (recorder_runtime.config_for_cloud_recorder fails
+    it closed rather than run it on the legacy recorder); unclaimed, it waits in WatchLog
+    until Setup has restored the registry and the Agent has restarted on it."""
+
+    def __init__(self, label: str):
+        self._label, self._logged = label, False
+
+    def holding(self, cfg) -> bool:
+        if not recorder_runtime.registry_unavailable(cfg):
+            self._logged = False
+            return False
+        if not self._logged:
+            core.log(f"{self._label}: the recorder configuration on this PC is not "
+                     "available; no request is claimed until WatchLog Setup restores it")
+            self._logged = True
+        return True
+
+
+def _may_claim(workers: _RecorderWorkers, site_recorders: set,
+               max_in_flight: int = FOOTAGE_MAX_IN_FLIGHT,
+               max_claimed: int = FOOTAGE_MAX_CLAIMED) -> bool:
+    held = workers.in_flight()
+    if held == 0:
+        return True
+    if held >= max_claimed:
+        return False
+    busy = workers.busy_recorders()
+    if len(busy) >= max_in_flight:
+        return False
+    # A busy recorder's next request waits unclaimed (pending) in WatchLog, as in 5.0.28.
+    # An idle recorder's request may be queued behind another recorder's backlog.
+    return bool(site_recorders - busy)
+
+
+def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
+    """Claim clip requests for the site and hand each to its recorder's own worker.
+
+    The claim is site-wide, but retrieval is per recorder: a slow export on recorder A
+    never delays a clip on recorder B (MNVR-034). Claiming pauses while a request is held
+    and no known recorder of the site is idle, so a single-recorder or legacy site claims
+    one request at a time as 5.0.28 did; while one is idle it continues up to
+    FOOTAGE_MAX_CLAIMED, because the oldest-first claim may hold that recorder's request
+    behind a backlog."""
+    cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
+    hosts = _recorder_hosts(cfg)
+    workers = _RecorderWorkers(
+        cfg, stop, lambda worker_cloud, row: _serve_clip_request(
+            worker_cloud, state, cfg, hosts, row),
+        "incident footage")
+    missing_backend_logged = False
+    site_recorders, site_recorders_at = set(), None
+    held = _RegistryHold("incident footage")
+    try:
+        while not stop.is_set():
+            if held.holding(cfg):
+                stop.wait(POLL_SECONDS)
+                continue
+            if workers.in_flight() > 0:
+                now = time.monotonic()
+                if (site_recorders_at is None
+                        or now - site_recorders_at >= SITE_RECORDERS_REFRESH_SECONDS):
+                    site_recorders, site_recorders_at = _site_recorder_ids(), now
+                if not _may_claim(workers, site_recorders):
+                    stop.wait(FOOTAGE_CAPACITY_WAIT_SECONDS)
+                    continue
+            try:
+                requests_list = cloud.call(
+                    "wl_agent_claim_clip_requests",
+                    p_agent_id=state["agent_id"],
+                    p_agent_key=state["agent_key"],
+                    p_limit=1,
+                ) or []
+                missing_backend_logged = False
+            except (RuntimeError, requests.RequestException) as error:
+                if _backend_missing(error):
+                    if not missing_backend_logged:
+                        core.log("incident footage: backend 0040 not deployed; worker idle")
+                        missing_backend_logged = True
+                    stop.wait(BACKEND_MISSING_RETRY_SECONDS)
+                else:
+                    core.log("incident footage: request poll failed; will retry: "
+                             + str(error).splitlines()[0][:160])
+                    stop.wait(POLL_SECONDS)
+                continue
+
+            if not requests_list:
+                stop.wait(POLL_SECONDS)
+                continue
+
+            for row in requests_list:
+                request_id = str(row.get("request_id") or "")
+                channel = str(row.get("channel") or "")
+                if not request_id or not channel:
+                    continue
+                workers.submit(row)
+    finally:
+        workers.close()
 
 
 def _still_backend_missing(error: Exception) -> bool:
@@ -348,6 +531,91 @@ def _still_backend_missing(error: Exception) -> bool:
     )
 
 
+class _StillRecorderGate:
+    """Per-recorder memory of a failed open, so a dead recorder's stills fail fast."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failed_at: dict[str, float] = {}
+
+    def recently_failed(self, key: str) -> bool:
+        with self._lock:
+            at = self._failed_at.get(key)
+        return at is not None and time.monotonic() - at < STILL_RECORDER_RETRY_SECONDS
+
+    def opened(self, key: str, ok: bool) -> None:
+        with self._lock:
+            if ok:
+                self._failed_at.pop(key, None)
+            else:
+                self._failed_at[key] = time.monotonic()
+
+
+def _serve_still_request(cloud, state: dict, cfg, gate: _StillRecorderGate, row: dict) -> None:
+    """Capture and upload one claimed still on the recorder it names."""
+    request_id = str(row.get("request_id") or "")
+    channel = str(row.get("channel") or "")
+    key = str(row.get("recorder_id") or "")
+    driver = None
+    try:
+        if gate.recently_failed(key):
+            raise DriverError("the recorder did not answer a moment ago; not retried yet")
+        job_cfg = recorder_runtime.config_for_cloud_recorder(cfg, row.get("recorder_id"))
+        try:
+            driver, info = core.open_driver(job_cfg)
+        except Exception:
+            gate.opened(key, False)
+            raise
+        gate.opened(key, True)
+        raw = driver.get_snapshot(channel)
+        if not raw:
+            # Only a transport with no still path at all is a capability verdict. An empty
+            # answer from a still-capable driver (a timeout it swallowed, or an ONVIF
+            # channel it could not resolve) stays retryable under 0058's attempt budget.
+            unsupported = not _implements(driver, "get_snapshot")
+            cloud.call("wl_agent_fail_incident_still",
+                       p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                       p_request_id=request_id,
+                       p_reason=(UNSUPPORTED_STILL if unsupported else
+                                 "This recorder returned no still for the incident window."),
+                       p_unsupported=unsupported)
+            core.log(f"incident stills: {info.vendor} ch{channel} returned no image via "
+                     f"{driver.name} ({'unsupported' if unsupported else 'will retry'})")
+            return
+        if len(raw) > STILL_MAX_BYTES:
+            cloud.call("wl_agent_fail_incident_still",
+                       p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                       p_request_id=request_id,
+                       p_reason="Still exceeded the 3 MiB evidence limit.", p_unsupported=False)
+            return
+        digest = hashlib.sha256(raw).hexdigest()
+        cloud.call("wl_agent_upload_incident_still",
+                   p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                   p_request_id=request_id,
+                   p_image_b64=base64.b64encode(raw).decode("ascii"),
+                   p_content_type="image/jpeg", p_sha256=digest,
+                   p_captured_at=core.iso(core.now_utc()))
+        core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
+    except Exception as error:  # noqa: BLE001
+        unsupported = _is_unsupported(error)
+        try:
+            cloud.call("wl_agent_fail_incident_still",
+                       p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                       p_request_id=request_id,
+                       p_reason=UNSUPPORTED_STILL if unsupported else STILL_FAILED,
+                       p_unsupported=unsupported)
+        except Exception:  # noqa: BLE001
+            pass
+        core.log(f"incident stills: request {request_id[:8]} failed: "
+                 f"{type(error).__name__}: {str(error)[:140]}")
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
     """Fulfil SERVER-AUTHORIZED incident still-evidence tasks (migration 0058).
 
@@ -355,87 +623,64 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
     worker only CLAIMS authorized work for its own site, captures ONE bounded JPEG from the local
     recorder and uploads it with a sha256 for integrity. It never chooses the tenant/site/camera —
     those come from the claimed task. Idle when 0058 is not deployed; truthful unsupported/failure.
+
+    The claim is site-wide, but each recorder's stills are taken by that recorder's own worker,
+    so an unreachable recorder's connect timeouts never delay a still on another recorder, and a
+    recorder that just failed to open fails its next stills straight away for a short while.
     """
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
+    gate = _StillRecorderGate()
+    workers = _RecorderWorkers(
+        cfg, stop, lambda worker_cloud, row: _serve_still_request(
+            worker_cloud, state, cfg, gate, row),
+        "incident stills")
     missing_backend_logged = False
-    while not stop.is_set():
-        try:
-            requests_list = cloud.call(
-                "wl_agent_claim_incident_stills",
-                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"], p_limit=2,
-            ) or []
-            missing_backend_logged = False
-        except (RuntimeError, requests.RequestException) as error:
-            if _still_backend_missing(error):
-                if not missing_backend_logged:
-                    core.log("incident stills: backend 0058 not deployed; worker idle")
-                    missing_backend_logged = True
-                stop.wait(BACKEND_MISSING_RETRY_SECONDS)
-            else:
-                core.log("incident stills: claim failed; will retry: "
-                         + str(error).splitlines()[0][:160])
+    site_recorders, site_recorders_at = set(), None
+    held = _RegistryHold("incident stills")
+    try:
+        while not stop.is_set():
+            if held.holding(cfg):
                 stop.wait(STILL_POLL_SECONDS)
-            continue
-
-        if not requests_list:
-            stop.wait(STILL_POLL_SECONDS)
-            continue
-
-        for row in requests_list:
-            request_id = str(row.get("request_id") or "")
-            channel = str(row.get("channel") or "")
-            if not request_id or not channel:
                 continue
-            driver = None
+            if workers.in_flight() > 0:
+                now = time.monotonic()
+                if (site_recorders_at is None
+                        or now - site_recorders_at >= SITE_RECORDERS_REFRESH_SECONDS):
+                    site_recorders, site_recorders_at = _site_recorder_ids(), now
+                if not _may_claim(workers, site_recorders,
+                                  STILL_MAX_IN_FLIGHT, STILL_MAX_CLAIMED):
+                    stop.wait(FOOTAGE_CAPACITY_WAIT_SECONDS)
+                    continue
             try:
-                driver, info = core.open_driver(cfg)
-                raw = driver.get_snapshot(channel)
-                if not raw:
-                    # Only a transport with no still path at all is a capability verdict. An empty
-                    # answer from a still-capable driver (a timeout it swallowed, or an ONVIF
-                    # channel it could not resolve) stays retryable under 0058's attempt budget.
-                    unsupported = not _implements(driver, "get_snapshot")
-                    cloud.call("wl_agent_fail_incident_still",
-                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_request_id=request_id,
-                               p_reason=(UNSUPPORTED_STILL if unsupported else
-                                         "This recorder returned no still for the incident window."),
-                               p_unsupported=unsupported)
-                    core.log(f"incident stills: {info.vendor} ch{channel} returned no image via "
-                             f"{driver.name} ({'unsupported' if unsupported else 'will retry'})")
+                requests_list = cloud.call(
+                    "wl_agent_claim_incident_stills",
+                    p_agent_id=state["agent_id"], p_agent_key=state["agent_key"], p_limit=1,
+                ) or []
+                missing_backend_logged = False
+            except (RuntimeError, requests.RequestException) as error:
+                if _still_backend_missing(error):
+                    if not missing_backend_logged:
+                        core.log("incident stills: backend 0058 not deployed; worker idle")
+                        missing_backend_logged = True
+                    stop.wait(BACKEND_MISSING_RETRY_SECONDS)
+                else:
+                    core.log("incident stills: claim failed; will retry: "
+                             + str(error).splitlines()[0][:160])
+                    stop.wait(STILL_POLL_SECONDS)
+                continue
+
+            if not requests_list:
+                stop.wait(STILL_POLL_SECONDS)
+                continue
+
+            for row in requests_list:
+                request_id = str(row.get("request_id") or "")
+                channel = str(row.get("channel") or "")
+                if not request_id or not channel:
                     continue
-                if len(raw) > STILL_MAX_BYTES:
-                    cloud.call("wl_agent_fail_incident_still",
-                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_request_id=request_id,
-                               p_reason="Still exceeded the 3 MiB evidence limit.", p_unsupported=False)
-                    continue
-                digest = hashlib.sha256(raw).hexdigest()
-                cloud.call("wl_agent_upload_incident_still",
-                           p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                           p_request_id=request_id,
-                           p_image_b64=base64.b64encode(raw).decode("ascii"),
-                           p_content_type="image/jpeg", p_sha256=digest,
-                           p_captured_at=core.iso(core.now_utc()))
-                core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
-            except Exception as error:  # noqa: BLE001
-                unsupported = _is_unsupported(error)
-                try:
-                    cloud.call("wl_agent_fail_incident_still",
-                               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_request_id=request_id,
-                               p_reason=UNSUPPORTED_STILL if unsupported else STILL_FAILED,
-                               p_unsupported=unsupported)
-                except Exception:  # noqa: BLE001
-                    pass
-                core.log(f"incident stills: request {request_id[:8]} failed: "
-                         f"{type(error).__name__}: {str(error)[:140]}")
-            finally:
-                if driver is not None:
-                    try:
-                        driver.close()
-                    except Exception:  # noqa: BLE001
-                        pass
+                workers.submit(row)
+    finally:
+        workers.close()
 
 
 def wrap_cmd_run(original):
@@ -443,6 +688,8 @@ def wrap_cmd_run(original):
     def wrapped(cfg, state, cloud, once, device=None, channels=None):
         if once:
             return original(cfg, state, cloud, once, device, channels)
+        # Before any claim: a registry site's jobs never fall back to the legacy recorder.
+        recorder_runtime.mark_registry_required(cfg)
         stop = threading.Event()
         workers = [
             threading.Thread(target=footage_worker, args=(cfg, state, stop),

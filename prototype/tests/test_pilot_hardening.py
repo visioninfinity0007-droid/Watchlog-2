@@ -156,6 +156,28 @@ class UpgradeAndUninstallLifecycleTests(unittest.TestCase):
         self.assertIn("wl-upgrade.ps1", un)
         self.assertIn("wlbak", un)
 
+    def test_uninstall_removes_multi_recorder_state_with_the_identity(self):
+        """recorders.json names per-recorder credentials that the Secrets removal deletes.
+        Leaving it made every later reinstall fail at 'Encrypting recorder credentials'
+        until someone deleted the file by hand. Secondary recorders' spools and health
+        ledgers are identity-bound queued data, exactly like the singleton spool."""
+        un = NSI[NSI.find('Section "Uninstall"'):]
+        for target in ('Delete "${DATAROOT}\\recorders.json"',
+                       'Delete "${DATAROOT}\\recorders.json.tmp"',
+                       'RMDir /r "${DATAROOT}\\Secrets\\recorders"',
+                       'RMDir /r "${DATAROOT}\\recorders"'):
+            self.assertIn(target, un, f"uninstall must run: {target}")
+
+    def test_the_registry_is_removed_before_the_credentials_it_points_at(self):
+        """An interrupted uninstall must never leave a registry whose credentials are gone:
+        that is exactly the state every reinstall then fails on."""
+        un = NSI[NSI.find('Section "Uninstall"'):]
+        registry = un.find('Delete "${DATAROOT}\\recorders.json"')
+        secrets = un.find('RMDir /r "${DATAROOT}\\Secrets"')
+        self.assertNotEqual(-1, registry)
+        self.assertNotEqual(-1, secrets)
+        self.assertLess(registry, secrets)
+
 
 class WizardHonestyTests(unittest.TestCase):
     def test_the_ready_screen_actually_calls_the_status_lines(self):
@@ -170,10 +192,18 @@ class WizardHonestyTests(unittest.TestCase):
 
     def test_a_setup_failure_offers_more_than_retry(self):
         """Retry was the ONLY control, so a technician had no way to export a support
-        bundle and no way out except killing the window -- which aborted the install."""
-        we = GUI[GUI.find("def _worker_error"):][:900]
-        self.assertIn("incomplete_exit_btn.show()", we)
-        self.assertIn("incomplete_bundle_btn.show()", we)
+        bundle and no way out except killing the window -- which aborted the install.
+        _worker_error_if_current only drops a stale worker's error and hands a current one
+        to _worker_error, which shows the failed Connect step its controls."""
+        guard = GUI[GUI.find("def _worker_error_if_current("):]
+        guard = guard[:guard.find("\n    def ", 1)]
+        self.assertIn("self._worker_error(message)", guard)
+        we = GUI[GUI.find("def _worker_error(self, message"):]
+        we = we[:we.find("\n    def ", 1)]
+        connect = we[we.find("self.stack.currentIndex() == 5"):we.find("currentIndex() == 3")]
+        self.assertIn("self.retry_btn.show()", connect)
+        self.assertIn("self.incomplete_bundle_btn.show()", connect)
+        self.assertIn("self.incomplete_exit_btn.show()", connect)
 
     def test_the_log_file_open_cannot_kill_a_windowed_build(self):
         """It runs at IMPORT, before any handler exists: a locked setup.log would kill a
@@ -182,18 +212,29 @@ class WizardHonestyTests(unittest.TestCase):
         self.assertIn("tempfile.gettempdir()", head, "needs a fallback log location")
         self.assertIn("except Exception", head, "logging must never prevent setup running")
 
-    def test_a_multi_recorder_site_is_warned_not_silently_half_monitored(self):
-        """cameras are unique per (site_id, channel), so a second recorder at one site
-        overwrites the first's rows. The wizard used to say 'Found 2 possible recorders'
-        and then silently monitor one."""
-        fn = GUI[GUI.find("def show_recorders"):][:1800]
-        self.assertIn("ONE recorder per installation", fn)
-        self.assertIn("its own WatchLog site", fn)
+    def test_a_multi_recorder_site_is_not_silently_half_monitored(self):
+        """The wizard used to say 'Found 2 possible recorders' and then silently monitor
+        one. 5.1 cameras are unique per recorder, so every recorder at the site can be
+        connected in the same installation: discovery says how, and the camera step
+        offers "Add another recorder" before Connect."""
+        fn = GUI[GUI.find("def show_recorders"):][:2400]
+        self.assertIn("Use Add another recorder on the camera", fn)
+        self.assertIn("same WatchLog site in this installation", fn)
+        self.assertIn("self.add_another_btn.clicked.connect(self.add_install_recorder)", GUI)
 
-    def test_the_push_outcome_is_logged(self):
-        """Computed, returned, and never logged or shown -- the second reason nobody
-        noticed the bridge was dead."""
-        self.assertIn("recorder push: configured=", BACKEND)
+    def test_the_push_outcome_is_stated_not_implied(self):
+        """0.4.11 computed the push outcome and never logged or showed it -- the second
+        reason nobody noticed the bridge was dead. Since Build 41 first-run setup never runs
+        recorder push at all (it could strand the Connect step): finalize_install returns a
+        recorder_push result that says so, and never reports push as configured."""
+        fn = BACKEND[BACKEND.find("def finalize_install("):]
+        fn = fn[:fn.find("\ndef ", 1)]
+        self.assertNotIn("provision_recorder_push(", fn)
+        self.assertIn('"recorder_push": push,', fn)
+        stated = fn[fn.find("push = {"):fn.find("}", fn.find("push = {"))]
+        self.assertIn('"configured": False', stated)
+        self.assertIn('"verified": False', stated)
+        self.assertIn("not run during installation", stated)
 
 
 class RecorderPushAgentSemanticsTests(unittest.TestCase):

@@ -91,13 +91,17 @@ class RecoveryRunner:
     """Drives automatic NVR backfill for claimed recovery intervals. Live monitoring first."""
 
     def __init__(self, cloud, agent_id, agent_key, driver, on_event, *,
+                 recorder_id=None,
                  chunk_seconds: int = DEFAULT_CHUNK_SECONDS, throttle_seconds: float = 0.0,
                  live_pending=None, detector=None, frame_provider=None, ai_max_frames=None,
                  snapshot_interval_seconds=recovery_ai.DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
                  camera_channels=None, max_attempts=DEFAULT_MAX_ATTEMPTS,
                  max_error_attempts=DEFAULT_MAX_ERROR_ATTEMPTS, driver_factory=None, log=print):
         self.cloud, self.agent_id, self.agent_key = cloud, agent_id, agent_key
-        self.driver, self.on_event = driver, on_event
+        self.driver = driver
+        self.recorder_id = str(recorder_id) if recorder_id else None
+        self._raw_on_event = on_event
+        self.on_event = self._emit_event
         # With no open driver, ``driver_factory()`` opens the archive the first time a claimed
         # interval needs reading, and run_once closes it again: an idle cycle never logs in to
         # the recorder.
@@ -121,11 +125,40 @@ class RecoveryRunner:
         self.max_error_attempts = max(1, int(max_error_attempts))
         self._log = log
 
+    def _emit_event(self, event):
+        """Stamp recovered events with recorder provenance at the context boundary."""
+        if self.recorder_id:
+            if isinstance(event, dict):
+                event = dict(event)
+                event["recorder_id"] = self.recorder_id
+            elif hasattr(event, "with_recorder_id"):
+                event = event.with_recorder_id(self.recorder_id)
+        if self._raw_on_event:
+            self._raw_on_event(event)
+
+    def _open_rpc(self):
+        return "wl_open_recorder_recovery_interval" if self.recorder_id else "wl_open_recovery_interval"
+
+    def _claim_rpc(self):
+        return "wl_agent_claim_recorder_recovery" if self.recorder_id else "wl_agent_claim_recovery"
+
+    def _complete_rpc(self):
+        return "wl_complete_recorder_recovery" if self.recorder_id else "wl_complete_recovery"
+
     def report_outage(self, last_live, now, cameras=None):
         """Report a detected outage as a pending recovery interval (idempotent server-side)."""
-        return self.cloud.call("wl_open_recovery_interval", p_agent_id=self.agent_id,
-                               p_agent_key=self.agent_key, p_started_at=_iso(_as_dt(last_live)),
-                               p_ended_at=_iso(_as_dt(now)), p_cameras=list(cameras or []))
+        args = dict(
+            p_agent_id=self.agent_id,
+            p_agent_key=self.agent_key,
+            p_started_at=_iso(_as_dt(last_live)),
+            p_ended_at=_iso(_as_dt(now)),
+        )
+        if self.recorder_id:
+            args["p_recorder_id"] = self.recorder_id
+            args["p_channels"] = list(cameras or [])
+        else:
+            args["p_cameras"] = list(cameras or [])
+        return self.cloud.call(self._open_rpc(), **args)
 
     def _complete(self, interval_id, status, recovered, seen, cursor, *, errors=0, progress=0,
                   detail=None, examined=False, incomplete=False):
@@ -143,9 +176,11 @@ class RecoveryRunner:
         params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key,
                       p_id=interval_id, p_status=status, p_recovered_count=recovered,
                       p_checkpoint=checkpoint)
+        if self.recorder_id:
+            params["p_recorder_id"] = self.recorder_id
         if detail:
             params["p_detail"] = detail
-        self.cloud.call("wl_complete_recovery", **params)
+        self.cloud.call(self._complete_rpc(), **params)
 
     def _close(self, iv, status, seen, cursor, reason) -> dict:
         """Complete an interval that will not be read (further), saying why."""
@@ -173,9 +208,11 @@ class RecoveryRunner:
         the recorder answers again, as when the worker used to skip the cycle."""
         kept = dict(checkpoint)
         kept["progress_attempt"] = progress + 1
-        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id,
-                        p_agent_key=self.agent_key, p_id=iv["id"], p_status="pending",
-                        p_recovered_count=0, p_checkpoint=kept)
+        params = dict(p_agent_id=self.agent_id, p_agent_key=self.agent_key, p_id=iv["id"],
+                      p_status="pending", p_recovered_count=0, p_checkpoint=kept)
+        if self.recorder_id:
+            params["p_recorder_id"] = self.recorder_id     # the claim was the recorder's
+        self.cloud.call(self._complete_rpc(), **params)
         return {"id": iv["id"], "status": "pending", "recovered": 0, "yielded": False,
                 "error": failure}
 
@@ -213,6 +250,23 @@ class RecoveryRunner:
                 channels.append(ch)
         return channels, unresolved
 
+    def _recorder_channels(self, iv):
+        """(archive channels, unresolved cameras) for a recorder-aware claim.
+
+        Recorder-aware claims expose explicit archive channels. Never fall back to canonical
+        camera UUIDs or guess channel 1 on this path: a camera the claim gives no channel for
+        stays unread, so the interval is never recovered, and with no channel at all it
+        completes as unrecoverable. An interval with neither cameras nor channels is a
+        whole-site interval opened before this recorder was bound (a legacy row of a
+        one-recorder site): like a recorder-less whole-site interval it covers every camera
+        this recorder knows, and with no known inventory nothing is read."""
+        cameras = {str(c) for c in (iv.get("cameras") or []) if c}
+        channels = list(dict.fromkeys(
+            str(c).strip() for c in (iv.get("channels") or []) if str(c or "").strip()))
+        if not cameras and not channels:
+            return list(dict.fromkeys(self.camera_channels.values())), 0
+        return channels, max(0, len(cameras) - len(channels))
+
     def _recover_interval(self, iv) -> dict:
         checkpoint = iv.get("checkpoint") or {}
         seen = set(checkpoint.get("seen_keys") or [])
@@ -222,7 +276,8 @@ class RecoveryRunner:
         progress = int(checkpoint.get("progress_attempt") or 0)
         start = resume or _as_dt(iv["started_at"])
         end = _as_dt(iv["ended_at"])
-        cams, unresolved = self._channels(iv.get("cameras") or [])
+        cams, unresolved = (self._recorder_channels(iv) if self.recorder_id
+                            else self._channels(iv.get("cameras") or []))
         if not cams:
             # Nothing can be read truthfully: never scan a guessed channel and never call the
             # interval (or the site) recovered.
@@ -352,8 +407,14 @@ class RecoveryRunner:
         """Claim up to `limit` pending recovery intervals and recover each. Returns per-interval outcomes."""
         if self.live_pending():
             return []                  # never start recovery while live work is pending
-        claimed = self.cloud.call("wl_agent_claim_recovery", p_agent_id=self.agent_id,
-                                  p_agent_key=self.agent_key, p_limit=limit) or []
+        args = dict(
+            p_agent_id=self.agent_id,
+            p_agent_key=self.agent_key,
+            p_limit=limit,
+        )
+        if self.recorder_id:
+            args["p_recorder_id"] = self.recorder_id
+        claimed = self.cloud.call(self._claim_rpc(), **args) or []
         self._unopenable = None
         try:
             return [self._recover_interval(iv) for iv in claimed]

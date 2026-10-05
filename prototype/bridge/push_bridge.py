@@ -10,8 +10,16 @@ clean JSON. This small service sits between them: it receives the NVR's
 POST at /push/<token>, parses out (event type, channel, time, snapshot),
 and calls wl_ingest_push with that token.
 
-It holds NO secret. The token in the URL is the site's credential; the
-Supabase publishable key is public by design. Deploy it on the same
+It holds NO secret. The token in the URL is one recorder's credential: WatchLog
+issues one token per recorder, and wl_ingest_push resolves the recorder from the
+token BEFORE it reads any channel, then the camera by (recorder, channel). The
+bridge therefore never names a site, recorder or camera itself (MNVR-011). The
+Supabase publishable key is public by design.
+
+What an alarm MEANS (event type, channel, keep-alive filtering, burst collapse,
+which clock stamped it) comes from alarm_parsing.py, the Agent drivers' own parser
+shipped here byte for byte, so an alarm that reaches WatchLog both through the
+Agent and through push is one row with one meaning (MNVR-026). Deploy it on the same
 Coolify host as everything else, behind TLS.
 
     python bridge/push_bridge.py --port 8620
@@ -34,197 +42,105 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import alarm_parsing
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
 
-# Hikvision event names -> the vocabulary the rest of WatchLog uses.
-HIK_EVENT_MAP = {
-    "VMD": "motion", "vmd": "motion", "motion": "motion",
-    "linedetection": "line_crossing", "fielddetection": "intrusion",
-    "intrusion": "intrusion", "regionEntrance": "intrusion",
-    "regionExiting": "intrusion", "tamperdetection": "tamper",
-    "shelteralarm": "tamper", "videoloss": "video_loss",
-    "facedetection": "person", "humanDetection": "person",
-    "vehicledetection": "vehicle",
-}
+# The shared vocabulary (kept under the names other code and tests use).
+HIK_EVENT_MAP = alarm_parsing.HIK_EVENT_TYPE_MAP
+DAHUA_EVENT_MAP = alarm_parsing.DAHUA_EVENT_CODE_MAP
+DAHUA_NON_EVENTS = alarm_parsing.DAHUA_NON_EVENTS
+
+# Which clock stamped an event whose recorder time could not be used: the bridge's.
+RECEIVE_SOURCE = "push_receive"
+
+# Repeats of one continuing alarm, per recorder token (see deliver()).
+BurstFilter = alarm_parsing.BurstFilter
+BURST = BurstFilter()
 
 
-def _strip_ns(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
+def _event(alarm, jpeg, received_at):
+    """The wl_ingest_push event for one parsed alarm.
+
+    device_event_id is NULL, exactly as the Agent sends it: neither vendor's alarm
+    carries a stable id, and an invented one would key the push copy of an alarm
+    differently from the Agent's copy. A naive recorder time is never read as UTC: the
+    bridge cannot ask the recorder for its offset, so it uses its receive time and keeps
+    the recorder's text. ``_burst`` is internal and removed by deliver()."""
+    ts, clock = alarm_parsing.resolve_event_time(
+        alarm.raw_time, received_at or datetime.now(timezone.utc),
+        receive_source=RECEIVE_SOURCE)
+    ev = {
+        "channel": alarm.channel,
+        "event_type": alarm.event_type,
+        "device_ts": ts.astimezone(timezone.utc).isoformat(),
+        "device_event_id": None,
+        "payload": {**alarm.payload, **clock},
+        "_burst": (alarm.vendor,) + tuple(alarm.burst_key),
+    }
+    if jpeg:
+        ev["snapshot_b64"] = base64.b64encode(jpeg).decode("ascii")
+    return ev
 
 
-def parse_hikvision(body: bytes, content_type: str):
+def parse_hikvision(body: bytes, content_type: str, received_at=None):
     """
     Turn a Hikvision alarm POST into a WatchLog event dict, or None.
 
     Handles the two shapes Hikvision sends: a bare EventNotificationAlert
     XML, and multipart/form-data with that XML in one part and a JPEG in
-    another. Returns {channel, event_type, device_ts, device_event_id,
-    snapshot_b64?} or None if it is not a recognisable alarm.
+    another. Returns {channel, event_type, device_ts, device_event_id, payload,
+    snapshot_b64?} or None if it is not an event (keep-alive, heartBeat, heartbeat
+    videoloss with activePostCount 0, inactive, or not an alert at all).
     """
     xml_bytes, jpeg = _split_multipart(body, content_type)
     if xml_bytes is None:
         xml_bytes = body
-
-    try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError:
-        return None
-    if _strip_ns(root.tag) != "EventNotificationAlert":
-        return None
-
-    fields = {}
-    for child in root.iter():
-        fields[_strip_ns(child.tag)] = (child.text or "").strip()
-
-    raw_type = fields.get("eventType") or fields.get("subEventType") or ""
-    # HTTP-host heartBeat is the NVR's independent liveness signal, not a
-    # security incident. Handler authenticates the token and records liveness
-    # before parsing, so never create an event row for it.
-    if raw_type.strip().lower() == "heartbeat":
-        return None
-    event_type = HIK_EVENT_MAP.get(raw_type, HIK_EVENT_MAP.get(raw_type.lower()))
-    if not event_type:
-        # An unknown but present eventType is still a real event; keep it
-        # under its own name rather than dropping it.
-        event_type = raw_type.lower() or None
-    if not event_type:
-        return None
-
-    # Hikvision "videoloss"/"ipcOnline" keep-alives report inactive; skip.
-    if fields.get("eventState", "active").lower() == "inactive":
-        return None
-
-    channel = (fields.get("channelID") or fields.get("dynChannelID")
-               or fields.get("channelName") or "1")
-    ts = _parse_ts(fields.get("dateTime"))
-    ev = {
-        "channel": str(channel),
-        "event_type": event_type,
-        "device_ts": ts,
-        "device_event_id": fields.get("activePostCount") and
-                           f"{channel}-{raw_type}-{ts}" or None,
-    }
-    if jpeg:
-        ev["snapshot_b64"] = base64.b64encode(jpeg).decode("ascii")
-    return ev
+    alarm = alarm_parsing.parse_hikvision_alert(xml_bytes)
+    return _event(alarm, jpeg, received_at) if alarm is not None else None
 
 
-# Dahua event codes -> our vocabulary. MUST stay a superset of
-# agent/drivers/dahua.py:EVENT_CODE_MAP — the attach path and the push path have
-# to agree or the same alarm means two different things depending on how it
-# reached us. test_push_bridge pins that parity.
-DAHUA_EVENT_MAP = {
-    "VideoMotion": "motion",
-    "SmartMotionHuman": "person",
-    "SmartMotionVehicle": "vehicle",
-    "CrossLineDetection": "line_crossing",
-    "CrossRegionDetection": "intrusion",
-    "LeftDetection": "object_left",
-    "TakenAwayDetection": "object_removed",
-    "VideoLoss": "video_loss",
-    "VideoBlind": "tamper",
-    "AlarmLocal": "alarm_input",
-    "StorageNotExist": "disk_error",
-    "StorageFailure": "disk_error",
-    "StorageLowSpace": "disk_full",
-    "FaceDetection": "face",
-}
-
-# Chatter a Dahua unit emits that is not an occurrence.
-DAHUA_NON_EVENTS = {"heartbeat", "keepalive", "timechange", "ntpadjusttime"}
-
-
-def parse_dahua(body: bytes, content_type: str):
+def parse_dahua(body: bytes, content_type: str, received_at=None):
     """
     Turn a Dahua alarm POST into a WatchLog event dict, or None.
 
     Dahua posts the same ``Code=VideoMotion;action=Start;index=0;data={...}``
-    vocabulary it streams over eventManager attach, so this mirrors
-    ``drivers/dahua.py::_parse_line`` deliberately — including ignoring
-    action=Stop/State and converting the 0-based wire channel to the 1-based
-    channel used everywhere else in WatchLog. Some firmware wraps the same
-    fields in JSON, and some attaches a JPEG via multipart; both are handled.
+    vocabulary it streams over eventManager attach, and alarm_parsing is the very
+    parser the Agent's attach path uses: action=Stop/State is ignored, the 0-based wire
+    index becomes the 1-based channel, and a disk/alarm-input code or a missing index
+    is never guessed onto a camera. Some firmware wraps the same fields in JSON, and
+    some attaches a JPEG via multipart; both are handled.
     """
     text_bytes, jpeg = _split_multipart(body, content_type)
     raw = (text_bytes if text_bytes is not None else body)
     try:
-        text = raw.decode("utf-8", "replace").strip()
+        text = raw.decode("utf-8", "replace")
     except Exception:  # noqa: BLE001
         return None
-    if not text:
-        return None
-
-    fields = {}
-    data = ""
-    if text.startswith("{"):
-        try:
-            obj = json.loads(text)
-        except ValueError:
-            return None
-        if not isinstance(obj, dict):
-            return None
-        fields = {str(k): ("" if v is None else str(v)) for k, v in obj.items()
-                  if not isinstance(v, (dict, list))}
-        data = json.dumps(obj.get("data")) if isinstance(obj.get("data"), (dict, list)) else ""
-    else:
-        # data={...} may itself contain ';', so only split the leading pairs.
-        head, sep, data = text.partition(";data=")
-        if "Code=" not in head:
-            return None
-        for part in head.split(";"):
-            k, _, v = part.partition("=")
-            if k:
-                fields[k.strip()] = v.strip()
-        data = data if sep else ""
-
-    code = fields.get("Code") or fields.get("code") or ""
-    if not code:
-        return None
-    action = (fields.get("action") or fields.get("Action") or "").lower()
-    if action not in ("start", "pulse", ""):
-        return None                       # Stop / State — not an occurrence
-    if code.lower() in DAHUA_NON_EVENTS:
-        return None
-
-    event_type = DAHUA_EVENT_MAP.get(code) or code.lower()
-
-    # index is 0-based on the wire; channels are 1-based everywhere else.
-    try:
-        channel = str(int(str(fields.get("index", fields.get("Index", "0"))).strip()) + 1)
-    except ValueError:
-        channel = "1"
-
-    ts = _parse_ts(fields.get("dateTime") or fields.get("DateTime"))
-    ev = {
-        "channel": channel,
-        "event_type": event_type,
-        "device_ts": ts,
-        "device_event_id": f"{channel}-{code}-{ts}",
-    }
-    if jpeg:
-        ev["snapshot_b64"] = base64.b64encode(jpeg).decode("ascii")
-    return ev
+    alarm = alarm_parsing.parse_dahua_block(text)
+    return _event(alarm, jpeg, received_at) if alarm is not None else None
 
 
 PARSERS = (("hikvision", parse_hikvision), ("dahua", parse_dahua))
 
 
-def parse_any(body: bytes, content_type: str):
+def parse_any(body: bytes, content_type: str, received_at=None):
     """First parser that confidently understands this body wins.
 
     Order matters only for speed: the two formats are structurally disjoint (XML
     document vs Code=...;action=... / JSON), so neither can claim the other's.
     Returns (vendor, event) or (None, None) — never a guess.
     """
+    received_at = received_at or datetime.now(timezone.utc)
     for vendor, parser in PARSERS:
         try:
-            ev = parser(body, content_type)
+            ev = parser(body, content_type, received_at)
         except Exception:  # noqa: BLE001 — a malformed push is not a crash
             ev = None
         if ev:
@@ -296,16 +212,6 @@ def _split_multipart(body: bytes, content_type: str):
     return text_part, jpeg_part
 
 
-def _parse_ts(raw):
-    if raw:
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(
-                timezone.utc).isoformat()
-        except ValueError:
-            pass
-    return datetime.now(timezone.utc).isoformat()
-
-
 def liveness(token: str) -> tuple:
     """Record that the recorder is alive WITHOUT inventing an event.
 
@@ -320,6 +226,24 @@ def liveness(token: str) -> tuple:
 def push(token: str, events: list) -> tuple:
     """Call wl_ingest_push. Returns (ok, detail)."""
     return _rpc("wl_ingest_push", {"p_token": token, "p_events": events})
+
+
+def deliver(token: str, vendor: str, ev: dict, mono: float | None = None) -> int:
+    """Ingest one parsed event under its recorder token; returns the HTTP status.
+
+    A continuing alarm repeats about once a second. The Agent collapses those repeats
+    to one event per BURST_WINDOW_SECONDS; the bridge applies the same rule, per
+    recorder token, on its own monotonic clock. An event WatchLog did not accept is not
+    counted against the window, so the recorder's retry still gets through."""
+    key = (token,) + tuple(ev.pop("_burst", None) or (vendor, ev.get("channel"),
+                                                       ev.get("event_type")))
+    now = time.monotonic() if mono is None else mono
+    if not BURST.admit(key, now):
+        return 200
+    ok, _detail = push(token, [ev])
+    if not ok:
+        BURST.forget(key, now)
+    return 200 if ok else 502
 
 
 def _rpc(fn: str, payload: dict) -> tuple:
@@ -386,10 +310,10 @@ class Handler(BaseHTTPRequestHandler):
             self.log_message("unrecognised push on token %s... %s",
                              token[:6], describe_unparsed(body, ctype))
             self.send_response(202); self.end_headers(); return
-        ok, detail = push(token, [ev])
+        status = deliver(token, vendor, ev)
         self.log_message("%s %s ch%s -> %s", vendor, ev.get("event_type"),
-                         ev.get("channel"), detail[:80])
-        self.send_response(200 if ok else 502); self.end_headers()
+                         ev.get("channel") or "-", status)
+        self.send_response(status); self.end_headers()
 
 
 def main():

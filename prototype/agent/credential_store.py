@@ -61,6 +61,19 @@ def nvr_credential_path() -> Path:
     return secrets_dir() / "nvr_credential.dpapi"
 
 
+def recorder_secrets_dir() -> Path:
+    return secrets_dir() / "recorders"
+
+
+def recorder_credential_path(local_id: str) -> Path:
+    """Per-recorder credential path. local_id is validated by recorder_registry;
+    keep this helper path-only so credential_store has no registry dependency."""
+    safe = str(local_id or "").strip()
+    if not safe or any(ch not in "0123456789abcdefABCDEF-" for ch in safe):
+        raise ValueError("invalid recorder local_id")
+    return recorder_secrets_dir() / f"{safe}.dpapi"
+
+
 def legacy_env_path() -> Path:
     return data_dir() / "watchlog.env"           # 0.3.3 plaintext (insecure)
 
@@ -209,6 +222,103 @@ def _cleanup_legacy(config_ini_path: Path | None) -> None:
                 tmp.replace(config_ini_path)
         except (configparser.Error, OSError):
             pass
+
+
+# --- multi-recorder credential store -----------------------------------------
+
+def save_recorder_credential(local_id: str, username: str, password: str) -> None:
+    """Store one recorder credential independently from every other recorder."""
+    write_json_secret(recorder_credential_path(local_id), {
+        "username": username,
+        "password": password,
+        "credential_version": CREDENTIAL_STORE_VERSION,
+        "local_id": str(local_id),
+    })
+
+
+def load_recorder_credential(local_id: str) -> dict:
+    """Load one recorder credential.
+
+    Missing/corrupt per-recorder state is an error. There is deliberately no
+    fallback to the singleton credential because that could authenticate against
+    the wrong physical recorder on a multi-recorder site.
+    """
+    path = recorder_credential_path(local_id)
+    if not path.exists():
+        raise SecretError(f"recorder credential missing for {local_id}")
+    cred = read_json_secret(path)
+    if str(cred.get("local_id") or "") != str(local_id):
+        raise SecretError(f"recorder credential identity mismatch for {local_id}")
+    return cred
+
+
+def delete_recorder_credential(local_id: str) -> None:
+    recorder_credential_path(local_id).unlink(missing_ok=True)
+
+
+def snapshot_secret_files(paths) -> dict:
+    """Capture the current encrypted bytes (or absence) of secret files."""
+    return {Path(p): (Path(p).read_bytes() if Path(p).exists() else None) for p in paths}
+
+
+def restore_secret_files(snapshot: dict) -> None:
+    """Put secret files back exactly as snapshot_secret_files() found them.
+
+    The ciphertext is restored as-is (no re-encryption); the replacement is
+    created inside the same hardened directory, so it inherits its DACL."""
+    for path, raw in snapshot.items():
+        try:
+            if raw is None:
+                path.unlink(missing_ok=True)
+                continue
+            tmp = path.with_name(path.name + ".restore")
+            tmp.write_bytes(raw)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+
+def replace_recorder_credential(local_id: str, username: str, password: str, *,
+                                mirror_legacy: bool = False) -> None:
+    """Replace one recorder's credential, verified, as one unit.
+
+    ``mirror_legacy`` is set for the continuity recorder while the legacy
+    singleton files are still read (rollback to 5.0.x, the legacy probe): its
+    nvr_credential.dpapi then moves together with the per-recorder blob. Both
+    are written and read back; on any failure each file is restored to its
+    previous bytes and the error propagates. (No cross-file atomic transaction
+    exists; restore-on-failure is the guarantee.)"""
+    paths = [recorder_credential_path(local_id)]
+    if mirror_legacy:
+        paths.append(nvr_credential_path())
+    snapshot = snapshot_secret_files(paths)
+    try:
+        save_recorder_credential(local_id, username, password)
+        if mirror_legacy:
+            save_nvr_credential(username, password)
+        check = load_recorder_credential(local_id)
+        if (check.get("username"), check.get("password")) != (username, password):
+            raise SecretError("per-recorder credential verification failed")
+        if mirror_legacy:
+            legacy = read_json_secret(nvr_credential_path())
+            if (legacy.get("username"), legacy.get("password")) != (username, password):
+                raise SecretError("legacy credential verification failed")
+    except BaseException:
+        restore_secret_files(snapshot)
+        raise
+
+
+def recorder_credential_generation(local_id: str) -> str:
+    """Generation token for one recorder's encrypted credential."""
+    path = recorder_credential_path(local_id)
+    if not path.exists():
+        return "absent"
+    try:
+        data = path.read_bytes()
+        digest = hashlib.blake2b(data, digest_size=8).hexdigest()
+        return f"{path.stat().st_mtime_ns}:{len(data)}:{digest}"
+    except OSError:
+        return "unknown"
 
 
 # --- agent cloud key (bearer secret) ---

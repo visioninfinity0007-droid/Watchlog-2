@@ -3,6 +3,8 @@
 FROM python:3.12-slim
 WORKDIR /app
 COPY push_bridge.py /app/push_bridge.py
+# The Agent drivers' alarm parser, shipped byte for byte (see alarm_parsing.py).
+COPY alarm_parsing.py /app/alarm_parsing.py
 EXPOSE 8620
 # SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY are injected by Coolify.
 # Both are public-safe (the publishable key is public by design).

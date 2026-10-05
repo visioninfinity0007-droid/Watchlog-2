@@ -57,6 +57,7 @@ create table if not exists last_state (
 create table if not exists transitions (
   seq        integer primary key autoincrement,   -- monotonic, stable across restarts
   dedupe_key text unique,                          -- "<agent>:<seq>"
+  recorder_id text,                                -- cloud recorder UUID; NULL = legacy singleton
   layer      text not null,
   entity     text not null,
   from_state text,
@@ -74,6 +75,7 @@ create index if not exists transitions_status_idx on transitions(status, seq);
 
 create table if not exists checkpoints (
   seq             integer primary key autoincrement,
+  recorder_id     text,                              -- cloud recorder UUID; NULL = legacy singleton
   device_ts       text not null,
   nvr_state       text not null,
   cameras_observed integer not null,
@@ -195,6 +197,8 @@ class HealthStore:
                         self.db.execute(f"alter table {tbl} add column last_reason text")
                     if "quarantined_at" not in cols:
                         self.db.execute(f"alter table {tbl} add column quarantined_at integer")
+                    if "recorder_id" not in cols:
+                        self.db.execute(f"alter table {tbl} add column recorder_id text")
                     # Conservative backfill: a row already quarantined by an older agent gets a FRESH
                     # forensic window (now), NEVER the old observation time — so migration can never
                     # immediately prune it just because the original event is old.
@@ -203,50 +207,174 @@ class HealthStore:
             except sqlite3.Error as e:
                 _log(f"migrate skipped ({e})")
 
+    def stamp_missing_recorder_id(self, recorder_id: str) -> dict:
+        """Transactionally attribute the legacy singleton ledger to one recorder.
+
+        This is a CUTOVER operation, not a fail-soft monitoring write. It raises
+        on malformed/conflicting provenance so a secondary recorder is never
+        created while primary health evidence is ambiguous.
+
+        All historical local rows belong to the primary because this runs before
+        multi-recorder workers exist. Dedupe ids / epochs / statuses are preserved.
+        last_state keys are namespaced too so the first post-cutover cycle does
+        not manufacture a duplicate transition merely because the key changed.
+
+        The legacy ``layer:entity`` keys are kept beside the scoped copies: a rolled-back
+        Repair/Upgrade restarts a 5.0.x Agent on this same file, which looks state up by
+        the legacy key only and would otherwise record a from_state=NULL transition for
+        every entity. When both exist and disagree, the legacy one is newer only if a
+        singleton runtime recorded an unattributed transition for that entity since the
+        last cutover (it is attributed here); otherwise the scoped one is current.
+        """
+        try:
+            rid = str(uuid.UUID(str(recorder_id or "").strip()))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("recorder_id must be a UUID") from exc
+
+        with self._lock:
+            # Validate every existing explicit row BEFORE beginning writes.
+            for tbl in ("transitions", "checkpoints"):
+                rows = self.db.execute(
+                    f"select distinct recorder_id from {tbl} "
+                    "where recorder_id is not null and trim(recorder_id)<>''"
+                ).fetchall()
+                for row in rows:
+                    try:
+                        existing = str(uuid.UUID(str(row["recorder_id"])))
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"{tbl} contains invalid recorder identity"
+                        ) from exc
+                    if existing != rid:
+                        raise ValueError(
+                            f"{tbl} contains evidence for another recorder"
+                        )
+
+            states = self.db.execute(
+                "select key,state from last_state order by key"
+            ).fetchall()
+            legacy_states = []
+            existing_scoped = {}
+            for row in states:
+                key, state = str(row["key"]), row["state"]
+                first = key.split(":", 1)[0]
+                try:
+                    scoped = str(uuid.UUID(first))
+                except ValueError:
+                    legacy_states.append((key, state))
+                    continue
+                if scoped != rid:
+                    raise ValueError(
+                        "last_state contains evidence for another recorder"
+                    )
+                existing_scoped[key] = state
+
+            # Entities a singleton runtime (5.0.x after a rollback, or this Agent before
+            # it was bound) moved since the last cutover: their legacy state is newer.
+            singleton_moved = {
+                f"{row['layer']}:{row['entity']}" for row in self.db.execute(
+                    "select distinct layer, entity from transitions "
+                    "where recorder_id is null or trim(recorder_id)=''"
+                ).fetchall()
+            }
+
+            try:
+                self.db.execute("begin immediate")
+                tx = self.db.execute(
+                    "update transitions set recorder_id=? "
+                    "where recorder_id is null or trim(recorder_id)=''",
+                    (rid,),
+                ).rowcount
+                cp = self.db.execute(
+                    "update checkpoints set recorder_id=? "
+                    "where recorder_id is null or trim(recorder_id)=''",
+                    (rid,),
+                ).rowcount
+
+                state_count = 0
+                for key, state in legacy_states:
+                    target = f"{rid}:{key}"
+                    current = existing_scoped.get(target)
+                    if current == state:
+                        continue
+                    if current is not None and key not in singleton_moved:
+                        continue                    # the scoped state is the current one
+                    self.db.execute(
+                        "insert into last_state(key,state) values(?,?) "
+                        "on conflict(key) do update set state=excluded.state",
+                        (target, state),
+                    )
+                    state_count += 1
+
+                self.db.execute("commit")
+                return {
+                    "transitions": int(tx or 0),
+                    "checkpoints": int(cp or 0),
+                    "last_state": state_count,
+                    "recorder_id": rid,
+                }
+            except Exception:
+                try:
+                    self.db.execute("rollback")
+                except Exception:
+                    pass
+                raise
+
     # -- writes (all fail-safe) ----------------------------------------------------
 
     def observe(self, layer: str, entity: str, new_state: str, reason: str,
-                source: str, device_ts: str) -> Optional[dict]:
-        """Record a transition IFF the state changed from the last observed for this entity.
-        Returns the new row, or None (no change, or a persistence failure)."""
-        key = f"{layer}:{entity}"
+                source: str, device_ts: str, recorder_id: str | None = None) -> Optional[dict]:
+        """Record a transition IFF state changed for this recorder-scoped entity.
+
+        recorder_id=None preserves the historical singleton key/payload exactly.
+        """
+        rid = str(recorder_id).strip() if recorder_id else None
+        key = f"{rid}:{layer}:{entity}" if rid else f"{layer}:{entity}"
         with self._lock:
             try:
                 cur = self.db.execute("select state from last_state where key=?", (key,)).fetchone()
                 prev = cur["state"] if cur else None
                 if prev == new_state:
-                    return None                       # steady state -> nothing to record
+                    return None
                 self.db.execute("begin")
                 self.db.execute(
-                    "insert into transitions (dedupe_key, layer, entity, from_state, to_state,"
-                    " reason, source, device_ts) values (?,?,?,?,?,?,?,?)",
-                    (None, layer, entity, prev, new_state, reason, source, str(device_ts)))
+                    "insert into transitions (dedupe_key, recorder_id, layer, entity, from_state,"
+                    " to_state, reason, source, device_ts) values (?,?,?,?,?,?,?,?,?)",
+                    (None, rid, layer, entity, prev, new_state, reason, source, str(device_ts)))
                 seq = self.db.execute("select last_insert_rowid()").fetchone()[0]
-                dedupe_key = f"{self.agent_id}:{self.epoch}:{seq}"   # epoch-qualified: rebuild-proof
+                dedupe_key = f"{self.agent_id}:{self.epoch}:{seq}"
                 self.db.execute("update transitions set dedupe_key=? where seq=?", (dedupe_key, seq))
                 self.db.execute(
                     "insert into last_state(key,state) values(?,?) "
                     "on conflict(key) do update set state=excluded.state", (key, new_state))
                 self.db.execute("commit")
-                return {"seq": seq, "dedupe_key": dedupe_key, "layer": layer, "entity": entity,
-                        "from_state": prev, "to_state": new_state, "reason": reason,
-                        "source": source, "device_ts": str(device_ts)}
+                out = {"seq": seq, "dedupe_key": dedupe_key, "layer": layer, "entity": entity,
+                       "from_state": prev, "to_state": new_state, "reason": reason,
+                       "source": source, "device_ts": str(device_ts)}
+                if rid:
+                    out["recorder_id"] = rid
+                return out
             except sqlite3.Error as e:
                 _log(f"observe failed ({e}); dropping in-memory, will re-observe next cycle")
                 self._safe_rollback()
                 return None
 
     def checkpoint(self, device_ts: str, nvr_state: str, cameras_observed: int,
-                   cycle_ok: bool = True) -> Optional[dict]:
+                   cycle_ok: bool = True, recorder_id: str | None = None) -> Optional[dict]:
+        rid = str(recorder_id).strip() if recorder_id else None
         with self._lock:
             try:
                 self.db.execute(
-                    "insert into checkpoints (device_ts, nvr_state, cameras_observed, cycle_ok)"
-                    " values (?,?,?,?)",
-                    (str(device_ts), str(nvr_state), int(cameras_observed), 1 if cycle_ok else 0))
+                    "insert into checkpoints (recorder_id, device_ts, nvr_state, cameras_observed,"
+                    " cycle_ok) values (?,?,?,?,?)",
+                    (rid, str(device_ts), str(nvr_state), int(cameras_observed),
+                     1 if cycle_ok else 0))
                 seq = self.db.execute("select last_insert_rowid()").fetchone()[0]
-                return {"seq": seq, "device_ts": str(device_ts), "nvr_state": str(nvr_state),
-                        "cameras_observed": int(cameras_observed), "cycle_ok": bool(cycle_ok)}
+                out = {"seq": seq, "device_ts": str(device_ts), "nvr_state": str(nvr_state),
+                       "cameras_observed": int(cameras_observed), "cycle_ok": bool(cycle_ok)}
+                if rid:
+                    out["recorder_id"] = rid
+                return out
             except sqlite3.Error as e:
                 _log(f"checkpoint failed ({e})")
                 return None
@@ -365,15 +493,24 @@ class HealthStore:
     def export_batch(self, limit: int) -> dict:
         """The reconciliation payload: pending transitions + checkpoints, defined fields only
         (no secrets, no bytes)."""
-        txs = [{"id": r["dedupe_key"], "seq": r["seq"], "store_epoch": self.epoch,
-                "layer": r["layer"], "entity": r["entity"],
-                "from": r["from_state"], "to": r["to_state"], "reason": r["reason"],
-                "source": r["source"], "device_ts": r["device_ts"]}
-               for r in self.pending_transitions(limit)]
-        cps = [{"id": f"{self.agent_id}:{self.epoch}:cp:{r['seq']}", "store_epoch": self.epoch,
-                "seq": r["seq"], "device_ts": r["device_ts"], "nvr_state": r["nvr_state"],
-                "cameras_observed": r["cameras_observed"], "cycle_ok": bool(r["cycle_ok"])}
-               for r in self.pending_checkpoints(limit)]
+        txs = []
+        for r in self.pending_transitions(limit):
+            item = {"id": r["dedupe_key"], "seq": r["seq"], "store_epoch": self.epoch,
+                    "layer": r["layer"], "entity": r["entity"],
+                    "from": r["from_state"], "to": r["to_state"], "reason": r["reason"],
+                    "source": r["source"], "device_ts": r["device_ts"]}
+            if r.get("recorder_id"):
+                item["recorder_id"] = r["recorder_id"]
+            txs.append(item)
+        cps = []
+        for r in self.pending_checkpoints(limit):
+            item = {"id": f"{self.agent_id}:{self.epoch}:cp:{r['seq']}",
+                    "store_epoch": self.epoch, "seq": r["seq"],
+                    "device_ts": r["device_ts"], "nvr_state": r["nvr_state"],
+                    "cameras_observed": r["cameras_observed"], "cycle_ok": bool(r["cycle_ok"])}
+            if r.get("recorder_id"):
+                item["recorder_id"] = r["recorder_id"]
+            cps.append(item)
         return {"transitions": txs, "checkpoints": cps}
 
     def total_checkpoints(self) -> int:

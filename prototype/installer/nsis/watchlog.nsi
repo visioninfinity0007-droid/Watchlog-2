@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.0.28"
+  !define APPVERSION "5.1.0"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -147,8 +147,9 @@ Section "Install"
   ; UPGRADE VERSION TRUTH: before starting anything, verify the on-disk binary's file ProductVersion
   ; AND its runtime --version both equal this release. If the binary was not actually replaced, roll
   ; back and abort rather than register/start/report a version that is not installed.
+  ; -VerifySetupUi: this installer also wrote the Setup UI, so its version must match too.
   ${If} $6 == "1"
-    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}"' $9
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage verify-version -InstallDir "$INSTDIR" -ExpectedVersion "${APPVERSION}" -VerifySetupUi' $9
     ${If} $9 != 0
       ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\wl-upgrade.ps1" -Stage rollback -InstallDir "$INSTDIR"' $9
       ${If} $9 == 0
@@ -216,7 +217,7 @@ Section "Install"
     ; it rather than dead-ending on the check below.
     ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
       DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
-      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
+      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
       DetailPrint "WatchLog setup exited with code $0"
       ${If} $0 != 0
         ${If} $8 == "1"
@@ -235,7 +236,7 @@ Section "Install"
     ${EndIf}
   ${Else}
     DetailPrint "Opening WatchLog Setup..."
-    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --config "$INSTDIR\watchlog.ini"' $0
+    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
     DetailPrint "WatchLog setup exited with code $0"
     ${If} $0 != 0
       MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
@@ -300,6 +301,8 @@ Section "Install"
 
   CreateDirectory "${STARTMENU}"
   CreateShortcut "${STARTMENU}\WatchLog Setup.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+  CreateShortcut "${STARTMENU}\WatchLog Site Status.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--status --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
+  CreateShortcut "${STARTMENU}\WatchLog Manage Recorders.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--manage-recorders --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
@@ -327,6 +330,8 @@ Section "Uninstall"
   ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
   ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
   Delete "${STARTMENU}\WatchLog Setup.lnk"
+  Delete "${STARTMENU}\WatchLog Site Status.lnk"
+  Delete "${STARTMENU}\WatchLog Manage Recorders.lnk"
   Delete "${STARTMENU}\Uninstall WatchLog.lnk"
   RMDir "${STARTMENU}"
   Delete "$INSTDIR\watchlog-agent.exe"
@@ -347,6 +352,15 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
 
+  ; Multi-recorder state follows the same rule as the legacy credential. recorders.json
+  ; binds local recorder ids to this site's cloud recorder identities and names the
+  ; per-recorder credentials under Secrets\recorders. Remove it BEFORE those credentials:
+  ; a registry left without them made every later reinstall fail until someone deleted
+  ; it by hand.
+  Delete "${DATAROOT}\recorders.json"
+  Delete "${DATAROOT}\recorders.json.tmp"
+  RMDir /r "${DATAROOT}\Secrets\recorders"
+
   ; Remove the encrypted credential + agent key (the whole Secrets directory)
   ; and any legacy plaintext/blob remnants. Non-secret state and logs remain in
   ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
@@ -366,4 +380,6 @@ Section "Uninstall"
   Delete "${DATAROOT}\last_live.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
+  ; Secondary recorders keep their own spool, health ledger and last-live marker here.
+  RMDir /r "${DATAROOT}\recorders"
 SectionEnd

@@ -17,11 +17,17 @@ import threading
 
 import dahua_archive
 import hikvision_archive
+import recorder_registry
 import recording_health
 
 _ORIGINAL_ASSESS = recording_health.assess_recording_storage
 _LOCAL = threading.local()
 _INSTALLED = False
+
+RECORDER_CURRENT_RPC = "wl_report_recorder_recording_storage_current"
+SITE_CURRENT_RPC = "wl_report_recording_storage_current"
+# Set once the database answers that the recorder-aware RPC does not exist.
+_RECORDER_RPC_ABSENT = False
 
 ARCHIVE_LOOKBACK_MINUTES = 12
 ARCHIVE_SETTLE_MINUTES = 2
@@ -98,6 +104,47 @@ def _capture_assess(driver, channels, nvr_state: str, inventory=None) -> dict:
     return report
 
 
+def _rpc_absent(error: Exception, fn: str) -> bool:
+    return (getattr(error, "fn", "") == fn
+            and (getattr(error, "code", None) == "PGRST202"
+                 or getattr(error, "status", None) == 404))
+
+
+def _single_recorder_site() -> bool:
+    """True when this PC monitors at most one recorder (no registry counts as one)."""
+    try:
+        configured = [row for row in recorder_registry.recorders() if row.get("is_configured")]
+    except Exception:  # noqa: BLE001 — an unreadable registry is never assumed single
+        return False
+    return len(configured) <= 1
+
+
+def report_current(core, cloud, state, cfg, report) -> None:
+    """Publish one recorder's present-tense recording/storage proof (MNVR-013).
+
+    A bound recorder names itself: its proof covers only its own channels and storage. The
+    site-scoped RPC applies a proof to every same-numbered channel of the site, so it is
+    used only by a recorder-less runtime or, on a database that has no recorder-aware RPC,
+    only while this site has a single recorder. A multi-recorder site on such a database
+    defers the proof rather than apply one recorder's state to another's cameras."""
+    global _RECORDER_RPC_ABSENT
+    recorder_id = str(getattr(cfg, "recorder_cloud_id", "") or "").strip()
+    args = dict(p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+    if recorder_id and not _RECORDER_RPC_ABSENT:
+        try:
+            cloud.call(RECORDER_CURRENT_RPC, p_recorder_id=recorder_id, p_report=report, **args)
+            return
+        except Exception as error:  # noqa: BLE001 — classified below
+            if not _rpc_absent(error, RECORDER_CURRENT_RPC):
+                raise
+            _RECORDER_RPC_ABSENT = True
+    if recorder_id and not _single_recorder_site():
+        core.log("recording current proof deferred: this WatchLog database cannot yet take "
+                 "a proof for one recorder of a multi-recorder site")
+        return
+    cloud.call(SITE_CURRENT_RPC, p_report=report, **args)
+
+
 def install(core) -> None:
     """Patch the production health cycle with a separate current-state RPC.
 
@@ -121,12 +168,7 @@ def install(core) -> None:
         report = getattr(_LOCAL, "latest", None)
         if report:
             try:
-                cloud.call(
-                    "wl_report_recording_storage_current",
-                    p_agent_id=state["agent_id"],
-                    p_agent_key=state["agent_key"],
-                    p_report=report,
-                )
+                report_current(core, cloud, state, cfg, report)
             except Exception as error:  # noqa: BLE001 — never disturb the agent
                 try:
                     core.log(
@@ -140,4 +182,4 @@ def install(core) -> None:
     core.health_cycle = wrapped_cycle
 
 
-__all__ = ["install", "_archive_assess"]
+__all__ = ["install", "report_current", "_archive_assess"]

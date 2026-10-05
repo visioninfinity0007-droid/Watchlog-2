@@ -73,6 +73,8 @@ def _run(monkeypatch, tmp_path, holder_state, *, recovery_enabled=True):
         elif sleeps["n"] >= 3:
             raise KeyboardInterrupt
 
+    # No recorder registry: the historical singleton loop, whatever this PC's ProgramData holds.
+    monkeypatch.setattr(analytics_agent.recorder_registry, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(core.vision, "build", lambda _cfg, _log: None)
     monkeypatch.setattr(core, "collector", collector)
     for name in ("recovery_worker", "health_worker", "command_worker", "health_cycle"):

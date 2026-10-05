@@ -485,7 +485,7 @@ class RecoveryLoginBackoff(RecoveryWorkerRpcContract):
     def test_a_credential_change_lets_the_login_retry_at_once(self):
         recorder = _RefusedLogin()
         generation = {"n": 1}
-        with _Patch(core, _credential_generation=lambda: generation["n"]):
+        with _Patch(core, _credential_generation=lambda _cfg: generation["n"]):
             self._work(StrictCloud(), _Spool(), [], cycles=3, recorder=recorder)
             self.assertEqual(recorder.opens, 1)
             generation["n"] = 2                       # Setup saved a new password

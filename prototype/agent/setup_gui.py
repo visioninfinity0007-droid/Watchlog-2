@@ -4,12 +4,17 @@ Customer path:
 Welcome -> Site Code -> Find Recorder -> Recorder Login -> Camera Check ->
 Connect -> Ready.
 
+A site with several recorders repeats Find Recorder -> Recorder Login -> Camera
+Check for each one ("Add another recorder" on the camera step) before Connect;
+every recorder is signed in to with its own login and gets its own name.
+
 All network/recorder work runs off the Qt UI thread. Detailed diagnostic output
 is redirected to ProgramData; the customer sees concise actionable messages.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -39,12 +44,15 @@ if os.name == "nt":
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget, QHeaderView,
+    QApplication, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QProgressBar, QPushButton, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
+import credential_store
+import recorder_registry
+import recorder_runtime
 import setup_backend as backend
 from status_controller import StatusController
 
@@ -123,9 +131,11 @@ def card_layout() -> tuple[QFrame, QVBoxLayout]:
 class SetupWindow(QMainWindow):
     STEPS = ["Welcome", "Site Code", "Recorder", "Login", "Cameras", "Connecting", "Ready"]
 
-    def __init__(self, config_path: Path, *, installer_child: bool = False):
+    def __init__(self, config_path: Path, *, installer_child: bool = False,
+                 manage_recorders: bool = False):
         super().__init__()
         self.config_path = config_path
+        self.manage_recorders = bool(manage_recorders)
         # NSIS waits synchronously for this process. A successful setup therefore
         # MUST terminate itself; showing Ready forever leaves the parent installer
         # apparently stuck even though WatchLog is already connected.
@@ -133,13 +143,17 @@ class SetupWindow(QMainWindow):
         self.public = backend.read_public_defaults(config_path)
         self.pool = QThreadPool.globalInstance()
         self.exit_code = 1
-        self.site_connected = False   # set once the agent is registered + running
-        self.recorder_address = self.public.get("nvr_url", "")
-        self.recorder_user = self.public.get("nvr_username", "admin")
+        self.site_connected = bool(self.manage_recorders)  # existing site is already installed
+        self.recorder_address = "" if self.manage_recorders else self.public.get("nvr_url", "")
+        self.recorder_user = ("admin" if self.manage_recorders
+                              else self.public.get("nvr_username", "admin"))
         self.recorder_password = ""
         self.recorder_result = None
         self.recorder_hint = None
         self._discovered = {}
+        # First install only: recorders already confirmed on the camera step, in
+        # order. The first one is the site's primary; the one on screen is not here yet.
+        self.install_recorders: list[dict] = []
         self.final_result = None
         self._busy = False
         # Worker generation lets the UI abandon a timed-out recorder login safely.
@@ -168,7 +182,9 @@ class SetupWindow(QMainWindow):
         sl = QVBoxLayout(side)
         sl.setContentsMargins(26, 28, 20, 24)
         sl.addWidget(label("W  WatchLog", "brand"))
-        sl.addWidget(label("SITE CONNECTION SETUP", "eyebrow"))
+        sl.addWidget(label(
+            "MANAGE RECORDERS" if self.manage_recorders else "SITE CONNECTION SETUP",
+            "eyebrow"))
         sl.addSpacing(24)
         self.step_labels = []
         for i, name in enumerate(self.STEPS):
@@ -190,7 +206,11 @@ class SetupWindow(QMainWindow):
         bl.addWidget(self.stack, 1)
         bl.addWidget(self.status)
         outer.addWidget(body, 1)
-        self.go(0)
+        if self.manage_recorders:
+            self.go(2)
+            QTimer.singleShot(0, self.search_recorders)
+        else:
+            self.go(0)
 
     def _asset(self, name: str) -> Path:
         if getattr(sys, "frozen", False):
@@ -273,6 +293,13 @@ class SetupWindow(QMainWindow):
         self.search_btn.clicked.connect(self.search_recorders)
         row.addWidget(self.search_btn)
         row.addStretch(1)
+        # First install, after "Add another recorder": return to the recorders already
+        # chosen without connecting a further one (offline, wrong password, mis-click).
+        self.back_to_cameras_btn = QPushButton("Back to cameras")
+        self.back_to_cameras_btn.setObjectName("secondary")
+        self.back_to_cameras_btn.clicked.connect(self.return_to_cameras)
+        self.back_to_cameras_btn.hide()
+        row.addWidget(self.back_to_cameras_btn)
         cl.addLayout(row)
         self.discovery_status = label("", "muted")
         self.discovery_status.hide()
@@ -329,6 +356,11 @@ class SetupWindow(QMainWindow):
         self.login_progress.setTextVisible(False)
         self.login_progress.hide()
         cl.addWidget(self.login_progress)
+        self.login_back_to_cameras_btn = QPushButton("Back to cameras without this recorder")
+        self.login_back_to_cameras_btn.setObjectName("secondary")
+        self.login_back_to_cameras_btn.clicked.connect(self.return_to_cameras)
+        self.login_back_to_cameras_btn.hide()
+        cl.addWidget(self.login_back_to_cameras_btn)
         l.addWidget(c)
         self.login_next = self._nav(l, 2, "Test Connection", self.test_connection)
         self.stack.addWidget(page)
@@ -339,15 +371,51 @@ class SetupWindow(QMainWindow):
         c, cl = card_layout()
         self.recorder_summary = label("", "muted")
         cl.addWidget(self.recorder_summary)
-        self.camera_table = QTableWidget(0, 2)
-        self.camera_table.setHorizontalHeaderLabels(["Channel", "Recorder camera name"])
+        self.recorder_name_label = label("RECORDER NAME", "eyebrow")
+        cl.addWidget(self.recorder_name_label)
+        self.recorder_name_edit = QLineEdit(backend.default_recorder_name(0))
+        self.recorder_name_edit.setMaxLength(80)
+        self.recorder_name_edit.textChanged.connect(lambda _text: self.populate_cameras())
+        cl.addWidget(self.recorder_name_edit)
+        self.recorder_name_label.setVisible(not self.manage_recorders)
+        self.recorder_name_edit.setVisible(not self.manage_recorders)
+        # Cameras of every recorder in this installation, grouped by recorder:
+        # two recorders may both have a channel 1.
+        self.camera_table = QTableWidget(0, 3)
+        self.camera_table.setHorizontalHeaderLabels(["Recorder", "Channel", "Recorder camera name"])
         self.camera_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.camera_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.camera_table.setMinimumHeight(220)
+        self.camera_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.camera_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.camera_table.setMinimumHeight(200)
         cl.addWidget(self.camera_table)
         cl.addWidget(label(
             "All discovered channels are connected by default. You can rename, ignore or assign camera purposes from the portal after setup.",
             "muted"))
+        more = QHBoxLayout()
+        self.add_another_btn = QPushButton("Add another recorder")
+        self.add_another_btn.setObjectName("secondary")
+        self.add_another_btn.clicked.connect(self.add_install_recorder)
+        # Reachable during the FIRST install, installer-child or not. A post-install
+        # add (Manage Recorders) activates each recorder on its own instead.
+        self.add_another_btn.setVisible(not self.manage_recorders)
+        more.addWidget(self.add_another_btn)
+        more.addWidget(label("Connect each recorder at this site in the same installation.",
+                             "muted"), 1)
+        cl.addLayout(more)
+        # The recorders in this installation (shown once there is more than one), so a
+        # recorder chosen by mistake can be taken out again before Connect.
+        self.install_list = QListWidget()
+        self.install_list.setMaximumHeight(90)
+        self.install_list.hide()
+        cl.addWidget(self.install_list)
+        self.remove_recorder_btn = QPushButton("Remove selected recorder")
+        self.remove_recorder_btn.setObjectName("secondary")
+        self.remove_recorder_btn.clicked.connect(self.remove_install_recorder)
+        self.remove_recorder_btn.hide()
+        cl.addWidget(self.remove_recorder_btn)
+        self.cameras_error = label("", "muted")
+        self.cameras_error.setWordWrap(True)
+        cl.addWidget(self.cameras_error)
         l.addWidget(c)
         self._nav(l, 3, "Connect WatchLog", self.begin_finalize)
         self.stack.addWidget(page)
@@ -405,6 +473,11 @@ class SetupWindow(QMainWindow):
         open_status.setObjectName("secondary")
         open_status.clicked.connect(self.open_site_status)
         row.addWidget(open_status)
+        self.add_recorder_btn = QPushButton("Add another recorder")
+        self.add_recorder_btn.setObjectName("secondary")
+        self.add_recorder_btn.clicked.connect(self.begin_add_another_recorder)
+        self.add_recorder_btn.setVisible(self.manage_recorders and not self.installer_child)
+        row.addWidget(self.add_recorder_btn)
         finish = QPushButton("Finish")
         finish.clicked.connect(self.finish)
         row.addWidget(finish)
@@ -422,6 +495,27 @@ class SetupWindow(QMainWindow):
             else:
                 item.setStyleSheet(f"color:{MUTED};padding:8px 0;font-size:13px;")
         self.status.setText("")
+        self._refresh_install_controls()
+
+    def _refresh_install_controls(self):
+        """First install: show the ways back to, and out of, the recorders already chosen."""
+        chosen = bool(self.install_recorders) and not self.manage_recorders
+        self.back_to_cameras_btn.setVisible(chosen)
+        self.login_back_to_cameras_btn.setVisible(chosen)
+        entries = [] if self.manage_recorders else self._install_entries()
+        several = len(entries) > 1
+        current = self.install_list.currentItem()
+        keep = current.data(Qt.UserRole) if current is not None else None
+        self.install_list.clear()
+        for index, entry in enumerate(entries):
+            cameras = len((entry.get("verified_recorder") or {}).get("channels") or [])
+            item = QListWidgetItem(f"{entry['display_name']}   •   {cameras} camera(s)")
+            item.setData(Qt.UserRole, index)
+            self.install_list.addItem(item)
+        if keep is not None and int(keep) < len(entries):
+            self.install_list.setCurrentRow(int(keep))
+        self.install_list.setVisible(several)
+        self.remove_recorder_btn.setVisible(several)
 
     def set_busy(self, busy: bool, message: str = ""):
         self._busy = busy
@@ -500,6 +594,10 @@ class SetupWindow(QMainWindow):
             self.login_next.setEnabled(True)
         elif self.stack.currentIndex() == 5:
             if self.installer_child:
+                # Unlike a returned failure, the timed-out finalize_install thread may
+                # still be writing credentials and the registry, and it cannot be
+                # stopped. A Retry would run a second one beside it; ending the
+                # installer-child process is the only clean stop.
                 self._terminal_installer_failure(message)
                 return
             self.progress_bar.setRange(0, 1)
@@ -523,9 +621,8 @@ class SetupWindow(QMainWindow):
             self._set_discovery_loading(False)
             QMessageBox.warning(self, "WatchLog Setup", message)
         elif self.stack.currentIndex() == 5:
-            if self.installer_child:
-                self._terminal_installer_failure(message)
-                return
+            # Retryable in installer-child mode too: the worker has returned. Only
+            # Exit/Cancel ends an installer child (non-zero; NSIS stops cleanly).
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.connect_error.setText(message)
@@ -585,6 +682,10 @@ class SetupWindow(QMainWindow):
     def show_recorders(self, rows):
         self._set_discovery_loading(False)
         self._discovered = {row["ip"]: row for row in rows}
+        # A recorder already added to this installation is not offered again.
+        rows = [row for row in rows
+                if backend.find_install_duplicate(self.install_recorders,
+                                                  {"address": row["ip"]}) is None]
         if not rows:
             self.status.setText("No recorder was found automatically. Enter its local IP address below.")
             return
@@ -608,14 +709,10 @@ class SetupWindow(QMainWindow):
         recorder_word = "recorder" if len(rows) == 1 else "recorders"
         found = f"Found {len(rows)} possible {recorder_word}."
         if len(rows) > 1:
-            # WatchLog monitors exactly ONE recorder per installation: the agent holds a
-            # single nvr_url, and cameras are unique per (site_id, channel), so pointing a
-            # second recorder at the same site SILENTLY overwrites the first one's camera
-            # rows and stops monitoring it. A technician who picks one here and leaves on a
-            # green screen would believe a 2-recorder site was fully covered. Say it.
-            found += (" WatchLog monitors ONE recorder per installation - pick the one this"
-                      " PC should monitor. A second recorder needs its own WatchLog site and"
-                      " its own PC.")
+            found += (
+                " Select one recorder to connect. Use Add another recorder on the camera "
+                "step to connect the others to this same WatchLog site in this installation."
+            )
         self.status.setText(found)
 
     def recorder_selected(self):
@@ -703,37 +800,184 @@ class SetupWindow(QMainWindow):
 
     def connection_ok(self, result):
         self._set_login_loading(False)
+        if not self.manage_recorders and backend.find_install_duplicate(
+                self.install_recorders,
+                {"address": self.recorder_address, "verified_recorder": result}) is not None:
+            message = ("This recorder is already part of this installation. "
+                       "Go back and choose another recorder.")
+            self.login_error.setText(message)
+            self.status.setText(message)
+            return
         self.recorder_result = result
-        self.recorder_summary.setText(
-            f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
+        self._show_recorder_summary(result)
+        self.recorder_name_edit.setText(backend.unused_recorder_name(
+            [entry["display_name"] for entry in self.install_recorders]))
+        self.cameras_error.setText("")
         self.populate_cameras()
         self.go(4)
 
+    def _show_recorder_summary(self, result: dict):
+        self.recorder_summary.setText(
+            f"{result['vendor']} {result['model']}  •  {len(result['channels'])} camera(s)  •  Connection verified")
+
+    def _current_entry(self) -> dict:
+        """The recorder on the camera step, in finalize_install's recorder shape."""
+        return {
+            "address": self.recorder_address,
+            "username": self.recorder_user,
+            "password": self.recorder_password,
+            "display_name": (self.recorder_name_edit.text().strip()
+                             or backend.default_recorder_name(len(self.install_recorders))),
+            "verified_recorder": self.recorder_result,
+            "profiles": self.profiles(),
+            "hint": self.recorder_hint,
+        }
+
+    def _install_entries(self) -> list[dict]:
+        entries = list(self.install_recorders)
+        if self.recorder_result:
+            entries.append(self._current_entry())
+        return entries
+
     def populate_cameras(self):
-        channels = self.recorder_result["channels"] if self.recorder_result else []
-        self.camera_table.setRowCount(len(channels))
-        for row, camera in enumerate(channels):
-            channel_item = QTableWidgetItem(str(camera["channel"]))
-            channel_item.setFlags(channel_item.flags() & ~Qt.ItemIsEditable)
-            name_item = QTableWidgetItem(camera.get("name") or f"Camera {camera['channel']}")
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.camera_table.setItem(row, 0, channel_item)
-            self.camera_table.setItem(row, 1, name_item)
+        rows = backend.camera_rows_by_recorder(
+            self._install_entries() if not self.manage_recorders
+            else [{"display_name": "New recorder", "verified_recorder": self.recorder_result}])
+        self.camera_table.setRowCount(len(rows))
+        for index, values in enumerate(rows):
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.camera_table.setItem(index, col, item)
+        self._refresh_install_controls()
 
     def profiles(self):
         """Connectivity-first defaults; richer camera configuration belongs in portal."""
-        channels = self.recorder_result["channels"] if self.recorder_result else []
-        return [{
-            "channel": str(camera["channel"]),
-            "name": camera.get("name") or f"Camera {camera['channel']}",
-            "purpose": "custom",
-            "monitored": True,
-            "analytics_enabled": True,
-        } for camera in channels]
+        return backend.default_camera_profiles(self.recorder_result)
+
+    def add_install_recorder(self):
+        """Keep the recorder on screen and find the next one (first install only)."""
+        if self._busy or self.manage_recorders or not self.recorder_result:
+            return
+        problem = self._install_problem(adding=True)
+        if problem:
+            self._refuse_install(problem)
+            return
+        entry = self._current_entry()
+        self.install_recorders.append(entry)
+        self.recorder_address = ""
+        self.recorder_password = ""
+        self.recorder_result = None
+        self.recorder_hint = None
+        self.manual_ip.clear()
+        self.password_edit.clear()
+        self.login_error.clear()
+        self.go(2)
+        known = list(self._discovered.values())
+        if known:
+            self.recorder_list.clear()
+            self.show_recorders(known)
+        else:
+            self.search_recorders()
+        self.status.setText(
+            f"{entry['display_name']} is ready to connect. Select or enter the next recorder.")
+
+    def _install_problem(self, adding: bool) -> str | None:
+        """Why the recorders on the camera step cannot be connected as they are, in
+        the words finalize_install would use; None when they can. Checked in the UI
+        so an installer child never ends the whole installation over a typo."""
+        if not self.recorder_name_edit.text().strip() and (adding or self.install_recorders):
+            return "Give each recorder a name."
+        return backend.install_recorders_problem(self._install_entries())
+
+    def _refuse_install(self, message: str):
+        """Keep the technician on the camera step with the reason, inline (no modal box)."""
+        self.cameras_error.setText(message)
+        self.status.setText(message)
+
+    def _show_install_entry(self, entry: dict):
+        """Put an already chosen recorder back on the camera step, as it was."""
+        self.recorder_address = entry["address"]
+        self.recorder_user = entry["username"]
+        self.recorder_password = entry["password"]
+        self.recorder_result = entry["verified_recorder"]
+        self.recorder_hint = entry.get("hint")
+        self.manual_ip.setText(self.recorder_address)
+        self.user_edit.setText(self.recorder_user)
+        self.password_edit.setText(self.recorder_password)
+        self.selected_recorder.setText(f"Recorder: {self.recorder_address}")
+        self.login_error.setText("")
+        self.cameras_error.setText("")
+        self._show_recorder_summary(self.recorder_result)
+        self.recorder_name_edit.setText(entry["display_name"])
+        self.populate_cameras()
+        self.go(4)
+
+    def return_to_cameras(self):
+        """Leave Find Recorder / Login without a further recorder (first install)."""
+        if self.manage_recorders or not self.install_recorders:
+            return
+        if self._busy:
+            if self.stack.currentIndex() != 2:
+                return                  # a recorder login is being checked; let it finish
+            # Abandon discovery as Use this IP does; a late result is ignored.
+            self._worker_seq += 1
+            self._active_worker = 0
+            self.set_busy(False)
+            self._set_discovery_loading(False)
+        self._show_install_entry(self.install_recorders.pop())
+        self.status.setText("Add another recorder or connect the recorders listed.")
+
+    def remove_install_recorder(self):
+        """Take the selected recorder out of this installation before Connect."""
+        if self._busy or self.manage_recorders:
+            return
+        entries = self._install_entries()
+        if len(entries) < 2:
+            return
+        item = self.install_list.currentItem()
+        if item is None:
+            self.cameras_error.setText("Select the recorder to remove.")
+            return
+        index = int(item.data(Qt.UserRole))
+        removed = entries[index]["display_name"]
+        self.install_list.setCurrentRow(-1)
+        if index < len(self.install_recorders):
+            del self.install_recorders[index]
+            self.cameras_error.setText("")
+            self.populate_cameras()
+        else:                           # the recorder on screen: bring back the previous one
+            self._show_install_entry(self.install_recorders.pop())
+        self.status.setText(f"{removed} removed from this installation.")
+
+    def install_plan(self) -> dict:
+        """finalize_install arguments for the recorders chosen in this installation."""
+        entries = self._install_entries()
+        primary, additional = entries[0], entries[1:]
+        default = backend.default_recorder_name(0)
+        return {
+            "args": (self.config_path, dict(self.public), self.code_edit.text().strip(),
+                     primary["address"], primary["username"], primary["password"],
+                     "custom", primary["profiles"]),
+            "kwargs": {
+                "hint": primary["hint"],
+                "verified_recorder": primary["verified_recorder"],
+                "additional_recorders": additional or None,
+                "primary_display_name": (primary["display_name"]
+                                         if primary["display_name"] != default else None),
+            },
+        }
 
     def begin_finalize(self):
         if self._busy:
             return
+        if not self.manage_recorders and self.stack.currentIndex() == 4:
+            # The whole recorder set is checked here, not by finalize_install on the
+            # Connect page, where a refusal would end an installer child.
+            problem = self._install_problem(adding=False)
+            if problem:
+                self._refuse_install(problem)
+                return
         self.go(5)
         self.retry_btn.hide()
         self.incomplete_status_btn.hide()
@@ -742,24 +986,91 @@ class SetupWindow(QMainWindow):
         self.connect_error.setText("")
         self.progress_bar.setRange(0, 0)
         public = dict(self.public)
-        args = (self.config_path, public, self.code_edit.text().strip(), self.recorder_address,
+        if self.manage_recorders:
+            args = (
+                self.config_path, public, self.recorder_address,
                 self.recorder_user, self.recorder_password,
-                "custom", self.profiles())
-        self.run_worker(
-            backend.finalize_install, args, self.finalize_ok, "Connecting to WatchLog…",
-            hint=self.recorder_hint,
-            verified_recorder=self.recorder_result,
-            timeout_ms=50000,
-            timeout_message=(
-                "WatchLog could not finish the site connection within 50 seconds. "
-                "Installation has been stopped cleanly; the previous working agent is kept "
-                "when this is an upgrade."
-            ),
-        )
+            )
+            self.run_worker(
+                backend.add_existing_site_recorder,
+                args,
+                self.finalize_ok,
+                "Adding this recorder to WatchLog…",
+                hint=self.recorder_hint,
+                verified_recorder=self.recorder_result,
+                timeout_ms=90000,
+                timeout_message=(
+                    "WatchLog could not verify the recorder cutover within 90 seconds. "
+                    "Open Site Status before retrying so the same recorder is not added twice."
+                ),
+            )
+        else:
+            plan = self.install_plan()
+            extra = len(plan["kwargs"]["additional_recorders"] or [])
+            # Each further recorder adds its credential, its WatchLog link and its cameras.
+            seconds = 50 + 20 * extra
+            self.run_worker(
+                backend.finalize_install,
+                plan["args"],
+                self.finalize_ok,
+                "Connecting to WatchLog…",
+                timeout_ms=seconds * 1000,
+                timeout_message=(
+                    f"WatchLog could not finish the site connection within {seconds} seconds. "
+                    "Installation has been stopped cleanly; the previous working agent is kept "
+                    "when this is an upgrade."
+                ),
+                **plan["kwargs"],
+            )
         # On the connecting page use the page-local progress label too.
         self.status.setText("")
 
     def finalize_ok(self, result):
+        if self.manage_recorders:
+            self.final_result = result or {}
+            self.agent_start = self.final_result.get("agent_start") or {}
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(1)
+            if not self.final_result.get("ok"):
+                self.progress_label.setText("WatchLog could not add this recorder.")
+                self.connect_error.setText(
+                    "The recorder was not added. Retry or export a support bundle."
+                )
+                self.retry_btn.show()
+                self.incomplete_status_btn.show()
+                self.incomplete_bundle_btn.show()
+                self.incomplete_exit_btn.show()
+                return
+            if not self.final_result.get("connected"):
+                self.progress_label.setText("Recorder saved; connection not yet verified.")
+                self.connect_error.setText(
+                    "WatchLog kept the recorder configuration but could not yet confirm "
+                    "the restarted background connection. Open Site Status before retrying."
+                )
+                self.incomplete_status_btn.show()
+                self.incomplete_bundle_btn.show()
+                self.incomplete_exit_btn.show()
+                return
+
+            count = int(self.final_result.get("recorder_count") or 0)
+            cameras = int(self.final_result.get("camera_count") or 0)
+            self.success_summary.setText(
+                f"✓ Recorder added to this WatchLog site\n"
+                f"✓ {cameras} camera channel(s) verified on this recorder\n"
+                f"✓ {count} recorder(s) configured on this PC\n"
+                f"✓ Recorder credential protected on this PC\n\n"
+                f"{self.final_result.get('vendor') or ''} "
+                f"{self.final_result.get('model') or ''}".strip()
+            )
+            self.progress_label.setText("Connected.")
+            self.go(6)
+            self.status.setText(
+                "Recorder added. Add another recorder or finish."
+            )
+            if hasattr(self, "add_recorder_btn"):
+                self.add_recorder_btn.show()
+            return
+
         # finalize_install reuses the Step 04 recorder proof, encrypts the credential,
         # enrolled/authenticated the site, synced cameras, sent a heartbeat and started the
         # background agent. Those are the REQUIRED installation proofs.
@@ -797,22 +1108,66 @@ class SetupWindow(QMainWindow):
             return
 
         self.progress_label.setText("Connected.")
-        base = (
-            f"✓ Recorder verified\n"
-            f"✓ WatchLog site linked\n"
-            f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
-            f"✓ Recorder credential encrypted on this PC\n"
-            f"{self._background_line()}\n\n"
-            f"{result.get('vendor', '')} {result.get('model', '')}"
-        )
+        recorders = result.get("recorders") or []
+        if recorders:
+            lines = "".join(
+                (f"✓ {r['display_name']}: {r.get('camera_count', 0)} camera(s) connected\n"
+                 if r.get("cloud_linked") else
+                 f"! {r['display_name']}: link to WatchLog not confirmed\n")
+                for r in recorders)
+            base = (
+                f"✓ {len(recorders)} recorders verified, each with its own login\n"
+                f"✓ WatchLog site linked\n"
+                f"{lines}"
+                f"✓ Recorder credentials encrypted on this PC\n"
+                f"{self._background_line()}"
+            )
+        else:
+            base = (
+                f"✓ Recorder verified\n"
+                f"✓ WatchLog site linked\n"
+                f"✓ {result.get('camera_count', 0)} camera(s) connected\n"
+                f"✓ Recorder credential encrypted on this PC\n"
+                f"{self._background_line()}\n\n"
+                f"{result.get('vendor', '')} {result.get('model', '')}"
+            )
         self.success_summary.setText(base)
+        self.install_recorders = []
         self.go(6)
+        # Standalone Setup can keep adding recorders to the now-connected site.
+        self.add_recorder_btn.setVisible(not self.installer_child)
         if self.installer_child:
             # Give the technician a brief visual confirmation, then return exit 0
             # to NSIS automatically. Standalone "WatchLog Setup" remains open and
             # still uses the Finish button.
             self.status.setText("Installation complete. Finishing automatically…")
             QTimer.singleShot(1800, self.finish)
+
+    def begin_add_another_recorder(self):
+        """Reuse the proven discovery/login flow without re-enrolling the site."""
+        if self.installer_child:
+            return
+        self.manage_recorders = True
+        self.install_recorders = []
+        self.add_another_btn.hide()
+        self.recorder_name_label.hide()
+        self.recorder_name_edit.hide()
+        self.recorder_address = ""
+        self.recorder_password = ""
+        self.recorder_result = None
+        self.recorder_hint = None
+        self._discovered = {}
+        self.recorder_list.clear()
+        self.manual_ip.clear()
+        self.password_edit.clear()
+        self.login_error.clear()
+        self.connect_error.clear()
+        self.retry_btn.hide()
+        self.incomplete_status_btn.hide()
+        self.incomplete_bundle_btn.hide()
+        self.incomplete_exit_btn.hide()
+        self.go(2)
+        self.search_recorders()
 
     def _background_line(self) -> str:
         """State only what register-service actually proved.
@@ -973,6 +1328,451 @@ def _emit_line(line: str) -> None:
         pass
 
 
+class AddRecorderDialog(QDialog):
+    """Post-install add-recorder flow using the production activation/rollback path."""
+    def __init__(self, config_path: Path, parent=None):
+        super().__init__(parent)
+        self.config_path = config_path
+        self.public = backend.read_public_defaults(config_path)
+        self.pool = QThreadPool.globalInstance()
+        self.result = None
+        self._hint = None
+        self.setWindowTitle("Add CCTV Recorder")
+        self.setMinimumSize(620, 560)
+        self.setStyleSheet(STYLE)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(12)
+        root.addWidget(label("ADD RECORDER", "eyebrow"))
+        root.addWidget(label("Connect another CCTV recorder", "title"))
+        root.addWidget(label(
+            "WatchLog checks this local network only. Recorder credentials stay protected on this PC.",
+            "muted"))
+
+        frame, lay = card_layout()
+        row = QHBoxLayout()
+        self.search_btn = QPushButton("Search Network")
+        self.search_btn.setObjectName("secondary")
+        self.search_btn.clicked.connect(self.search)
+        row.addWidget(self.search_btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self.found = QListWidget()
+        self.found.setMaximumHeight(130)
+        self.found.itemClicked.connect(self._picked)
+        lay.addWidget(self.found)
+
+        lay.addWidget(label("LOCAL ADDRESS", "eyebrow"))
+        self.address_edit = QLineEdit()
+        self.address_edit.setPlaceholderText("192.168.1.108")
+        lay.addWidget(self.address_edit)
+
+        lay.addWidget(label("USERNAME", "eyebrow"))
+        self.user_edit = QLineEdit("admin")
+        lay.addWidget(self.user_edit)
+
+        lay.addWidget(label("PASSWORD", "eyebrow"))
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.Password)
+        lay.addWidget(self.password_edit)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        lay.addWidget(self.progress)
+        self.status = label("", "muted")
+        lay.addWidget(self.status)
+        root.addWidget(frame)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("ghost")
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(cancel)
+        self.add_btn = QPushButton("Test & Add Recorder")
+        self.add_btn.clicked.connect(self.add)
+        actions.addWidget(self.add_btn)
+        root.addLayout(actions)
+
+    def _busy(self, value: bool, message: str = ""):
+        for widget in (
+            self.search_btn, self.add_btn, self.address_edit,
+            self.user_edit, self.password_edit
+        ):
+            widget.setEnabled(not value)
+        self.progress.setVisible(value)
+        if message:
+            self.status.setText(message)
+
+    def search(self):
+        self._busy(True, "Searching the local network…")
+        worker = Worker(backend.discover_recorders)
+        worker.signals.progress.connect(self.status.setText)
+        worker.signals.finished.connect(self._search_done)
+        worker.signals.failed.connect(self._search_failed)
+        self.pool.start(worker)
+
+    def _search_done(self, rows):
+        self._busy(False, "Select a recorder, or enter its local address manually.")
+        self.found.clear()
+        for row in rows or []:
+            item = QListWidgetItem(
+                f"{row.get('ip','')}  —  {row.get('label') or 'Recorder'}"
+            )
+            item.setData(Qt.UserRole, row)
+            self.found.addItem(item)
+
+    def _search_failed(self, _message):
+        self._busy(
+            False,
+            "Automatic search could not complete. Enter the recorder address manually.",
+        )
+
+    def _picked(self, item):
+        row = item.data(Qt.UserRole) or {}
+        self._hint = dict(row)
+        self.address_edit.setText(str(row.get("ip") or ""))
+
+    def add(self):
+        address = self.address_edit.text().strip()
+        username = self.user_edit.text().strip()
+        password = self.password_edit.text()
+        if not address:
+            self.status.setText("Enter or select the recorder's local address.")
+            return
+        if not username or not password:
+            self.status.setText("Enter the recorder username and password.")
+            return
+
+        self._busy(True, "Testing and activating this recorder…")
+        worker = Worker(
+            backend.add_existing_site_recorder,
+            self.config_path,
+            self.public,
+            address,
+            username,
+            password,
+            hint=self._hint,
+        )
+        worker.signals.progress.connect(self.status.setText)
+        worker.signals.finished.connect(self._added)
+        worker.signals.failed.connect(self._failed)
+        self.pool.start(worker)
+
+    def _added(self, result):
+        self.result = result
+        self.password_edit.clear()
+        self._busy(False)
+        self.accept()
+
+    def _failed(self, message):
+        self.password_edit.clear()
+        self._busy(False, message or "WatchLog could not add this recorder.")
+
+
+class RecorderManagerWindow(QMainWindow):
+    """Post-install recorder lifecycle manager. There is deliberately no hard delete."""
+    def __init__(self, config_path: Path, parent=None):
+        super().__init__(parent)
+        self.config_path = config_path
+        self.pool = QThreadPool.globalInstance()
+        self._worker = None
+        self.setWindowTitle("WatchLog — Manage Recorders")
+        self.setMinimumSize(900, 600)
+        self.setStyleSheet(STYLE)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(30, 26, 30, 24)
+        outer.setSpacing(14)
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.addWidget(label("SITE CCTV", "eyebrow"))
+        title_col.addWidget(label("Manage recorders", "title"))
+        title_col.addWidget(label(
+            "Add or maintain the CCTV recorders connected to this site. "
+            "Credentials stay on this PC.",
+            "muted"))
+        header.addLayout(title_col)
+        header.addStretch(1)
+        self.add_btn = QPushButton("+ Add Recorder")
+        self.add_btn.clicked.connect(self.add_recorder)
+        header.addWidget(self.add_btn)
+        outer.addLayout(header)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels([
+            "Recorder", "Device", "Local address", "State", "Primary", "WatchLog link"
+        ])
+        for col in (0, 1, 2):
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        for col in (3, 4, 5):
+            self.table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeToContents
+            )
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
+        outer.addWidget(self.table, 1)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        outer.addWidget(self.progress)
+        self.status = label("", "muted")
+        outer.addWidget(self.status)
+
+        actions = QHBoxLayout()
+        self.rename_btn = QPushButton("Rename")
+        self.rename_btn.setObjectName("secondary")
+        self.rename_btn.clicked.connect(self.rename_selected)
+        actions.addWidget(self.rename_btn)
+
+        self.primary_btn = QPushButton("Make Primary")
+        self.primary_btn.setObjectName("secondary")
+        self.primary_btn.clicked.connect(self.make_primary_selected)
+        actions.addWidget(self.primary_btn)
+
+        self.enable_btn = QPushButton("Disable")
+        self.enable_btn.setObjectName("secondary")
+        self.enable_btn.clicked.connect(self.toggle_selected)
+        actions.addWidget(self.enable_btn)
+
+        self.repair_btn = QPushButton("Repair Login")
+        self.repair_btn.setObjectName("secondary")
+        self.repair_btn.clicked.connect(self.repair_selected)
+        actions.addWidget(self.repair_btn)
+
+        actions.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        actions.addWidget(close)
+        outer.addLayout(actions)
+        self.refresh()
+
+    def _selected(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _set_busy(self, busy: bool, message: str = ""):
+        for button in (
+            self.add_btn, self.rename_btn, self.primary_btn,
+            self.enable_btn, self.repair_btn
+        ):
+            button.setEnabled(not busy)
+        self.table.setEnabled(not busy)
+        self.progress.setVisible(busy)
+        if message:
+            self.status.setText(message)
+        if not busy:
+            self._selection_changed()
+
+    def _selection_changed(self):
+        row = self._selected()
+        enabled = row is not None and not self.progress.isVisible()
+        self.rename_btn.setEnabled(enabled)
+        self.repair_btn.setEnabled(enabled)
+        self.primary_btn.setEnabled(
+            bool(enabled and row and not row.get("is_primary")
+                 and row.get("is_configured") and row.get("cloud_linked"))
+        )
+        if row:
+            configured = bool(row.get("is_configured"))
+            protected_original = bool(configured and row.get("continuity_owner"))
+            self.enable_btn.setEnabled(bool(enabled and not protected_original))
+            self.enable_btn.setText(
+                "Keep enabled" if protected_original
+                else "Disable" if configured
+                else "Re-enable"
+            )
+            self.enable_btn.setToolTip(
+                "This original WatchLog recorder must stay enabled to preserve "
+                "monitoring-history continuity. Another recorder can still be made primary."
+                if protected_original else ""
+            )
+        else:
+            self.enable_btn.setEnabled(False)
+            self.enable_btn.setToolTip("")
+
+    def refresh(self):
+        try:
+            rows = backend.list_managed_recorders(self.config_path)
+        except Exception as exc:
+            self.status.setText(
+                str(exc) or "WatchLog could not read the local recorder list."
+            )
+            rows = []
+        self.table.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            device = " ".join(
+                x for x in (row.get("vendor"), row.get("model")) if x
+            ) or "Recorder"
+            values = [
+                row.get("display_name") or "Recorder",
+                device,
+                row.get("url") or "—",
+                backend.managed_recorder_state(row),
+                "Yes" if row.get("is_primary") else "No",
+                "Linked" if row.get("cloud_linked") else "Pending sync",
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if col == 0:
+                    item.setData(Qt.UserRole, row)
+                self.table.setItem(index, col, item)
+        self.status.setText(
+            f"{len(rows)} recorder{'s' if len(rows) != 1 else ''} configured locally."
+            if rows else "No recorder is configured locally."
+        )
+        if rows:
+            self.table.selectRow(0)
+        else:
+            self._selection_changed()
+
+    def _run_change(self, fn, *args, message: str, success):
+        """``success`` is the status text, or a function of the change's result."""
+        self._set_busy(True, message)
+        worker = Worker(fn, *args)
+        worker.signals.progress.connect(self.status.setText)
+        worker.signals.finished.connect(
+            lambda result: self._change_done(
+                success(result) if callable(success) else success)
+        )
+        worker.signals.failed.connect(self._change_failed)
+        self._worker = worker
+        self.pool.start(worker)
+
+    def _change_done(self, message: str):
+        self._worker = None
+        self._set_busy(False)
+        self.refresh()
+        self.status.setText(message)
+
+    def _change_failed(self, message: str):
+        self._worker = None
+        self._set_busy(False, message or "WatchLog could not apply that recorder change.")
+
+    def add_recorder(self):
+        dialog = AddRecorderDialog(self.config_path, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.refresh()
+            result = dialog.result or {}
+            if result.get("connected"):
+                self.status.setText("Recorder added and WatchLog is reporting with the updated recorder set.")
+            else:
+                self.status.setText(
+                    "Recorder added. WatchLog is starting with the updated recorder set; "
+                    "check Site Status if it does not appear shortly."
+                )
+
+    def rename_selected(self):
+        row = self._selected()
+        if not row:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Rename Recorder", "Recorder name:",
+            text=row.get("display_name") or "Recorder"
+        )
+        if not ok or not name.strip():
+            return
+        self._run_change(
+            backend.rename_managed_recorder,
+            self.config_path, row["local_id"], name.strip(),
+            message="Updating the recorder name…",
+            success="Recorder name updated.",
+        )
+
+    def make_primary_selected(self):
+        row = self._selected()
+        if not row or row.get("is_primary"):
+            return
+        reply = QMessageBox.question(
+            self, "Make Primary Recorder",
+            f"Use {row.get('display_name') or 'this recorder'} as this site's primary recorder? "
+            "Existing evidence history stays attached to its original recorder.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._run_change(
+            backend.make_managed_recorder_primary,
+            self.config_path, row["local_id"],
+            message="Changing the primary recorder…",
+            success="Primary recorder updated. Historical evidence ownership was preserved.",
+        )
+
+    def toggle_selected(self):
+        row = self._selected()
+        if not row:
+            return
+        if row.get("is_configured") and row.get("continuity_owner"):
+            QMessageBox.information(
+                self, "Keep Original Recorder Enabled",
+                "This original WatchLog recorder must stay enabled to preserve "
+                "monitoring history. You can make another recorder primary."
+            )
+            return
+        if row.get("is_configured"):
+            reply = QMessageBox.question(
+                self, "Disable Recorder",
+                "Disable this recorder for future WatchLog monitoring? "
+                "Historical evidence and configuration are preserved.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            self._run_change(
+                backend.disable_managed_recorder,
+                self.config_path, row["local_id"],
+                message="Disabling this recorder…",
+                success=backend.disabled_recorder_message,
+            )
+        else:
+            self._run_change(
+                backend.enable_managed_recorder,
+                self.config_path, row["local_id"],
+                message="Re-enabling this recorder…",
+                success="Recorder re-enabled.",
+            )
+
+    def repair_selected(self):
+        row = self._selected()
+        if not row:
+            return
+        username, ok = QInputDialog.getText(
+            self, "Recorder Login", "Username:", text="admin"
+        )
+        if not ok or not username.strip():
+            return
+        password, ok = QInputDialog.getText(
+            self, "Recorder Login", "Password:", QLineEdit.Password
+        )
+        if not ok or not password:
+            return
+
+        self._set_busy(True, "Testing this recorder login…")
+        worker = Worker(
+            backend.repair_managed_recorder_credential,
+            row["local_id"], username, password
+        )
+        worker.signals.progress.connect(self.status.setText)
+        worker.signals.finished.connect(
+            lambda _result: self._change_done("Recorder login verified and updated.")
+        )
+        worker.signals.failed.connect(self._change_failed)
+        self._worker = worker
+        self.pool.start(worker)
+
+
 def _run_ui_selftest(*, installer_child: bool = False) -> int:
     """Exercise the exact packaged Qt recorder-selection and installer lifecycle."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1047,23 +1847,46 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 def __exit__(self, *_args):
                     return False
 
+            probe_timeouts = []
+
             def _fake_connect(address, timeout=None):
+                probe_timeouts.append(timeout)
                 ip, port = address
                 if ip == "10.44.7.119" and port == 8000:
                     return _FakeConnect()
                 raise OSError("filtered")
 
-            discovery_started = time.monotonic()
+            two_subnets = (["192.168.10", "10.44.7"], ["192.168.10.25", "10.44.7.20"])
+            # The sweep's deadline clock is injected and stands still, so a loaded machine
+            # cannot cut the sweep short or fail it (a 5 s wall-clock budget did, exit 30).
             simulated_hits = _discover.sweep(
                 log=lambda *_a: None,
                 progress=lambda *_a: None,
-                _bases=(["192.168.10", "10.44.7"],
-                        ["192.168.10.25", "10.44.7.20"]),
+                _bases=two_subnets,
                 _connect=_fake_connect,
+                _clock=lambda: 0.0,
             )
             if 8000 not in dict(simulated_hits).get("10.44.7.119", []):
                 return 29
-            if time.monotonic() - discovery_started > 5.0:
+            # Bounded work: the fast ports of both /24s, then only the found recorder's other
+            # ports; every probe goes through the injected connect with a bounded timeout.
+            expected_probes = (2 * 254 * len(_discover.SWEEP_FAST_PORTS)
+                               + len(_discover.SWEEP_PORTS) - 1)
+            if (len(probe_timeouts) != expected_probes
+                    or not all(0 < t <= _discover.SWEEP_TIMEOUT for t in probe_timeouts)):
+                return 30
+            # Bounded time: once its clock passes the global deadline the sweep stops
+            # without probing anything further.
+            probe_timeouts.clear()
+            readings = iter([0.0])
+            late_hits = _discover.sweep(
+                log=lambda *_a: None,
+                progress=lambda *_a: None,
+                _bases=two_subnets,
+                _connect=_fake_connect,
+                _clock=lambda: next(readings, _discover.DISCOVERY_DEADLINE_SECONDS + 1.0),
+            )
+            if late_hits or probe_timeouts:
                 return 30
 
             # Standalone Setup keeps login timeout retryable. Installer-child timeout
@@ -1086,6 +1909,93 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 app.processEvents()
                 if window.stack.currentIndex() != 3:
                     return 32
+
+            # Multi-recorder FIRST install (WP-12): "Add another recorder" is reachable
+            # before Connect, in installer-child mode too. Each recorder keeps its own
+            # login, name and cameras, even when two recorders share channel numbers.
+            def _verified(url, serial, names):
+                return {"url": url, "vendor": "Selftest", "model": "NVR", "firmware": "",
+                        "serial": serial, "driver": "onvif", "capabilities": None,
+                        "verified_against_hardware": False,
+                        "channels": [{"channel": str(i + 1), "name": name}
+                                     for i, name in enumerate(names)]}
+
+            window._discovered = {
+                ip: {"ip": ip, "label": "Recorder candidate", "ports": [80]}
+                for ip in ("10.10.10.2", "10.10.10.3")}
+            window.recorder_address = "10.10.10.2"
+            window.recorder_user, window.recorder_password = "selftest-a", "pw-a"
+            window.connection_ok(_verified("http://10.10.10.2", "SELF-A", ["Gate", "Till"]))
+            app.processEvents()
+            if window.stack.currentIndex() != 4 or window.add_another_btn.isHidden():
+                return 40
+            window.recorder_name_edit.setText("Shop")
+            window.add_install_recorder()
+            app.processEvents()
+            if window.stack.currentIndex() != 2 or len(window.install_recorders) != 1:
+                return 41
+            offered = [window.recorder_list.item(i).data(Qt.UserRole)
+                       for i in range(window.recorder_list.count())]
+            if offered != ["10.10.10.3"]:
+                return 42
+            window.manual_ip.setText("10.10.10.3")
+            window.recorder_continue()
+            if window.stack.currentIndex() != 3:
+                return 43
+            window.recorder_user, window.recorder_password = "selftest-b", "pw-b"
+            window.connection_ok(_verified("http://10.10.10.3", "SELF-B", ["Yard", "Store"]))
+            app.processEvents()
+            if window.stack.currentIndex() != 4:
+                return 44
+            table = [tuple(window.camera_table.item(r, c).text() for c in range(3))
+                     for r in range(window.camera_table.rowCount())]
+            if table != [("Shop", "1", "Gate"), ("Shop", "2", "Till"),
+                         ("Recorder 2", "1", "Yard"), ("Recorder 2", "2", "Store")]:
+                return 45
+            plan = window.install_plan()
+            extra = plan["kwargs"]["additional_recorders"] or []
+            if (plan["args"][3:6] != ("10.10.10.2", "selftest-a", "pw-a")
+                    or plan["kwargs"]["primary_display_name"] != "Shop"):
+                return 46
+            if [(e["address"], e["username"], e["password"], e["display_name"])
+                    for e in extra] != [("10.10.10.3", "selftest-b", "pw-b", "Recorder 2")]:
+                return 47
+            # The first recorder again under a new address (same serial) is refused.
+            window.add_install_recorder()
+            window.manual_ip.setText("10.10.10.9")
+            window.recorder_continue()
+            window.connection_ok(_verified("http://10.10.10.9", "SELF-A", ["Gate"]))
+            app.processEvents()
+            if window.stack.currentIndex() != 3 or "already part" not in window.login_error.text():
+                return 48
+            # That further recorder is abandoned: back to the cameras, nothing lost.
+            if window.login_back_to_cameras_btn.isHidden():
+                return 49
+            window.login_back_to_cameras_btn.click()
+            app.processEvents()
+            if (window.stack.currentIndex() != 4 or len(window.install_recorders) != 1
+                    or window.recorder_name_edit.text() != "Recorder 2"):
+                return 50
+            # Connect refuses a repeated name on the camera step itself; on the Connect
+            # page the refusal would end an installer child.
+            window.recorder_name_edit.setText("shop")
+            window.begin_finalize()
+            app.processEvents()
+            if (window.stack.currentIndex() != 4 or window._active_worker
+                    or "different name" not in window.cameras_error.text()):
+                return 51
+            # A recorder chosen by mistake is removed; the plan keeps only the other.
+            if window.install_list.count() != 2 or window.remove_recorder_btn.isHidden():
+                return 52
+            window.install_list.setCurrentRow(1)
+            window.remove_recorder_btn.click()
+            app.processEvents()
+            plan = window.install_plan()
+            if (window.install_recorders or plan["kwargs"]["additional_recorders"] is not None
+                    or plan["args"][3] != "10.10.10.2" or window.stack.currentIndex() != 4):
+                return 53
+            window.install_recorders = []
+            window.recorder_result = None
 
             # Recreate the Step 06 field outcome: core connection + background agent are
             # already proven. finalize_ok must go straight to Ready and must not launch
@@ -1154,6 +2064,390 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
             os.environ["PROGRAMDATA"] = old_pd
 
 
+REGISTRY_RESULT_SCHEMA = "watchlog.registry_selftest.v1"
+# Upper bound for probing every recorder concurrently, so one unreachable recorder cannot
+# stall the Repair/Upgrade window.
+RECORDER_PROBE_SECONDS = 45.0
+
+
+def _write_result_json(result_path: str | None, result: dict) -> None:
+    if not result_path:
+        return
+    path = Path(result_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(result, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _finish(result_path: str | None, result: dict) -> int:
+    try:
+        _write_result_json(result_path, result)
+    except Exception:  # noqa: BLE001 - an unwritable result is a failed run
+        return 2
+    return 0 if result.get("ok") else 2
+
+
+def _run_registry_selftest(result_path: str | None = None) -> int:
+    """GUI-free proof that THIS packaged exe drives the multi-recorder storage path.
+
+    Runs in a private temporary ProgramData, never the PC's real one: legacy singleton ->
+    recorders.json + Secrets\\recorders\\<id>.dpapi, a stable re-migration, a second
+    recorder with an independent credential, contexts built by the Agent's own loader,
+    then rollback of the unbound recorder.
+    """
+    import secrets
+    import uuid
+    from types import SimpleNamespace
+
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": "isolated", "ok": False, "checks": {}}
+
+    def check(name: str, ok) -> None:
+        result["checks"][name] = bool(ok)
+        if not ok:
+            raise AssertionError(name)
+
+    old_pd = os.environ.get("PROGRAMDATA")
+    try:
+        with tempfile.TemporaryDirectory(prefix="wl-registry-selftest-",
+                                         ignore_cleanup_errors=True) as td:
+            os.environ["PROGRAMDATA"] = td
+            data = Path(td) / "WatchLog"
+            check("isolated_data_root", recorder_registry.data_dir() == data
+                  and credential_store.data_dir() == data)
+            data.mkdir(parents=True, exist_ok=True)
+            ini = data / "watchlog.ini"
+            ini.write_text("[watchlog]\nnvr_url = http://192.0.2.10\nnvr_driver = auto\n",
+                           encoding="utf-8")
+            first_pw, second_pw = secrets.token_urlsafe(18), secrets.token_urlsafe(18)
+            credential_store.save_nvr_credential("selftest-one", first_pw)
+
+            primary = recorder_registry.migrate_legacy_singleton(ini)
+            check("legacy_migrated_to_primary", primary and primary["is_primary"]
+                  and primary["continuity_owner"] and uuid.UUID(primary["local_id"]))
+            blob = credential_store.recorder_credential_path(primary["local_id"])
+            check("per_recorder_blob_written",
+                  recorder_registry.registry_path().exists() and blob.exists())
+            cred = credential_store.load_recorder_credential(primary["local_id"])
+            check("per_recorder_blob_round_trip", cred.get("username") == "selftest-one"
+                  and cred.get("password") == first_pw)
+            check("legacy_credential_retained", credential_store.nvr_credential_path().exists())
+            check("no_plaintext_in_blob", first_pw.encode("utf-8") not in blob.read_bytes())
+            again = recorder_registry.migrate_legacy_singleton(ini)
+            check("re_migration_keeps_stable_id",
+                  again and again["local_id"] == primary["local_id"])
+
+            second = recorder_registry.add_recorder(
+                display_name="Selftest Recorder 2", url="http://192.0.2.11", driver="auto",
+                username="selftest-two", password=second_pw)
+            check("second_credential_independent",
+                  credential_store.load_recorder_credential(second["local_id"]).get("password")
+                  == second_pw
+                  and credential_store.load_recorder_credential(primary["local_id"]).get("password")
+                  == first_pw)
+            base = SimpleNamespace(state_path=data / "agent_state.json",
+                                   spool_path=data / "spool.sqlite",
+                                   health_store_path=data / "health.sqlite",
+                                   last_live_path=data / "last_live.json")
+            contexts = recorder_runtime.load_contexts(base)
+            check("runtime_loads_every_recorder", sorted(c.local_id for c in contexts)
+                  == sorted([primary["local_id"], second["local_id"]]))
+            secondary = next(c for c in contexts if c.local_id == second["local_id"])
+            check("secondary_state_is_recorder_scoped",
+                  Path(secondary.config.spool_path).parent == data / "recorders" / second["local_id"])
+
+            recorder_registry.remove_unbound_recorder(second["local_id"])
+            check("unbound_rollback_deletes_its_credential",
+                  not credential_store.recorder_credential_path(second["local_id"]).exists()
+                  and [r["local_id"] for r in recorder_registry.recorders()] == [primary["local_id"]])
+
+            # First install with two recorders (WP-12), through THIS exe's install code:
+            # the second recorder gets its own row and DPAPI blob, both rows are bound
+            # (a local stand-in answers the binding call; no network), a Retry reuses the
+            # row, and camera choices are stored per recorder.
+            class _Binder:
+                def __init__(self):
+                    self.ids = {}
+
+                def call(self, name, **kw):
+                    if name != "wl_sync_recorders":
+                        raise AssertionError(name)
+                    return {row["local_key"]: self.ids.setdefault(row["local_key"],
+                                                                  str(uuid.uuid4()))
+                            for row in kw["p_recorders"]}
+
+            third_pw = secrets.token_urlsafe(18)
+            entry = {"address": "192.0.2.12", "username": "selftest-three",
+                     "password": third_pw, "display_name": "Selftest Recorder 3"}
+            proven = {"url": "http://192.0.2.12", "driver": "auto", "serial": "SELFTEST-3",
+                      "vendor": None, "model": None, "firmware": None,
+                      "channels": [{"channel": "1", "name": "Camera 1"}]}
+            third, added_now = backend._stage_additional_recorder(entry, proven)
+            check("install_second_recorder_row", added_now and not third["continuity_owner"]
+                  and not third["is_primary"] and third["display_name"] == "Selftest Recorder 3")
+            binder = _Binder()
+            backend._bind_install_recorders(binder, {"agent_id": "selftest",
+                                                     "agent_key": "selftest"})
+            rows = recorder_registry.recorders()
+            check("install_every_recorder_bound", len(rows) == 2
+                  and all(r["cloud_recorder_id"] for r in rows)
+                  and len({r["cloud_recorder_id"] for r in rows}) == 2)
+            check("install_credentials_independent",
+                  credential_store.load_recorder_credential(third["local_id"]).get("password")
+                  == third_pw
+                  and credential_store.load_recorder_credential(primary["local_id"]).get("password")
+                  == first_pw)
+            again, added_again = backend._stage_additional_recorder(entry, proven)
+            check("install_retry_reuses_the_row", not added_again
+                  and again["local_id"] == third["local_id"] and again["cloud_recorder_id"])
+            backend._save_recorder_camera_profiles(
+                third["local_id"], third["display_name"], backend.default_camera_profiles(proven))
+            saved = json.loads((data / "recorders" / third["local_id"]
+                                / backend.RECORDER_CAMERA_PROFILES_NAME).read_text("utf-8"))
+            check("install_profiles_keyed_by_recorder", saved["local_id"] == third["local_id"]
+                  and [p["channel"] for p in saved["profiles"]] == ["1"])
+            result["ok"] = True
+    except BaseException as exc:  # noqa: BLE001 - report every failure as a result
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        if old_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = old_pd
+    return _finish(result_path, result)
+
+
+def _probe_recorders(contexts: dict, report: list[dict]) -> None:
+    """Probe every recorder concurrently through the Agent's own driver path."""
+    import threading
+
+    outcome: dict[str, tuple[bool, str]] = {}
+
+    def probe(local_id: str, cfg) -> None:
+        driver = None
+        try:
+            driver, device = backend.core.open_driver(cfg)
+            channels = driver.list_channels() or []
+            outcome[local_id] = (bool(device) and len(channels) > 0, f"{len(channels)} channel(s)")
+        except BaseException as exc:  # noqa: BLE001 - classified, never the raw text (LAN address)
+            outcome[local_id] = (False, backend._classify_exception(exc))
+        finally:
+            if driver is not None:
+                try:
+                    driver.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    workers = [threading.Thread(target=probe, args=(local_id, ctx.config), daemon=True)
+               for local_id, ctx in contexts.items()]
+    for worker in workers:
+        worker.start()
+    stop_at = time.monotonic() + RECORDER_PROBE_SECONDS
+    for worker in workers:
+        worker.join(max(0.0, stop_at - time.monotonic()))
+    for entry in report:
+        live, detail = outcome.get(entry["local_id"], (False, "timeout"))
+        entry["live"] = bool(live)
+        entry["detail"] = detail
+
+
+def _run_registry_preflight(config_path: Path, *, mode: str,
+                            result_path: str | None = None) -> int:
+    """Read-only Repair/Upgrade validation of THIS site's recorder registry.
+
+    passive  - live Agent still running: the registry validates, every configured
+               recorder credential decrypts and the Agent's own loader builds a context
+               for each recorder. No network.
+    recorder - live Agent paused: also probes every configured recorder. The continuity
+               recorder must answer. Any other recorder that does not is reported, not
+               fatal: it is the pre-upgrade baseline the commit gate compares against.
+    Never migrates, writes the registry or changes a credential. A site with no registry
+    is left to the Agent's own --preflight-existing-site.
+    """
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": mode, "ok": False,
+              "registry": "absent", "recorders": []}
+    try:
+        if mode not in ("passive", "recorder"):
+            raise ValueError(f"unknown preflight mode {mode!r}")
+        if recorder_registry.registry_path().exists():
+            result["registry"] = "present"
+            rows = [row for row in recorder_registry.recorders() if row.get("is_configured")]
+            report = []
+            for row in rows:
+                entry = {"local_id": row["local_id"], "display_name": row["display_name"],
+                         "continuity_owner": bool(row.get("continuity_owner")),
+                         "is_primary": bool(row.get("is_primary")),
+                         "credential": "ok", "live": None, "detail": ""}
+                try:
+                    credential_store.load_recorder_credential(row["local_id"])
+                except Exception as exc:  # noqa: BLE001
+                    entry["credential"] = "needs_attention"
+                    entry["detail"] = type(exc).__name__
+                report.append(entry)
+            result["recorders"] = report
+            result["recorders_total"] = len(report)
+            if any(entry["credential"] != "ok" for entry in report):
+                raise RuntimeError("a configured recorder credential cannot be decrypted")
+
+            base = backend.core.Config(Path(config_path), read_only_credentials=True)
+            contexts = {ctx.local_id: ctx for ctx in recorder_runtime.load_contexts(base)}
+            # Each recorder's last-live marker is kept by the multi-recorder runtime whether
+            # recovery is on or off (MNVR-040); a single-recorder runtime keeps it only with
+            # recovery on. Repair/Upgrade's commit gate reads the protected runtime-health
+            # rows, not these files; they are reported for diagnosis only.
+            result["live_markers"] = (bool(getattr(base, "recovery_enabled", False))
+                                      or len(report) > 1)
+            for entry in report:
+                entry["live_marker"] = str(contexts[entry["local_id"]].config.last_live_path)
+            if mode == "recorder":
+                _probe_recorders(contexts, report)
+                if not any(entry["continuity_owner"] and entry["live"] for entry in report):
+                    raise RuntimeError("the original WatchLog recorder did not answer")
+        result["ok"] = True
+    except BaseException as exc:  # noqa: BLE001 - includes SystemExit from strict config
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return _finish(result_path, result)
+
+
+def _recorder_blob_names() -> set[str]:
+    folder = credential_store.recorder_secrets_dir()
+    return {blob.name for blob in folder.glob("*.dpapi")} if folder.exists() else set()
+
+
+def _undo_registry_staging(keep_blobs: set[str]) -> bool:
+    """Remove a registry staged by Repair/Upgrade and the credentials it created. The
+    legacy singleton was never touched, so this is the previous working state."""
+    path = recorder_registry.registry_path()
+    for leftover in (path, path.with_suffix(path.suffix + ".tmp")):
+        leftover.unlink(missing_ok=True)
+    for name in _recorder_blob_names() - set(keep_blobs):
+        (credential_store.recorder_secrets_dir() / name).unlink(missing_ok=True)
+    return not path.exists()
+
+
+def _run_registry_migration(config_path: Path, *, result_path: str | None = None) -> int:
+    """Repair/Upgrade step: stage the legacy singleton recorder into the registry.
+
+    recorder_registry.migrate_legacy_singleton reads the legacy credential, creates the
+    stable local UUID, writes the per-recorder DPAPI blob and reads it back, publishes the
+    registry and re-reads both; this step then proves the Agent's own loader accepts it.
+    The legacy watchlog.ini recorder and nvr_credential.dpapi are NOT retired: the 5.1
+    runtime still runs a one-recorder site from them, so retirement waits for a release
+    whose runtime boots from the registry. Any failure removes what this step created.
+    """
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": "migrate", "ok": False,
+              "migrated": False, "registry": "existing"}
+    staged = False
+    keep = set()
+    try:
+        if not recorder_registry.registry_path().exists():
+            keep = _recorder_blob_names()
+            staged = True
+            primary = recorder_registry.migrate_legacy_singleton(Path(config_path))
+            if primary is None:
+                raise RuntimeError("this site has no legacy recorder to stage")
+            result.update(registry="created", migrated=True, local_id=primary["local_id"])
+            base = backend.core.Config(Path(config_path), read_only_credentials=True)
+            contexts = recorder_runtime.load_contexts(base)
+            if [ctx.local_id for ctx in contexts if ctx.continuity_owner] != [primary["local_id"]]:
+                raise RuntimeError("the staged registry does not load as the original recorder")
+            if not credential_store.load_nvr_credential_readonly():
+                raise RuntimeError("the legacy recorder credential was not retained")
+        result["ok"] = True
+    except BaseException as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        if staged:
+            try:
+                result["undone"] = _undo_registry_staging(keep)
+            except Exception:  # noqa: BLE001
+                result["undone"] = False
+    return _finish(result_path, result)
+
+
+def _run_registry_rollback(local_id: str, *, result_path: str | None = None) -> int:
+    """Undo a registry THIS Repair/Upgrade staged, after its payload rollback.
+
+    Only an untouched one-recorder registry holding exactly that unbound recorder is
+    removed. Anything else is kept: a recorder bound to a cloud identity is never
+    discarded locally, and a recorder added since belongs to the operator.
+    """
+    result = {"schema": REGISTRY_RESULT_SCHEMA, "mode": "rollback", "ok": False,
+              "action": "kept"}
+    try:
+        rows = recorder_registry.recorders() if recorder_registry.registry_path().exists() else []
+        if (len(rows) == 1 and rows[0]["local_id"] == str(local_id)
+                and not rows[0].get("cloud_recorder_id")):
+            credential_store.delete_recorder_credential(rows[0]["local_id"])
+            if _undo_registry_staging(_recorder_blob_names()):
+                result.update(ok=True, action="removed")
+        elif not rows:
+            result.update(ok=True, action="absent")
+    except BaseException as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return _finish(result_path, result)
+
+
+# Setup, Site Status and Manage Recorders read the SYSTEM+Administrators-only Secrets
+# store and (re)register the SYSTEM background task. A plain Start Menu launch under UAC
+# gets a filtered token, so every Secrets read failed with a raw "Access is denied".
+ADMIN_REQUIRED_EXIT = 5  # ERROR_ACCESS_DENIED
+ADMIN_REQUIRED_MESSAGE = (
+    "WatchLog needs administrator permission to open this window.\n\n"
+    "Accept the Windows permission prompt, or right-click the WatchLog shortcut "
+    "and choose Run as administrator."
+)
+# Marks the copy started through the permission prompt, so it never relaunches again.
+ELEVATED_RELAUNCH_ARG = "--elevated-relaunch"
+
+
+def _is_elevated() -> bool:
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 - unknown elevation is treated as not elevated
+        return False
+
+
+def _relaunch_elevated() -> bool:
+    """Start this same command again through the Windows permission prompt, marked as
+    the relaunched copy."""
+    try:
+        import ctypes
+        import subprocess
+        argv = sys.argv[1:] if getattr(sys, "frozen", False) else [
+            str(Path(sys.argv[0]).resolve()), *sys.argv[1:]]
+        if ELEVATED_RELAUNCH_ARG not in argv:
+            argv.append(ELEVATED_RELAUNCH_ARG)
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, subprocess.list2cmdline(argv), None, 1)
+        return int(rc) > 32
+    except Exception:  # noqa: BLE001 - declined prompt or no shell: report, never crash
+        return False
+
+
+def _show_admin_required() -> None:
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, ADMIN_REQUIRED_MESSAGE, "WatchLog", 0x10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _admin_required(*, interactive: bool, relaunched: bool = False) -> int:
+    """Interactive windows relaunch elevated, once: a relaunched copy that is still not
+    elevated (a standard user with UAC turned off gets no administrator token from
+    "runas") says so instead of relaunching forever. Installer and CI modes fail closed
+    and never detach: their caller waits on THIS process's exit code."""
+    if interactive:
+        if not relaunched and _relaunch_elevated():
+            return 0
+        _show_admin_required()
+    _emit_line("WatchLog: administrator permission is required.")
+    return ADMIN_REQUIRED_EXIT
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", default="")
@@ -1163,6 +2457,22 @@ def main() -> int:
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--ui-selftest", action="store_true")
     parser.add_argument("--installer-child", action="store_true")
+    parser.add_argument("--manage-recorders", action="store_true",
+                        help="open post-install CCTV recorder management")
+    parser.add_argument("--registry-selftest", action="store_true",
+                        help="prove the recorder registry + per-recorder credential path "
+                             "in a private ProgramData, without a window")
+    parser.add_argument("--existing-site", action="store_true",
+                        help="with --registry-selftest: read-only Repair/Upgrade validation "
+                             "of this site's recorder registry")
+    parser.add_argument("--preflight-mode", choices=("passive", "recorder"), default="passive")
+    parser.add_argument("--registry-migrate", action="store_true",
+                        help="Repair/Upgrade: stage the legacy recorder into the registry")
+    parser.add_argument("--registry-rollback", metavar="LOCAL_ID", default="",
+                        help="Repair/Upgrade: undo the registry staged by this repair")
+    parser.add_argument("--result-json", default="")
+    parser.add_argument(ELEVATED_RELAUNCH_ARG, dest="elevated_relaunch", action="store_true",
+                        help=argparse.SUPPRESS)
     args, _unknown = parser.parse_known_args()
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
@@ -1171,10 +2481,35 @@ def main() -> int:
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
 
+    # Every mode below touches Secrets or the SYSTEM task.
+    if not _is_elevated():
+        return _admin_required(interactive=not (
+            args.migrate_only or args.registry_selftest or args.registry_migrate
+            or args.registry_rollback), relaunched=args.elevated_relaunch)
+
+    if args.registry_selftest:
+        if args.existing_site:
+            return _run_registry_preflight(config_path, mode=args.preflight_mode,
+                                           result_path=args.result_json)
+        return _run_registry_selftest(args.result_json)
+    if args.registry_migrate:
+        return _run_registry_migration(config_path, result_path=args.result_json)
+    if args.registry_rollback:
+        return _run_registry_rollback(args.registry_rollback, result_path=args.result_json)
+
     if args.status:
         # Post-install: the same WatchLog app opens into the Site Status / control panel.
         import site_status_gui
         return site_status_gui.main(config_path)
+
+    if args.manage_recorders:
+        app = QApplication(sys.argv[:1])
+        app.setApplicationName("WatchLog — Manage Recorders")
+        app.setStyle("Fusion")
+        window = RecorderManagerWindow(config_path)
+        window.show()
+        app.exec()
+        return 0
 
     if args.migrate_only:
         try:

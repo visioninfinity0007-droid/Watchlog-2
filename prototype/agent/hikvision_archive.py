@@ -27,7 +27,7 @@ from requests.auth import HTTPBasicAuth
 from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
-from drivers.hikvision import HikvisionDriver, HIKVISION_HTTP_LOCK
+from drivers.hikvision import HikvisionDriver, recorder_http_lock
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 SEARCH_LIMIT = 40
@@ -162,9 +162,14 @@ def _not_supported(text: str) -> bool:
     return "notsupport" in (text or "").lower()
 
 
+def _http_lock(driver: HikvisionDriver):
+    """This recorder's archive lock: shared by every transport to it, never by another recorder."""
+    return recorder_http_lock(driver.base_url)
+
+
 def _post(driver: HikvisionDriver, path: str, body: str, *, stream=False, timeout=None):
     url = driver.base_url + path
-    with HIKVISION_HTTP_LOCK:
+    with _http_lock(driver):
         try:
             response = driver.s.post(
                 url,
@@ -395,7 +400,7 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) 
     # only the recorder-returned playback URI and keeping the transfer bounded.
     refused = []
     transport = None
-    with HIKVISION_HTTP_LOCK:
+    with _http_lock(driver):
         for method in ("GET", "POST"):
             if deadline is not None and time.monotonic() >= deadline:
                 raise ClipTimedOut(detail="budget spent before download")
@@ -595,17 +600,19 @@ def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: dateti
     if end <= start:
         raise DriverError("invalid Hikvision incident footage time window")
 
-    # Recovery, the archive scan and recording proofs share this lock. Waiting for it must not
-    # spend this request's download budget, so the deadline starts once the lock is held, and
-    # the wait itself is bounded.
-    if not HIKVISION_HTTP_LOCK.acquire(timeout=CLIP_LOCK_WAIT_SECONDS):
+    # Recovery, the archive scan and recording proofs on THIS recorder share its lock; other
+    # recorders have their own (MNVR-025). Waiting for it must not spend this request's
+    # download budget, so the deadline starts once the lock is held, and the wait itself is
+    # bounded.
+    lock = _http_lock(driver)
+    if not lock.acquire(timeout=CLIP_LOCK_WAIT_SECONDS):
         raise ClipTimedOut("The recorder was busy with other footage work. Request it again.",
                            detail="archive lock wait")
     try:
         deadline = time.monotonic() + CLIP_TOTAL_SECONDS
         return _clip_within_deadline(driver, str(channel), start, end, deadline)
     finally:
-        HIKVISION_HTTP_LOCK.release()
+        lock.release()
 
 
 def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime,

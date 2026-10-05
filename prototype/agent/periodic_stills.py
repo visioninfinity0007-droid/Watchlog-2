@@ -21,6 +21,11 @@ Contract, derived from production rows (read-only), reproduced exactly:
 Every production row carries a still: a sample with no still is never emitted. Cameras are
 staggered evenly across one cadence (8 cameras -> one still every ~37.5 s), as in production.
 
+Multi-recorder Agent: a recorder bound to a cloud recorder also stamps its recorder_id on every
+still (as on every other event it spools), so the server namespaces the dedupe key by recorder
+(0154) and two recorders' channel 1 never collide. The fan-out runs one producer per recorder,
+each on its own driver, spool, credential, back-off and Monitor/Ignore choices.
+
 Field status: IMPLEMENTED_UNVERIFIED until seen on site. The still comes from the driver's
 own get_snapshot, so the same code serves hikvision-isapi, dahua-cgi and onvif; nothing here
 assumes anything about a recorder model.
@@ -29,12 +34,14 @@ from __future__ import annotations
 
 import base64
 import configparser
+import json
 import math
 import os
 import random
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -72,6 +79,9 @@ SPOOL_HIGH_WATER_ROWS = 2000
 DEVICE_ID_BUCKET_SECONDS = 30
 TICK_SECONDS = 1.0
 JPEG_MAGIC = b"\xff\xd8"
+# A further recorder's camera choices, written by Setup (setup_backend) in its recorder folder.
+RECORDER_CAMERA_PROFILES_NAME = "camera_profiles.json"
+RECORDER_CAMERA_PROFILES_SCHEMA = "watchlog.recorder_camera_profiles.v1"
 
 
 def _flag(value, default: bool) -> bool:
@@ -290,15 +300,43 @@ def _close(driver) -> None:
         pass
 
 
-def _reload_credential(cfg) -> None:
-    loader = getattr(cfg, "load_recorder_credential", None)
+def recorder_camera_profiles(cfg, *, continuity_owner: bool) -> list:
+    """The Monitor/Ignore choices of the recorder ``cfg`` is bound to.
+
+    watchlog.ini camera_profiles_json is the continuity recorder's channel-keyed list (the
+    singleton runtime's); it cannot describe a second recorder that also has a channel 1. A
+    further recorder's choices are in its own recorder folder. With none readable, every
+    present and enabled channel of that recorder is sampled, as with no choices in 5.0.28."""
+    if continuity_owner:
+        return list(getattr(cfg, "camera_profiles", None) or [])
+    state_dir = getattr(cfg, "recorder_state_dir", None)
+    if not state_dir:
+        return []
+    try:
+        doc = json.loads((Path(state_dir) / RECORDER_CAMERA_PROFILES_NAME)
+                         .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if (not isinstance(doc, dict) or doc.get("schema") != RECORDER_CAMERA_PROFILES_SCHEMA
+            or str(doc.get("local_id") or "") != str(getattr(cfg, "recorder_local_id", "") or "")
+            or not isinstance(doc.get("profiles"), list)):
+        return []
+    return list(doc["profiles"])
+
+
+def _reload_credential(cfg, log) -> None:
+    if getattr(cfg, "recorder_local_id", None):
+        # A registry recorder's own DPAPI credential, never the singleton one.
+        def loader():
+            core._reload_credential_for_cfg(cfg)
+    else:
+        loader = getattr(cfg, "load_recorder_credential", None)
     if not callable(loader):
         return
     try:
         loader()
     except (Exception, SystemExit) as error:                 # noqa: BLE001 — retry decides
-        core.log(f"periodic stills: recorder credential could not be reloaded "
-                 f"({type(error).__name__})")
+        log(f"recorder credential could not be reloaded ({type(error).__name__})")
 
 
 def _recorder_down(driver):
@@ -311,12 +349,12 @@ def _recorder_down(driver):
     return None
 
 
-def _list_channels(driver):
+def _list_channels(driver, log):
     try:
         return list(driver.list_channels() or [])
     except Exception as error:                              # noqa: BLE001
-        core.log(f"periodic stills: channel list unavailable "
-                 f"({type(error).__name__}); using the channels found at start")
+        log(f"channel list unavailable ({type(error).__name__}); "
+            "using the channels found at start")
         return []
 
 
@@ -330,17 +368,29 @@ def _high_water(spool) -> int:
 
 def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                           open_driver=None, clock=time.monotonic, wall=None,
-                          rng: random.Random | None = None) -> None:
+                          rng: random.Random | None = None, profiles=None,
+                          label: str | None = None) -> None:
     """Long-running timed-still producer. Outbound only; one recorder request at a time.
 
     Each still goes through the normal spool, so it waits out a cloud outage and uploads with
     the next batch (fenced by the same single-authority rule as every other event). No still,
     a non-JPEG answer or an oversized one produces no event. An unreachable or refusing
     recorder backs the worker off; a camera that cannot give a still is simply tried again at
-    its next turn."""
+    its next turn.
+
+    ``profiles`` are this recorder's camera choices (default: cfg.camera_profiles, the
+    single-recorder list); ``label`` names the recorder in log lines (the fan-out passes its
+    display name, never its address)."""
+    name = f"periodic stills ({label})" if label else "periodic stills"
+
+    def log(text: str) -> None:
+        core.log(f"{name}: {text}")
+
+    if profiles is None:
+        profiles = getattr(cfg, "camera_profiles", None)
     settings = load_settings(cfg)
     if not settings["enabled"]:
-        core.log("periodic stills: disabled by configuration")
+        log("disabled by configuration")
         return
     if not str(getattr(cfg, "nvr_url", "") or "").strip():
         return
@@ -359,9 +409,9 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
     first_open = True
     restagger = True
     paused_logged = False
-    credential_gen = core._credential_generation()
+    credential_gen = core._credential_generation(cfg)
     next_credential_check = 0.0
-    core.log(f"periodic stills: one still per configured camera every ~{cadence}s")
+    log(f"one still per configured camera every ~{cadence}s")
 
     try:
         while not stop.is_set():
@@ -371,12 +421,11 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                     if backoff.auth and now >= next_credential_check:
                         # Setup fixed the password: retry now with it, not in 15-30 min.
                         next_credential_check = now + CREDENTIAL_CHECK_SECONDS
-                        generation = core._credential_generation()
+                        generation = core._credential_generation(cfg)
                         if generation != credential_gen:
                             credential_gen = generation
-                            core.log("periodic stills: recorder credential changed in Setup; "
-                                     "retrying now")
-                            _reload_credential(cfg)
+                            log("recorder credential changed in Setup; retrying now")
+                            _reload_credential(cfg, log)
                             backoff.reset()
                             continue
                     stop.wait(min(TICK_SECONDS, backoff.until - now))
@@ -388,11 +437,11 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                     except (DriverError, requests.RequestException, RuntimeError, OSError,
                             SystemExit) as error:
                         delay = backoff.fail(now, auth=core._is_auth_failure(error))
-                        core.log("periodic stills: recorder not reachable; next try in "
-                                 f"{int(delay)}s ({nvr_health.redact(str(error))})")
+                        log(f"recorder not reachable; next try in {int(delay)}s "
+                            f"({nvr_health.redact(str(error))})")
                         continue
                     vendor = vendor_family(driver)
-                    credential_gen = core._credential_generation()
+                    credential_gen = core._credential_generation(cfg)
                     next_enumerate = 0.0
                     # Fresh connection (start, or after a back-off): spread the cameras over
                     # one cadence again instead of firing every overdue camera at once.
@@ -400,8 +449,8 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
 
                 if now >= next_enumerate:
                     next_enumerate = now + REENUMERATE_SECONDS
-                    found = configured_channels(_list_channels(driver), startup,
-                                                getattr(cfg, "camera_profiles", None))
+                    found = configured_channels(_list_channels(driver, log), startup,
+                                                profiles)
                     if restagger:
                         start = now + (STARTUP_DELAY_SECONDS if first_open else 0.0)
                         schedule.set_channels(found, now, start=start, restagger=True)
@@ -411,7 +460,7 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                     first_open = False
                     restagger = False
                     if not cameras:
-                        core.log("periodic stills: no configured camera to sample; "
+                        log("no configured camera to sample; "
                                  f"checking again in {int(cadence)}s")
                         _close(driver)
                         driver = None
@@ -428,12 +477,12 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                     schedule.done(channel, now)
                     if not paused_logged:
                         paused_logged = True
-                        core.log(f"periodic stills: paused while {waiting} events wait to "
+                        log(f"paused while {waiting} events wait to "
                                  "upload; recorder events keep priority")
                     continue
                 if paused_logged:
                     paused_logged = False
-                    core.log("periodic stills: resumed")
+                    log("resumed")
 
                 try:
                     raw = driver.get_snapshot(channel)
@@ -448,31 +497,31 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                         schedule.last_request = now
                         delay = backoff.fail(now, auth=isinstance(upper, NvrAuthFailed)
                                              or core._is_auth_failure(upper))
-                        core.log(f"periodic stills: recorder stopped answering (ch{channel}); "
+                        log(f"recorder stopped answering (ch{channel}); "
                                  f"next try in {int(delay)}s ({nvr_health.redact(str(upper))})")
                         _close(driver)
                         driver = None
                         camera_failures = 0
                         continue
                     raw = None
-                    core.log(f"periodic stills: ch{channel} gave no still "
+                    log(f"ch{channel} gave no still "
                              f"({type(error).__name__}: {nvr_health.redact(str(error))})")
                 except Exception as error:                  # noqa: BLE001 — camera-level
                     raw = None
-                    core.log(f"periodic stills: ch{channel} gave no still "
+                    log(f"ch{channel} gave no still "
                              f"({type(error).__name__}: {nvr_health.redact(str(error))})")
                 captured = wall()
                 schedule.done(channel, now)
 
                 if not usable_still(raw):
                     if raw:
-                        core.log(f"periodic stills: ch{channel} still discarded "
+                        log(f"ch{channel} still discarded "
                                  f"({len(raw) // 1024} KB, not a JPEG within the size limit)")
                     camera_failures += 1
                     # Every configured camera failing in a row is the recorder, not a camera.
                     if camera_failures >= max(3, len(cameras)):
                         delay = backoff.fail(now)
-                        core.log(f"periodic stills: {camera_failures} stills in a row failed; "
+                        log(f"{camera_failures} stills in a row failed; "
                                  f"pausing {int(delay)}s")
                         _close(driver)
                         driver = None
@@ -482,12 +531,15 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                 camera_failures = 0
                 backoff.reset()
                 event = build_event(vendor, channel, bytes(raw), captured)
+                # Stamped like every other event of a bound recorder (the collector's rule);
+                # the no-registry path keeps the 5.0.28 row exactly.
+                event = event.with_recorder_id(getattr(cfg, "recorder_cloud_id", None))
                 spool.add(event.to_json(wall()))
                 dropped = spool.trim()
                 if dropped:
                     core.log(f"WARNING: spool over capacity, dropped {dropped} oldest events")
             except Exception as error:                      # noqa: BLE001 — never end the thread
-                core.worker_fault("periodic stills", error)
+                core.worker_fault(name, error)
                 _close(driver)
                 driver = None
                 backoff.fail(now)

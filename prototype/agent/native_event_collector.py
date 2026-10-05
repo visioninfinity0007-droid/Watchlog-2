@@ -119,7 +119,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
     one per-recorder ``event_stream`` state survives driver re-opens for the heartbeat."""
     detector = core.vision.build(cfg, core.log)
     auth_failures = 0
-    last_gen = core.credential_store.credential_generation()
+    last_gen = core._credential_generation_for_cfg(cfg)
     stream = {"connected": None, "connected_at": None, "last_frame_at": None,
               "last_error": None}
     if holder is not None:
@@ -166,6 +166,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
             for ev in events:
                 if stop.is_set():
                     break
+                recorder_id = getattr(cfg, "recorder_cloud_id", None)
+                if recorder_id:
+                    ev = ev.with_recorder_id(recorder_id)
                 if holder is not None:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = core.now_utc()

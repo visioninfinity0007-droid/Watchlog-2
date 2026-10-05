@@ -87,6 +87,45 @@ def test_unsupported_action_is_refused():
     assert r["ok"] is False and r["error"] == "unsupported_read_action"
 
 
+# MNVR-069: the 0063 read catalog (production before the recorder catalog) also
+# advertises these two. The Agent does not run them: get_recorder_capabilities would
+# duplicate get_analytics_config (both are driver.capabilities()), and
+# get_configuration_drift needs a desired baseline that no caller supplies. The recorder
+# catalog drops both; until it is live the Agent reports them unsupported.
+LEGACY_CATALOG_ONLY = {"get_configuration_drift", "get_recorder_capabilities"}
+
+
+def _latest_read_catalog():
+    import re
+    pattern = re.compile(r"create\s+or\s+replace\s+function\s+public\.wl_site_command_enqueue\s*\(",
+                         re.I)
+    found = None
+    migrations = Path(__file__).resolve().parents[1] / "supabase" / "migrations"
+    for path in sorted(migrations.glob("*.sql")):
+        text = path.read_text(encoding="utf-8")
+        starts = [m.start() for m in pattern.finditer(text)]
+        if starts:
+            found = (path.name, text[starts[-1]:])
+    assert found, "no migration defines wl_site_command_enqueue"
+    name, body = found
+    m = re.search(r"p_action\s+not\s+in\s*\((.*?)\)", body, re.I | re.S)
+    assert m, f"{name}: no read catalog"
+    return name, set(re.findall(r"'([a-z_]+)'", m.group(1)))
+
+
+def test_every_catalog_read_runs_or_is_reported_unsupported():
+    name, catalog = _latest_read_catalog()
+    for action in sorted(catalog):
+        r = site_control.execute_read(FakeDriver(), action, {"channel": "1"})
+        if action in LEGACY_CATALOG_ONLY:
+            assert r == {"action": action, "ok": False, "error": "unsupported_read_action"}, r
+        else:
+            assert r["ok"] is True, (name, action, r)
+    assert set(site_control.READ_ACTIONS) <= catalog, (
+        name, sorted(set(site_control.READ_ACTIONS) - catalog))
+    assert not LEGACY_CATALOG_ONLY & set(site_control.READ_ACTIONS)
+
+
 def test_driver_fault_becomes_structured_error_no_crash():
     class Broken(FakeDriver):
         def probe(self):
