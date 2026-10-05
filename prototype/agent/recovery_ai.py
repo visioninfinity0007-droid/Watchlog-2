@@ -442,6 +442,7 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
     seen = seen if seen is not None else set()
     recovered = activity = snapshots = frames = no_frame = duplicates = attempted = 0
     unplaced = 0                     # windows whose segments all lie outside the window
+    unrecorded = 0                   # windows the archive holds no recording of
 
     for w_start, w_end in backfill._windows(start, end, window_seconds):
         cursor = None
@@ -509,6 +510,8 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                 break
         if rows and not placed:
             unplaced += 1
+        elif not rows:
+            unrecorded += 1
 
     final_status = SUPPORTED
     reason = None
@@ -520,6 +523,11 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
         # another clock), so no footage of the window was examined: never a recovered window.
         final_status = UNKNOWN
         reason = "recorded segments were found but none lies inside the recovery window"
+    elif unrecorded:
+        # No recording does not prove nothing happened (recording off, a failed disk, a
+        # motion-only schedule): a window nobody examined stays unknown, never recovered.
+        final_status = PARTIAL if frames else UNKNOWN
+        reason = "the archive holds no recording of part of the recovery window"
     elif no_frame:
         # Some samples decoded, the rest did not: the footage around the failed samples was
         # never examined, so the window is partial, never recovered.

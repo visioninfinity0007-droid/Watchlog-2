@@ -75,7 +75,9 @@ class SegDriver:
 
 SEGS = [{"start": "2026-09-14T22:00:00+00:00", "end": "2026-09-14T22:05:00+00:00", "path": "/a.dav", "id": "seg-a"},
         {"start": "2026-09-14T22:05:00+00:00", "end": "2026-09-14T22:10:00+00:00", "path": "/b.dav", "id": "seg-b"}]
-WINDOW = ("2026-09-14T21:00:00+00:00", "2026-09-14T23:00:00+00:00")
+# One hour, all of it within the hourly search window that holds SEGS: an hour of the window
+# with no recording would make the pass partial (its footage was never examined).
+WINDOW = ("2026-09-14T22:00:00+00:00", "2026-09-14T23:00:00+00:00")
 
 
 class DecodeFrame(unittest.TestCase):

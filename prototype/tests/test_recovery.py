@@ -513,12 +513,24 @@ class DeepRecoveryRun(unittest.TestCase):
         self.assertEqual(cloud.completes[-1]["p_status"], "unrecoverable")
         self.assertEqual(cloud.completes[-1]["p_recovered_count"], 0)
 
-    def test_footage_only_hours_without_recordings_do_not_block_a_recovered_gap(self):
-        # Footage exists only in the first hour (motion recording). The search of every hour was
-        # complete and every recording in the gap was examined.
+    def test_hours_without_recordings_make_the_gap_partial_not_recovered(self):
+        # Footage exists only in the first hour. The search of every hour was complete, but no
+        # recording does not prove nothing happened (recording off, a failed disk, a motion-only
+        # schedule): the two hours nobody examined stay unknown, so the gap is partial. Before,
+        # it completed 'recovered' and 0098 counted all three hours as recovered coverage.
         runner, cloud, events = self._footage_only(self._segments()[:1], lambda d, c, ts: b"J")
         out = runner.run_once(limit=1)
-        self.assertEqual(out[0]["status"], "recovered")
+        self.assertEqual(out[0]["status"], "partial")
+        self.assertEqual(cloud.completes[-1]["p_status"], "partial")
+        self.assertEqual(len(events), 1)
+        # The same for a recorder that also replays its own event log.
+        cloud = FakeCloud([interval()])
+        events = []
+        out = recovery.RecoveryRunner(cloud, "agent", "key",
+                                      DeepArchiveDriver(self._segments()[:1]), events.append,
+                                      chunk_seconds=3600, frame_provider=lambda d, c, ts: b"J",
+                                      log=lambda *a: None).run_once(limit=1)
+        self.assertEqual(out[0]["status"], "partial")
         self.assertEqual(len(events), 1)
 
     def test_an_unreadable_hour_before_a_yield_is_not_forgotten(self):
@@ -542,12 +554,13 @@ class DeepRecoveryRun(unittest.TestCase):
 
     def test_a_recovered_hour_before_a_yield_is_not_forgotten(self):
         # Claim 1 recovers the only recording (first hour), then yields; the hours claim 2 reads
-        # hold no recording. Footage of the gap was examined, so the interval is recovered.
+        # hold no recording. Footage of the gap was examined in claim 1, so the interval is
+        # partial (the unrecorded hours stay unknown), never unrecoverable.
         live = iter([False, False, True])
         runner, cloud, events = self._footage_only(self._segments()[:1], lambda d, c, ts: b"J",
                                                    live_pending=lambda: next(live, False))
         self.assertTrue(runner.run_once(limit=1)[0]["yielded"])
-        self.assertEqual(runner.run_once(limit=1)[0]["status"], "recovered")
+        self.assertEqual(runner.run_once(limit=1)[0]["status"], "partial")
         self.assertEqual(len(events), 1)
 
     def _two_claims(self, frame_provider):
