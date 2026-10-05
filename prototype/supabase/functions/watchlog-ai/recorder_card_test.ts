@@ -2,6 +2,7 @@
 // MNVR-051: the Watch AI recorder card never claims support WatchLog has not confirmed.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { groundRecorderCards, recorderCardData, verifiedOnThisRecorder } from "./recorder_card.ts";
+import { customerCardData } from "./harness.ts";
 
 const multiCtx = {
   capability_known: false,
@@ -88,4 +89,27 @@ Deno.test("only evidence proven on this recorder counts as verified here (MNVR-0
   }
   assertEquals(verifiedOnThisRecorder({ ...cap, evidence_class: "OFFICIAL_DOCUMENTED", evidence_scope: "recorder" }), false);
   assertEquals(verifiedOnThisRecorder(undefined as any), false);
+});
+
+Deno.test("a model-written single-recorder card cannot invent a recorder, a recorder list or capabilities", () => {
+  const ctx = { capability_known: false, capabilities: [], recorder: { vendor: null, model: null, identified: false },
+    recorders: [{ id: "rec-a", name: "Recorder", state: "unknown", camera_count: 4, camera_ids: [] }] };
+  const invented = {
+    recorder: { vendor: "Hikvision", model: "DS-7608NI-K2" }, vendor: "Hikvision", model: "DS-7608NI-K2",
+    recorders: [{ name: "Main recorder", state: "healthy" }, { name: "Back office recorder", state: "healthy" }],
+    capabilities: [{ capability: "line_crossing", verdict: "supported", evidence_class: "FIELD_VERIFIED" }],
+    recommendation: { note: "advice" },
+  };
+  for (const ground of [ctx, { ...ctx, recorders: [] }]) {
+    const [card] = groundRecorderCards([{ type: "recorder", title: "Recorder", data: invented }], ground);
+    assertEquals(card.data.recorder, ctx.recorder, "the recorder identity is the context's");
+    assert(!("recorders" in card.data), "no model-written recorder list");
+    assert(!("vendor" in card.data) && !("model" in card.data), "no model-written vendor/model");
+    assertEquals(card.data.capabilities, [], "capabilities are the context's");
+    assertEquals(card.data.capability_known, false);
+    assertEquals(card.data.recommendation, { note: "advice" });
+  }
+  const [confirmed] = groundRecorderCards([{ type: "capabilities", title: "Support", data: invented }], singleCtx);
+  assertEquals(confirmed.data.recorder, singleCtx.recorder);
+  assertEquals(confirmed.data.capabilities, customerCardData(singleCtx.capabilities), "the context's rows, in customer words");
 });
