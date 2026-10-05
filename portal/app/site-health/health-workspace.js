@@ -183,12 +183,15 @@ export default function HealthWorkspace(){
   }else if(!cams.length){
     tone="unknown";title="No cameras are selected for monitoring";copy="Choose the cameras WatchLog should monitor before this page can verify camera health or recording.";
     cta=<a className="ow-btn" href={withSite("/setup/",siteId)}>Choose cameras</a>;
-  }else if(recorderIssues.length){
-    const affected=new Set(recorderIssues.flatMap(r=>(r.camera_ids||[]).map(String))).size;
+  }else if(impact.blockingIssues.length||(recorderIssues.length&&issueCount===recorderIssues.length)){
+    // A recorder issue leads only when it stops observation, or when it is the only issue: a storage
+    // issue never outranks camera faults. Affected cameras are the ones the root cause explains.
+    const affected=recorderIssueCameraIds.size;
     const unavailable=recorderIssues.filter(r=>String(r.state||"").toLowerCase()==="offline").length;
+    const more=issueCount-recorderIssues.length;
     tone=unavailable?"bad":"warn";
     title=recorderIssues.length+" recorder"+(recorderIssues.length===1?" needs":"s need")+" attention";
-    copy=(affected?affected+" camera"+(affected===1?" is":"s are")+" affected. ":"")+"WatchLog is connected; the recorder issue is grouped below so one cause is not shown as many unrelated camera faults.";
+    copy=(affected?affected+" camera"+(affected===1?" is":"s are")+" affected. ":"")+"WatchLog is connected; the recorder issue is grouped below so one cause is not shown as many unrelated camera faults."+(more>0?" "+more+" more item"+(more===1?" needs":"s need")+" checking below.":"");
   }else if(cameraFaults.length||stats.offline||stats.degraded||stats.recordingIssue){
     tone="warn";title="Monitoring needs attention";copy=issueCount+" item"+(issueCount===1?"":"s")+" need checking. WatchLog is connected; the affected cameras are listed below.";
   }else if(stats.healthUnknown||stats.recordingUnknown){
@@ -262,7 +265,7 @@ export default function HealthWorkspace(){
         {!ever&&!online?<Empty title="Health information appears after WatchLog connects to the site."/>
         :<div className="ow-rows">
           {!online&&<Row tone="bad" title="WatchLog connection lost" body="Check that the WatchLog computer at the site is switched on and online." meta={["Since "+(siteTime(lastSeen,tz,true)||"unknown")+" · site time","Owner action required"]}/>}
-          {recorderIssues.map(r=>{const v=recorderView(r);return <Row key={"rec-"+r.id} tone={v.tone} title={r.name+" · "+v.label} body={v.action} meta={[r.camera_count+" camera"+(r.camera_count===1?"":"s")+" affected","Owner action required"]}/>})}
+          {recorderIssues.map(r=>{const v=recorderView(r);return <Row key={"rec-"+r.id} tone={v.tone} title={r.name+" · "+v.label} body={v.action} meta={[impact.camerasAffectedBy(r)+" camera"+(impact.camerasAffectedBy(r)===1?"":"s")+" affected","Owner action required"]}/>})}
           {cameraFaults.slice(0,8).map((f,i)=>{const v=faultView(f);return <Row key={f.id||i} tone="warn" title={f.camera?f.camera+" · "+v.label:v.label} body={v.action} meta={[f.camera?"Camera":"Camera system",v.owner?"Owner action required":"WatchLog is checking"]}/>})}
           {unreported.map(c=><Row key={"cam-"+c.key} tone="warn" title={c.name+" · "+(c.health.tone==="ok"?"Recording needs attention":c.health.label)} body={c.action} meta={["Camera","Owner action required"]}/>)}
           {online&&!recorderIssues.length&&!cameraFaults.length&&!unreported.length&&(stats.healthUnknown||stats.recordingUnknown)?<Row tone="unknown" title="Some camera states are Not verified" body="No current fault is reported, but some health or recording states are still unverified. Check the cameras below before treating the picture as complete." meta={["No owner action yet"]}/>:null}

@@ -246,6 +246,34 @@ t("sign-in attention still takes over its cameras and their faults", () => {
   assert.equal(r.issueCount, 1);
 });
 
+// Page leads (Cameras & Evidence, System Health): only a blocking recorder issue outranks camera faults,
+// and "affected" means the cameras the root cause explains.
+t("a storage issue on Recorder A never claims its recording cameras or hides an offline camera on B", () => {
+  const cams = [
+    cam("a1", "rec-a", "Till", "operational"), cam("a2", "rec-a", "Door", "operational"),
+    cam("a3", "rec-a", "Store", "operational"), cam("a4", "rec-a", "Office", "operational"),
+    cam("b1", "rec-b", "Yard", "offline", "unknown"),
+  ];
+  const rows = [rec("rec-a", "Recorder A", "attention", ["a1", "a2", "a3", "a4"], "storage"), rec("rec-b", "Recorder B", "healthy", ["b1"])];
+  const r = H.recorderImpact({ cams, faults: [{ camera_id: "b1", camera: "Yard", reason: "video_loss" }], recorderRows: rows });
+  assert.equal(r.recorderIssues.length, 1);
+  assert.equal(r.blockingIssues.length, 0, "a storage issue does not stop observation, so it never leads over camera faults");
+  assert.equal(r.camerasAffectedBy(rows[0]), 0, "recording cameras are not affected by the storage issue");
+  assert.equal(r.recorderIssueCameraIds.size, 0);
+  assert.equal(r.recorderFor(cams[4]), null, "Yard keeps its own camera advice");
+});
+
+t("a blocking recorder affects every camera behind it; a storage issue only the symptoms it explains", () => {
+  const cams = [cam("a1", "rec-a", "Gate", "offline", "unknown"), cam("a2", "rec-a", "Dock", "unknown", "unknown"),
+    cam("b1", "rec-b", "Till", "operational", "storage_fault"), cam("b2", "rec-b", "Door", "operational")];
+  const rows = [rec("rec-a", "Recorder A", "offline", ["a1", "a2"], "connection"), rec("rec-b", "Recorder B", "attention", ["b1", "b2"], "storage")];
+  const r = H.recorderImpact({ cams, faults: [], recorderRows: rows });
+  assert.deepEqual(r.blockingIssues.map(x => x.id), ["rec-a"]);
+  assert.equal(r.camerasAffectedBy(rows[0]), 2);
+  assert.equal(r.camerasAffectedBy(rows[1]), 1, "only Till shows the storage symptom");
+  assert.deepEqual([...r.recorderIssueCameraIds].sort(), ["a1", "a2", "b1"]);
+});
+
 // --- Site Control labels (MNVR-049) ------------------------------------------------------------
 const VERIFIED_HERE = /verified on (your|this)/i;
 t("model-level verified evidence is never shown as verified on the customer's system", () => {

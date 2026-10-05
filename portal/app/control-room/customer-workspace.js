@@ -23,6 +23,7 @@ import {
 } from "../owner/ui";
 import styles from "./cameras.module.css";
 import { atMostOneRecorder, latestEventFor, latestEventIndex } from "./camera-events";
+import { recorderImpact } from "../site-health/recorder-impact";
 
 function human(v) {
   return String(v || "Not verified")
@@ -245,9 +246,11 @@ export default function CustomerCameraView() {
     }
     return map;
   }, [recorderSummary]);
-  const recorderIssues = recorderRows.filter((row) =>
-    ["offline", "attention"].includes(String(row.state || "").toLowerCase()),
-  );
+  // Recorder root cause with the System Health rules (MNVR-068): only a recorder issue that stops
+  // WatchLog observing its cameras outranks camera faults, and the affected cameras are the ones the
+  // root cause explains, never every camera behind a recorder with a storage issue.
+  const impact = recorderImpact({ cams: cameras, faults, recorderRows });
+  const recorderIssues = impact.recorderIssues;
   const recorderHealthy = recorderRows.filter(
     (row) => String(row.state || "").toLowerCase() === "healthy",
   ).length;
@@ -475,28 +478,45 @@ export default function CustomerCameraView() {
     (list.length > 3 ? ` and ${list.length - 3} more` : "");
 
   // One conclusion, driven only by governed camera and connection state.
+  // A storage issue (non-blocking) is mentioned alongside camera faults, never instead of them.
+  const storageNote = recorderIssues.length && !impact.blockingIssues.length
+    ? ` · Storage needs attention on ${recorderIssues.map((row) => row.name || "the recorder").join(", ")}`
+    : "";
   let lead = null;
   if (ctx && cameras.length) {
     if (!connected && !seen) {
       lead = { tone: "unknown", title: "This site has not connected yet", body: "Camera states appear once the site connection is online.", action: <a className="ow-btn" href={withSite("/setup/", siteId)}>Continue setup</a> };
     } else if (!connected) {
       lead = { tone: "bad", title: "Site connection lost · camera states may be out of date", body: "Recent views and events may be missing until the site reconnects.", action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
-    } else if (recorderIssues.length) {
-      const affected = new Set(recorderIssues.flatMap((row) => (row.camera_ids || []).map(String))).size;
+    } else if (impact.blockingIssues.length) {
+      const affected = impact.recorderIssueCameraIds.size;
       const unavailable = recorderIssues.filter((row) => String(row.state || "").toLowerCase() === "offline").length;
+      // Offline cameras the failing recorder does not explain (behind another recorder) stay named.
+      const elsewhere = offline.filter((c) => !impact.recorderFor(c));
       lead = {
-        tone: unavailable ? "bad" : "warn",
+        tone: unavailable || elsewhere.length ? "bad" : "warn",
         title: `${recorderIssues.length} recorder${recorderIssues.length === 1 ? " needs" : "s need"} attention`,
-        body: affected
-          ? `${affected} camera${affected === 1 ? " is" : "s are"} affected. Open System Health for the recorder-level cause.`
-          : "Open System Health for the recorder-level cause.",
+        body: [
+          affected ? `${affected} camera${affected === 1 ? " is" : "s are"} affected.` : "",
+          elsewhere.length ? `Also offline: ${names(elsewhere)}.` : "",
+          "Open System Health for the recorder-level cause.",
+        ].filter(Boolean).join(" "),
         action: <a className="ow-btn" href={healthHref}>Check monitoring</a>,
       };
     } else if (offline.length) {
-      lead = { tone: "bad", title: `${offline.length} camera${offline.length === 1 ? " is" : "s are"} offline · evidence may be missing`, body: names(offline), action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+      lead = { tone: "bad", title: `${offline.length} camera${offline.length === 1 ? " is" : "s are"} offline · evidence may be missing`, body: names(offline) + storageNote, action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
     } else if (attention.length || faults.length) {
       const n = attention.length || faults.length;
-      lead = { tone: "warn", title: `${n} camera${n === 1 ? " needs" : "s need"} attention`, body: attention.length ? names(attention) : "Open System Health for the affected cameras.", action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+      lead = { tone: "warn", title: `${n} camera${n === 1 ? " needs" : "s need"} attention`, body: (attention.length ? names(attention) : "Open System Health for the affected cameras.") + storageNote, action: <a className="ow-btn" href={healthHref}>Check monitoring</a> };
+    } else if (recorderIssues.length) {
+      // Only non-blocking (storage) recorder issues remain: WatchLog still observes the cameras.
+      const affected = impact.recorderIssueCameraIds.size;
+      lead = {
+        tone: "warn",
+        title: `${recorderIssues.length} recorder${recorderIssues.length === 1 ? " needs" : "s need"} attention`,
+        body: (affected ? `${affected} camera${affected === 1 ? " is" : "s are"} affected.` : "WatchLog is still observing the cameras.") + " Open System Health for the recorder-level cause.",
+        action: <a className="ow-btn" href={healthHref}>Check monitoring</a>,
+      };
     } else if (unverified.length) {
       lead = { tone: "unknown", title: `${healthy} of ${cameras.length} cameras confirmed healthy`, body: `Recording confirmed on ${recording} of ${cameras.length}. Anything WatchLog cannot verify stays marked Not verified.` };
     } else {

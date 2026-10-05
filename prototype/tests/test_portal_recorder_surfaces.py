@@ -61,6 +61,23 @@ def test_system_health_renders_through_the_recorder_rules():
     assert "recorderRootReasons" not in health
 
 
+def test_page_leads_follow_the_recorder_impact_rules():
+    # A storage issue never outranks camera faults in a lead, and "affected" is the cameras the root
+    # cause explains (recorderImpact), never every camera_id behind a failing recorder.
+    cameras = read("control-room/customer-workspace.js")
+    health = read("site-health/health-workspace.js")
+    assert 'import { recorderImpact } from "../site-health/recorder-impact";' in cameras
+    assert "recorderImpact({ cams: cameras, faults, recorderRows })" in cameras
+    assert "} else if (impact.blockingIssues.length) {" in cameras
+    assert "impact.blockingIssues.length||" in health
+    for page in (cameras, health):
+        assert "recorderIssueCameraIds.size" in page
+        assert "(row.camera_ids || []).map(String))).size" not in page
+        assert "(r.camera_ids||[]).map(String))).size" not in page
+    assert '(r.camera_count===1?"":"s")+" affected"' not in health
+    assert "impact.camerasAffectedBy(r)" in health
+
+
 def test_site_control_renders_through_the_recorder_rules():
     page = read("site-control/customer-workspace.js")
     assert 'from "./recorder-control"' in page

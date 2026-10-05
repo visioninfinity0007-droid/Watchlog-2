@@ -73,9 +73,15 @@ export function recorderImpact({cams=[],faults=[],recorderRows=[]}={}){
     if(!r)return null;
     return blocking(r)||storageSymptom(cam)||foldedCams.has(cam)?r:null;
   };
-  const recorderIssueCameraIds=new Set();
-  for(const r of recorderIssues)if(blocking(r))for(const id of r.camera_ids||[])recorderIssueCameraIds.add(String(id));
-  for(const c of cams)if(recorderFor(c))recorderIssueCameraIds.add(String(c.id));
+  // The cameras each recorder issue affects: every camera behind a blocking recorder, and only the
+  // cameras whose symptoms it explains for a storage issue (which does not stop observation).
+  const affectedBy=new Map();
+  for(const r of recorderIssues){
+    const ids=new Set(blocking(r)?(r.camera_ids||[]).map(String):[]);
+    for(const c of cams)if(recorderFor(c)===r)ids.add(String(c.id));
+    affectedBy.set(r,ids);
+  }
+  const recorderIssueCameraIds=new Set([...affectedBy.values()].flatMap(ids=>[...ids]));
 
   // Offline cameras a kept name-only fault could be about (a fault row is raised only for an offline
   // camera). That fault already counts them; they are not counted again or reported as fault-less.
@@ -84,7 +90,10 @@ export function recorderImpact({cams=[],faults=[],recorderRows=[]}={}){
   const cameraItems=cams.filter(c=>!recorderFor(c)&&!faultFor(c)&&!unattributedCameraIds.has(String(c.id))&&needsAttention(c)).length;
   return{
     recorderIssues,
+    // Only these may outrank camera faults in a page lead: a storage issue never hides them.
+    blockingIssues:recorderIssues.filter(blocking),
     recorderIssueCameraIds,
+    camerasAffectedBy:r=>affectedBy.get(r)?.size??0,
     recorderFor,
     cameraFaults,
     faultFor,
