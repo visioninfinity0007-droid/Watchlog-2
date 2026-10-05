@@ -25,6 +25,7 @@ from PIL import Image
 
 import analytics
 import analytics_setup
+import periodic_stills
 import watchlog_agent as core
 from action_runtime import ActionRuntime
 from archive_runtime import ArchiveRuntime
@@ -756,6 +757,10 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     health = threading.Thread(target=core.health_worker,
                               args=(cfg, state, cloud, holder, stop, resume_evt),
                               daemon=True, name="health")
+    # Timed still per configured camera (~300 s), spooled like every other event (NEW-L2).
+    stills = threading.Thread(target=periodic_stills.periodic_still_worker,
+                              args=(cfg, spool, stop, channels),
+                              daemon=True, name="periodic-stills")
     collector.start()
     analytic.start()
 
@@ -780,6 +785,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     archive.start()   # background historical scan; lower priority, run mode only
     recovery.start()  # automatic LIVE-gap reconciliation from recorder archive
     health.start()    # Phase-A camera/NVR health probing on its own thread
+    stills.start()    # periodic stills; run mode only
     sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
                                daemon=True, name="sitecontrol")
     sitectl.start()   # Site Control read plane (H6); thread exits at once unless enabled
@@ -839,6 +845,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         archive.join(timeout=5)
         recovery.join(timeout=5)
         health.join(timeout=5)
+        stills.join(timeout=5)
         sitectl.join(timeout=5)
         spool.close()
         core.vision.build = original_build
