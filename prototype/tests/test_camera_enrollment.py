@@ -31,9 +31,13 @@ import setup_backend as sb         # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _isolated_programdata(tmp_path, monkeypatch):
-    """Never write the real ProgramData\\WatchLog (setup.log, Secrets\\runtime-health.json)."""
+def _private_data_root(tmp_path, monkeypatch):
+    """establish_identity heartbeats (runtime health is published under the data root) and
+    appends setup.log there: keep both in a temporary directory, never the real ProgramData."""
     monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    monkeypatch.setattr(core, "default_state_dir", lambda: tmp_path / "WatchLog")
+    monkeypatch.setattr(sb, "programdata_dir", lambda: tmp_path / "WatchLog")
+
 
 DEVICE = types.SimpleNamespace(vendor="Dahua", model="NVR", driver="dahua")
 EIGHT = [{"channel": str(i), "name": f"Channel{i}"} for i in range(1, 9)]
