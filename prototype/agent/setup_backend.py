@@ -450,6 +450,20 @@ def _setup_log(message: str) -> None:
         pass
 
 
+# test_recorder's display placeholders for a vendor or model the recorder did not report.
+# They are for the Setup screens only: unknown stays unknown in recorders.json and in the
+# descriptors synced to WatchLog.
+VENDOR_PLACEHOLDER = "Recorder"
+MODEL_PLACEHOLDER = "Unknown model"
+
+
+def _observed(recorder: dict, key: str) -> str | None:
+    """The recorder's reported vendor or model, or None when it reported none."""
+    value = str((recorder or {}).get(key) or "").strip()
+    placeholder = VENDOR_PLACEHOLDER if key == "vendor" else MODEL_PLACEHOLDER
+    return value if value and value != placeholder else None
+
+
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
                   hint: dict | None = None, _scan=None, _build=None, _probe=None,
@@ -580,8 +594,8 @@ def test_recorder(address: str, username: str, password: str,
                        f"elapsed={time.monotonic() - attempt_started:.1f}s")
             return {
                 "url": url,
-                "vendor": info.vendor or "Recorder",
-                "model": info.model or "Unknown model",
+                "vendor": info.vendor or VENDOR_PLACEHOLDER,
+                "model": info.model or MODEL_PLACEHOLDER,
                 "firmware": info.firmware or "",
                 "serial": info.serial or "",
                 "driver": driver.name,
@@ -986,8 +1000,8 @@ def repair_managed_recorder_credential(
     )
     updated = recorder_registry.update_observed_identity(
         local_id,
-        vendor=proven.get("vendor"),
-        model=proven.get("model"),
+        vendor=_observed(proven, "vendor"),
+        model=_observed(proven, "model"),
         firmware=proven.get("firmware"),
         driver=proven.get("driver") or row.get("driver") or "auto",
         identity_fingerprint=(
@@ -1622,10 +1636,8 @@ def add_existing_site_recorder(
         ) from exc
 
     display = " ".join(
-        value for value in (
-            str(recorder.get("vendor") or "").strip(),
-            str(recorder.get("model") or "").strip(),
-        ) if value
+        value for value in (_observed(recorder, "vendor"), _observed(recorder, "model"))
+        if value
     ) or "Additional Recorder"
 
     progress("Encrypting the additional recorder credential on this PC…")
@@ -1637,8 +1649,8 @@ def add_existing_site_recorder(
             username=username.strip(),
             password=password,
             is_primary=False,
-            vendor=recorder.get("vendor"),
-            model=recorder.get("model"),
+            vendor=_observed(recorder, "vendor"),
+            model=_observed(recorder, "model"),
             firmware=recorder.get("firmware"),
             identity_fingerprint=(
                 f"serial:{recorder.get('serial')}"
@@ -1869,7 +1881,7 @@ def _stage_additional_recorder(entry: dict, recorder: dict) -> tuple[dict, bool]
         row = recorder_registry.update_recorder_connection(
             existing["local_id"], url=url, driver=recorder.get("driver") or "auto",
             username=username, password=entry["password"],
-            vendor=recorder.get("vendor"), model=recorder.get("model"),
+            vendor=_observed(recorder, "vendor"), model=_observed(recorder, "model"),
             firmware=recorder.get("firmware"), identity_fingerprint=fingerprint)
         if row["display_name"] != entry["display_name"]:
             row = recorder_registry.rename_recorder(row["local_id"], entry["display_name"])
@@ -1878,7 +1890,7 @@ def _stage_additional_recorder(entry: dict, recorder: dict) -> tuple[dict, bool]
         display_name=entry["display_name"], url=url,
         driver=str(recorder.get("driver") or "auto"),
         username=username, password=entry["password"], is_primary=False,
-        vendor=recorder.get("vendor"), model=recorder.get("model"),
+        vendor=_observed(recorder, "vendor"), model=_observed(recorder, "model"),
         firmware=recorder.get("firmware"), identity_fingerprint=fingerprint)
     return row, True
 
@@ -2031,8 +2043,8 @@ def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
                 driver=recorder.get("driver") or "auto",
                 username=username,
                 password=password,
-                vendor=recorder.get("vendor"),
-                model=recorder.get("model"),
+                vendor=_observed(recorder, "vendor"),
+                model=_observed(recorder, "model"),
                 firmware=recorder.get("firmware"),
                 identity_fingerprint=fingerprint,
             )
