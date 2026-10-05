@@ -188,10 +188,16 @@ def test_recovery_worker_survives_repeated_failures(monkeypatch):
 
     class Cloud:
         # The recorder-less contract opens and reads intervals by camera UUID, so the
-        # worker reaches the archive only once the camera mapping exists.
+        # worker reaches the archive only once the camera mapping exists, and (5.0.28) only
+        # for an interval it claimed; the unopenable archive hands the claim back.
         def call(self, name, **_kwargs):
             if name == "wl_sync_cameras":
                 return {"1": "11111111-1111-4111-8111-111111111111"}
+            if name == "wl_agent_claim_recovery":
+                return [{"id": "iv-1", "started_at": "2026-10-04T10:00:00Z",
+                         "ended_at": "2026-10-04T11:00:00Z",
+                         "cameras": ["11111111-1111-4111-8111-111111111111"],
+                         "status": "in_progress", "checkpoint": {}, "attempts": 1}]
             return []
 
     worker = threading.Thread(

@@ -10,7 +10,9 @@ gave the singleton worker a last-resort worker_fault handler; the recorder varia
 the same loop and must survive the same faults, each recorder on its own.
 
 This builds the fan-out's real worker sets (multi_recorder_fanout.build_worker_sets) and runs only
-their recovery threads, with the archive transport and the cloud faked.
+their recovery threads, with the archive transport and the cloud faked. Since 5.0.28 the archive
+is opened only for a claimed interval, so the fake cloud hands each claim an interval; an archive
+that cannot be opened hands it back as pending on the same recorder's RPC.
 """
 from __future__ import annotations
 
@@ -84,15 +86,26 @@ def _prepared(root: Path, name: str, rid: str, host: str):
 
 
 class _Cloud:
-    def __init__(self):
+    def __init__(self, intervals_for=(REC_A, REC_B)):
         self.claims = []
+        self.completes = []
+        self.intervals_for = set(intervals_for)
         self._lock = threading.Lock()
 
     def call(self, fn, **params):
         if fn == "wl_agent_claim_recorder_recovery":
+            rid = params.get("p_recorder_id")
             with self._lock:
-                self.claims.append(params.get("p_recorder_id"))
-            return []
+                self.claims.append(rid)
+            if rid not in self.intervals_for:
+                return []
+            return [{"id": f"iv-{rid[:8]}", "started_at": "2026-10-04T10:00:00Z",
+                     "ended_at": "2026-10-04T11:00:00Z",
+                     "cameras": [f"{rid[:8]}-0000-4000-8000-000000000001"], "channels": ["1"],
+                     "status": "in_progress", "checkpoint": {}, "attempts": 1}]
+        if fn in ("wl_complete_recorder_recovery", "wl_complete_recovery"):
+            with self._lock:
+                self.completes.append((fn, params))
         return {}
 
     def claims_for(self, rid):
@@ -108,8 +121,8 @@ class _Archive:
 
 
 class FanoutRecoveryThreadsSurvive(unittest.TestCase):
-    def _run(self, open_archive_driver, log, check):
-        cloud = _Cloud()
+    def _run(self, open_archive_driver, log, check, cloud=None):
+        cloud = cloud or _Cloud()
         stop = threading.Event()
         with TemporaryDirectory() as tmp, \
                 _Patch(core, open_archive_driver=open_archive_driver, log=log):
@@ -166,6 +179,7 @@ class FanoutRecoveryThreadsSurvive(unittest.TestCase):
 
     def test_one_recorders_fault_leaves_the_others_recovery_claiming(self):
         """A keeps failing; B keeps claiming its own intervals through the recorder RPC."""
+        cloud = _Cloud(intervals_for=(REC_A,))
         opens = {REC_A: 0, REC_B: 0}
         lines = []
 
@@ -179,9 +193,15 @@ class FanoutRecoveryThreadsSurvive(unittest.TestCase):
             self.assertTrue(_wait_for(lambda: opens[REC_A] >= 3 and cloud.claims_for(REC_B) >= 3),
                             f"opens={opens} claims={cloud.claims}")
             self.assertTrue(all(unit.recovery.is_alive() for unit in units))
-            self.assertEqual(cloud.claims_for(REC_A), 0, "A never reached its archive")
+            # A's claims went back as pending through A's own recorder RPC.
+            with cloud._lock:
+                released = list(cloud.completes)
+            self.assertTrue(released)
+            self.assertTrue(all(fn == "wl_complete_recorder_recovery"
+                                and p["p_recorder_id"] == REC_A and p["p_status"] == "pending"
+                                for fn, p in released), released[:3])
 
-        self._run(a_broken, lines.append, check)
+        self._run(a_broken, lines.append, check, cloud)
         # The last-resort line names the fault, never the recorder's address.
         faults = [line for line in lines if "SystemExit" in line]
         self.assertTrue(faults, lines[:5])
