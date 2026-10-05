@@ -20,12 +20,20 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 
 import credential_store            # noqa: E402
 import watchlog_agent as core      # noqa: E402
 import setup_backend as sb         # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_programdata(tmp_path, monkeypatch):
+    """Never write the real ProgramData\\WatchLog (setup.log, Secrets\\runtime-health.json)."""
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
 
 DEVICE = types.SimpleNamespace(vendor="Dahua", model="NVR", driver="dahua")
 EIGHT = [{"channel": str(i), "name": f"Channel{i}"} for i in range(1, 9)]
