@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Production-order upgrade rehearsal for the multi-recorder chain (0146-0155).
 
-Production runs 0001-0143 today (0144/0145 are reserved for production-only
-portal migrations) with 5.0.x Agents writing data. The `integration` job applies
+Production runs 0001-0145 today (0144/0145 are the production-only portal
+QA migrations) with 5.0.x Agents writing data. The `integration` job applies
 the whole chain to an EMPTY database, so no backfill there ever meets a real row.
 This script reproduces the real upgrade on its OWN fresh, disposable database:
 
-  stage 1  apply 0001..0143 with apply_migrations.py (WATCHLOG_MIGRATIONS_DIR
+  stage 1  apply 0001..0145 with apply_migrations.py (WATCHLOG_MIGRATIONS_DIR
            pointed at a staged copy), exactly the production baseline;
   seed     5.0.x-shaped legacy data through the 5.0.x RPCs: tenant, site,
            enrolled Agent, 8 configured cameras plus 8 hidden non-canonical
@@ -51,7 +51,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "supabase" / "migrations"
 APPLY = ROOT / "supabase" / "apply_migrations.py"
 PRELUDE = ROOT / "supabase" / "ci_prelude.sql"
-BASELINE_LAST = 143          # production baseline: 0001..0143
+BASELINE_LAST = 145          # production baseline: 0001..0145
 MNVR_015 = "[gated: MNVR-015] "
 
 ENV = {}
@@ -294,7 +294,7 @@ def run() -> int:
         with psycopg.connect(**dsn(rehearsal_db, autocommit=True)) as c:
             c.execute(PRELUDE.read_text(encoding="utf-8"))
 
-        # ---------------- stage 1: production baseline 0001..0143 ----------------
+        # ---------------- stage 1: production baseline 0001..0145 ----------------
         baseline = [p for p in sorted(MIGRATIONS.glob("*.sql"))
                     if migration_number(p) <= BASELINE_LAST]
         pending = [p for p in sorted(MIGRATIONS.glob("*.sql"))
@@ -303,9 +303,9 @@ def run() -> int:
             shutil.copy2(p, stage / p.name)
         out1 = apply_migrations(rehearsal_db, stage)
         step(f"{len(baseline)} migration(s) executed" in out1
-             and baseline[-1].name == "0143_site_period_facts.sql"
+             and baseline[-1].name == "0145_camera_preview_performance.sql"
              and pending and migration_number(pending[0]) == 146,
-             "stage 1 applies exactly the 0001..0143 production baseline",
+             "stage 1 applies exactly the 0001..0145 production baseline",
              f"{len(baseline)} baseline, {len(pending)} pending")
 
         with psycopg.connect(**dsn(rehearsal_db)) as conn:
