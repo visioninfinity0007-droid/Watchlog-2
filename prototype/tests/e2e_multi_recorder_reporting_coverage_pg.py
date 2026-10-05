@@ -10,6 +10,8 @@ Proves:
 - a window beginning before recorder tracking is Unknown, never legacy fallback;
 - an overnight Agent/PC outage on a two-recorder site is unverified, not LIVE,
   and the daily dataset flags it as a monitoring gap (MNVR-016);
+- daily intelligence states Unknown coverage as an explicit caveat, never
+  100%, and names recovered camera-time on a multi-recorder site (MNVR-046);
 - wl_my_daily_intelligence inherits the same effective coverage source;
 - wl_my_site_diagnosis / wl_ai_context inherit the same source;
 - direct coverage-classes access is tenant scoped;
@@ -315,6 +317,51 @@ def run() -> int:
                             "honesty": day3["honesty"]}, default=str),
             )
             cur.execute("delete from agent_unreachable_intervals where site_id=%s", (sa,))
+
+            # MNVR-046: 2026-10-02 starts before recorder tracking (09:00), so
+            # its coverage is Unknown. The daily dataset must say so, never
+            # treat it as fully monitored.
+            day2 = as_service(
+                "select wl_daily_intelligence(%s,%s::date,false)",
+                sa, "2026-10-02",
+            )[0]
+            step(
+                day2["coverage"]["known"] is False
+                and day2["coverage"]["coverage_ratio"] is None
+                and any("coverage could not be confirmed" in h.lower()
+                        for h in day2["honesty"])
+                and not any("Monitoring had gaps" in h for h in day2["honesty"]),
+                "MNVR-046: Unknown coverage is an explicit daily caveat, never 100%",
+                json.dumps(day2["honesty"]),
+            )
+            # Recovered camera-time on a multi-recorder day names the three
+            # coverage classes, as the single-recorder classes do.
+            cur.execute(
+                """insert into recorder_coverage_intervals(
+                     tenant_id,site_id,recorder_id,started_at,ended_at,cause,source
+                   ) values (%s,%s,%s,%s,%s,'nvr_unreachable','test')""",
+                (ta, sa, rec_a, on(3, 10), on(3, 11)),
+            )
+            cur.execute(
+                """insert into recovery_intervals(
+                     tenant_id,site_id,agent_id,recorder_id,
+                     started_at,ended_at,status,cameras,recovered_count
+                   ) values (%s,%s,%s,%s,%s,%s,'recovered',%s::uuid[],2)""",
+                (ta, sa, agent_a, rec_a, on(3, 10, 30), on(3, 10, 45),
+                 [str(cams_a["1"]), str(cams_a["2"])]),
+            )
+            day3r = as_service(
+                "select wl_daily_intelligence(%s,%s::date,false)",
+                sa, "2026-10-03",
+            )[0]
+            step(
+                float(day3r["coverage"]["recovered_camera_seconds"]) > 0
+                and any("RECOVERED" in h for h in day3r["honesty"]),
+                "MNVR-046: recovered camera-time is named in the daily caveats",
+                json.dumps(day3r["honesty"]),
+            )
+            cur.execute("delete from recorder_coverage_intervals where site_id=%s", (sa,))
+            cur.execute("delete from recovery_intervals where site_id=%s", (sa,))
 
             # Current owner/daily context uses the exact same source. Make the
             # current UTC day fully governed and open one Recorder B gap.
