@@ -20,7 +20,12 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.0.28**
+**5.1.0**
+
+5.1.0 (section 1C, branch `mr/agent-5.1.0`) is the multi-recorder Agent and installer
+**candidate, not promoted**: no Windows artifact has been built from it, none is promoted
+to any update channel and none is installed on any site. It requires database contract v4
+(`mr/db-contracts` migrations `0146`-`0155`) deployed first, and it contains every 5.0.28 fix.
 
 5.0.28 (section 1B, branch `fix/agent-5.0.28`) is an Agent-only **candidate, not
 promoted**: no Windows artifact has been built from it and none is installed on any
@@ -247,6 +252,114 @@ merge SHA, workflow run, artifact ID and executable hashes, then:
    Site Control is enabled there while its executor is unknown.
 
 Any failed gate keeps 5.0.28 unpromoted and preserves rollback to the installed version.
+
+---
+
+## 1C. 5.1.0 multi-recorder Agent candidate (`mr/agent-5.1.0`)
+
+5.1.0 is the **multi-recorder** Agent and installer: one WatchLog site, one Agent authority,
+many recorders. It is a **candidate, not promoted**: no Windows artifact has been built from
+it, no Windows workflow run, artifact ID or executable hash exists for it, nothing is promoted
+to any update channel, and it is installed on no site. Build 69 / 5.0.17 stays the field-proven
+baseline; 5.0.27 and 5.0.28 stay unpromoted. 5.1.0 contains every 5.0.28 live-site fix
+(section 1B, merged from `fix/agent-5.0.28`), applied inside the per-recorder runtime.
+
+### Deployment order (hard prerequisite)
+
+5.1.0 requires **database contract v4** from `mr/db-contracts`: migrations
+`0146`-`0155` (`0146_multi_recorder_foundation` through `0155_multi_recorder_reporting_coverage`), deployed and verified first.
+`0144` and `0145` are reserved for the production-only portal migrations already applied
+(portal QA truth contracts, camera preview performance) and are not part of this set. Without
+contract v4 the recorder RPCs it calls (`wl_multi_recorder_agent_contract`,
+`wl_sync_recorders`, the recorder health, recovery, evidence and job RPCs) do not exist. A
+one-recorder site against a database without the recorder contract falls back to the 5.0.x
+recorder-less RPCs (no recorder identity); a site with two or more recorders fails closed and
+does not monitor until the database is upgraded. No migration, Agent deployment or customer
+configuration change is implied by this repository state.
+
+### What 5.1.0 adds
+
+- **Multi-recorder per site.** Each configured recorder runs as its own `RecorderContext`
+  (local id, cloud recorder id, display name, driver, address, credential reference, cameras,
+  health, capabilities) with its own collector, event spool, health worker and durable health
+  store, recovery worker, footage worker and periodic-still producer. One recorder that is
+  unreachable, slow, refusing its login or held for an unreadable credential does not stop
+  another recorder's events, health, recovery, evidence or stills.
+- **Manage Recorders.** Add, rename, disable and re-add recorders after install without a
+  reinstall. The immutable continuity recorder (the site's original recorder, owner of the
+  legacy singleton spool, health and dedupe namespace) cannot be disabled by these flows;
+  disabling another recorder keeps its history, and re-adding the same physical recorder does
+  not create duplicate active cameras.
+- **Per-recorder credentials.** Each recorder's login is its own DPAPI blob under
+  `ProgramData\WatchLog\Secrets`; it never falls back to another recorder's or the legacy
+  singleton credential. A repaired login is picked up by that recorder's workers without a
+  restart.
+- **Recorder-scoped events.** Every spooled event carries its `recorder_id`; the server dedupe
+  key is namespaced by recorder (the continuity recorder keeps the historical channel
+  namespace), so recorder A channel 1 and recorder B channel 1 never collide. Recorder-scoped
+  events (disk, alarm input) carry a JSON null channel. Periodic stills (5.0.28 NEW-L2) run per
+  recorder with the same production payload contract plus `recorder_id`, each recorder sampling
+  by its own Monitor/Ignore choices.
+- **Recorder-scoped health.** Camera/NVR health, recording/storage transitions and checkpoints
+  are reported through the recorder RPCs; each recorder's liveness is its own event stream
+  (Hikvision keep-alives, Dahua heartbeats, ONVIF answered pulls), never a probe. The local
+  protected runtime-health proof lists every recorder with `live`, `last_live_at` and its own
+  redacted `event_stream` state; `recorder_seen_at` advances only when the full configured set
+  is live. Each recorder keeps its own `last_live` outage clock.
+- **Recorder-scoped recovery.** Outages open and claim recovery intervals per recorder
+  (`wl_open_recorder_recovery_interval`, `wl_agent_claim_recorder_recovery`,
+  `wl_complete_recorder_recovery`) over that recorder's explicitly synced channels, never a
+  guessed channel; the archive is opened only for a claimed interval, and an unopenable archive
+  hands the claim back as pending on the same recorder RPC.
+- **Recorder-scoped evidence.** Incident clips and stills, archive jobs and Site Control
+  commands resolve exactly one recorder from the claimed row and run on that recorder's
+  config, with that recorder's address redacted from any customer-visible reason; clip clock
+  selection follows 5.0.28 (MNVR-035).
+- **Multi-recorder first install.** Setup can add further recorders on the camera step before
+  Connect; each gets its own registry row, credential and camera choices, and Setup binds all
+  of them to WatchLog before the Agent starts. The installer child process carries the
+  multi-recorder wiring, and the Repair/Upgrade gate commits only once the continuity recorder
+  and every recorder that answered before the upgrade are live again, otherwise it restores
+  the previous install (CI-covered; not field-proven).
+
+### What is proven, and what is not
+
+- **CI-covered (fakes, no hardware)**: the backend job's multi-recorder steps (identity,
+  enrollment, registry, runtime, fan-out, first install, failure isolation, recorder push,
+  Site Control routing) and the 5.0.28 live-site gates, including two-recorder tests with
+  overlapping channel numbers. The Setup disable/reinstall Postgres e2e steps need contract v4
+  and run only in a tree that contains `0146`-`0155`. Status at this commit: the backend job
+  run locally on 2026-10-05 passes every step except "Public website claims", which needs PHP
+  (not installed on that PC); GitHub CI has not run it.
+- **IMPLEMENTED_UNVERIFIED on hardware**: everything a recorder decides, as in 1B, now for two
+  or more recorders at once. No multi-recorder site exists; nothing about mixed vendors is
+  inferred from vendor or model. Coverage stays UNVERIFIED for every recorder until the field
+  acceptance below passes.
+
+### Field acceptance (docs/architecture/MULTI_RECORDER_CONTRACT.md section 20)
+
+"Multi-recorder supported" requires a physical test, not CI alone. Minimum topology: one
+WatchLog site, two physical recorders, overlapping channel numbers, preferably mixed vendors.
+Prove, on one exact recorded artifact:
+
+1. both recorders discovered/configured;
+2. credentials remain independent and local;
+3. cameras remain distinct despite overlapping channels;
+4. events map to the correct camera/recorder;
+5. one recorder outage does not stop the other;
+6. camera/recorder health remains truthful;
+7. recovery uses the correct recorder;
+8. snapshots/evidence use the correct recorder;
+9. bounded incident clip comes from the correct recorder;
+10. reboot preserves both recorder contexts;
+11. Repair/Upgrade preserves both or rolls back;
+12. adding another recorder works without reinstall;
+13. disabling/removing one recorder preserves history;
+14. portal groups/root-causes the fault correctly;
+15. report coverage remains truthful.
+
+Until these pass in the field, 5.1.0 is implementation, not field proof, and stays unpromoted.
+The 1B per-site gates still apply to every single-recorder site upgraded to 5.1.0.
 
 ---
 
