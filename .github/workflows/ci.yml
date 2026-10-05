@@ -489,6 +489,8 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py
       - name: Multi-recorder upgrade rehearsal, planned production order — 0001..0145 + 5.0.x data, then 0156, then 0146..0155
         run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py --production-order
+      - name: Site removal and tenant deletion after 0146 — RESTRICT composite keys on a multi-recorder site (rolled back)
+        run: python prototype/tests/e2e_multi_recorder_site_removal_pg.py
       - name: Coverage ACL per migration step — no tenant coverage function exposed before its site check (MNVR-065)
         run: python prototype/tests/e2e_coverage_classes_acl_per_step_pg.py
 
