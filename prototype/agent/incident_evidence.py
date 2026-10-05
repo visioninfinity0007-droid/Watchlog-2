@@ -31,6 +31,12 @@ STILL_MAX_BYTES = 3 * 1024 * 1024      # matches the 0058 bounded still limit
 REMUX_TIMEOUT_SECONDS = 60
 UNSUPPORTED_FOOTAGE = ("This recorder does not expose on-demand incident footage through the "
                        "validated WatchLog path.")
+# Customer-visible still outcomes. Driver and library text (endpoints, HTTP codes, exception
+# names) is not customer language, so a failed still is always one of these; the detail goes
+# to the agent log.
+STILL_FAILED = "Recorder could not provide a still for this camera."
+UNSUPPORTED_STILL = ("This recorder does not provide incident stills through the validated "
+                     "WatchLog path.")
 # open_archive_driver keeps the ONVIF driver for these recorders only when the vendor-native
 # archive attempt failed (timeout, refused login), so their missing footage is not a verdict.
 NATIVE_ARCHIVE_VENDORS = ("dahua", "hikvision")
@@ -291,7 +297,6 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
     those come from the claimed task. Idle when 0058 is not deployed; truthful unsupported/failure.
     """
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
-    hosts = _recorder_hosts(cfg)
     missing_backend_logged = False
     while not stop.is_set():
         try:
@@ -333,8 +338,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                     cloud.call("wl_agent_fail_incident_still",
                                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
                                p_request_id=request_id,
-                               p_reason=("This recorder does not provide incident stills through "
-                                         "the validated WatchLog path." if unsupported else
+                               p_reason=(UNSUPPORTED_STILL if unsupported else
                                          "This recorder returned no still for the incident window."),
                                p_unsupported=unsupported)
                     core.log(f"incident stills: {info.vendor} ch{channel} returned no image via "
@@ -355,13 +359,13 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                            p_captured_at=core.iso(core.now_utc()))
                 core.log(f"incident stills: uploaded {len(raw) // 1024} KB for request {request_id[:8]}")
             except Exception as error:  # noqa: BLE001
-                reason = _safe_reason(error, hosts,
-                                      redacted="Recorder could not provide a still for this camera.")
+                unsupported = _is_unsupported(error)
                 try:
                     cloud.call("wl_agent_fail_incident_still",
                                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-                               p_request_id=request_id, p_reason=reason,
-                               p_unsupported=_is_unsupported(error))
+                               p_request_id=request_id,
+                               p_reason=UNSUPPORTED_STILL if unsupported else STILL_FAILED,
+                               p_unsupported=unsupported)
                 except Exception:  # noqa: BLE001
                     pass
                 core.log(f"incident stills: request {request_id[:8]} failed: "
