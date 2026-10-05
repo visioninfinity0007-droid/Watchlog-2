@@ -487,9 +487,10 @@ def test_legacy_primary_health_is_stamped_before_secondary_cloud_sync():
             states = store.db.execute(
                 "select key from last_state order by key"
             ).fetchall()
-            assert [row["key"] for row in states] == [
-                f"{mapping[a]}:camera:1"
-            ]
+            # The legacy key stays beside the scoped one for a rolled-back 5.0.x Agent.
+            assert sorted(row["key"] for row in states) == sorted([
+                "camera:1", f"{mapping[a]}:camera:1"
+            ])
         finally:
             store.close()
 

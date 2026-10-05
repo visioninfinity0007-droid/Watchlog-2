@@ -195,8 +195,9 @@ def test_cutover_stamp_attributes_legacy_rows_and_last_state_atomically():
             keys = store.db.execute(
                 "select key,state from last_state order by key"
             ).fetchall()
+            # The legacy key is kept for a rolled-back 5.0.x Agent (see below).
             assert [(r["key"], r["state"]) for r in keys] == [
-                (f"{rid}:camera:1", "offline")
+                ("camera:1", "offline"), (f"{rid}:camera:1", "offline")
             ]
 
             # Re-running the cutover is idempotent and does not rewrite identity.
@@ -206,6 +207,51 @@ def test_cutover_stamp_attributes_legacy_rows_and_last_state_atomically():
             assert again["last_state"] == 0
         finally:
             store.close()
+
+
+def test_a_rolled_back_singleton_agent_still_finds_its_state():
+    """A Repair/Upgrade that rolls back restarts 5.0.x on the same health.sqlite after the
+    5.1 runtime's cutover. The cutover moved every legacy key to <recorder>:<key>, so 5.0.x
+    found no prior state and recorded a from_state=NULL transition for every entity."""
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "health.sqlite"
+        rid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+        store = HealthStore(path, "agent-1")
+        try:
+            store.observe("camera", "1", "offline", "probe_timeout", "probe",
+                          "2026-10-02T12:05:00Z")
+            store.observe("camera", "2", "online", "probe_ok", "probe",
+                          "2026-10-02T12:05:00Z")
+            store.stamp_missing_recorder_id(rid)            # the 5.1 runtime binds
+            store.observe("camera", "2", "offline", "probe_timeout", "probe",
+                          "2026-10-02T12:06:00Z", recorder_id=rid)
+        finally:
+            store.close()
+
+        # Rolled back: the singleton runtime (recorder_id=None) on the same file.
+        old = HealthStore(path, "agent-1")
+        try:
+            assert old.observe("camera", "1", "offline", "probe_timeout", "probe",
+                               "2026-10-02T12:07:00Z") is None, (
+                "an unchanged camera became a state re-initialisation transition")
+            moved = old.observe("camera", "1", "online", "probe_ok", "probe",
+                                "2026-10-02T12:08:00Z")
+            assert moved and moved["from_state"] == "offline"
+        finally:
+            old.close()
+
+        # Upgraded again: the singleton's newer state wins for the entity it moved, the
+        # 5.1 runtime's state stays for the one it moved.
+        again = HealthStore(path, "agent-1")
+        try:
+            again.stamp_missing_recorder_id(rid)
+            states = dict(again.db.execute("select key,state from last_state").fetchall())
+            assert states[f"{rid}:camera:1"] == "online"
+            assert states[f"{rid}:camera:2"] == "offline"
+            assert again.observe("camera", "1", "online", "probe_ok", "probe",
+                                 "2026-10-02T12:09:00Z", recorder_id=rid) is None
+        finally:
+            again.close()
 
 
 def test_cutover_stamp_rejects_conflicting_provenance_without_partial_write():

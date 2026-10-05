@@ -218,6 +218,13 @@ class HealthStore:
         multi-recorder workers exist. Dedupe ids / epochs / statuses are preserved.
         last_state keys are namespaced too so the first post-cutover cycle does
         not manufacture a duplicate transition merely because the key changed.
+
+        The legacy ``layer:entity`` keys are kept beside the scoped copies: a rolled-back
+        Repair/Upgrade restarts a 5.0.x Agent on this same file, which looks state up by
+        the legacy key only and would otherwise record a from_state=NULL transition for
+        every entity. When both exist and disagree, the legacy one is newer only if a
+        singleton runtime recorded an unattributed transition for that entity since the
+        last cutover (it is attributed here); otherwise the scoped one is current.
         """
         try:
             rid = str(uuid.UUID(str(recorder_id or "").strip()))
@@ -262,14 +269,14 @@ class HealthStore:
                     )
                 existing_scoped[key] = state
 
-            # A partial previous cutover may contain both legacy and scoped keys.
-            # Accept it only when they agree.
-            for key, state in legacy_states:
-                target = f"{rid}:{key}"
-                if target in existing_scoped and existing_scoped[target] != state:
-                    raise ValueError(
-                        "legacy/scoped last_state conflict during recorder cutover"
-                    )
+            # Entities a singleton runtime (5.0.x after a rollback, or this Agent before
+            # it was bound) moved since the last cutover: their legacy state is newer.
+            singleton_moved = {
+                f"{row['layer']}:{row['entity']}" for row in self.db.execute(
+                    "select distinct layer, entity from transitions "
+                    "where recorder_id is null or trim(recorder_id)=''"
+                ).fetchall()
+            }
 
             try:
                 self.db.execute("begin immediate")
@@ -287,12 +294,16 @@ class HealthStore:
                 state_count = 0
                 for key, state in legacy_states:
                     target = f"{rid}:{key}"
+                    current = existing_scoped.get(target)
+                    if current == state:
+                        continue
+                    if current is not None and key not in singleton_moved:
+                        continue                    # the scoped state is the current one
                     self.db.execute(
                         "insert into last_state(key,state) values(?,?) "
-                        "on conflict(key) do nothing",
+                        "on conflict(key) do update set state=excluded.state",
                         (target, state),
                     )
-                    self.db.execute("delete from last_state where key=?", (key,))
                     state_count += 1
 
                 self.db.execute("commit")
