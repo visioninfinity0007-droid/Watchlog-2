@@ -480,6 +480,30 @@ class DeepRecoveryRun(unittest.TestCase):
         self.assertEqual(out[0]["status"], "unrecoverable")
         self.assertEqual(events, [])
 
+    def test_a_window_whose_samples_partly_failed_to_decode_is_partial(self):
+        # One 30 min recording, sampled every 5 min: only the first sample decodes (FFmpeg
+        # fails on the rest, e.g. a truncated segment). About 25 of the 30 minutes were never
+        # examined, so the interval is partial, never recovered.
+        segs = [{"start": T0.isoformat(), "end": (T0 + timedelta(minutes=30)).isoformat(),
+                 "id": "S0"}]
+        for archive in (FootageOnlyArchive(segs), DeepArchiveDriver(segs)):
+            calls = []
+
+            def first_only(d, c, ts):
+                calls.append(ts)
+                return b"J" if len(calls) == 1 else None
+
+            cloud = FakeCloud([interval(hours=1)])
+            events = []
+            out = recovery.RecoveryRunner(cloud, "agent", "key", archive, events.append,
+                                          chunk_seconds=3600, frame_provider=first_only,
+                                          snapshot_interval_seconds=300,
+                                          log=lambda *a: None).run_once(limit=1)
+            self.assertEqual(len(calls), 6)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(out[0]["status"], "partial")
+            self.assertEqual(cloud.completes[-1]["p_status"], "partial")
+
     def test_footage_only_recorder_with_no_footage_in_the_gap_is_not_recovered(self):
         # The archive holds no recording of the gap: nothing was examined, so nothing may be
         # called recovered (and nothing was recovered, so it is not partial either).
