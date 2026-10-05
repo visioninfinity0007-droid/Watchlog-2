@@ -35,37 +35,23 @@ from typing import Iterator
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
+from . import alarm_parsing
 from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
                    NvrDriver, NvrUnreachable, explain)
 
-# Dahua event codes -> our vocabulary.
-EVENT_CODE_MAP = {
-    "VideoMotion": "motion",
-    "SmartMotionHuman": "person",
-    "SmartMotionVehicle": "vehicle",
-    "CrossLineDetection": "line_crossing",
-    "CrossRegionDetection": "intrusion",
-    "LeftDetection": "object_left",
-    "TakenAwayDetection": "object_removed",
-    "VideoLoss": "video_loss",
-    "VideoBlind": "tamper",
-    "AlarmLocal": "alarm_input",
-    "StorageNotExist": "disk_error",
-    "StorageFailure": "disk_error",
-    "StorageLowSpace": "disk_full",
-    "FaceDetection": "face",
-}
+# One code map, channel rule and burst rule shared with the push bridge, so an alarm
+# means the same thing on both paths (MNVR-026).
+EVENT_CODE_MAP = alarm_parsing.DAHUA_EVENT_CODE_MAP
 
 # Codes whose index names a disk or an alarm input, not a video channel. They are
 # recorder-scoped: channel None plus a flag, never index+1 guessed onto a camera.
-RECORDER_SCOPED_CODES = {"AlarmLocal", "StorageNotExist", "StorageFailure",
-                         "StorageLowSpace"}
+RECORDER_SCOPED_CODES = alarm_parsing.DAHUA_RECORDER_SCOPED_CODES
 
 # Events we subscribe to. "All" also works but floods the link with
 # heartbeats and config chatter on a busy NVR.
 SUBSCRIBE_CODES = ",".join(EVENT_CODE_MAP.keys())
 
-BURST_WINDOW_SECONDS = 30
+BURST_WINDOW_SECONDS = alarm_parsing.BURST_WINDOW_SECONDS
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 
@@ -95,7 +81,7 @@ class DahuaDriver(NvrDriver):
         super().__init__(*a, **kw)
         self.s = requests.Session()
         self.s.auth = HTTPDigestAuth(self.username, self.password)
-        self._last_emitted: dict[tuple[str, str], float] = {}
+        self._burst = alarm_parsing.BurstFilter(BURST_WINDOW_SECONDS)
         # (monotonic, wall) clock of the block being parsed, stamped by stream_events
         # when it arrived; None outside the stream (parse time is used then).
         self._received: tuple[float, datetime] | None = None
@@ -630,56 +616,25 @@ class DahuaDriver(NvrDriver):
     # -- parsing --------------------------------------------------------
 
     def _parse_line(self, line: str) -> Event | None:
-        fields: dict[str, str] = {}
-        # data={...} may contain ';' so split only the leading key=value pairs
-        head, sep, data = line.partition(";data=")
-        for part in head.split(";"):
-            k, _, v = part.partition("=")
-            if k:
-                fields[k.strip()] = v.strip()
-
-        code = fields.get("Code", "")
-        action = fields.get("action", "").lower()
-        if action not in ("start", "pulse", ""):
-            return None               # Stop / State — not an occurrence
-
-        etype = EVENT_CODE_MAP.get(code)
-        if etype is None:
-            if code in ("Heartbeat", "KeepAlive", "TimeChange", "NTPAdjustTime"):
-                return None
-            etype = code.lower() or "unknown"
-
-        scope: dict = {}
-        index = fields.get("index")
-        if code in RECORDER_SCOPED_CODES:
-            channel = None
-            scope = {"recorder_scoped": True, "native_index": index}
-        else:
-            # index is 0-based on the wire; channels are 1-based everywhere else.
-            try:
-                channel = str(int(index) + 1)
-            except (TypeError, ValueError):
-                channel = None            # no usable index: unknown, never camera 1
-                scope = {"channel_unknown": True, "native_index": index}
+        alarm = alarm_parsing.parse_dahua_block(line)
+        if alarm is None:
+            return None
 
         # attach is live and carries no device clock field: the event time is when the
         # block arrived. Repeats collapse on the monotonic receive clock, so a backward
         # PC clock step cannot drop every later event of this type (MNVR-023).
-        received_mono, ts = self._receive_clock()
-        key = (channel if channel is not None else f"recorder:{index}", etype)
-        last = self._last_emitted.get(key)
-        if last is not None and received_mono - last < BURST_WINDOW_SECONDS:
+        received_mono, received_at = self._receive_clock()
+        if not self._burst.admit(alarm.burst_key, received_mono):
             return None
-        self._last_emitted[key] = received_mono
+        ts, clock = alarm_parsing.resolve_event_time(
+            alarm.raw_time, received_at, receive_source="agent_receive")
 
         return Event(
-            channel=channel,
-            event_type=etype,
+            channel=alarm.channel,
+            event_type=alarm.event_type,
             device_ts=ts,
             device_event_id=None,
-            payload={"vendor": "dahua", "code": code, "action": action,
-                     "data": (data[:500] if sep else None),
-                     "clock_source": "agent_receive", **scope},
+            payload={**alarm.payload, **clock},
         )
 
     def close(self) -> None:

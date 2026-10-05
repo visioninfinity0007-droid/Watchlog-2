@@ -50,6 +50,8 @@ jobs:
         run: python -m pytest prototype/tests/test_fanout_stream_last_live.py prototype/tests/test_health_worker_survival.py prototype/tests/test_recorder_recovery_rules.py prototype/tests/test_incident_routed_recorder_redaction.py prototype/tests/test_fanout_recovery_worker_survival.py prototype/tests/test_fanout_quiet_stream_liveness.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py -q
       - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write)
         run: python -m pytest prototype/tests/test_multi_recorder_spool_stamp_bounded.py prototype/tests/test_incident_footage_recorder_isolation.py prototype/tests/test_analytics_sampler_backoff.py prototype/tests/test_recording_current_multi_recorder.py prototype/tests/test_worker_credential_reload.py prototype/tests/test_analytics_sampler_channel_isolation.py prototype/tests/test_incident_footage_claim_backlog.py prototype/tests/test_multi_recorder_identity_write_race.py -q
+      - name: Recorder push per recorder, Agent/bridge alarm parity, Site Control recorder routing and read catalog
+        run: python -m pytest prototype/tests/test_recorder_push_scoped.py prototype/tests/test_recorder_push_setup.py prototype/tests/test_push_bridge.py prototype/tests/test_push_bridge_dahua.py prototype/tests/test_site_control.py prototype/tests/test_site_control_recorder_routing.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
       - name: Health Foundation schema/authz contract (Phase A)
