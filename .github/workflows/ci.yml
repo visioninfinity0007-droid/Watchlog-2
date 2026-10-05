@@ -220,6 +220,10 @@ jobs:
         run: python prototype/tests/test_site_type_intelligence_contract.py
       - name: Multi-recorder owner portal contract
         run: python prototype/tests/test_multi_recorder_portal_contract.py
+      - name: Multi-recorder portal surfaces (System Health root cause, Site Control per recorder, Watch AI card)
+        run: python prototype/tests/test_portal_recorder_surfaces.py
+      - name: Watch AI customer harness contract
+        run: python prototype/tests/test_watch_ai_customer_harness.py
 
   setup-ui-build:
     runs-on: windows-latest
@@ -507,6 +511,9 @@ jobs:
       - name: Router policy unit tests (fail-closed config, egress gate, NO_MODEL, candidate ordering)
         working-directory: prototype/supabase/functions/watchlog-ai
         run: deno test providers/router_test.ts
+      - name: Recorder card grounding and per-recorder Site Control target tests
+        working-directory: prototype/supabase/functions/watchlog-ai
+        run: deno test recorder_card_test.ts site_control_target_test.ts
       - name: Type-check the WatchLog AI edge function (provider router + secure config)
         working-directory: prototype/supabase/functions/watchlog-ai
         run: deno check index.ts
