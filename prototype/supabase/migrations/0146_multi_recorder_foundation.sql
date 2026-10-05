@@ -1607,6 +1607,12 @@ begin
 
   v_recorder_id := public.wl_push_recorder_for_site(v_tenant, p_site_id);
 
+  if v_recorder_id is not null then
+    perform pg_advisory_xact_lock(
+      hashtext('wl_recorder_push_source'), hashtext(v_recorder_id::text)
+    );
+  end if;
+
   -- Rotate: disable any existing source for this site.
   update public.push_sources set enabled = false where site_id = p_site_id;
 
