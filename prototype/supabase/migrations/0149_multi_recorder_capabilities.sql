@@ -110,6 +110,41 @@ revoke all on function public.wl_overlay_recorder_camera_truth(
   uuid,uuid,jsonb
 ) from public,anon,authenticated,service_role;
 
+-- The legacy site-level overlay (0088) joined cameras on site + channel only.
+-- Once a channel number can exist on two recorders, a site with one
+-- configured recorder and a disabled secondary sharing a channel got the
+-- secondary's camera overlaid too (duplicate or wrong channel entries). The
+-- site-level document belongs to the site's single configured recorder, so
+-- only that recorder's cameras are overlaid. Without exactly one configured
+-- recorder there is no unambiguous legacy recorder, and every channel stays
+-- explicitly unknown rather than borrowing another recorder's camera.
+create or replace function public.wl_overlay_camera_truth(
+  p_site_id uuid,
+  p_capabilities jsonb
+) returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $function$
+  select public.wl_overlay_recorder_camera_truth(
+    p_site_id,
+    (
+      select case when count(*)=1 then (array_agg(r.id))[1] end
+        from public.recorders r
+       where r.site_id=p_site_id
+         and r.is_configured
+    ),
+    p_capabilities
+  )
+$function$;
+
+-- Preserve the 0103 ACL exactly.
+revoke execute on function public.wl_overlay_camera_truth(uuid,jsonb)
+  from public,anon,authenticated;
+grant execute on function public.wl_overlay_camera_truth(uuid,jsonb)
+  to service_role;
+
 create or replace function public.wl_sync_recorder_capabilities(
   p_agent_id uuid,
   p_agent_key text,
