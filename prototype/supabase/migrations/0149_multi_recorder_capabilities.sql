@@ -180,3 +180,173 @@ revoke all on function public.wl_sync_recorder_capabilities(
 grant execute on function public.wl_sync_recorder_capabilities(
   uuid,text,uuid,jsonb
 ) to anon;
+
+-- ---------------------------------------------------------------------
+-- Recorder-scoped write eligibility (MNVR-049).
+--
+-- The 0061 knowledge base is keyed by vendor + model. Its FIELD_VERIFIED rows
+-- come from one field test on one physical unit (FIELD-AKSS-001, "site-specific,
+-- not manufacturer truth"), so they prove nothing about another recorder of the
+-- same model, nor about the same recorder on other firmware. Field evidence now
+-- names the recorder, identity fingerprint and firmware it was taken on, and
+-- only evidence that matches all three makes a capability FIELD_VERIFIED for a
+-- recorder. Model-only field evidence is capped below FIELD_VERIFIED.
+-- ---------------------------------------------------------------------
+alter table public.recorder_field_evidence
+  add column if not exists recorder_id uuid
+    references public.recorders(id) on delete set null;
+
+alter table public.recorder_field_evidence
+  add column if not exists identity_fingerprint text;
+
+create index if not exists recorder_field_evidence_recorder_idx
+  on public.recorder_field_evidence(recorder_id,capability)
+  where recorder_id is not null;
+
+-- Owner-only helper. Callers authenticate and authorize the recorder first.
+-- Same shape as wl_recorder_capability, plus recorder scope:
+--   evidence_scope       'recorder' when this recorder's own evidence is used,
+--                        'model' when only vendor/model knowledge applies;
+--   model_evidence_class the knowledge-base grade before recorder scoping;
+--   field_write_verified this recorder's evidence covers a read-back-verified
+--                        write of the capability.
+create or replace function public.wl_recorder_capability_for_recorder(
+  p_recorder_id uuid,
+  p_capability text
+) returns jsonb
+language plpgsql
+stable
+set search_path = public
+as $function$
+declare
+  v_recorder public.recorders;
+  v_model jsonb;
+  v_field boolean := false;
+  v_field_write boolean := false;
+  v_official boolean := false;
+  v_class text;
+  v_scope text := 'model';
+begin
+  select *
+    into v_recorder
+    from public.recorders r
+   where r.id=p_recorder_id;
+
+  if v_recorder.id is null
+     or nullif(btrim(v_recorder.vendor),'') is null
+     or nullif(btrim(v_recorder.model),'') is null
+  then
+    return jsonb_build_object(
+      'recorder_id',p_recorder_id,
+      'capability',p_capability,
+      'verdict','unknown',
+      'evidence_class','UNKNOWN',
+      'model_evidence_class','UNKNOWN',
+      'evidence_scope','none',
+      'field_write_verified',false,
+      'read',null,
+      'write',null,
+      'safety_class','na',
+      'source_ids','[]'::jsonb,
+      'notes','recorder identity unknown'
+    );
+  end if;
+
+  v_model := public.wl_recorder_capability(
+    v_recorder.vendor,v_recorder.model,p_capability,v_recorder.firmware
+  );
+
+  -- Evidence counts only for the unit, identity and firmware it was taken on.
+  -- An unknown recorder identity or firmware never matches.
+  select coalesce(bool_or(true),false),
+         coalesce(bool_or(
+           e.operation in ('write','read_write')
+           and e.read_back_verified is true
+         ),false)
+    into v_field,v_field_write
+    from public.recorder_field_evidence e
+   where e.recorder_id=v_recorder.id
+     and e.capability=p_capability
+     and e.evidence_class='FIELD_VERIFIED'
+     and e.vendor=v_recorder.vendor
+     and e.model=v_recorder.model
+     and nullif(btrim(v_recorder.identity_fingerprint),'') is not null
+     and e.identity_fingerprint=v_recorder.identity_fingerprint
+     and nullif(btrim(v_recorder.firmware),'') is not null
+     and e.firmware=v_recorder.firmware;
+
+  select exists (
+    select 1
+      from jsonb_array_elements_text(
+             coalesce(v_model->'source_ids','[]'::jsonb)
+           ) s(id)
+      join public.recorder_capability_sources src
+        on src.id=s.id
+       and src.source_type='official'
+  )
+  into v_official;
+
+  if v_field and v_model->>'verdict'='supported' then
+    -- This recorder's own evidence confirms the documented/implemented support.
+    v_class := 'FIELD_VERIFIED';
+    v_scope := 'recorder';
+  elsif v_model->>'evidence_class'='FIELD_VERIFIED' then
+    -- Proven on another unit only: documented support at most.
+    v_class := case when v_official then 'OFFICIAL_DOCUMENTED'
+                    else 'IMPLEMENTED_UNVERIFIED' end;
+  else
+    v_class := v_model->>'evidence_class';
+  end if;
+
+  return v_model || jsonb_build_object(
+    'recorder_id',v_recorder.id,
+    'evidence_class',v_class,
+    'model_evidence_class',v_model->>'evidence_class',
+    'evidence_scope',v_scope,
+    'field_write_verified',(v_scope='recorder' and v_field_write)
+  );
+end
+$function$;
+
+revoke all on function public.wl_recorder_capability_for_recorder(uuid,text)
+  from public,anon,authenticated,service_role;
+
+-- Owner-only, recorder-scoped counterpart of wl_recorder_profile (same row
+-- shape plus evidence_scope) for read models that show one recorder's
+-- capability truth. A same-model sibling's field evidence never shows here as
+-- FIELD_VERIFIED.
+create or replace function public.wl_recorder_profile_for_recorder(
+  p_recorder_id uuid
+) returns jsonb
+language sql
+stable
+set search_path = public
+as $function$
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'capability',x.cap->>'capability',
+           'verdict',x.cap->>'verdict',
+           'evidence_class',x.cap->>'evidence_class',
+           'evidence_scope',x.cap->>'evidence_scope',
+           'ai_location',x.cap->'ai_location',
+           'read',x.cap->'read',
+           'write',x.cap->'write',
+           'safety_class',x.cap->'safety_class',
+           'constraints',x.cap->'constraints',
+           'source_ids',x.cap->'source_ids'
+         ) order by x.capability),'[]'::jsonb)
+    from (
+      select k.capability,
+             public.wl_recorder_capability_for_recorder(r.id,k.capability) as cap
+        from public.recorders r
+        join (
+          select distinct c.vendor,c.model,c.capability
+            from public.recorder_capabilities c
+        ) k
+          on k.vendor=r.vendor
+         and k.model=r.model
+       where r.id=p_recorder_id
+    ) x
+$function$;
+
+revoke all on function public.wl_recorder_profile_for_recorder(uuid)
+  from public,anon,authenticated,service_role;

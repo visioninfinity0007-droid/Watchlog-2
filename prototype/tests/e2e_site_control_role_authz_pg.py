@@ -154,6 +154,20 @@ def run() -> int:
                     "is_configured": True,
                 }]),
             )[0]["rec-a"]
+            # Write eligibility is recorder-scoped (MNVR-049): this recorder has
+            # its own read-back-verified field evidence for the time write.
+            cur.execute(
+                """insert into recorder_field_evidence(
+                     id,site_id,recorder_id,identity_fingerprint,vendor,model,
+                     firmware,capability,operation,result,evidence_class,
+                     test_date,read_back_verified
+                   ) values (
+                     'TEST-AUTHZ-TIME',%s,%s,%s,%s,%s,%s,'time_ntp_config',
+                     'read_write','write applied and read back','FIELD_VERIFIED',
+                     current_date,true
+                   )""",
+                (site, recorder, FINGERPRINT, VENDOR, MODEL, FIRMWARE),
+            )
             cur.execute("update sites set site_control_enabled=true where id=%s", (site,))
 
             propose_sql = (

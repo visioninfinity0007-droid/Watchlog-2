@@ -216,6 +216,33 @@ update public.site_commands c
    and c.tenant_id=x.tenant_id
    and c.site_id=x.site_id;
 
+-- Managed pre-authorization names the recorder it was given for (MNVR-049).
+-- An authorization given while only Recorder A existed must not auto-run a
+-- write on a Recorder B added later. Existing rows on a site with exactly one
+-- configured recorder are scoped to it; any other row stays NULL and never
+-- auto-queues a write (the proposal then waits for human approval).
+alter table public.site_managed_actions
+  add column if not exists recorder_id uuid
+    references public.recorders(id) on delete cascade;
+
+alter table public.site_managed_actions
+  drop constraint if exists site_managed_actions_site_id_action_key;
+
+create unique index if not exists site_managed_actions_site_recorder_action_idx
+  on public.site_managed_actions(site_id,recorder_id,action);
+
+update public.site_managed_actions m
+   set recorder_id=x.recorder_id
+  from (
+    select site_id,(array_agg(id order by id))[1] as recorder_id
+      from public.recorders
+     where is_configured
+     group by site_id
+    having count(*)=1
+  ) x
+ where m.recorder_id is null
+   and m.site_id=x.site_id;
+
 create or replace function public.wl_site_command_enqueue(
   p_site_id uuid,
   p_action text,
@@ -368,9 +395,10 @@ begin
       using errcode='42501';
   end if;
 
-  v_capjson := public.wl_recorder_capability(
-    v_recorder.vendor,
-    v_recorder.model,
+  -- FIELD_VERIFIED must come from evidence taken on THIS recorder (same
+  -- identity and firmware), never from another unit of the same model.
+  v_capjson := public.wl_recorder_capability_for_recorder(
+    v_recorder.id,
     v_cap
   );
 
@@ -379,6 +407,7 @@ begin
     and (v_capjson->>'write')::boolean is true
     and v_capjson->>'safety_class'='safe_write'
     and v_capjson->>'evidence_class'='FIELD_VERIFIED'
+    and (v_capjson->>'field_write_verified')::boolean is true
   ) then
     raise exception
       'action % is not a FIELD-VERIFIED safe write for target recorder % (%)',
@@ -391,6 +420,7 @@ begin
        select 1
          from public.site_managed_actions m
         where m.site_id=p_site_id
+          and m.recorder_id=v_recorder.id
           and m.action=p_action
      )
   then
@@ -443,6 +473,7 @@ set search_path = public
 as $function$
 declare
   v_cmd public.site_commands;
+  v_capjson jsonb;
 begin
   select *
     into v_cmd
@@ -464,6 +495,30 @@ begin
     return jsonb_build_object(
       'ok',false,'reason','not_proposed','status',v_cmd.status
     );
+  end if;
+
+  -- Re-check write eligibility now (MNVR-049): the target recorder's
+  -- identity, firmware or evidence may have changed since the proposal, and a
+  -- proposal without a recorder target is never approvable.
+  if v_cmd.recorder_id is not null then
+    v_capjson := public.wl_recorder_capability_for_recorder(
+      v_cmd.recorder_id,
+      v_cmd.detail->>'capability'
+    );
+  end if;
+  if v_capjson is null
+     or not (
+       v_capjson->>'verdict'='supported'
+       and (v_capjson->>'write')::boolean is true
+       and v_capjson->>'safety_class'='safe_write'
+       and v_capjson->>'evidence_class'='FIELD_VERIFIED'
+       and (v_capjson->>'field_write_verified')::boolean is true
+     )
+  then
+    raise exception
+      'action % is no longer a FIELD-VERIFIED safe write for its target recorder',
+      v_cmd.action
+      using errcode='42501';
   end if;
 
   update public.site_commands
