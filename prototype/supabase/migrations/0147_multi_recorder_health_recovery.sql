@@ -1311,9 +1311,12 @@ begin
 end
 $function$;
 
+-- Keep 0103's ACL: this body has no tenant check (the base report it wraps
+-- has none either), so it stays service_role-only. Browser roles get it only
+-- in the migration that adds wl_assert_my_site.
 revoke all on function public.wl_site_coverage_report_classes(
   uuid,timestamptz,timestamptz
-) from public,anon;
+) from public,anon,authenticated;
 grant execute on function public.wl_site_coverage_report_classes(
   uuid,timestamptz,timestamptz
-) to authenticated,service_role;
+) to service_role;

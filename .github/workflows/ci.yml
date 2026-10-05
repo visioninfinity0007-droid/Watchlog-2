@@ -455,6 +455,8 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_push_pg.py
       - name: Multi-recorder upgrade rehearsal — 0001..0143 + 5.0.x data, then 0146..0155 on its own database
         run: python prototype/tests/e2e_multi_recorder_upgrade_rehearsal_pg.py
+      - name: Coverage ACL per migration step — no tenant coverage function exposed before its site check (MNVR-065)
+        run: python prototype/tests/e2e_coverage_classes_acl_per_step_pg.py
 
   # PRODUCTION-ORDER simulation: production is already at 0001-0039 + 0042-0048 WITHOUT 0040/0041, so the
   # real upgrade applies 0040/0041 out of numeric order on top of 0048. The `integration` job above applies
