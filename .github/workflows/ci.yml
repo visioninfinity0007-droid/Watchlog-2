@@ -434,7 +434,7 @@ jobs:
           python-version: '3.12'
       - name: Install psycopg + PDF + psql client
         run: |
-          python -m pip install --quiet "psycopg[binary]" xhtml2pdf
+          python -m pip install --quiet "psycopg[binary]" xhtml2pdf requests
           sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
       - name: Supabase-shim prelude (roles, auth schema, auth.uid) on the disposable Postgres
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f prototype/supabase/ci_prelude.sql

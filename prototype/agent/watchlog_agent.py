@@ -3141,10 +3141,14 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
     def recorder_live_until(now):
         """Wall time of the latest recorder activity recorder_is_live() counted (at most now)."""
         drv = holder.get("live_driver")
-        latest = max(float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0),
-                     float(holder.get("recorder_live_at") or 0.0))
-        if not latest:
+        # Same presence test as recorder_is_live(): any non-zero stamp counts. Clamping with
+        # max(..., 0.0) dropped a stamp taken shortly after boot (monotonic near zero) and the
+        # outage was then dated to this cycle instead of the last activity.
+        stamps = [s for s in (float(getattr(drv, "last_activity_monotonic", 0.0) or 0.0),
+                              float(holder.get("recorder_live_at") or 0.0)) if s]
+        if not stamps:
             return now
+        latest = max(stamps)
         return now - timedelta(seconds=max(0.0, time.monotonic() - latest))
 
     def heartbeat_keeps_last_live() -> bool:
