@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable
+from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, RecorderIdentityMismatch
 
 _URL_RE = re.compile(r"\w+://\S+")
 _CRED_RE = re.compile(r"[\w.-]+:[^/\s@]+@\S+")
@@ -53,6 +53,9 @@ def _classify_probe_error(e: Exception):
         return True, False, "auth_failed", "nvr_auth_failed"
     if isinstance(e, NvrUnreachable):
         return False, None, "unreachable", "nvr_unreachable"
+    if isinstance(e, RecorderIdentityMismatch):
+        # Something answered, but not this recorder: no claim about its cameras either way.
+        return True, None, "unknown", "unknown"
     msg = str(e).lower()
     if "401" in msg or "403" in msg or "unauthor" in msg:
         return True, False, "auth_failed", "nvr_auth_failed"
@@ -73,12 +76,17 @@ def assess_from_error(e: Exception) -> dict:
             "channels": {"enumerated": False}}
 
 
-def assess_nvr_health(driver) -> dict:
-    """Probe the recorder and return the cloud health report (no secrets)."""
+def assess_nvr_health(driver, verify=None) -> dict:
+    """Probe the recorder and return the cloud health report (no secrets).
+
+    ``verify(info)`` may raise DriverError (a RecorderIdentityMismatch) to refuse the
+    device that answered; nothing is then enumerated from it."""
     report = {"nvr": {}, "channels": {"enumerated": False}}
 
     try:
         info = driver.probe()
+        if verify is not None:
+            verify(info)
     except DriverError as e:
         reachable, auth_ok, state, reason = _classify_probe_error(e)
         report["nvr"] = {"reachable": reachable, "auth_ok": auth_ok,

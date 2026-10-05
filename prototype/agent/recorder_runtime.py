@@ -101,6 +101,8 @@ def _bound_config(base_cfg, row: dict, *, degrade_credential_errors: bool = Fals
     bound.recorder_local_id = row["local_id"]
     bound.recorder_cloud_id = row.get("cloud_recorder_id")
     bound.recorder_display_name = row.get("display_name") or "Recorder"
+    # The device at nvr_url must still be this recorder (watchlog_agent.require_recorder_identity).
+    bound.recorder_identity_fingerprint = row.get("identity_fingerprint")
 
     # Recorder-scoped durable state. At cutover the PRIMARY must preserve
     # every historical singleton path in place: moving its spool, health ledger

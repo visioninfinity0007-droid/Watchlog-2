@@ -63,6 +63,7 @@ import setup_wizard
 import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
+from drivers.base import RecorderIdentityMismatch
 
 import credential_store
 import recorder_runtime
@@ -502,7 +503,42 @@ def _connect_recorder(cfg: Config, base_url: str):
     return driver, driver.probe()
 
 
+def _fingerprint_serial(identity_fingerprint) -> str | None:
+    text = str(identity_fingerprint or "").strip()
+    if not text.lower().startswith("serial:"):
+        return None
+    return text[len("serial:"):].strip().upper() or None
+
+
+def require_recorder_identity(cfg, info) -> None:
+    """Refuse a device whose serial differs from the one saved for this recorder.
+
+    The recorder's address is operational configuration, not its identity (contract
+    sections 3, 8, 12): after an address swap another recorder that accepts the same login
+    can answer there. Unknown stays unknown: with no saved or no reported serial nothing
+    is refused."""
+    expected = _fingerprint_serial(getattr(cfg, "recorder_identity_fingerprint", None))
+    observed = str(getattr(info, "serial", "") or "").strip().upper() or None
+    if expected and observed and expected != observed:
+        raise RecorderIdentityMismatch(
+            "the device at this recorder's address reports a different serial number than "
+            "the saved recorder; it is not monitored until Setup confirms the recorder")
+
+
 def open_driver(cfg: Config):
+    driver, info = _open_driver_unverified(cfg)
+    try:
+        require_recorder_identity(cfg, info)
+    except RecorderIdentityMismatch:
+        try:
+            driver.close()
+        except Exception:                                       # noqa: BLE001
+            pass
+        raise
+    return driver, info
+
+
+def _open_driver_unverified(cfg: Config):
     cfg.require_nvr()
     # Primary attempt: exactly the configured driver/URL — unchanged behaviour. When it
     # works (the normal case) nothing below runs.
@@ -1456,7 +1492,25 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
                                        cfg.nvr_password, log=lambda *a, **k: None)
             else:
                 driver = build(cfg.nvr_driver, cfg.nvr_url, cfg.nvr_username, cfg.nvr_password)
-            assessment = nvr_health.assess_nvr_health(driver)
+            refused = []
+
+            def _verify(info):
+                try:
+                    require_recorder_identity(cfg, info)
+                except RecorderIdentityMismatch:
+                    refused.append(True)
+                    raise
+            assessment = nvr_health.assess_nvr_health(driver, verify=_verify)
+            if refused:
+                # Another recorder answered at this address: none of its cameras, recording
+                # state or channels are this recorder's. Its cameras stay UNKNOWN.
+                log("recorder identity mismatch: the device at this recorder's address is a "
+                    "different recorder; not monitoring it until Setup confirms the recorder")
+                try:
+                    driver.close()
+                except Exception:                      # noqa: BLE001
+                    pass
+                driver = None
         except DriverError as e:
             assessment = nvr_health.assess_from_error(e)   # still report the classified state
             driver = None

@@ -994,6 +994,7 @@ def repair_managed_recorder_credential(
             f"serial:{proven.get('serial')}" if proven.get("serial")
             else row.get("identity_fingerprint")
         ),
+        verified_by_setup=True,
     )
     out = _public_recorder_row(updated, credential_state="available")
     out["channels"] = list(proven.get("channels") or [])

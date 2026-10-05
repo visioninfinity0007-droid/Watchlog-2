@@ -45,6 +45,10 @@ class DuplicateRecorder(ValueError):
     """The recorder being added or re-pointed is already in the registry."""
 
 
+class RecorderIdentityConflict(ValueError):
+    """A probe saw a different physical recorder than the one this row names."""
+
+
 def data_dir() -> Path:
     return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
 
@@ -426,11 +430,29 @@ def apply_cloud_mapping(mapping: dict) -> dict:
 
 def update_observed_identity(local_id: str, *, vendor=None, model=None,
                              firmware=None, driver=None,
-                             identity_fingerprint=None) -> dict:
-    """Update non-secret observed recorder facts for one local recorder."""
+                             identity_fingerprint=None,
+                             verified_by_setup: bool = False) -> dict:
+    """Update non-secret observed recorder facts for one local recorder.
+
+    A runtime probe never replaces a known serial with a different one, and never gives
+    this row another row's serial: the address is configuration, not identity, so another
+    recorder answering at it after an address swap raises RecorderIdentityConflict and
+    nothing is saved. Setup passes ``verified_by_setup`` after the operator tested this
+    recorder again."""
     current = load_registry()
     found = False
     rows = []
+    observed = _serial(identity_fingerprint)
+    if observed and not verified_by_setup:
+        for row in current["recorders"]:
+            if row["local_id"] != str(local_id):
+                if _serial(row.get("identity_fingerprint")) == observed:
+                    raise RecorderIdentityConflict(
+                        "the device at this recorder's address is another recorder of this site")
+            elif (_serial(row.get("identity_fingerprint")) or observed) != observed:
+                raise RecorderIdentityConflict(
+                    "the device at this recorder's address reports a different serial number "
+                    "than the saved recorder")
     for row in current["recorders"]:
         row = dict(row)
         if row["local_id"] == str(local_id):

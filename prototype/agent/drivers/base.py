@@ -120,6 +120,13 @@ class NvrAuthFailed(DriverError):
     a recorder-auth fault, never as a camera being offline or 'cameras could not be added'."""
 
 
+class RecorderIdentityMismatch(DriverError):
+    """A device answered at this recorder's address, but it reports a different serial
+    number than the recorder saved for it (an address swap, a replaced unit). Its cameras
+    and events are not this recorder's, so nothing is collected or synced from it; what
+    the saved recorder's cameras are doing is unknown until Setup confirms the recorder."""
+
+
 def explain(e: Exception) -> str:
     """
     Turn a requests/urllib3 exception into something a person can act on.
