@@ -45,6 +45,9 @@ ANALYTICS_UPLOAD_BATCH = 500
 # Per-recorder sampler backoff after a recorder could not be opened or a sample failed
 # (MNVR-037); the last value repeats. A refused login uses the Agent's auth breaker.
 SAMPLER_RETRY_SECONDS = (15, 30, 60, 120, 300)
+# Consecutive failed samples on one recorder, with no success in between, that back the
+# whole recorder off (two different channels failing in a row also do).
+SAMPLER_RECORDER_FAILURE_STREAK = 3
 STATUS_WRITE_SECONDS = 30
 SNAPSHOT_REQUESTS_PER_POLL = 2
 ARCHIVE_POLL_SECONDS = 120                        # background historical scan; lower priority than live
@@ -307,10 +310,12 @@ class _SamplerDrivers:
     A recorder is opened on its own short-lived thread, never on the caller's: the caller
     is the thread that refreshes the site's single-authority lease, and one recorder's
     connect timeouts must not let that lease lapse. While a recorder is opening or backing
-    off, get() returns None and that sample is skipped. A failed open or sample closes the
-    transport and backs that recorder off (SAMPLER_RETRY_SECONDS); a refused login opens the
-    auth breaker (5, 15, 30 min) until the credential file changes. Other recorders are
-    unaffected."""
+    off, get() returns None and that sample is skipped. A failed open closes the transport
+    and backs that recorder off (SAMPLER_RETRY_SECONDS); a refused login opens the auth
+    breaker (5, 15, 30 min) until the credential file changes. A failed sample backs off
+    only that channel (sample_failed); the recorder backs off when failures span two
+    channels, or run SAMPLER_RECORDER_FAILURE_STREAK long, with no success in between.
+    Other recorders, and healthy channels on the same recorder, are unaffected."""
 
     def __init__(self, opener, generation, clock=time.monotonic, log=None):
         self._opener = opener            # recorder_id -> open transport (may block)
@@ -324,6 +329,9 @@ class _SamplerDrivers:
         self._auth_failures: dict = {}
         self._auth_generation: dict = {}
         self._retry_at: dict = {}
+        self._channel_failures: dict = {}   # (key, channel) -> consecutive failed samples
+        self._channel_retry_at: dict = {}   # (key, channel) -> monotonic retry time
+        self._streak: dict = {}             # key -> [failures, {channels}] since a success
         self._epoch = 0                  # bumped by close_all(); a stale open is discarded
 
     def opening(self, key) -> bool:
@@ -414,11 +422,46 @@ class _SamplerDrivers:
                 pass
         return delay
 
-    def succeeded(self, key) -> None:
+    def channel_waiting(self, key, channel) -> bool:
+        """True while this one channel is backing off after its own failed sample."""
+        with self._lock:
+            retry = self._channel_retry_at.get((key, channel))
+            return retry is not None and self._clock() < retry
+
+    def sample_failed(self, key, channel, error, recorder_id=None):
+        """One channel's sample failed. Back off that channel; back off the whole recorder
+        (failed()) only when failures span two channels or run on with no success.
+        Returns (delay seconds, recorder_wide)."""
+        with self._lock:
+            ck = (key, channel)
+            count = self._channel_failures.get(ck, 0) + 1
+            self._channel_failures[ck] = count
+            delay = float(SAMPLER_RETRY_SECONDS[min(count - 1, len(SAMPLER_RETRY_SECONDS) - 1)])
+            self._channel_retry_at[ck] = self._clock() + delay
+            streak = self._streak.setdefault(key, [0, set()])
+            streak[0] += 1
+            streak[1].add(channel)
+            recorder_wide = (len(streak[1]) >= 2
+                             or streak[0] >= SAMPLER_RECORDER_FAILURE_STREAK)
+            if recorder_wide:
+                # The recorder is the fault: its own backoff covers these channels.
+                for failed_channel in streak[1]:
+                    self._channel_failures.pop((key, failed_channel), None)
+                    self._channel_retry_at.pop((key, failed_channel), None)
+                self._streak.pop(key, None)
+        if recorder_wide:
+            return self.failed(key, error, recorder_id), True
+        return delay, False
+
+    def succeeded(self, key, channel=None) -> None:
         with self._lock:
             self._failures.pop(key, None)
             self._auth_failures.pop(key, None)
             self._auth_generation.pop(key, None)
+            self._streak.pop(key, None)
+            if channel is not None:
+                self._channel_failures.pop((key, channel), None)
+                self._channel_retry_at.pop((key, channel), None)
 
     def close_all(self) -> None:
         """Close every transport; an open still running is discarded when it finishes."""
@@ -426,6 +469,10 @@ class _SamplerDrivers:
             self._epoch += 1
             drivers = list(self._drivers.values())
             self._drivers.clear()
+            # Config changed: cameras may have moved, so channel backoffs start fresh.
+            self._channel_failures.clear()
+            self._channel_retry_at.clear()
+            self._streak.clear()
         for driver in drivers:
             try:
                 driver.close()
@@ -674,11 +721,13 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     recorder_id, channel = mux.resolve_target(target)
                     driver_key = recorder_id or "__legacy__"
                     try:
-                        # None while this recorder is opening or backing off: skip it.
-                        driver = drivers.get(driver_key, recorder_id)
+                        # None while this channel or its recorder is opening or backing
+                        # off: skip it.
+                        driver = (None if drivers.channel_waiting(driver_key, channel)
+                                  else drivers.get(driver_key, recorder_id))
                         raw = driver.get_snapshot(channel) if driver is not None else None
                         if driver is not None:
-                            drivers.succeeded(driver_key)
+                            drivers.succeeded(driver_key, channel)
                         if raw:
                             found = detector.detect(raw)
                             if found is not None:
@@ -698,10 +747,12 @@ def analytics_worker(cfg: Config, state: dict, detector,
                                 counters["last_sample_at"] = core.iso(when)
                     except (DriverError, requests.RequestException) as error:
                         counters["sample_errors"] += 1
-                        delay = drivers.failed(driver_key, error, recorder_id)
+                        delay, recorder_wide = drivers.sample_failed(
+                            driver_key, channel, error, recorder_id)
                         core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
-                                 f"ch{channel} failed: {str(error)[:140]}; "
-                                 f"next try in {int(delay)}s")
+                                 f"ch{channel} failed: {str(error)[:140]}; next try "
+                                 f"{'for the recorder' if recorder_wide else 'on this channel'}"
+                                 f" in {int(delay)}s")
                     except Exception as error:
                         counters["sample_errors"] += 1
                         core.log(f"analytics: sampler recorder={recorder_id or 'legacy'} "
