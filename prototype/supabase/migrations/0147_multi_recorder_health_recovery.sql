@@ -8,7 +8,10 @@
 --   * isolate recorder recovery intervals so simultaneous NVR gaps do not collide;
 --   * fail legacy ambiguous paths closed once a site has multiple recorders;
 --   * keep site-wide coverage conservative: recorder-specific recovery does NOT
---     automatically promote a whole-site UNVERIFIED interval to RECOVERED.
+--     automatically promote a whole-site UNVERIFIED interval to RECOVERED;
+--   * keep pre-upgrade recovery intervals legacy (recorder_id NULL) so deployed
+--     single-recorder Agents can still claim and complete them and their
+--     RECOVERED history keeps counting.
 --
 -- Deliberately deferred to the next gate:
 --   * recorder-aware durable health reconciliation / storage-transition replay;
@@ -668,24 +671,17 @@ grant execute on function public.wl_report_camera_health(uuid,text,jsonb)
 
 -- ---------------------------------------------------------------------
 -- Recorder-scoped recovery identity.
--- Existing production currently has no recovery rows, but the migration is
--- written safely for non-empty histories too.
+--
+-- Existing rows are NOT backfilled. recorder_id NULL means a legacy site-wide
+-- interval: deployed 5.0.x Agents may hold one pending or in progress across
+-- this deploy, and recovered ones carry RECOVERED coverage history that the
+-- site-wide coverage contract counts only while recorder_id is NULL. On a
+-- one-recorder site both the legacy and the recorder RPCs below therefore
+-- serve NULL rows and that recorder's rows alike; on a multi-recorder site the
+-- legacy RPCs fail closed and a NULL row is never attributed to a recorder.
 -- ---------------------------------------------------------------------
 alter table public.recovery_intervals
   add column if not exists recorder_id uuid;
-
--- Backfill only when the site has exactly one configured recorder.
-update public.recovery_intervals ri
-   set recorder_id = x.recorder_id
-  from (
-    select site_id,(array_agg(id order by id))[1] as recorder_id
-      from public.recorders
-     where is_configured
-     group by site_id
-    having count(*)=1
-  ) x
- where ri.recorder_id is null
-   and ri.site_id=x.site_id;
 
 alter table public.recovery_intervals
   drop constraint if exists recovery_intervals_recorder_lineage_fkey;
@@ -728,6 +724,7 @@ declare
   v_id uuid;
   v_cameras uuid[] := '{}';
   v_channel_count int := 0;
+  v_singleton boolean;
 begin
   v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
   if v_agent.id is null then
@@ -748,6 +745,14 @@ begin
     raise exception 'recorder not configured for this agent site'
       using errcode='42501';
   end if;
+
+  -- p_recorder_id is configured, so "exactly one" means it is the only one and
+  -- the site's legacy (NULL recorder) intervals are its work too.
+  select count(*)=1 into v_singleton
+    from public.recorders r
+   where r.tenant_id=v_agent.tenant_id
+     and r.site_id=v_agent.site_id
+     and r.is_configured;
 
   if p_ended_at<=p_started_at then
     return jsonb_build_object('ok',false,'reason','empty_interval');
@@ -770,7 +775,12 @@ begin
 
   select id into v_id
     from public.recovery_intervals r
-   where r.recorder_id=p_recorder_id
+   where r.tenant_id=v_agent.tenant_id
+     and r.site_id=v_agent.site_id
+     and (
+       r.recorder_id=p_recorder_id
+       or (v_singleton and r.recorder_id is null)
+     )
      and abs(extract(epoch from (r.started_at-p_started_at)))<5
      and abs(extract(epoch from (r.ended_at-p_ended_at)))<5
    limit 1;
@@ -816,6 +826,7 @@ as $function$
 declare
   v_agent public.agents;
   v_out jsonb;
+  v_singleton boolean;
 begin
   v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
   if v_agent.id is null then
@@ -837,10 +848,19 @@ begin
       using errcode='42501';
   end if;
 
+  select count(*)=1 into v_singleton
+    from public.recorders r
+   where r.tenant_id=v_agent.tenant_id
+     and r.site_id=v_agent.site_id
+     and r.is_configured;
+
   with due as (
     select id
       from public.recovery_intervals
-     where recorder_id=p_recorder_id
+     where (
+         recorder_id=p_recorder_id
+         or (v_singleton and recorder_id is null)
+       )
        and tenant_id=v_agent.tenant_id
        and site_id=v_agent.site_id
        and (
@@ -914,6 +934,7 @@ set search_path = public
 as $function$
 declare
   v_agent public.agents;
+  v_singleton boolean;
 begin
   v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
   if v_agent.id is null then
@@ -930,6 +951,16 @@ begin
     raise exception 'invalid recovery status' using errcode='22023';
   end if;
 
+  -- A legacy (NULL recorder) row belongs to p_recorder_id only while it is
+  -- the site's one configured recorder.
+  select count(*)=1
+         and bool_or(r.id=p_recorder_id)
+    into v_singleton
+    from public.recorders r
+   where r.tenant_id=v_agent.tenant_id
+     and r.site_id=v_agent.site_id
+     and r.is_configured;
+
   update public.recovery_intervals r
      set status=p_status,
          recovered_count=greatest(r.recovered_count,coalesce(p_recovered_count,0)),
@@ -937,7 +968,10 @@ begin
          detail=r.detail||coalesce(p_detail,'{}'::jsonb),
          updated_at=now()
    where r.id=p_id
-     and r.recorder_id=p_recorder_id
+     and (
+       r.recorder_id=p_recorder_id
+       or (coalesce(v_singleton,false) and r.recorder_id is null)
+     )
      and r.tenant_id=v_agent.tenant_id
      and r.site_id=v_agent.site_id;
 
@@ -959,9 +993,12 @@ grant execute on function public.wl_complete_recorder_recovery(
 ) to anon;
 
 -- Legacy recovery RPCs remain available for deployed single-recorder Agents,
--- but they assert singleton recorder identity first. They intentionally keep
+-- but they assert singleton recorder identity first. New legacy rows keep
 -- recorder_id NULL so the existing site-wide recovery/coverage semantics and
--- dedupe keys are byte-compatible on a one-recorder site.
+-- dedupe keys are byte-compatible on a one-recorder site. Dedupe, claim and
+-- complete also accept rows of that singleton recorder, so an interval a
+-- recorder-aware Agent opened is not stranded if the site rolls back to a
+-- legacy Agent.
 
 create or replace function public.wl_open_recovery_interval(
   p_agent_id uuid,
@@ -1008,7 +1045,7 @@ begin
   select id into v_id
     from public.recovery_intervals r
    where r.site_id=v_agent.site_id
-     and r.recorder_id is null
+     and (r.recorder_id is null or r.recorder_id=v_guard)
      and abs(extract(epoch from (r.started_at-p_started_at)))<5
      and abs(extract(epoch from (r.ended_at-p_ended_at)))<5
    limit 1;
@@ -1063,7 +1100,7 @@ begin
       from public.recovery_intervals
      where site_id=v_agent.site_id
        and tenant_id=v_agent.tenant_id
-       and recorder_id is null
+       and (recorder_id is null or recorder_id=v_guard)
        and (
          status='pending'
          or (
@@ -1146,7 +1183,7 @@ begin
    where r.id=p_id
      and r.site_id=v_agent.site_id
      and r.tenant_id=v_agent.tenant_id
-     and r.recorder_id is null;
+     and (r.recorder_id is null or r.recorder_id=v_guard);
 
   if not found then
     return jsonb_build_object('ok',false,'reason','not_found');
