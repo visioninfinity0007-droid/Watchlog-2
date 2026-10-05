@@ -270,6 +270,43 @@ def _primary_device(units):
     return units[0].prepared.device if units else None
 
 
+def _recorder_live_state(units, clock: float, stamp: str) -> tuple[int, list[dict]]:
+    """(live count, per-recorder rows) for the protected runtime-health proof (MNVR-040).
+
+    ``last_live_at`` is the last heartbeat at which that recorder's event stream was live,
+    the same rule as the site's recorder_seen_at. Rows carry identity only: no address,
+    login or display name."""
+    live_count, rows = 0, []
+    for unit in units:
+        live = _fresh(unit.holder, clock)
+        if live:
+            live_count += 1
+            unit.holder["live_seen_at"] = stamp
+        ctx = unit.prepared.context
+        row = {
+            "local_id": (getattr(ctx, "local_id", None)
+                         or getattr(unit.cfg, "recorder_local_id", None)),
+            "recorder_id": str(unit.cfg.recorder_cloud_id),
+            "continuity_owner": bool(getattr(ctx, "continuity_owner", False)),
+            "live": live,
+            "last_live_at": unit.holder.get("live_seen_at"),
+        }
+        if unit.holder.get("credential_unavailable"):
+            row["credential"] = "unavailable"
+        rows.append(row)
+    return live_count, rows
+
+
+def _write_live_marker(unit) -> None:
+    """Per-recorder last_live marker while recovery is off (MNVR-040).
+
+    With recovery on, the outage-aware writer keeps it. With recovery off nothing opens
+    outage intervals from it, so it is simply the recorder's latest live time: the
+    Repair/Upgrade gate reads it as that recorder's proof."""
+    import recovery
+    recovery.persist_last_live(unit.cfg.last_live_path, core.now_utc())
+
+
 def _close(units) -> None:
     for unit in units:
         try:
@@ -371,7 +408,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                     )
                 if unit.credential_ready is None or unit.credential_ready.is_set():
                     core.health_cycle(cloud, state, unit.cfg, unit.holder)
-            live_count = sum(1 for unit in units if _fresh(unit.holder))
+            live_count, recorder_rows = _recorder_live_state(
+                units, time.monotonic(), core.iso(core.now_utc()))
             core.heartbeat(
                 cloud, state, _primary_device(units),
                 recorder_live=(live_count == len(units)),
@@ -380,6 +418,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 recorders_total=len(units),
                 recorders_live=live_count,
                 multi_recorder=True,
+                recorders=recorder_rows,
             )
             return
 
@@ -442,7 +481,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
 
             if clock >= next_heartbeat:
                 next_heartbeat = clock + base_cfg.heartbeat_seconds
-                live_count = sum(1 for unit in units if _fresh(unit.holder, clock))
+                live_count, recorder_rows = _recorder_live_state(
+                    units, clock, core.iso(core.now_utc()))
                 try:
                     # recorder_seen_at in the legacy local runtime-health document
                     # advances only when the complete configured recorder set is live.
@@ -450,23 +490,30 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                         cloud, state, _primary_device(units),
                         recorder_live=(live_count == len(units)),
                     )
-                    core.update_runtime_health(
-                        recorders_total=len(units),
-                        recorders_live=live_count,
-                        multi_recorder=True,
-                    )
                 except (RuntimeError, requests.RequestException) as error:
                     core.log(
                         "ERROR: heartbeat failed, will retry: "
                         + str(error).splitlines()[0][:200]
                     )
+                # Each recorder's live state goes into the protected runtime-health proof
+                # at every heartbeat, cloud reachable or not (MNVR-040).
+                core.update_runtime_health(
+                    recorders_total=len(units),
+                    recorders_live=live_count,
+                    multi_recorder=True,
+                    recorders=recorder_rows,
+                )
 
                 # Per-recorder outage clocks. A failed B never freezes A. Each moves only
                 # with that recorder's event-stream activity (never a probe), to the time of
                 # that activity, and never over an outage its recovery has not opened yet.
-                for unit in units:
+                # With recovery off the marker is still kept, as that recorder's live proof.
+                for unit, row in zip(units, recorder_rows):
                     try:
-                        persist_last_live(unit.cfg, unit.holder, clock)
+                        if getattr(unit.cfg, "recovery_enabled", False):
+                            persist_last_live(unit.cfg, unit.holder, clock)
+                        elif row["live"]:
+                            _write_live_marker(unit)
                     except Exception:
                         pass
 

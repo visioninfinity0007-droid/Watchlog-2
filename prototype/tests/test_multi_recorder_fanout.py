@@ -418,3 +418,86 @@ def test_run_loop_restarts_cleanly_when_the_background_check_asks(tmp_path, monk
         fanout.run(base, {"agent_id": "agent", "agent_key": "key"}, object(), once=False,
                    prepared_recorders=[a, b], detector=None, analytics_worker=idle,
                    archive_worker=idle, recorder_check=refuse)
+
+
+# --- per-recorder live state for Repair/Upgrade (MNVR-040, Agent side) -------------
+
+def _live_only_a(a_rid):
+    def fake_collector(cfg, spool, stop, holder):
+        if cfg.recorder_cloud_id == a_rid:
+            holder["recorder_live_at"] = time.monotonic()
+        stop.wait()
+    return fake_collector
+
+
+def test_once_mode_publishes_each_recorders_live_state(tmp_path, monkeypatch):
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
+    a.context.local_id, a.context.continuity_owner = "local-a", True
+    b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
+    b.context.local_id, b.context.continuity_owner = "local-b", False
+    runtime_health = []
+    monkeypatch.setattr(core, "collector", _live_only_a(a.context.cloud_recorder_id))
+    monkeypatch.setattr(core, "ONCE_COLLECT_SECONDS", 0.1)
+    monkeypatch.setattr(core, "upload_once", lambda *_a, **_k: 0)
+    monkeypatch.setattr(core, "health_cycle", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "heartbeat", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "update_runtime_health", lambda **kw: runtime_health.append(kw))
+
+    fanout.run(SimpleNamespace(recovery_enabled=False), {"agent_id": "agent", "agent_key": "key"},
+               object(), once=True, prepared_recorders=[a, b], detector=None,
+               analytics_worker=lambda *_a: None, archive_worker=lambda *_a: None)
+
+    rows = {row["local_id"]: row for row in runtime_health[-1]["recorders"]}
+    assert rows["local-a"]["live"] is True and rows["local-a"]["last_live_at"]
+    assert rows["local-a"]["continuity_owner"] is True
+    assert rows["local-a"]["recorder_id"] == a.context.cloud_recorder_id
+    assert rows["local-b"]["live"] is False and rows["local-b"]["last_live_at"] is None
+    assert rows["local-b"]["continuity_owner"] is False
+    text = repr(runtime_health[-1])
+    assert "192.0.2" not in text and "nvr_url" not in text
+
+
+def test_heartbeat_publishes_live_state_and_markers_with_recovery_off(tmp_path, monkeypatch):
+    a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
+    a.context.local_id, a.context.continuity_owner = "local-a", True
+    b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
+    b.context.local_id, b.context.continuity_owner = "local-b", False
+    for item in (a, b):
+        item.context.config.recovery_enabled = False
+    runtime_health = []
+
+    def idle(*_a, **_k):
+        return None
+
+    def cloud_down(*_a, **_k):
+        raise RuntimeError("cloud unreachable")
+
+    monkeypatch.setattr(core, "collector", _live_only_a(a.context.cloud_recorder_id))
+    for name in ("recovery_worker", "health_worker", "command_worker"):
+        monkeypatch.setattr(core, name, idle)
+    monkeypatch.setattr(core, "heartbeat", cloud_down)
+    monkeypatch.setattr(core, "upload_once", idle)
+    monkeypatch.setattr(core, "update_runtime_health", lambda **kw: runtime_health.append(kw))
+    real_sleep, ticks = time.sleep, []
+
+    def sleep(_seconds):
+        ticks.append(1)
+        if len(ticks) > 3:
+            raise KeyboardInterrupt
+        real_sleep(0.05)
+
+    monkeypatch.setattr(fanout.time, "sleep", sleep)
+    base = SimpleNamespace(recovery_enabled=False, upload_seconds=60, heartbeat_seconds=0.01)
+    fanout.run(base, {"agent_id": "agent", "agent_key": "key"}, object(), once=False,
+               prepared_recorders=[a, b], detector=None, analytics_worker=idle,
+               archive_worker=idle)
+
+    published = [kw for kw in runtime_health if "recorders" in kw]
+    assert published, "per-recorder live state is published even while the cloud is down"
+    rows = {row["local_id"]: row for row in published[-1]["recorders"]}
+    assert rows["local-a"]["live"] is True and rows["local-b"]["live"] is False
+    assert published[-1]["recorders_live"] == 1 and published[-1]["recorders_total"] == 2
+    # Per-recorder last_live markers are written even with recovery disabled.
+    import recovery
+    assert recovery.read_last_live(a.context.config.last_live_path) is not None
+    assert recovery.read_last_live(b.context.config.last_live_path) is None

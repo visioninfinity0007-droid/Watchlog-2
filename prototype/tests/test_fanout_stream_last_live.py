@@ -132,7 +132,10 @@ def test_each_recorder_keeps_its_own_stream_based_outage_clock(monkeypatch, tmp_
     assert recovery.read_last_live(c.context.config.last_live_path) == FRAME
 
 
-def test_recovery_disabled_writes_no_outage_clock(monkeypatch, tmp_path):
+def test_recovery_disabled_keeps_only_a_live_recorders_marker(monkeypatch, tmp_path):
+    # With recovery off nothing opens outage intervals, but the marker is still each
+    # recorder's live proof for the Repair/Upgrade gate (MNVR-040): kept for a live
+    # recorder, never written for one whose event stream is down.
     a = _prepared(tmp_path, "A", "11111111-1111-1111-1111-111111111111", primary=True)
     b = _prepared(tmp_path, "B", "22222222-2222-2222-2222-222222222222")
     for item in (a, b):
@@ -140,8 +143,8 @@ def test_recovery_disabled_writes_no_outage_clock(monkeypatch, tmp_path):
 
     _run(monkeypatch, [a, b], {
         a.context.cloud_recorder_id: _live_stream,
-        b.context.cloud_recorder_id: _live_stream,
+        b.context.cloud_recorder_id: dict,          # no event-stream activity at all
     }, recovery_enabled=False)
 
-    assert not a.context.config.last_live_path.exists()
+    assert recovery.read_last_live(a.context.config.last_live_path) is not None
     assert not b.context.config.last_live_path.exists()
