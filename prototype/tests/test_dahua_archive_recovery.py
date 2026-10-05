@@ -220,5 +220,43 @@ class ClockWithUtcOffset(unittest.TestCase):
                          ["2026-10-04T07:30:00Z", "2026-10-04T08:00:00Z"])
 
 
+class SegmentTimesReplayOnTheSameClock(unittest.TestCase):
+    """Segment times come back on the agent clock (recorder wall time minus the measured offset,
+    drift included). recovery_ai fetches a sample either through the installed
+    get_recorded_segment or, where a driver offers no segment getter, through get_clip; both must
+    land on the recorder wall time the segment was found at, even on a drifting recorder."""
+
+    def setUp(self):
+        da.install()
+        patcher = mock.patch.object(da, "datetime", pinned_datetime(PC_NOW))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.rec = FakeRecorder(PC_NOW, zone=timedelta(hours=5), drift=timedelta(seconds=40),
+                                files=continuous_files(local("2026-10-04 12:00:00"),
+                                                       local("2026-10-04 14:00:00")))
+        self.drv = FakeDahua(self.rec)
+        rows = da.enumerate_historical_events(self.drv, "1", G0 - timedelta(minutes=30),
+                                              G0 + timedelta(minutes=30))["events"]
+        [self.segment] = [r["segment"] for r in rows if r["segment"]["path"].endswith("130000.dav")]
+
+    def _fetch(self, driver):
+        import recovery_ai
+        frame = recovery_ai.recovered_frame(driver, "1", self.segment["start"],
+                                            decoder=lambda clip, *_offset: JPEG)
+        self.assertEqual(frame, JPEG)
+        return self.rec.loadfile_windows()[-1][0]
+
+    def test_the_segment_getter_replays_the_recorder_wall_time(self):
+        self.assertEqual(self.segment["start"], "2026-10-04T07:59:20Z")
+        self.assertEqual(self._fetch(self.drv), local("2026-10-04 13:00:00"))
+
+    def test_the_get_clip_fallback_replays_the_recorder_wall_time(self):
+        class ClipOnly:                     # no segment getter: recovery_ai falls back to get_clip
+            def __init__(self, drv):
+                self.get_clip = drv.get_clip
+
+        self.assertEqual(self._fetch(ClipOnly(self.drv)), local("2026-10-04 13:00:00"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

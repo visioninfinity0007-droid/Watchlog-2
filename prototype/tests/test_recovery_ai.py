@@ -421,7 +421,7 @@ class SingleClipAttempt(unittest.TestCase):
             calls = []
             original = module.get_clip
 
-            def counting(driver, channel, start, end):
+            def counting(driver, channel, start, end, **_clock):
                 calls.append(channel)
                 return None
 
