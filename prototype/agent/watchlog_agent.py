@@ -941,7 +941,10 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
                 # camera that hangs, refuses auth or returns junk must
                 # cost us the picture, never the incident record.
                 raw = None
-                if cfg.snapshots and ev.event_type not in NO_SNAPSHOT_EVENTS:
+                # A recorder-scoped or channel-less event (channel None) has no camera
+                # to take a still from.
+                if (cfg.snapshots and ev.channel is not None
+                        and ev.event_type not in NO_SNAPSHOT_EVENTS):
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
                         last_shot[ev.channel] = clock
@@ -981,7 +984,8 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
                 # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to
                 # the health monitor straight from the event stream (best-effort; never let a
                 # health-side error disturb ingestion).
-                if holder is not None and ev.event_type in NATIVE_FAULT_TYPES:
+                if (holder is not None and ev.channel is not None
+                        and ev.event_type in NATIVE_FAULT_TYPES):
                     mon = holder.get("monitor")
                     if mon is not None:
                         try:
@@ -2393,7 +2397,9 @@ def cmd_probe(cfg: Config) -> None:
     try:
         for ev in driver.stream_events(stop):
             seen += 1
-            print(f"    {iso(ev.device_ts)}  ch{ev.channel:<4} {ev.event_type}")
+            # A recorder-scoped or channel-less event has channel None: no camera column.
+            channel = "-" if ev.channel is None else ev.channel
+            print(f"    {iso(ev.device_ts)}  ch{channel:<4} {ev.event_type}")
             if seen >= 20:
                 break
     except DriverError as e:
