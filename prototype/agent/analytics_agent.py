@@ -76,7 +76,8 @@ def _recorder_stream_live(holder: dict, clock: float) -> bool:
 
     Hikvision and Dahua drivers stamp last_activity_monotonic on every frame, keep-alives
     included, and on a 2xx answer only while that stream stays open (a 200 that ends before
-    any chunk is taken back); the collector carries the last activity into recorder_live_at
+    any chunk is taken back); the ONVIF driver on every PullMessages response that comes
+    back, empty pulls included, never on a failed one; the collector carries the last activity into recorder_live_at
     when it drops a driver. A recorder whose probe
     answers while its event stream is down is therefore NOT live: recorder_seen_at (the
     Repair/Upgrade proof) does not advance. Drivers that cannot report their stream keep

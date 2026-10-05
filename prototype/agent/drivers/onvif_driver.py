@@ -83,8 +83,9 @@ TOPIC_MAP = [
 
 # Event types that belong to the recorder, not to a camera. They carry no
 # video source, so they are emitted with channel None and a recorder_scoped
-# flag (the key the Hikvision and Dahua drivers use); putting them on a channel would turn a recorder HDD fault into a
-# fault on whichever camera that channel happens to be.
+# flag (the key the Hikvision and Dahua drivers use); putting them on a
+# channel would turn a recorder HDD fault into a fault on whichever camera
+# that channel happens to be.
 RECORDER_SCOPED_TYPES = {"disk_error"}
 
 # Data items that carry the state of a property event; false on one of them
