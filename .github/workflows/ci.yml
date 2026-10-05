@@ -323,8 +323,12 @@ jobs:
             $started = Get-Date
             $p = Start-Process -FilePath $exe -ArgumentList $mode -Wait -PassThru
             $elapsed = ((Get-Date) - $started).TotalSeconds
+            Write-Host "frozen setup UI selftest ($mode): exit $($p.ExitCode), $([math]::Round($elapsed,1))s"
             if ($p.ExitCode -ne 0) { throw "frozen setup UI selftest ($mode) failed with exit $($p.ExitCode)" }
-            if ($elapsed -gt 15) { throw "frozen setup UI selftest ($mode) took $([math]::Round($elapsed,1))s" }
+            # Hang guard, not a speed target: the time includes the one-file exe unpacking itself
+            # (about 259 MB) on the runner's disk. 15 s measured 15.2 s and under 15 s on GitHub
+            # for the same commit; a stuck installer-child window never exits at all.
+            if ($elapsed -gt 30) { throw "frozen setup UI selftest ($mode) took $([math]::Round($elapsed,1))s" }
           }
           Write-Host "Frozen setup UI selftest PASSED (standalone and installer child)."
       - name: Repair/Upgrade, registry preflight/staging and elevation tests
