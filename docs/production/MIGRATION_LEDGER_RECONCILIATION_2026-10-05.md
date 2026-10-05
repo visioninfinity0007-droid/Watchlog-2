@@ -698,3 +698,34 @@ profile `rp` is NULL, the predicate is NULL and the row is dropped, so office pe
 claimed (every HASCO Head Office periodic still was still `pending` on 2026-10-05). 0156 redefines the
 function from that exact production body with only the comparison made null-safe. Like the rest of 0156,
 it needs explicit approval before it is applied to production.
+
+The stranded rows kept their insert-time `next_attempt_at`. The claim serves the oldest
+`next_attempt_at` first, at most 4 rows per worker run (one run a minute, 0142), over one queue shared by
+every site. Released as they are, the whole backlog (bounded only by snapshot retention, 7-90 days by plan)
+would be reviewed before any fresh still from any site, including the restaurant stills 0156 sections 1 and
+3 turn on. So 0156 also retires every review row the old filter stranded at apply time: periodic stills of
+canonical cameras with no enabled restaurant profile that the claim would otherwise pick. They are set to
+`failed`, `attempts>=5`, no analysis, with `last_error` naming 0156 (the 0118 style), so they count as not
+reviewed and never as analysed. Rows under a live lease are left alone; snapshots and events are untouched.
+Periodic stills queued after the apply are claimed normally, in arrival order with every other still.
+
+Unknown: the size of the production backlog. It was not measured. Before approval, count it read-only:
+
+```sql
+select s.site_id, count(*) as stranded, min(r.captured_at) as oldest, max(r.captured_at) as newest
+from public.snapshot_visual_reviews r
+join public.snapshots s on s.event_id=r.event_id
+join public.events ev on ev.id=s.event_id
+join public.cameras c on c.id=s.camera_id
+where coalesce(c.is_canonical,true)
+  and coalesce(ev.payload->>'source','')='periodic_snapshot'
+  and not exists (select 1 from public.restaurant_camera_profiles rp where rp.camera_id=s.camera_id and rp.enabled)
+  and ((r.status='pending' and r.next_attempt_at<=now())
+    or (r.status='failed' and r.attempts<5 and r.next_attempt_at<=now())
+    or (r.status='processing' and r.lease_until<now() and r.attempts<5))
+group by s.site_id order by stranded desc;
+```
+
+`prototype/tests/e2e_vision_claim_periodic_no_profile_pg.py` re-applies 0156 over a seeded 10-day backlog
+and checks that a fresh restaurant still from another tenant is in the first worker batch. Without the
+retirement step the first batch is four backlog rows.

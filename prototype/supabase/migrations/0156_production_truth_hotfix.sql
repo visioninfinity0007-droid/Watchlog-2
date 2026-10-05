@@ -34,6 +34,12 @@
 --    pending). The body below is production's body (prosrc md5
 --    25787ce940f1409f11c3d3ddcc3f79e6, read 2026-10-05) with only that comparison
 --    made null-safe. Signature, SECURITY DEFINER, search_path and grants unchanged.
+--    The stranded rows kept their insert-time next_attempt_at, and the claim serves
+--    the oldest next_attempt_at first (at most 4 per worker run), so releasing them
+--    would put the whole backlog (bounded only by snapshot retention) ahead of every
+--    site's fresh stills. 0156 therefore retires the rows stranded at apply time as
+--    not reviewed, in the 0118 style (failed, attempts>=5, reason recorded). Stills
+--    queued after the apply are claimed normally. Snapshots and events are untouched.
 
 -- ---------------------------------------------------------------------------
 -- 1. Known capabilities: production body + 'config_snapshot_requests'
@@ -289,3 +295,30 @@ revoke all on function public.wl_vision_claim_snapshots_v2(integer, text, boolea
   from public, anon, authenticated;
 grant execute on function public.wl_vision_claim_snapshots_v2(integer, text, boolean)
   to service_role;
+
+-- Retire the backlog the old filter stranded: every review row it would have claimed
+-- but for that filter. They are marked not reviewed (no analysis) so they cannot
+-- consume worker runs ahead of fresh work. A row already under a live lease is left
+-- alone. Raw snapshots and events remain untouched for audit/history.
+update public.snapshot_visual_reviews r
+   set status='failed',
+       attempts=greatest(r.attempts,5),
+       lease_until=null,
+       worker_id=null,
+       last_error='Skipped: periodic still of a camera without a restaurant profile, stranded before 0156; not reviewed',
+       updated_at=now()
+  from public.snapshots s
+  join public.events ev on ev.id=s.event_id
+  join public.cameras c on c.id=s.camera_id
+ where s.event_id=r.event_id
+   and coalesce(c.is_canonical,true)
+   and coalesce(ev.payload->>'source','')='periodic_snapshot'
+   and not exists (
+     select 1 from public.restaurant_camera_profiles rp
+      where rp.camera_id=s.camera_id and rp.enabled
+   )
+   and (
+     (r.status='pending' and r.next_attempt_at<=now())
+     or (r.status='failed' and r.attempts<5 and r.next_attempt_at<=now())
+     or (r.status='processing' and r.lease_until<now() and r.attempts<5)
+   );
