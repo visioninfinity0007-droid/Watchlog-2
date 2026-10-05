@@ -118,7 +118,11 @@ class IsolatedRegistrySelftest(_Site):
                      "legacy_credential_retained", "no_plaintext_in_blob",
                      "re_migration_keeps_stable_id", "second_credential_independent",
                      "runtime_loads_every_recorder", "secondary_state_is_recorder_scoped",
-                     "unbound_rollback_deletes_its_credential"):
+                     "unbound_rollback_deletes_its_credential",
+                     # first install with two recorders (WP-12)
+                     "install_second_recorder_row", "install_every_recorder_bound",
+                     "install_credentials_independent", "install_retry_reuses_the_row",
+                     "install_profiles_keyed_by_recorder"):
             self.assertTrue(body["checks"].get(name), name)
         self.assertEqual(os.environ["PROGRAMDATA"], str(self.root))
         self.assertFalse((self.data / "recorders.json").exists())

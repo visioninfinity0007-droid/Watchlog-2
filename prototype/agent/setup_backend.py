@@ -647,6 +647,23 @@ def _public_recorder_row(row: dict, *, credential_state: str = "unknown") -> dic
     }
 
 
+def _retained_event_count(local_id: str) -> int | None:
+    """Events a disabled recorder still holds on this PC, or None when unknown."""
+    path = recorder_runtime.recorder_state_dir(programdata_dir(), local_id) / "spool.sqlite"
+    if not path.exists():
+        return 0
+    try:
+        from spool import Spool
+        spool = Spool(path)
+        try:
+            return int(spool.count())
+        finally:
+            spool.close()
+    except Exception as exc:  # noqa: BLE001 — a count is display-only; unknown stays unknown
+        _setup_log(f"retained event count unavailable ({type(exc).__name__})")
+        return None
+
+
 def list_managed_recorders(config_path: Path) -> list[dict]:
     """List the local recorder registry without exposing credentials."""
     recorder_registry.migrate_legacy_singleton(config_path)
@@ -657,8 +674,39 @@ def list_managed_recorders(config_path: Path) -> list[dict]:
             credential_store.load_recorder_credential(row["local_id"])
         except SecretError:
             state = "needs_attention"
-        out.append(_public_recorder_row(row, credential_state=state))
+        public = _public_recorder_row(row, credential_state=state)
+        if not row.get("is_configured"):
+            public["retained_events"] = _retained_event_count(row["local_id"])
+        out.append(public)
     return out
+
+
+def _events_kept(count: int) -> str:
+    return (f"{count} recorded event{'s' if count != 1 else ''} from this recorder "
+            f"{'are' if count != 1 else 'is'} kept on this PC")
+
+
+def managed_recorder_state(row: dict) -> str:
+    """Manage Recorders 'State' column text for one list_managed_recorders row."""
+    if row.get("credential_state") != "available":
+        return "Needs attention"
+    if row.get("is_configured"):
+        return "Available"
+    retained = row.get("retained_events")
+    if isinstance(retained, int) and retained > 0:
+        return f"Disabled ({retained} event{'s' if retained != 1 else ''} kept on this PC)"
+    return "Disabled"
+
+
+def disabled_recorder_message(result: dict | None) -> str:
+    """What Manage Recorders says after disable_managed_recorder succeeded."""
+    message = "Recorder disabled. Historical evidence was preserved."
+    retained = (result or {}).get("retained_events")
+    if isinstance(retained, int) and retained > 0:
+        message += (f" {_events_kept(retained)} because WatchLog could not take "
+                    + ("it yet. It uploads" if retained == 1 else "them yet. They upload")
+                    + " if the recorder is re-enabled.")
+    return message
 
 
 def _activate_managed_registry_change(
@@ -1668,6 +1716,284 @@ def add_existing_site_recorder(
     }
 
 
+# --- first install with more than one recorder --------------------------------
+#
+# The first recorder is set up exactly as a single-recorder install (legacy
+# singleton store + staged continuity row). Every further recorder gets its own
+# registry row and DPAPI credential, and Setup binds them all to WatchLog before
+# the background Agent starts, so each recorder's cameras are created on that
+# recorder with the technician's names and Monitor/Ignore choices.
+
+RECORDER_CAMERA_PROFILES_NAME = "camera_profiles.json"
+RECORDER_CAMERA_PROFILES_SCHEMA = "watchlog.recorder_camera_profiles.v1"
+ANALYTICS_BOOTSTRAP_MARKER_NAME = "analytics_bootstrap_sent.json"
+
+
+def default_recorder_name(index: int) -> str:
+    """Prefilled recorder name in Setup. The first matches the registry default."""
+    return "Primary Recorder" if int(index) == 0 else f"Recorder {int(index) + 1}"
+
+
+def unused_recorder_name(names) -> str:
+    """The prefilled name for the next recorder: the next default name that no
+    recorder already chosen uses (a technician may have typed "Recorder 2")."""
+    taken = {str(name or "").strip().casefold() for name in names or []}
+    index = len(taken)
+    while default_recorder_name(index).casefold() in taken:
+        index += 1
+    return default_recorder_name(index)
+
+
+def install_recorders_problem(entries: list[dict]) -> str | None:
+    """What finalize_install would refuse about this recorder set, as the message
+    Setup shows on the camera step before Connect; None when it is acceptable."""
+    if not entries:
+        return None
+    first = entries[0]
+    try:
+        _validate_install_recorders(
+            {"address": first.get("address"), "verified_recorder": first.get("verified_recorder"),
+             "display_name": first.get("display_name")},
+            list(entries[1:]))
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def default_camera_profiles(recorder: dict | None) -> list[dict]:
+    """Connectivity-first camera choices for one verified recorder: every
+    discovered channel monitored, purpose left for the portal."""
+    return [{
+        "channel": str(camera["channel"]),
+        "name": camera.get("name") or f"Camera {camera['channel']}",
+        "purpose": "custom",
+        "monitored": True,
+        "analytics_enabled": True,
+    } for camera in ((recorder or {}).get("channels") or [])]
+
+
+def camera_rows_by_recorder(entries: list[dict]) -> list[tuple[str, str, str]]:
+    """(recorder name, channel, camera name) rows, grouped by recorder in setup
+    order. Channel numbers repeat across recorders; each row says whose it is."""
+    rows = []
+    for index, entry in enumerate(entries or []):
+        name = str(entry.get("display_name") or "").strip() or default_recorder_name(index)
+        for camera in (entry.get("verified_recorder") or {}).get("channels") or []:
+            rows.append((name, str(camera["channel"]),
+                         camera.get("name") or f"Camera {camera['channel']}"))
+    return rows
+
+
+def _entry_url(entry: dict) -> str:
+    verified = entry.get("verified_recorder") or {}
+    return str(verified.get("url") or entry.get("address") or "").strip()
+
+
+def _fingerprint(recorder: dict | None) -> str | None:
+    serial = str((recorder or {}).get("serial") or "").strip()
+    return f"serial:{serial}" if serial else None
+
+
+def find_install_duplicate(entries: list[dict], candidate: dict) -> int | None:
+    """Index of an already chosen recorder that is the same physical recorder as
+    ``candidate`` (same normalised address, or the same serial where both are known)."""
+    rows = [{
+        "local_id": str(index),
+        "url": _entry_url(entry),
+        "identity_fingerprint": _fingerprint(entry.get("verified_recorder")),
+        "is_configured": True,
+    } for index, entry in enumerate(entries or [])]
+    # The registry's own duplicate rule, so Setup and the registry agree.
+    same = recorder_registry._duplicate_of(
+        rows, _entry_url(candidate), _fingerprint(candidate.get("verified_recorder")))
+    return int(same["local_id"]) if same is not None else None
+
+
+def _validate_install_recorders(primary: dict, additional: list[dict]) -> list[dict]:
+    """Check the whole recorder set before anything is written. Returns the
+    additional entries with their display names settled."""
+    chosen = [dict(primary)]
+    out = []
+    names = {str(primary.get("display_name") or default_recorder_name(0)).strip().casefold()}
+    for index, raw in enumerate(additional, start=1):
+        entry = dict(raw or {})
+        if not str(entry.get("address") or "").strip():
+            raise ValueError("Each additional recorder needs its local address.")
+        if not str(entry.get("username") or "").strip() or not entry.get("password"):
+            raise ValueError("Each additional recorder needs its own username and password.")
+        if find_install_duplicate(chosen, entry) is not None:
+            raise ValueError(
+                "The same recorder was added twice. Remove the duplicate and try again.")
+        entry["display_name"] = (str(entry.get("display_name") or "").strip()
+                                 or default_recorder_name(index))
+        key = entry["display_name"].casefold()
+        if key in names:
+            raise ValueError("Give each recorder a different name.")
+        names.add(key)
+        chosen.append(entry)
+        out.append(entry)
+    return out
+
+
+def _verified_install_recorder(entry: dict, progress: Callable[[str], None]) -> dict:
+    """Reuse the recorder login proven on its own Login step (or prove it now)."""
+    address = str(entry["address"]).strip()
+    verified = entry.get("verified_recorder")
+    if verified:
+        recorder = dict(verified)
+        if any(key not in recorder for key in ("url", "vendor", "model", "driver", "channels")):
+            raise ValueError("WatchLog lost a recorder verification. Please test that recorder again.")
+        if discover.host_of(str(recorder["url"])) != discover.host_of(address):
+            raise ValueError("A recorder selection changed after login. Please test that recorder again.")
+        return recorder
+    progress(f"Verifying {entry.get('display_name') or 'the next recorder'}…")
+    return test_recorder(address, str(entry["username"]).strip(), entry["password"],
+                         progress=progress, hint=entry.get("hint"))
+
+
+def _stage_additional_recorder(entry: dict, recorder: dict) -> tuple[dict, bool]:
+    """Write one additional recorder's registry row and DPAPI credential.
+
+    Returns (row, added_now). A recorder this same site already has (a Retry
+    after binding, or Setup run again) is re-pointed at the new login in place,
+    keeping its local and WatchLog identity, instead of becoming a duplicate."""
+    url = str(recorder.get("url") or entry["address"]).rstrip("/")
+    fingerprint = _fingerprint(recorder)
+    username = str(entry["username"]).strip()
+    existing = recorder_registry._duplicate_of(recorder_registry.recorders(), url, fingerprint)
+    if existing is not None:
+        if existing.get("continuity_owner") or not existing.get("is_configured"):
+            # The first recorder twice, or a recorder disabled in Manage Recorders.
+            recorder_registry._reject_duplicate([existing], url, fingerprint)
+        row = recorder_registry.update_recorder_connection(
+            existing["local_id"], url=url, driver=recorder.get("driver") or "auto",
+            username=username, password=entry["password"],
+            vendor=recorder.get("vendor"), model=recorder.get("model"),
+            firmware=recorder.get("firmware"), identity_fingerprint=fingerprint)
+        if row["display_name"] != entry["display_name"]:
+            row = recorder_registry.rename_recorder(row["local_id"], entry["display_name"])
+        return row, False
+    row = recorder_registry.add_recorder(
+        display_name=entry["display_name"], url=url,
+        driver=str(recorder.get("driver") or "auto"),
+        username=username, password=entry["password"], is_primary=False,
+        vendor=recorder.get("vendor"), model=recorder.get("model"),
+        firmware=recorder.get("firmware"), identity_fingerprint=fingerprint)
+    return row, True
+
+
+def _discard_unbound(local_ids: list[str]) -> None:
+    """Best-effort rollback of recorders this run added and WatchLog never bound."""
+    for local_id in local_ids:
+        try:
+            row = recorder_registry.recorder(local_id)
+            if row is not None and not row.get("cloud_recorder_id"):
+                recorder_registry.remove_unbound_recorder(local_id)
+        except Exception as exc:  # noqa: BLE001 — report, never mask the first failure
+            _setup_log(f"unbound recorder rollback skipped ({type(exc).__name__})")
+
+
+def _write_json_file(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _save_recorder_camera_profiles(local_id: str, display_name: str,
+                                   profiles: list[dict]) -> None:
+    """Persist one recorder's camera choices, keyed by recorder (non-secret).
+
+    watchlog.ini camera_profiles_json stays the first recorder's channel-keyed
+    list for the singleton runtime; it cannot describe two recorders that both
+    have a channel 1."""
+    _write_json_file(
+        recorder_runtime.recorder_state_dir(programdata_dir(), local_id)
+        / RECORDER_CAMERA_PROFILES_NAME,
+        {"schema": RECORDER_CAMERA_PROFILES_SCHEMA, "local_id": str(local_id),
+         "display_name": display_name, "profiles": list(profiles or [])})
+
+
+class RecorderBindingUnknown(ValueError):
+    """wl_sync_recorders was sent with the further recorders, but whether WatchLog
+    committed it is unknown (no answer, a server or gateway error, or an answer that
+    names other recorders). Those recorders' local rows must be kept: WatchLog may
+    already hold a recorder for each local key, and a Retry re-sends the same keys."""
+
+
+def _binding_definitely_refused(exc: Exception) -> bool:
+    """True only for an answer saying WatchLog rolled the call back: a 4xx from the
+    RPC (a refused or failed call), not a request timeout (408)."""
+    status = getattr(exc, "status", None)
+    return (isinstance(exc, core.CloudError) and isinstance(status, int)
+            and 400 <= status < 500 and status != 408)
+
+
+def _bind_install_recorders(cloud, state: dict) -> dict:
+    """Bind every local recorder to its WatchLog recorder, as the Agent's startup
+    binding does: the continuity recorder alone first (it adopts the recorder the
+    first camera sync created), then the whole registry. Fail closed unless the
+    answer names exactly the local recorders. When the whole-registry call's outcome
+    is unknown it raises RecorderBindingUnknown, so the caller keeps the rows."""
+    def sync(payload: list[dict], unknown: type) -> dict:
+        try:
+            mapping = cloud.call("wl_sync_recorders", p_agent_id=state["agent_id"],
+                                 p_agent_key=state["agent_key"], p_recorders=payload)
+        except Exception as exc:  # noqa: BLE001
+            error = ValueError if _binding_definitely_refused(exc) else unknown
+            raise error(
+                "WatchLog could not link this site's recorders. Please try again.") from exc
+        if not isinstance(mapping, dict) or \
+                {str(k) for k in mapping} != {row["local_key"] for row in payload}:
+            raise unknown("WatchLog did not confirm this site's recorders. Please try again.")
+        recorder_registry.apply_cloud_mapping(mapping)
+        return mapping
+
+    continuity = recorder_registry.continuity_recorder()
+    if continuity is not None and not continuity.get("cloud_recorder_id"):
+        # The further recorders are not in this call, so rolling them back stays safe.
+        sync([row for row in recorder_registry.registry_cloud_descriptors()
+              if row["local_key"] == continuity["local_id"]], ValueError)
+    return sync(recorder_registry.registry_cloud_descriptors(), RecorderBindingUnknown)
+
+
+def _sync_install_recorder_cameras(cloud, state: dict, row: dict, recorder: dict,
+                                   profiles: list[dict]) -> dict:
+    """Create one recorder's cameras on that recorder, with its own choices."""
+    channels = merge_camera_config(recorder.get("channels") or [], profiles)
+    if not channels:
+        raise AgentSyncError("CAMERA_ENUMERATION_FAILED",
+            f"WatchLog could not read any camera channels from {row['display_name']}. "
+            "Check the recorder is online and try again.")
+    try:
+        mapping = cloud.call("wl_sync_recorder_cameras", p_agent_id=state["agent_id"],
+                             p_agent_key=state["agent_key"],
+                             p_recorder_id=row["cloud_recorder_id"], p_cameras=channels)
+    except core.CloudError as exc:
+        raise _classify_camera_sync(exc) from exc
+    except Exception as exc:  # noqa: BLE001 — transport/timeout
+        raise AgentSyncError("CAMERA_SYNC_FAILED",
+            "WatchLog could not reach the cloud to add the cameras. "
+            "Check the internet connection and try again.") from exc
+    wanted = {c["channel"] for c in channels}
+    missing = wanted - {str(k) for k in (mapping or {})}
+    if missing:
+        _setup_log(f"camera sync CAMERA_SYNC_PARTIAL recorder={row['local_id'][:8]} "
+                   f"created={len(wanted) - len(missing)} of {len(wanted)}")
+        raise AgentSyncError("CAMERA_SYNC_PARTIAL",
+            f"WatchLog added some but not all of {row['display_name']}'s cameras. "
+            "Please try again; if it persists, contact WatchLog support.")
+    capabilities = recorder.get("capabilities")
+    if capabilities and capabilities.get("channels"):
+        try:
+            cloud.call("wl_sync_recorder_capabilities", p_agent_id=state["agent_id"],
+                       p_agent_key=state["agent_key"],
+                       p_recorder_id=row["cloud_recorder_id"], p_capabilities=capabilities)
+        except Exception:  # noqa: BLE001 — enrichment; the Agent re-syncs it
+            pass
+    return mapping
+
+
 def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
                              password: str, prior_identity: dict | None,
                              state: dict) -> None:
@@ -1726,13 +2052,28 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                      address: str, username: str, password: str, site_type: str,
                      profiles: list[dict], progress: Callable[[str], None] | None = None,
                      hint: dict | None = None,
-                     verified_recorder: dict | None = None) -> dict:
-    """Prove local recorder + WatchLog enrollment and persist only protected secrets."""
+                     verified_recorder: dict | None = None,
+                     additional_recorders: list[dict] | None = None,
+                     primary_display_name: str | None = None) -> dict:
+    """Prove local recorder + WatchLog enrollment and persist only protected secrets.
+
+    ``additional_recorders`` (5.1) connects more recorders in the same first
+    install: each item is {address, username, password, display_name,
+    verified_recorder, profiles[, hint]}. Without it the install is the
+    single-recorder install, unchanged. ``primary_display_name`` renames the
+    first recorder when the technician gave it a name."""
     progress = progress or (lambda _message: None)
     if not public.get("supabase_url") or not public.get("supabase_publishable_key"):
         raise ValueError("This installer is missing its WatchLog public connection settings.")
     if not enrollment_code.strip():
         raise ValueError("Enter the WatchLog site code from the portal.")
+    primary_name = str(primary_display_name or "").strip() or None
+    extras = _validate_install_recorders(
+        {"address": address, "verified_recorder": verified_recorder,
+         "display_name": primary_name or default_recorder_name(0)},
+        list(additional_recorders or []),
+    )
+    multi = bool(extras)
 
     # Step 04 already authenticated the recorder. Repeating that full hardware
     # transaction in Step 06 was both redundant and a field source of false hangs:
@@ -1754,6 +2095,16 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     else:
         progress("Verifying the recorder…")
         recorder = test_recorder(address, username, password, progress=progress, hint=hint)
+    extra_recorders = []
+    chosen = [{"address": address, "verified_recorder": recorder}]
+    for entry in extras:
+        proven = _verified_install_recorder(entry, progress)
+        candidate = {"address": entry["address"], "verified_recorder": proven}
+        if find_install_duplicate(chosen, candidate) is not None:   # e.g. the same serial
+            raise ValueError(
+                "The same recorder was added twice. Remove the duplicate and try again.")
+        chosen.append(candidate)
+        extra_recorders.append(proven)
 
     # The legacy singleton store (watchlog.ini, nvr_credential.dpapi and the
     # rediscovery identity) is written before Setup can know whether an existing
@@ -1785,47 +2136,143 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         # authenticates. Never skip enrollment just because a stale agent_state.json exists.
         state = establish_identity(cloud, state_path, enrollment_code, device, progress)
 
+        if multi:
+            # More than one recorder needs the complete multi-recorder backend; on
+            # anything less the Agent would stop monitoring, so refuse up front.
+            progress("Checking multi-recorder readiness…")
+            try:
+                _require_multi_recorder_setup_contract(cloud, state)
+            except ValueError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(
+                    "WatchLog could not confirm this site is ready for more than one "
+                    "recorder. Check the internet connection and try again.") from exc
+
         # Establish the recorder registry (stable local recorder UUID + independent
         # DPAPI credential) before the background process starts. The legacy
         # singleton files are retained so the proven 5.0.27 path still boots.
         try:
             _stage_recorder_registry(config_path, recorder, username.strip(), password,
                                      prior_identity, state)
+            continuity = recorder_registry.continuity_recorder()
+            if primary_name and continuity and continuity["display_name"] != primary_name:
+                recorder_registry.rename_recorder(continuity["local_id"], primary_name)
         except recorder_registry.DuplicateRecorder:
             raise                               # customer-safe: says which action to take
         except Exception as exc:
             raise ValueError(
                 "Windows could not prepare this recorder for WatchLog multi-recorder storage."
             ) from exc
+
+        # Every further recorder: its own registry row and DPAPI credential.
+        added: list[str] = []
+        extra_rows: list[dict] = []
+        for entry, extra in zip(extras, extra_recorders):
+            progress(f"Encrypting the login for {entry['display_name']} on this PC…")
+            try:
+                row, added_now = _stage_additional_recorder(entry, extra)
+            except recorder_registry.DuplicateRecorder:
+                _discard_unbound(added)
+                raise
+            except Exception as exc:
+                _discard_unbound(added)
+                raise ValueError(
+                    f"Windows could not prepare {entry['display_name']} for WatchLog."
+                ) from exc
+            if added_now:
+                added.append(row["local_id"])
+            extra_rows.append(row)
     except BaseException:
         credential_store.restore_secret_files(legacy_store)
         raise
 
-    progress("Adding cameras to this WatchLog site…")
-    # Honor the operator's Monitor/Ignore + name choices so monitored cameras are configured
-    # immediately and ignored channels never raise a false health warning (0.4.4 P4).
-    mapping = sync_cameras(cloud, state, merge_camera_config(recorder["channels"], profiles), progress)
+    # A first recorder that WatchLog already knows (Setup run again on a site whose
+    # recorders are bound) can no longer use the single-recorder camera calls.
+    continuity = recorder_registry.continuity_recorder() if multi else None
+    rebound = bool(continuity and continuity.get("cloud_recorder_id"))
+    purposes_applied = False
+    mapping = bootstrap = None
+    try:
+        if not rebound:
+            progress("Adding cameras to this WatchLog site…")
+            # Honor the operator's Monitor/Ignore + name choices so monitored cameras are configured
+            # immediately and ignored channels never raise a false health warning (0.4.4 P4).
+            mapping = sync_cameras(cloud, state, merge_camera_config(recorder["channels"], profiles), progress)
 
-    capabilities = recorder.get("capabilities")
-    if capabilities and capabilities.get("channels"):
-        progress("Confirming camera capabilities…")
-        try:
-            cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
-                       p_agent_key=state["agent_key"], p_capabilities=capabilities)
-        except Exception:
-            pass
+            capabilities = recorder.get("capabilities")
+            if capabilities and capabilities.get("channels"):
+                progress("Confirming camera capabilities…")
+                try:
+                    cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
+                               p_agent_key=state["agent_key"], p_capabilities=capabilities)
+                except Exception:
+                    pass
 
-    if site_type or profiles:
-        progress("Applying camera purposes…")
-        try:
-            cloud.call("wl_agent_bootstrap_analytics", p_agent_id=state["agent_id"],
-                       p_agent_key=state["agent_key"], p_site_type=site_type or "custom",
-                       p_camera_profiles=profiles)
-        except Exception:
-            # The background agent will retry this bootstrap from the local
-            # config after production schema alignment. It is enrichment, not
-            # a reason to lie that recorder/enrollment failed.
-            pass
+            if site_type or profiles:
+                progress("Applying camera purposes…")
+                try:
+                    bootstrap = cloud.call(
+                        "wl_agent_bootstrap_analytics", p_agent_id=state["agent_id"],
+                        p_agent_key=state["agent_key"], p_site_type=site_type or "custom",
+                        p_camera_profiles=profiles)
+                    purposes_applied = True
+                except Exception:
+                    # The background agent will retry this bootstrap from the local
+                    # config after production schema alignment. It is enrichment, not
+                    # a reason to lie that recorder/enrollment failed.
+                    pass
+
+        if multi:
+            # wl_agent_bootstrap_analytics matches cameras by channel across the whole
+            # site. It ran above while only the first recorder's cameras existed; the
+            # Agent must not send it again once a second recorder shares channel 1.
+            _write_json_file(programdata_dir() / ANALYTICS_BOOTSTRAP_MARKER_NAME, (
+                {"site_id": state.get("site_id"), "sent_at": core.iso(core.now_utc()),
+                 "version": (bootstrap or {}).get("version"),
+                 "updated_cameras": (bootstrap or {}).get("updated_cameras", 0),
+                 "recorder_local_id": continuity["local_id"]}
+                if purposes_applied else
+                {"site_id": state.get("site_id"), "skipped": True,
+                 "reason": "multi-recorder site: channel-keyed purposes are ambiguous"}))
+
+            # Recorder-scoped calls are accepted only from the site's current WatchLog
+            # connection (the most recently seen Agent), so this PC reports in first.
+            try:
+                core.heartbeat(cloud, state, device)
+            except Exception as exc:
+                raise ValueError(
+                    "WatchLog linked the site but could not confirm the connection. Try again."
+                ) from exc
+            progress("Linking each recorder to this WatchLog site…")
+            _bind_install_recorders(cloud, state)
+            bound = {row["local_id"]: row for row in recorder_registry.recorders()}
+            mappings = {}
+            if rebound:
+                progress("Adding cameras to this WatchLog site…")
+                mappings[continuity["local_id"]] = _sync_install_recorder_cameras(
+                    cloud, state, bound[continuity["local_id"]], recorder, profiles)
+            else:
+                mappings[continuity["local_id"]] = mapping
+            for entry, extra, row in zip(extras, extra_recorders, extra_rows):
+                progress(f"Adding the cameras of {entry['display_name']}…")
+                mappings[row["local_id"]] = _sync_install_recorder_cameras(
+                    cloud, state, bound[row["local_id"]], extra,
+                    entry.get("profiles") or default_camera_profiles(extra))
+            _save_recorder_camera_profiles(continuity["local_id"],
+                                           bound[continuity["local_id"]]["display_name"],
+                                           profiles)
+            for entry, extra, row in zip(extras, extra_recorders, extra_rows):
+                _save_recorder_camera_profiles(
+                    row["local_id"], entry["display_name"],
+                    entry.get("profiles") or default_camera_profiles(extra))
+    except BaseException as exc:
+        # Roll back this run's further recorders only when WatchLog definitely does
+        # not hold them. After an unknown binding outcome they stay, with their
+        # credentials, so Retry re-sends the same local keys (no second recorder).
+        if multi and not isinstance(exc, RecorderBindingUnknown):
+            _discard_unbound(added)
+        raise
 
     progress("Confirming the WatchLog connection…")
     try:
@@ -1860,7 +2307,7 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     cleared = _clear_consumed_code(config_path)
     core.log(f"post-connect phase done "
              f"(agent_started={connected} code_cleared={cleared})")
-    return {
+    result = {
         "site_id": state["site_id"],
         "recorder_push": push,
         "agent_start": agent_start,
@@ -1870,3 +2317,22 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         "model": recorder["model"],
         "verified_against_hardware": recorder["verified_against_hardware"],
     }
+    if multi:
+        rows = {row["local_id"]: row for row in recorder_registry.recorders()}
+        installed = [continuity["local_id"]] + [row["local_id"] for row in extra_rows]
+        result["camera_count"] = sum(len(mappings[local_id]) for local_id in installed)
+        result["recorder_count"] = len([r for r in rows.values() if r.get("is_configured")])
+        # Purposes reach WatchLog only through the channel-keyed bootstrap, which is
+        # safe for the first recorder alone. The others keep theirs on this PC until
+        # WatchLog can take a purpose for one recorder's camera.
+        result["recorders"] = [{
+            "local_id": local_id,
+            "display_name": rows[local_id]["display_name"],
+            "is_primary": bool(rows[local_id].get("is_primary")),
+            "cloud_linked": bool(rows[local_id].get("cloud_recorder_id")),
+            "camera_count": len(mappings[local_id]),
+            "purposes_applied": purposes_applied and local_id == continuity["local_id"],
+        } for local_id in installed]
+        _setup_log(f"multi-recorder install recorders={len(installed)} "
+                   f"cameras={result['camera_count']} agent_started={connected}")
+    return result

@@ -193,7 +193,8 @@ def check():
     assert 'app.enhanced_cmd_run = _setup_validation_complete' in RELEASE_ENTRY
     assert '"--setup" in sys.argv' in RELEASE_ENTRY
     assert 'File "watchlog-setup-ui.exe"' in NSIS
-    gui_exec='ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --config "$INSTDIR\\watchlog.ini"\''
+    # --installer-child: NSIS ExecWaits this window, so a finished setup must close itself.
+    gui_exec='ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\\watchlog.ini"\''
     assert gui_exec in NSIS
     assert "WatchLog setup exited with code $0" in NSIS
     assert 'watchlog-agent.exe" --setup' not in NSIS
