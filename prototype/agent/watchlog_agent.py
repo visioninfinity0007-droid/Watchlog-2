@@ -912,7 +912,8 @@ def _reload_credential_if_changed(cfg) -> bool:
         return False
     try:
         _reload_credential_for_cfg(cfg)
-    except Exception as e:                              # noqa: BLE001 — keep the current login
+    except (Exception, SystemExit) as e:                # noqa: BLE001 — keep the current login
+        # (a legacy config's load_recorder_credential exits on an unreadable store)
         log(f"recorder credential changed in Setup but could not be read yet: {type(e).__name__}")
         return False
     cfg.credential_generation_seen = generation

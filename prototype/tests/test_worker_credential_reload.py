@@ -125,5 +125,31 @@ def test_the_adopted_single_recorder_config_keeps_its_login_generation():
     assert process_cfg.credential_generation_seen == "g-registry"
 
 
+def test_a_legacy_site_keeps_its_login_when_the_new_one_cannot_be_read(monkeypatch):
+    """A recorder-less (5.0.x) config reloads through Config.load_recorder_credential, which
+    raises SystemExit on an unreadable store: that must not stop health or recovery."""
+    generations = iter(["g1", "g2", "g2"])
+    monkeypatch.setattr(core, "_credential_generation_for_cfg", lambda _cfg: next(generations))
+    monkeypatch.setattr(core, "log", lambda _m: None)
+    readable = {"ok": False}
+
+    class LegacyCfg:
+        nvr_username, nvr_password = "old-user", "old-pw"
+
+        def load_recorder_credential(self):
+            if not readable["ok"]:
+                raise SystemExit("FATAL: the recorder credential could not be read")
+            self.nvr_username, self.nvr_password = "new-user", "new-pw"
+
+    cfg = LegacyCfg()
+    assert core._reload_credential_if_changed(cfg) is False      # baseline g1
+    assert core._reload_credential_if_changed(cfg) is False      # g2 unreadable: kept
+    assert (cfg.nvr_username, cfg.nvr_password) == ("old-user", "old-pw")
+    assert cfg.credential_generation_seen == "g1", "retried next cycle"
+    readable["ok"] = True
+    assert core._reload_credential_if_changed(cfg) is True
+    assert (cfg.nvr_username, cfg.nvr_password) == ("new-user", "new-pw")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
