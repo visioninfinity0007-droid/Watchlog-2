@@ -1499,6 +1499,7 @@ declare
   v_agent public.agents;
   v_out jsonb;
   v_singleton boolean;
+  v_configured_channels jsonb;
 begin
   v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
   if v_agent.id is null then
@@ -1526,12 +1527,34 @@ begin
      and r.site_id=v_agent.site_id
      and r.is_configured;
 
+  -- Deployed 5.0.x Agents open legacy intervals with no cameras: a whole-site
+  -- gap. On a one-recorder site that gap covers every configured camera of
+  -- the recorder (an unconfigured slot has no camera to recover, 0085), so
+  -- such a row is handed out with those channels. A recorder-aware Agent
+  -- closes a claim without channels as unrecoverable without reading the
+  -- archive, so while the recorder has no configured camera a camera-less
+  -- legacy row is not claimed here at all: it stays pending for a later
+  -- claim (or a legacy Agent) instead of getting a false final status.
+  select jsonb_agg(cm.channel order by cm.channel)
+    into v_configured_channels
+    from public.cameras cm
+   where cm.tenant_id=v_agent.tenant_id
+     and cm.site_id=v_agent.site_id
+     and cm.recorder_id=p_recorder_id
+     and cm.is_configured;
+
   with due as (
     select id
       from public.recovery_intervals
      where (
          recorder_id=p_recorder_id
-         or (v_singleton and recorder_id is null)
+         or (
+           v_singleton and recorder_id is null
+           and (
+             coalesce(cardinality(cameras),0)>0
+             or v_configured_channels is not null
+           )
+         )
        )
        and tenant_id=v_agent.tenant_id
        and site_id=v_agent.site_id
@@ -1564,11 +1587,16 @@ begin
         'id',id,'recorder_id',recorder_id,
         'started_at',started_at,'ended_at',ended_at,
         'cameras',to_jsonb(cameras),
-        'channels',coalesce((
-          select jsonb_agg(cm.channel order by cm.channel)
-            from public.cameras cm
-           where cm.id=any(claimed.cameras)
-        ),'[]'::jsonb),
+        'channels',case
+          when claimed.recorder_id is null
+               and coalesce(cardinality(claimed.cameras),0)=0
+            then coalesce(v_configured_channels,'[]'::jsonb)
+          else coalesce((
+            select jsonb_agg(cm.channel order by cm.channel)
+              from public.cameras cm
+             where cm.id=any(claimed.cameras)
+          ),'[]'::jsonb)
+        end,
         'checkpoint',checkpoint,'attempts',attempts
       )
       order by ended_at desc
