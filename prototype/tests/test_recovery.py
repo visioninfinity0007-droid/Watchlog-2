@@ -452,20 +452,157 @@ class DeepRecoveryRun(unittest.TestCase):
         self.assertEqual(out[0]["status"], "partial")
         self.assertEqual(events, [])
 
-    def test_partial_when_only_ai_supported(self):
-        # events unsupported but segments supported -> partial (recovered SOME, not all sources)
-        class OnlySegments(DeepArchiveDriver):
-            def historical_capability(self):
-                return {"events": "unsupported", "segments": "supported", "snapshots": "unsupported"}
+    def _footage_only(self, segments, frame_provider, **kw):
         cloud = FakeCloud([interval()])
         events = []
-        runner = recovery.RecoveryRunner(cloud, "agent", "key", OnlySegments(self._segments()),
+        runner = recovery.RecoveryRunner(cloud, "agent", "key", FootageOnlyArchive(segments),
                                          events.append, chunk_seconds=3600, detector=_FakeDetector(),
-                                         frame_provider=lambda d, c, ts: b"J", log=lambda *a: None)
+                                         frame_provider=frame_provider, log=lambda *a: None, **kw)
+        return runner, cloud, events
+
+    def test_footage_only_recorder_is_judged_by_its_footage(self):
+        # MNVR-061 release gate. A recorder with searchable footage but no searchable event log
+        # (Hikvision, Dahua) reports events 'unsupported' and segments 'supported'. The event
+        # replay it cannot offer is not a part of the gap that went unrecovered, exactly as the
+        # absent footage of an event-only recorder (segments 'unsupported') is not: footage
+        # examined across the whole gap is a recovered interval. Before, this ended 'partial',
+        # which moved recovered Hikvision time to UNVERIFIED once the capability became truthful.
+        runner, cloud, events = self._footage_only(self._segments(), lambda d, c, ts: b"J")
         out = runner.run_once(limit=1)
-        self.assertEqual(out[0]["status"], "partial")
+        self.assertEqual(out[0]["status"], "recovered")
+        self.assertEqual(cloud.completes[-1]["p_status"], "recovered")
+        self.assertEqual(len(events), 3)
         self.assertTrue(all(e["source"] == "recovered" for e in events))
 
+    def test_footage_only_recorder_whose_frames_fail_is_never_recovered(self):
+        runner, cloud, events = self._footage_only(self._segments(), lambda d, c, ts: None)
+        out = runner.run_once(limit=1)
+        self.assertEqual(out[0]["status"], "unrecoverable")
+        self.assertEqual(events, [])
+
+    def test_footage_only_recorder_with_no_footage_in_the_gap_is_not_recovered(self):
+        # The archive holds no recording of the gap: nothing was examined, so nothing may be
+        # called recovered (and nothing was recovered, so it is not partial either).
+        runner, cloud, events = self._footage_only([], lambda d, c, ts: b"J")
+        out = runner.run_once(limit=1)
+        self.assertEqual(out[0]["status"], "unrecoverable")
+        self.assertEqual(cloud.completes[-1]["p_status"], "unrecoverable")
+        self.assertEqual(cloud.completes[-1]["p_recovered_count"], 0)
+
+    def test_footage_only_hours_without_recordings_do_not_block_a_recovered_gap(self):
+        # Footage exists only in the first hour (motion recording). The search of every hour was
+        # complete and every recording in the gap was examined.
+        runner, cloud, events = self._footage_only(self._segments()[:1], lambda d, c, ts: b"J")
+        out = runner.run_once(limit=1)
+        self.assertEqual(out[0]["status"], "recovered")
+        self.assertEqual(len(events), 1)
+
+    def test_an_unreadable_hour_before_a_yield_is_not_forgotten(self):
+        # Claim 1 cannot decode the first hour, then yields to live work; claim 2 recovers the
+        # rest. The first hour was never examined, so the interval is partial, not recovered.
+        first_hour = T0 + timedelta(hours=1)
+        live = iter([False, False, True])
+        cloud = FakeCloud([interval()])
+        events = []
+        runner = recovery.RecoveryRunner(
+            cloud, "agent", "key", DeepArchiveDriver(self._segments()), events.append,
+            chunk_seconds=3600, live_pending=lambda: next(live, False),
+            frame_provider=lambda d, c, ts: None if ts < first_hour else b"J",
+            log=lambda *a: None)
+        first = runner.run_once(limit=1)
+        self.assertTrue(first[0]["yielded"])
+        second = runner.run_once(limit=1)
+        self.assertEqual(second[0]["status"], "partial")
+        self.assertEqual(cloud.completes[-1]["p_status"], "partial")
+        self.assertEqual(len(events), 2)
+
+    def test_a_recovered_hour_before_a_yield_is_not_forgotten(self):
+        # Claim 1 recovers the only recording (first hour), then yields; the hours claim 2 reads
+        # hold no recording. Footage of the gap was examined, so the interval is recovered.
+        live = iter([False, False, True])
+        runner, cloud, events = self._footage_only(self._segments()[:1], lambda d, c, ts: b"J",
+                                                   live_pending=lambda: next(live, False))
+        self.assertTrue(runner.run_once(limit=1)[0]["yielded"])
+        self.assertEqual(runner.run_once(limit=1)[0]["status"], "recovered")
+        self.assertEqual(len(events), 1)
+
+    def _two_claims(self, frame_provider):
+        """Claim 1: channel 3's search fails, so the claim backs off from the first hour after
+        channel 1 was read. Claim 2 reads the whole interval again with channel 3 answering."""
+        class Flaky(DeepArchiveDriver):
+            claim = 1
+
+            def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+                if self.claim == 1 and str(channel) == "3":
+                    raise ConnectionError("recorder stopped answering")
+                return super().enumerate_historical_events(channel, start, end, cursor, limit)
+
+        drv = Flaky(self._segments())
+        iv = interval()
+        iv["cameras"] = [CAM1, CAM3]
+        cloud = FakeCloud([iv])
+        runner = recovery.RecoveryRunner(
+            cloud, "agent", "key", drv, [].append, chunk_seconds=3600,
+            camera_channels={CAM1: "1", CAM3: "3"},
+            frame_provider=lambda d, c, ts: frame_provider(drv.claim, c), log=lambda *a: None)
+        self.assertEqual(runner.run_once(limit=1)[0]["status"], "in_progress")
+        self.assertEqual(cloud.completes[-1]["p_checkpoint"]["cursor"], T0.isoformat())
+        drv.claim = 2
+        return runner.run_once(limit=1)[0]["status"]
+
+    def test_a_chunk_read_again_after_a_failed_read_is_judged_by_its_second_read(self):
+        # Channel 1's frames fail on claim 1 and decode on claim 2: the hours read again are
+        # judged by that second read, not stuck as missed.
+        self.assertEqual(self._two_claims(lambda claim, ch: b"J" if claim == 2 else None),
+                         "recovered")
+
+    def test_samples_whose_frames_failed_are_tried_again_not_taken_as_recovered(self):
+        # Channel 1's frames never decode. Its failed samples are not "already recovered" on the
+        # claim that reads them again, so the interval is never called recovered.
+        self.assertEqual(self._two_claims(lambda claim, ch: None if ch == "1" else b"J"),
+                         "partial")
+
+    def test_events_sent_before_a_scan_stopped_short_make_the_interval_partial(self):
+        # A search too large to page (Dahua) serves the rows it read, then ends 'partial'. The
+        # events it already sent are recovered, the rest of the window was not read.
+        class StopsShort(backfill.ReferenceArchiveDriver):
+            def enumerate_historical_events(self, channel, start, end, cursor=None, limit=500):
+                if cursor:
+                    return {"status": "partial", "events": [], "next_cursor": None}
+                page = super().enumerate_historical_events(channel, start, end, None, limit)
+                return {**page, "next_cursor": "1"}
+
+        cloud = FakeCloud([interval(hours=1)])
+        events = []
+        out = recovery.RecoveryRunner(cloud, "agent", "key", StopsShort(archive_events()),
+                                      events.append, chunk_seconds=3600,
+                                      log=lambda *a: None).run_once(limit=1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(out[0]["status"], "partial")
+        self.assertEqual(cloud.completes[-1]["p_recovered_count"], 1)
+
+
+class FrameBudget(unittest.TestCase):
+    def test_an_interval_whose_frame_budget_ran_out_is_partial(self):
+        # Two recordings in the first hour and a budget of one frame per chunk: the second
+        # recording of that hour is never examined (MNVR-062 verification: it was 'recovered').
+        segs = [{"start": (T0 + timedelta(minutes=m)).isoformat(),
+                 "end": (T0 + timedelta(minutes=m + 2)).isoformat(), "id": f"S{m}"}
+                for m in (10, 40)]
+        cloud = FakeCloud([interval(hours=1)])
+        events = []
+        out = recovery.RecoveryRunner(cloud, "agent", "key", FootageOnlyArchive(segs),
+                                      events.append, chunk_seconds=3600, ai_max_frames=1,
+                                      frame_provider=lambda d, c, ts: b"J",
+                                      log=lambda *a: None).run_once(limit=1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(out[0]["status"], "partial")
+
+
+class FootageOnlyArchive(DeepArchiveDriver):
+    """Searchable recorded footage, no searchable event log (the vendor archive shape)."""
+    def historical_capability(self):
+        return {"events": "unsupported", "segments": "supported", "snapshots": "unsupported"}
 
 
 RECORDER_IP = "192.0.2.64"

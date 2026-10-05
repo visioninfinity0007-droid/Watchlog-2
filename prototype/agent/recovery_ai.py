@@ -38,6 +38,7 @@ except ImportError:                                   # pragma: no cover - path 
     import backfill
 
 SUPPORTED, UNSUPPORTED, UNKNOWN = backfill.SUPPORTED, backfill.UNSUPPORTED, backfill.UNKNOWN
+PARTIAL = "partial"                                   # some of the window examined, the rest not
 RECOVERED_SOURCE = "recovered"                        # AI over recovered footage (stronger than event replay)
 PROVENANCE_LINE = "Recovered from recorder archive (WatchLog analysis of historical footage)"
 DEFAULT_FRAME_CLIP_SECONDS = 6                        # bounded clip length to sample one frame from
@@ -50,8 +51,8 @@ KEY_FRAME_SLACK_SECONDS = 10
 
 def _as_dt(v) -> datetime:
     """A zone-aware datetime, so archive times compare with the recovery window. A time without a
-    zone (Dahua mediaFileFind answers bare wall-clock strings) is read as UTC; turning recorder
-    local time into UTC is the archive driver's job."""
+    zone is read as UTC; turning recorder local time into UTC is the archive driver's job (the
+    Dahua archive returns its segment times as UTC on the agent clock)."""
     if not isinstance(v, datetime):
         v = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
@@ -422,7 +423,9 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
     Enumerates recorded segments (bounded, cursored, deduped via ``seen``), retrieves a representative
     historical frame per new segment, runs the detector, and emits recovered-intelligence events via
     ``on_event``. Returns a truthful summary. Never blocks or fabricates; unsupported archive =>
-    status is reported verbatim and nothing is recovered.
+    status is reported verbatim and nothing is recovered. A pass that the frame budget or a
+    cut-short search stopped before the end of the window is 'partial', with what it recovered
+    counted.
     """
     cap = (driver.historical_capability() or {}).get("segments", UNKNOWN)
     if cap != SUPPORTED:
@@ -467,9 +470,17 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                     sample_iso = _iso(sample_ts)
                     key = f"ai:{base_id}:{sample_iso}"
                     if key in seen:
-                        duplicates += 1
+                        duplicates += 1             # recovered by an earlier pass
                         continue
-                    seen.add(key)
+                    if max_frames is not None and frames >= max_frames:
+                        # The frame budget is spent while footage of the window is still
+                        # unexamined: what was recovered stands, the window is not recovered.
+                        return {"status": PARTIAL, "recovered": recovered,
+                                "activity": activity, "snapshots": snapshots,
+                                "frames": frames, "no_frame": no_frame,
+                                "attempted": attempted, "duplicates": duplicates,
+                                "provenance": RECOVERED_SOURCE, "stopped_at_limit": True,
+                                "reason": "the frame budget ran out before the window was examined"}
 
                     attempted += 1
                     frame = provider(driver, channel, sample_ts, seg.get("start"))
@@ -477,8 +488,11 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                         detector, frame, channel=channel, ts=sample_ts,
                         device_event_id=f"{base_id}:{sample_iso}", segment=seg_window)
                     if status == "no_frame":
+                        # Not examined: a later pass over this window tries the sample again
+                        # instead of taking it as already recovered.
                         no_frame += 1
                         continue
+                    seen.add(key)
 
                     frames += 1
                     recovered += 1
@@ -488,14 +502,6 @@ def backfill_intelligence(driver, detector, channel, start, end, *, seen=None, o
                         snapshots += 1
                     if on_event:
                         on_event(event)
-
-                    if max_frames is not None and frames >= max_frames:
-                        return {"status": SUPPORTED, "recovered": recovered,
-                                "activity": activity, "snapshots": snapshots,
-                                "frames": frames, "no_frame": no_frame,
-                                "attempted": attempted, "duplicates": duplicates,
-                                "provenance": RECOVERED_SOURCE,
-                                "stopped_at_limit": True}
 
             cursor = res.get("next_cursor")
             if not cursor:

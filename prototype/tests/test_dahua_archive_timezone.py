@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dahua_fake_recorder import (  # noqa: E402
     JPEG, FakeCloud, FakeDahua, FakeRecorder, continuous_files, local, pinned_datetime)
-import backfill  # noqa: E402
 import dahua_archive as da  # noqa: E402
 import recovery  # noqa: E402
 import recovery_ai  # noqa: E402
@@ -85,11 +84,14 @@ class Utc5Recorder(unittest.TestCase):
         res = da.enumerate_historical_events(self.drv, "1", G0, G1)
         self.assertEqual(res["events"][1]["device_event_id"], "/mnt/dvr/20261004130000.dav")
 
-    def test_backfill_device_ts_is_utc(self):
+    def test_recovered_device_ts_is_utc(self):
+        # The footage pass samples both gap files (12:30 and 13:00 local) every 5 minutes.
         out = []
-        res = backfill.backfill_events(self.drv, "1", G0, G1, on_event=out.append)
+        res = recovery_ai.backfill_intelligence(self.drv, None, "1", G0, G1, on_event=out.append,
+                                                frame_provider=lambda drv, ch, ts: JPEG)
         self.assertEqual(res["status"], "supported")
-        self.assertEqual(sorted(aware(e["device_ts"]) for e in out), [utc(7, 30), utc(8, 0)])
+        self.assertEqual(sorted(aware(e["device_ts"]) for e in out),
+                         [utc(7, 30) + timedelta(minutes=5 * i) for i in range(12)])
 
     def test_visual_recovery_samples_the_gap_footage(self):
         out = []

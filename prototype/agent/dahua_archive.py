@@ -50,6 +50,14 @@ CIVIL_UTC_OFFSETS_MINUTES = (
     720, 765, 780, 825, 840)
 AGENT_CLOCK, RECORDER_CLOCK = "agent", "recorder"
 
+# HTTP answers that mean "busy or failing right now": worth asking again later.
+TRANSIENT_HTTP = (408, 429)
+
+
+class RecorderBusy(DriverError):
+    """The recorder answered with a transient HTTP error (5xx, 408, 429): retry later."""
+
+
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
 _FOUND_RE = re.compile(r"^\s*found\s*=\s*(\d+)", re.IGNORECASE | re.MULTILINE)
 _TIME_FORMATS = (
@@ -75,6 +83,11 @@ def _request(driver: DahuaDriver, path: str, *, params=None, stream=False, timeo
 
     if response.status_code == 401:
         driver.s.auth = HTTPBasicAuth(driver.username, driver.password)
+        # A refused streamed response (loadfile) holds its recorder session open until closed.
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001 — closing must not mask the retry
+            pass
         try:
             response = driver.s.get(
                 url,
@@ -94,7 +107,9 @@ def _request(driver: DahuaDriver, path: str, *, params=None, stream=False, timeo
             detail = response.text[:160]
         except Exception:  # noqa: BLE001
             detail = ""
-        raise DriverError(f"{url}: HTTP {response.status_code} {detail}".strip())
+        transient = response.status_code >= 500 or response.status_code in TRANSIENT_HTTP
+        raise (RecorderBusy if transient else DriverError)(
+            f"{url}: HTTP {response.status_code} {detail}".strip())
     return response
 
 
@@ -117,7 +132,9 @@ def _parse_device_clock(text: str) -> datetime:
 
     Dahua CGI commonly returns ``result=YYYY-MM-DD HH:MM:SS``. A few firmware
     families use a different key or the bare value, so all values are inspected.
-    We intentionally do not guess if no supported timestamp is present.
+    A value that names its UTC offset ("15:00:00+05:00") still gives the wall
+    time the recorder stamps its recordings with, so the offset is dropped, not
+    applied. We intentionally do not guess if no supported timestamp is present.
     """
     raw = str(text or "").strip()
     candidates: list[str] = []
@@ -128,9 +145,7 @@ def _parse_device_clock(text: str) -> datetime:
     for value in candidates:
         parsed = _parse_time(value)
         if parsed is not None:
-            if parsed.tzinfo is not None:
-                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-            return parsed
+            return parsed.replace(tzinfo=None)
     raise DriverError("recorder current time was not parseable; refusing ambiguous archive request")
 
 
@@ -432,10 +447,12 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
 
 
 def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor=None, limit: int = 500) -> dict:
-    """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end) become
-    recoverable intelligence (each recorded segment is a recovered evidence window). Honest
-    status: an unreachable/ambiguous recorder returns 'unknown' (never a fabricated 'supported'
-    with empty data, and never masquerading as live). Read-only.
+    """Recovery enumeration: the recorder's ARCHIVE segments overlapping [start, end), for
+    recovery's footage backfill (each recorded segment is a recovered evidence window; the rows are
+    footage, not recorder events). Honest status, never a fabricated 'supported' with empty data
+    and never masquerading as live: a refused login or an ambiguous clock/search answer returns
+    'unknown'; an unreachable or busy recorder raises (NvrUnreachable / RecorderBusy), so the
+    caller keeps the window retryable instead of ending it on one failed attempt. Read-only.
 
     ``start``/``end`` are agent-clock UTC. Segment times come back as ISO-8601 UTC on the agent
     clock: recorder wall time minus the offset from the same clock reading that built the search
@@ -473,7 +490,9 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
                 "channel": str(channel),
                 "segment": {"start": st, "end": et, "path": path},
             })
-    except (NvrUnreachable, NvrAuthFailed):
+    except (NvrUnreachable, RecorderBusy):
+        raise                       # transient: the same search may well succeed later
+    except NvrAuthFailed:
         return {"status": "unknown", "events": [], "next_cursor": None}
     except DriverError:
         # An ambiguous clock/search response failed closed upstream — unknown, not unsupported.
@@ -485,8 +504,10 @@ def enumerate_historical_events(driver: DahuaDriver, channel, start, end, cursor
 
 def historical_capability(driver: DahuaDriver = None) -> dict:
     """Dahua archive: segment enumeration + bounded clip retrieval are supported (validated on the
-    Cooper-I pilot path); snapshot-at-timestamp is not exposed on the validated path."""
-    return {"events": "supported", "snapshots": "unsupported", "segments": "supported"}
+    Cooper-I pilot path); snapshot-at-timestamp is not exposed on the validated path. The search
+    answers with recording files only: a recording segment is footage, not a recorder event, and
+    the recorder's own event log is not searched, so historical events are unsupported."""
+    return {"events": "unsupported", "snapshots": "unsupported", "segments": "supported"}
 
 
 ARCHIVE_PROOF_WINDOW = 1800          # default recent window (30 min) for a setup-time archive proof
@@ -571,4 +592,4 @@ def install() -> None:
 
 __all__ = ["find_recordings", "has_recording", "get_clip", "enumerate_historical_events",
            "historical_capability", "prove_recorder_archive", "ARCHIVE_PROOF_WINDOW", "install",
-           "AGENT_CLOCK", "RECORDER_CLOCK"]
+           "AGENT_CLOCK", "RECORDER_CLOCK", "RecorderBusy"]

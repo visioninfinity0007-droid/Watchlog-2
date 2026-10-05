@@ -24,6 +24,7 @@ from xml.sax.saxutils import escape
 
 import requests
 from requests.auth import HTTPBasicAuth
+from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
 from drivers.hikvision import HikvisionDriver, HIKVISION_HTTP_LOCK
@@ -31,6 +32,7 @@ from drivers.hikvision import HikvisionDriver, HIKVISION_HTTP_LOCK
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 SEARCH_LIMIT = 40
 DOWNLOAD_TIMEOUT = (5, 30)
+READ_SIZE = 64 * 1024                # most bytes one download read asks for
 CLIP_TOTAL_SECONDS = 90
 CLIP_LOCK_WAIT_SECONDS = 120
 MAX_DOWNLOAD_CANDIDATES = 2
@@ -328,12 +330,32 @@ def enumerate_historical_events(driver: HikvisionDriver, channel, start, end,
     return {"status": "supported", "events": events, "next_cursor": nxt}
 
 
+def _body_reads(response):
+    """Yield a streamed body one read at a time, each read returning whatever has arrived.
+
+    requests' iter_content blocks until a whole chunk has arrived, so a slow stream would reach
+    the deadline check only once per chunk. urllib3's read1 returns after at most one socket read,
+    and a socket read waits at most the read timeout. A urllib3 without read1 gets READ_SIZE chunks.
+    """
+    read1 = getattr(getattr(response, "raw", None), "read1", None)
+    if not callable(read1):
+        yield from response.iter_content(chunk_size=READ_SIZE)
+        return
+    while True:
+        chunk = read1(READ_SIZE, decode_content=True)
+        if not chunk:
+            return
+        yield chunk
+
+
 def _read_download_response(response, *, deadline=None) -> bytes:
+    """Read a streamed download within the clip's total deadline, checked after every read: a
+    download that keeps trickling data never outlives the budget by more than one read timeout."""
     try:
         chunks = []
         total = 0
         try:
-            for chunk in response.iter_content(chunk_size=256 * 1024):
+            for chunk in _body_reads(response):
                 if deadline is not None and time.monotonic() >= deadline:
                     raise ClipTimedOut(detail="budget spent during transfer")
                 if not chunk:
@@ -342,9 +364,10 @@ def _read_download_response(response, *, deadline=None) -> bytes:
                 if total > MAX_CLIP_BYTES:
                     raise ClipTooLarge(detail="transfer over the byte cap")
                 chunks.append(chunk)
-        except (requests.RequestException, OSError) as error:
-            # A stall, reset or truncated body mid-transfer. requests names the recorder
-            # address in these messages, so only the error type is kept.
+        except (requests.RequestException, OSError, Urllib3Error) as error:
+            # A stall, reset or truncated body mid-transfer. requests and urllib3 name the
+            # recorder address in these messages, so only the error type is kept. read1 reads
+            # below requests, so urllib3's errors arrive unwrapped.
             raise ClipUnreachable(detail=f"transfer broke: {type(error).__name__}") from error
         data = b"".join(chunks)
         if not data:

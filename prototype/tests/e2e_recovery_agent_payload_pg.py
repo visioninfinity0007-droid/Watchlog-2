@@ -9,6 +9,9 @@ p_cameras parameter is uuid[]), and the claimed interval must be read by recorde
 The 5.0.27 payload (recorder channel numbers in p_cameras) is replayed first as a control: the
 database rejects it with 22P02, which is why no interval was ever opened.
 
+A claimed interval whose recorder archive cannot be opened (recorder offline) is handed back through
+the real wl_complete_recovery as pending, its checkpoint untouched, and is claimed and read again.
+
     python prototype/tests/e2e_recovery_agent_payload_pg.py
 """
 from __future__ import annotations
@@ -30,6 +33,7 @@ import psycopg  # noqa: E402
 
 import backfill  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+from drivers.base import NvrUnreachable  # noqa: E402
 
 KEY = "recov-payload-e2e-key"
 CHANNELS = [{"channel": "1", "name": "Gate"}, {"channel": "3", "name": "Yard"}]
@@ -135,34 +139,65 @@ def run() -> int:
                 step(error.code == "22P02", "channel numbers in p_cameras are rejected (22P02)", str(error.code))
 
             archive = _Archive()
-            saved = core.open_archive_driver, core.log
-            core.open_archive_driver, core.log = (lambda _cfg: (archive, None)), (lambda *_a: None)
             tmp = tempfile.TemporaryDirectory()          # the worker keeps last_live while live
-            try:
-                cfg = type("Cfg", (), dict(
-                    recovery_enabled=True, recovery_seconds=300, recovery_ai_enabled=False,
-                    last_live_path=Path(tmp.name) / "last_live.json", recovery_threshold_seconds=180,
-                    recovery_chunk_seconds=3600, recovery_throttle_seconds=0.0,
-                    recovery_live_backlog=500, recovery_ai_max_frames=40,
-                    recovery_snapshot_seconds=300))()
-                core.recovery_worker(cfg, state, cloud, _OneCycle(), _Spool(gap), CHANNELS,
-                                     {"recorder_live_at": time.monotonic()})
-            finally:
-                core.open_archive_driver, core.log = saved
-                tmp.cleanup()
+            cfg = type("Cfg", (), dict(
+                recovery_enabled=True, recovery_seconds=300, recovery_ai_enabled=False,
+                last_live_path=Path(tmp.name) / "last_live.json", recovery_threshold_seconds=180,
+                recovery_chunk_seconds=3600, recovery_throttle_seconds=0.0,
+                recovery_live_backlog=500, recovery_ai_max_frames=40,
+                recovery_snapshot_seconds=300))()
 
-            opens = [p for fn, p in cloud.calls if fn == "wl_open_recovery_interval"][1:]
-            cams = dict(conn.execute("select channel, id::text from cameras where site_id=%s",(sid,)).fetchall())
-            synced = sorted(v for v in (cams.get("1"), cams.get("3")) if v)
-            step(len(synced) == 2 and len(opens) == 1 and sorted(opens[0]["p_cameras"]) == synced,
-                 "the Agent opens the interval with the synced camera UUIDs", str(opens and opens[0]["p_cameras"]))
-            row = conn.execute("select cameras::text[], status, attempts from recovery_intervals where site_id=%s",(sid,)).fetchone()
-            step(row is not None and len(synced) == 2 and sorted(row[0]) == synced,
-                 "recovery_intervals.cameras holds those camera UUIDs", str(row and row[0]))
-            step(set(archive.channels) == {"1", "3"},
-                 "the claimed interval is read by recorder channel, never by UUID", str(sorted(set(archive.channels))))
-            step(row is not None and row[1] == "recovered" and row[2] == 1,
-                 "the interval completes as recovered after one claim", str(row and row[1:]))
+            def cycle(open_archive, spool_gap=None, holder=None):
+                saved = core.open_archive_driver, core.log
+                core.open_archive_driver, core.log = open_archive, (lambda *_a: None)
+                try:
+                    core.recovery_worker(cfg, state, cloud, _OneCycle(), _Spool(spool_gap), CHANNELS,
+                                         holder if holder is not None
+                                         else {"recorder_live_at": time.monotonic()})
+                finally:
+                    core.open_archive_driver, core.log = saved
+
+            try:
+                cycle(lambda _cfg: (archive, None), gap)
+
+                opens = [p for fn, p in cloud.calls if fn == "wl_open_recovery_interval"][1:]
+                cams = dict(conn.execute("select channel, id::text from cameras where site_id=%s",(sid,)).fetchall())
+                synced = sorted(v for v in (cams.get("1"), cams.get("3")) if v)
+                step(len(synced) == 2 and len(opens) == 1 and sorted(opens[0]["p_cameras"]) == synced,
+                     "the Agent opens the interval with the synced camera UUIDs", str(opens and opens[0]["p_cameras"]))
+                row = conn.execute("select cameras::text[], status, attempts from recovery_intervals where site_id=%s",(sid,)).fetchone()
+                step(row is not None and len(synced) == 2 and sorted(row[0]) == synced,
+                     "recovery_intervals.cameras holds those camera UUIDs", str(row and row[0]))
+                step(set(archive.channels) == {"1", "3"},
+                     "the claimed interval is read by recorder channel, never by UUID", str(sorted(set(archive.channels))))
+                step(row is not None and row[1] == "recovered" and row[2] == 1,
+                     "the interval completes as recovered after one claim", str(row and row[1:]))
+
+                # A second gap, claimed while the recorder is offline: handed back as pending.
+                gap2 = ((G0 + timedelta(hours=2)).isoformat(), (G0 + timedelta(hours=3)).isoformat())
+                cloud.call("wl_open_recovery_interval", p_agent_id=state["agent_id"], p_agent_key=KEY,
+                           p_started_at=gap2[0], p_ended_at=gap2[1], p_cameras=synced)
+
+                def offline(_cfg):
+                    raise NvrUnreachable("recorder offline")
+
+                for _ in range(3):                       # as many claims as the failed-read budget
+                    cycle(offline, holder={"recorder_live_at": 0.0})
+                q = """select status, attempts, checkpoint, detail from recovery_intervals
+                        where site_id=%s and started_at=%s"""
+                row2 = conn.execute(q, (sid, gap2[0])).fetchone()
+                step(row2 is not None and row2[0] == "pending" and row2[1] == 3
+                     and "errors" not in (row2[2] or {}) and (row2[2] or {}).get("cursor") is None
+                     and "reason" not in (row2[3] or {}),
+                     "an offline recorder hands each claim back as pending, checkpoint untouched",
+                     str(row2))
+                cycle(lambda _cfg: (archive, None))
+                row2 = conn.execute(q, (sid, gap2[0])).fetchone()
+                step(row2 is not None and row2[0] == "recovered" and row2[1] == 4,
+                     "the handed-back interval is claimed and read once the recorder answers",
+                     str(row2 and row2[:2]))
+            finally:
+                tmp.cleanup()
         finally:
             conn.rollback()
     ok = sum(1 for x in STEPS if x); print(f"\n  {ok}/{len(STEPS)} steps passed")

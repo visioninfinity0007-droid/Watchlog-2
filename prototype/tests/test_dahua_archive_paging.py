@@ -5,6 +5,8 @@ Before the fix find_recordings asked findNextFile once for at most 100 files and
 enumerate_historical_events returned next_cursor=None, so a channel-hour with 140 files reported
 SUPPORTED with 40 files never examined, and recovery could mark the interval recovered. Now every
 page is read; a search too large to page within the hard cap is reported partial, never supported.
+The files reach recovery through its footage pass (recovery_ai.backfill_intelligence): recording
+files are footage, not recorder events, so event replay never sees them.
 
 Field-only: whether any deployed recorder produces more than 100 files per channel-hour.
 """
@@ -19,7 +21,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dahua_fake_recorder import JPEG, FakeCloud, FakeDahua, FakeRecorder, local, pinned_datetime  # noqa: E402
-import backfill  # noqa: E402
 import dahua_archive as da  # noqa: E402
 import recovery  # noqa: E402
 import recovery_ai  # noqa: E402
@@ -45,6 +46,17 @@ class Paging(unittest.TestCase):
     def finder_pages(self):
         return [int(c[1]["count"]) for c in self.rec.calls_to("mediaFileFind.cgi", "findNextFile")]
 
+    def recover_footage(self, **kw):
+        """Recovery's footage pass over the window: one frame per (20 s) file."""
+        out = []
+        res = recovery_ai.backfill_intelligence(self.drv, None, "1", W0, W1, on_event=out.append,
+                                                frame_provider=lambda drv, ch, ts: JPEG, **kw)
+        return res, out
+
+    @staticmethod
+    def file_starts(files):
+        return sorted(start.replace(tzinfo=timezone.utc).isoformat() for start, _end, _path in files)
+
     def test_enumeration_reads_every_page(self):
         res = da.enumerate_historical_events(self.drv, "1", W0, W1)
         self.assertEqual(res["status"], "supported")
@@ -54,29 +66,25 @@ class Paging(unittest.TestCase):
         # 100 + 40 files, then the empty page that proves the archive has no more.
         self.assertEqual(len(self.finder_pages()), 3)
 
-    def test_backfill_recovers_every_file(self):
-        out = []
-        res = backfill.backfill_events(self.drv, "1", W0, W1, on_event=out.append)
+    def test_recovery_examines_every_file(self):
+        res, out = self.recover_footage()
         self.assertEqual(res["status"], "supported")
-        self.assertEqual(res["recovered"], 140)
-        self.assertEqual(len(out), 140)
+        self.assertEqual(res["frames"], 140)
+        self.assertEqual(sorted(e["device_ts"] for e in out), self.file_starts(FILES_140))
 
     def test_small_pages_continue_by_cursor_without_gaps_or_duplicates(self):
         first = da.enumerate_historical_events(self.drv, "1", W0, W1, limit=50)
         self.assertEqual(first["status"], "supported")
         self.assertEqual(len(first["events"]), 50)
         self.assertEqual(first["next_cursor"], "50")
-        out = []
-        res = backfill.backfill_events(self.drv, "1", W0, W1, page_limit=50, on_event=out.append)
-        self.assertEqual((res["status"], res["recovered"], res["duplicates"], res["pages"]),
-                         ("supported", 140, 0, 3))
-        self.assertEqual(sorted(e["device_event_id"] for e in out), sorted(f[2] for f in FILES_140))
+        res, out = self.recover_footage(page_limit=50)
+        self.assertEqual((res["status"], res["frames"], res["duplicates"]), ("supported", 140, 0))
+        self.assertEqual(sorted(e["device_ts"] for e in out), self.file_starts(FILES_140))
 
     def test_search_too_large_to_page_ends_partial_not_supported(self):
-        out = []
         with mock.patch.object(da, "MAX_FINDER_PAGES", 1, create=True):
             first = da.enumerate_historical_events(self.drv, "1", W0, W1)
-            res = backfill.backfill_events(self.drv, "1", W0, W1, on_event=out.append)
+            res, out = self.recover_footage()
         # What was read is still served, but the scan cannot end as a complete "supported".
         self.assertEqual(first["status"], "supported")
         self.assertIsNotNone(first["next_cursor"])
@@ -92,10 +100,9 @@ class Paging(unittest.TestCase):
 
     def test_short_pages_past_the_cap_end_partial_not_supported(self):
         self.rec.page_cap = 50
-        out = []
         with mock.patch.object(da, "MAX_FINDER_PAGES", 2):
             first = da.enumerate_historical_events(self.drv, "1", W0, W1)
-            res = backfill.backfill_events(self.drv, "1", W0, W1, on_event=out.append)
+            res, out = self.recover_footage()
         self.assertIsNotNone(first["next_cursor"])
         self.assertEqual(len(out), 100)
         self.assertEqual(res["status"], "partial")
@@ -124,9 +131,9 @@ class Paging(unittest.TestCase):
 
     def test_pages_are_ordered_even_when_the_recorder_is_not(self):
         self.rec.files = list(reversed(FILES_140))
-        res = backfill.backfill_events(self.drv, "1", W0, W1, page_limit=50, on_event=lambda _e: None)
+        res, _out = self.recover_footage(page_limit=50)
         first = da.enumerate_historical_events(self.drv, "1", W0, W1, limit=50)
-        self.assertEqual(res["recovered"], 140)
+        self.assertEqual(res["frames"], 140)
         self.assertEqual(first["events"][0]["device_event_id"], "/mnt/dvr/event000.dav")
 
 if __name__ == "__main__":

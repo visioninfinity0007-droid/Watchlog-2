@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """A failing archive read never leaves a recovery interval in progress forever (MNVR-059).
 
-hikvision_archive.search_recordings raises on an HTTP 4xx, a 401/403 or invalid XML, and
-enumerate_historical_events does not catch it. RecoveryRunner had no handler either, so the
+hikvision_archive.search_recordings raised on an HTTP 4xx, a 401/403 or invalid XML, and
+enumerate_historical_events did not catch it. RecoveryRunner had no handler either, so the
 exception escaped run_once without any wl_complete_recovery call: the interval stayed
 in_progress, wl_agent_claim_recovery reclaimed it every 15 minutes with attempts+1, and the same
 rejected search was replayed against the recorder forever.
 
-Now an archive failure checkpoints the interval from the first chunk that failed and backs off (the
-server re-offers it once the claim goes stale); after a few consecutive failed claims, or once
-too many claims in a row have not moved the cursor, the interval is completed with a terminal
-status. A claim that yields to live monitoring still counts its failed read, and a long interval
-that yields after every chunk is not cut short by the attempts cap.
+Now a definitive refusal (an HTTP 400 here) is an archive status, not an exception, so the
+interval ends on the claim that saw it. A transient failure (recorder unreachable, or busy with
+an HTTP 503) checkpoints the interval from the first chunk that failed and backs off (the server
+re-offers it once the claim goes stale); after a few consecutive failed claims, or once too many
+claims in a row have not moved the cursor, the interval is completed with a terminal status. A
+claim that yields to live monitoring still counts its failed read, and a long interval that
+yields after every chunk is not cut short by the attempts cap.
 """
 from __future__ import annotations
 
@@ -55,7 +57,8 @@ class _Response:
 
 
 class _Session:
-    """ISAPI search endpoint. ``behaviour(track)`` returns 'ok', 'reject' (HTTP 400) or 'down'."""
+    """ISAPI search endpoint. ``behaviour(track)`` returns 'ok', 'reject' (HTTP 400), 'busy'
+    (HTTP 503) or 'down'."""
 
     def __init__(self, behaviour):
         self.behaviour, self.searches, self.auth = behaviour, [], None
@@ -71,6 +74,9 @@ class _Session:
         if verdict == "reject":
             return _Response(b"<ResponseStatus><statusString>Invalid XML Format</statusString>"
                              b"</ResponseStatus>", status=400)
+        if verdict == "busy":
+            return _Response(b"<ResponseStatus><statusString>Device Busy</statusString>"
+                             b"</ResponseStatus>", status=503)
         return _Response(SEARCH_XML % (track, track))
 
     def close(self):
@@ -127,22 +133,33 @@ def _claim_until_terminal(ledger, runner, claims=10):
 
 class ArchiveSearchRejection(unittest.TestCase):
     def test_a_rejected_search_ends_in_a_terminal_status(self):
+        # A definitive refusal is not retried: the same search would be refused again.
         ledger = _Ledger()
         driver = _driver(lambda track: "reject")
         claims = _claim_until_terminal(ledger, _runner(ledger, driver))
-        self.assertEqual(claims, recovery.DEFAULT_MAX_ERROR_ATTEMPTS,
-                         "the interval must end after a bounded number of failed claims")
+        self.assertEqual(claims, 1, "a refused search ends the interval on the claim that saw it")
         self.assertEqual(ledger.iv["status"], "unrecoverable")
-        self.assertEqual(ledger.iv["detail"].get("reason"), "archive_error")
-        # One failing search per camera per claim, not one per chunk and step.
-        self.assertLessEqual(len(driver.s.searches), 2 * claims)
+        # One refused search per camera, not one per chunk and step.
+        self.assertEqual(len(driver.s.searches), 2)
+
+    def test_a_failing_recorder_ends_after_a_bounded_number_of_claims(self):
+        for verdict in ("down", "busy"):
+            ledger = _Ledger()
+            driver = _driver(lambda track: verdict)
+            claims = _claim_until_terminal(ledger, _runner(ledger, driver))
+            self.assertEqual(claims, recovery.DEFAULT_MAX_ERROR_ATTEMPTS, verdict)
+            self.assertEqual(ledger.iv["status"], "unrecoverable", verdict)
+            self.assertEqual(ledger.iv["detail"].get("reason"), "archive_error", verdict)
+            # One failing search per camera per claim, not one per chunk and step.
+            self.assertLessEqual(len(driver.s.searches), 2 * claims, verdict)
 
     def test_first_failed_claim_backs_off_instead_of_giving_up(self):
-        ledger = _Ledger()
-        _runner(ledger, _driver(lambda track: "reject")).run_once(limit=1)
-        self.assertEqual(ledger.iv["status"], "in_progress")
-        self.assertEqual(ledger.iv["checkpoint"]["cursor"], T0.isoformat())
-        self.assertEqual(ledger.iv["checkpoint"].get("errors"), 1)
+        for verdict in ("down", "busy"):
+            ledger = _Ledger()
+            _runner(ledger, _driver(lambda track: verdict)).run_once(limit=1)
+            self.assertEqual(ledger.iv["status"], "in_progress", verdict)
+            self.assertEqual(ledger.iv["checkpoint"]["cursor"], T0.isoformat(), verdict)
+            self.assertEqual(ledger.iv["checkpoint"].get("errors"), 1, verdict)
 
     def test_one_rejected_camera_does_not_block_the_others(self):
         ledger = _Ledger()
@@ -263,7 +280,7 @@ class AttemptsCountOnlyClaimsWithoutProgress(unittest.TestCase):
 class FailedReadsCountWhenTheClaimYields(unittest.TestCase):
     def test_a_failed_read_is_counted_even_when_the_claim_then_yields(self):
         ledger = _YieldingLedger(2)
-        runner = _runner(ledger, _driver(lambda track: "reject" if track == 101 else "ok"),
+        runner = _runner(ledger, _driver(lambda track: "down" if track == 101 else "ok"),
                          live_pending=ledger.live_backlog)
         runner.run_once(limit=1)
         self.assertEqual(ledger.iv["status"], "in_progress")
@@ -272,7 +289,7 @@ class FailedReadsCountWhenTheClaimYields(unittest.TestCase):
 
     def test_consecutive_failed_claims_end_the_interval_even_if_each_yields(self):
         ledger = _YieldingLedger(2)
-        driver = _driver(lambda track: "reject" if track == 101 else "ok")
+        driver = _driver(lambda track: "down" if track == 101 else "ok")
         claims = _claim_draining(ledger, _runner(ledger, driver, live_pending=ledger.live_backlog))
         self.assertEqual(claims, recovery.DEFAULT_MAX_ERROR_ATTEMPTS)
         self.assertEqual(ledger.iv["status"], "partial")
