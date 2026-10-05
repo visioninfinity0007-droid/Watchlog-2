@@ -1369,14 +1369,7 @@ class RecorderManagerWindow(QMainWindow):
                 row.get("display_name") or "Recorder",
                 device,
                 row.get("url") or "—",
-                (
-                    "Available"
-                    if row.get("is_configured")
-                       and row.get("credential_state") == "available"
-                    else "Needs attention"
-                    if row.get("credential_state") != "available"
-                    else "Disabled"
-                ),
+                backend.managed_recorder_state(row),
                 "Yes" if row.get("is_primary") else "No",
                 "Linked" if row.get("cloud_linked") else "Pending sync",
             ]
@@ -1395,12 +1388,14 @@ class RecorderManagerWindow(QMainWindow):
         else:
             self._selection_changed()
 
-    def _run_change(self, fn, *args, message: str, success: str):
+    def _run_change(self, fn, *args, message: str, success):
+        """``success`` is the status text, or a function of the change's result."""
         self._set_busy(True, message)
         worker = Worker(fn, *args)
         worker.signals.progress.connect(self.status.setText)
         worker.signals.finished.connect(
-            lambda _result: self._change_done(success)
+            lambda result: self._change_done(
+                success(result) if callable(success) else success)
         )
         worker.signals.failed.connect(self._change_failed)
         self._worker = worker
@@ -1489,7 +1484,7 @@ class RecorderManagerWindow(QMainWindow):
                 backend.disable_managed_recorder,
                 self.config_path, row["local_id"],
                 message="Disabling this recorder…",
-                success="Recorder disabled. Historical evidence was preserved.",
+                success=backend.disabled_recorder_message,
             )
         else:
             self._run_change(

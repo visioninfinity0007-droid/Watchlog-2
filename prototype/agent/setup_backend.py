@@ -647,6 +647,23 @@ def _public_recorder_row(row: dict, *, credential_state: str = "unknown") -> dic
     }
 
 
+def _retained_event_count(local_id: str) -> int | None:
+    """Events a disabled recorder still holds on this PC, or None when unknown."""
+    path = recorder_runtime.recorder_state_dir(programdata_dir(), local_id) / "spool.sqlite"
+    if not path.exists():
+        return 0
+    try:
+        from spool import Spool
+        spool = Spool(path)
+        try:
+            return int(spool.count())
+        finally:
+            spool.close()
+    except Exception as exc:  # noqa: BLE001 — a count is display-only; unknown stays unknown
+        _setup_log(f"retained event count unavailable ({type(exc).__name__})")
+        return None
+
+
 def list_managed_recorders(config_path: Path) -> list[dict]:
     """List the local recorder registry without exposing credentials."""
     recorder_registry.migrate_legacy_singleton(config_path)
@@ -657,8 +674,39 @@ def list_managed_recorders(config_path: Path) -> list[dict]:
             credential_store.load_recorder_credential(row["local_id"])
         except SecretError:
             state = "needs_attention"
-        out.append(_public_recorder_row(row, credential_state=state))
+        public = _public_recorder_row(row, credential_state=state)
+        if not row.get("is_configured"):
+            public["retained_events"] = _retained_event_count(row["local_id"])
+        out.append(public)
     return out
+
+
+def _events_kept(count: int) -> str:
+    return (f"{count} recorded event{'s' if count != 1 else ''} from this recorder "
+            f"{'are' if count != 1 else 'is'} kept on this PC")
+
+
+def managed_recorder_state(row: dict) -> str:
+    """Manage Recorders 'State' column text for one list_managed_recorders row."""
+    if row.get("credential_state") != "available":
+        return "Needs attention"
+    if row.get("is_configured"):
+        return "Available"
+    retained = row.get("retained_events")
+    if isinstance(retained, int) and retained > 0:
+        return f"Disabled ({retained} event{'s' if retained != 1 else ''} kept on this PC)"
+    return "Disabled"
+
+
+def disabled_recorder_message(result: dict | None) -> str:
+    """What Manage Recorders says after disable_managed_recorder succeeded."""
+    message = "Recorder disabled. Historical evidence was preserved."
+    retained = (result or {}).get("retained_events")
+    if isinstance(retained, int) and retained > 0:
+        message += (f" {_events_kept(retained)} because WatchLog could not take "
+                    + ("it yet. It uploads" if retained == 1 else "them yet. They upload")
+                    + " if the recorder is re-enabled.")
+    return message
 
 
 def _activate_managed_registry_change(
