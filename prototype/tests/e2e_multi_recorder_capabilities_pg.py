@@ -107,10 +107,10 @@ def run() -> int:
                 return cur.execute(
                     f"""insert into public.agents(
                          tenant_id,site_id,agent_key_hash,hostname,platform,
-                         agent_version,last_seen_at
+                         agent_version,device_driver,last_seen_at
                        ) values (
                          %s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),
-                         %s,'windows','5.0.27',{seen}
+                         %s,'windows','5.0.27','onvif',{seen}
                        ) returning id""",
                     (tenant_id, site_id, key, f"agent-{suffix}"),
                 ).fetchone()[0]
@@ -318,7 +318,7 @@ def run() -> int:
                 "select capabilities from recorders where id=%s", (rec_c,)
             ).fetchone()[0]
             # The legacy overlay (wl_overlay_camera_truth) carries the canonical
-            # camera name/configuration; only the recorder RPC adds camera_id.
+            # camera name/configuration of the site's configured recorder.
             legacy_channels = site_b_caps["channels"]
             cam_c_name = cur.execute(
                 "select name from cameras where id=%s", (cam_c,)
@@ -332,6 +332,65 @@ def run() -> int:
                 and legacy_channels[0]["configured"] is True,
                 "legacy singleton capability sync still mirrors site + recorder truth",
                 json.dumps(site_b_caps, default=str),
+            )
+
+            # --------------------------------------------------------------
+            # Tenant C: one configured recorder plus a DISABLED secondary that
+            # shares Channel 1. The legacy overlay must use only the configured
+            # recorder's camera, never the disabled secondary's.
+            # --------------------------------------------------------------
+            uc, tc, sc = bootstrap(
+                "caps-c@watchlog.test", "Capabilities C", "Retail C"
+            )
+            key_c = "caps-agent-c"
+            agent_c = add_agent(tc, sc, key_c, "c")
+            both = [
+                {"local_key": "rec-p", "display_name": "Recorder P",
+                 "is_primary": True, "is_configured": True},
+                {"local_key": "rec-s", "display_name": "Recorder S",
+                 "is_primary": False, "is_configured": True},
+            ]
+            recs_c = sync_recorders(agent_c, key_c, both)
+            rec_p, rec_s = recs_c["rec-p"], recs_c["rec-s"]
+            cam_p = sync_camera(agent_c, key_c, rec_p, "1", "P Camera 1")
+            sync_camera(agent_c, key_c, rec_s, "1", "S Camera 1")
+            both[1]["is_configured"] = False
+            sync_recorders(agent_c, key_c, both)
+            rec_s_caps_before = cur.execute(
+                "select capabilities from recorders where id=%s", (rec_s,)
+            ).fetchone()[0]
+
+            legacy_c = as_anon(
+                "select wl_sync_capabilities(%s,%s,%s::jsonb)",
+                agent_c, key_c, json.dumps({
+                    "source": "legacy-with-disabled-secondary",
+                    "channels": [{"channel": "1", "motion": "supported"}],
+                }),
+            )[0]
+            site_c_caps = cur.execute(
+                "select capabilities from sites where id=%s", (sc,)
+            ).fetchone()[0]
+            rec_s_caps_after = cur.execute(
+                "select capabilities from recorders where id=%s", (rec_s,)
+            ).fetchone()[0]
+            channels_c = site_c_caps["channels"]
+            step(
+                str(legacy_c["recorder_id"]) == str(rec_p)
+                and len(channels_c) == 1
+                and channels_c[0]["name"] == "P Camera 1"
+                and channels_c[0]["configured"] is True
+                and str(channels_c[0].get("camera_id", cam_p)) == str(cam_p)
+                and rec_s_caps_after == rec_s_caps_before,
+                "legacy capability overlay ignores a disabled secondary sharing the channel",
+                json.dumps(site_c_caps, default=str),
+            )
+
+            read_c = as_auth(uc, "select wl_capabilities()")[0]
+            read_channels = read_c[0]["capabilities"]["channels"] if read_c else []
+            step(
+                len(read_channels) == 1 and read_channels[0]["name"] == "P Camera 1",
+                "portal capability read overlays only the configured recorder's camera",
+                json.dumps(read_c, default=str),
             )
 
             stale_key = "caps-stale"
@@ -387,6 +446,13 @@ def run() -> int:
             step(
                 got == set(),
                 "recorder capability overlay helper is owner-only",
+                str(sorted(got)),
+            )
+
+            got = execute_grantees("public.wl_overlay_camera_truth(uuid,jsonb)")
+            step(
+                got == {"service_role"},
+                "legacy capability overlay keeps its service-role-only ACL",
                 str(sorted(got)),
             )
 

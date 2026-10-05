@@ -280,6 +280,46 @@ def run() -> int:
                 agent_a, key_a, rec_a, json.dumps(health_a),
             )
 
+            # MNVR-066: a slot the operator declared empty (is_configured=false)
+            # stays 'disabled' in inventory whatever the recorder reports (0085).
+            empty_slot = cur.execute(
+                """insert into cameras(tenant_id,site_id,recorder_id,channel,name,is_configured)
+                   values (%s,%s,%s,'2','Empty slot 2',false) returning id""",
+                (ta, sa, rec_a),
+            ).fetchone()[0]
+            both_reported = json.loads(json.dumps(health_a))
+            both_reported["channels"]["reported"] = [
+                {"channel": "1", "enabled": True}, {"channel": "2", "enabled": True},
+            ]
+            rep2 = as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(both_reported),
+            )[0]
+            slot_inv = cur.execute(
+                "select inventory_state,reason_code from camera_inventory where camera_id=%s",
+                (empty_slot,),
+            ).fetchone()
+            step(slot_inv == ("disabled", "channel_disabled")
+                 and rep2.get("present") == 1 and rep2.get("disabled") == 1
+                 and rep2.get("not_configured") == 1,
+                 "an unconfigured camera stays disabled even when its channel is reported",
+                 str((slot_inv, rep2)))
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(unknown_auth_report),
+            )
+            slot_inv = cur.execute(
+                "select inventory_state from camera_inventory where camera_id=%s",
+                (empty_slot,),
+            ).fetchone()[0]
+            step(slot_inv == "disabled",
+                 "an unconfigured camera stays disabled when the recorder cannot be verified",
+                 str(slot_inv))
+            as_anon(
+                "select wl_report_recorder_health(%s,%s,%s,%s::jsonb)",
+                agent_a, key_a, rec_a, json.dumps(health_a),
+            )
+
             rows = cur.execute(
                 """select recorder_id,nvr_reachable,nvr_auth_ok
                      from recorder_health
@@ -339,6 +379,24 @@ def run() -> int:
             step(raised and "does not belong" in msg.lower(),
                  "recovery refuses channel not owned by recorder", msg)
 
+            # MNVR-045: a recorder interval with no channel would make the
+            # Agent guess the archive target, so it is refused outright.
+            for label, channels_sql in (
+                ("an empty", "array[]::text[]"),
+                ("a NULL", "null::text[]"),
+                ("a NULL-element", "array[null]::text[]"),
+                ("a blank-element", "array['']::text[]"),
+            ):
+                raised, msg = as_anon_raises(
+                    "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,"
+                    + channels_sql + ")",
+                    agent_a, key_a, rec_a,
+                    datetime(2026, 10, 2, 10, 10, tzinfo=timezone.utc),
+                    datetime(2026, 10, 2, 10, 15, tzinfo=timezone.utc),
+                )
+                step(raised and "at least one recorder channel" in msg.lower(),
+                     f"recorder recovery refuses {label} channel list", msg)
+
             claimed_a = as_anon(
                 "select wl_agent_claim_recorder_recovery(%s,%s,%s,1,900)",
                 agent_a, key_a, rec_a,
@@ -355,6 +413,25 @@ def run() -> int:
             )[0]
             step(complete_a["ok"] is True and complete_a["status"] == "recovered",
                  "recorder-scoped recovery completes only under its recorder identity")
+
+            # A legacy (NULL recorder) interval on a multi-recorder site cannot be
+            # attributed to one recorder, so no recorder claim may take it.
+            orphan = cur.execute(
+                """insert into recovery_intervals(
+                     tenant_id,site_id,agent_id,recorder_id,started_at,ended_at,cameras
+                   ) values (%s,%s,%s,null,%s,%s,array[%s::uuid])
+                   returning id""",
+                (ta, sa, agent_a,
+                 datetime(2026, 10, 2, 8, 0, tzinfo=timezone.utc),
+                 datetime(2026, 10, 2, 8, 30, tzinfo=timezone.utc), cam_a),
+            ).fetchone()[0]
+            claimed_multi = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_a, key_a, rec_a,
+            )[0]
+            step(all(str(x["id"]) != str(orphan) for x in claimed_multi),
+                 "multi-recorder site: a recorder claim never takes a legacy site-wide interval",
+                 str([x["id"] for x in claimed_multi]))
 
             raised, msg = as_anon_raises(
                 "select wl_open_recovery_interval(%s,%s,%s,%s,array[%s::uuid])",
@@ -438,6 +515,135 @@ def run() -> int:
             ).fetchone()[0]
             step(legacy_recorder is None,
                  "legacy single-recorder recovery keeps NULL recorder_id for old site-wide coverage semantics")
+
+            # MNVR-015: on a one-recorder site the legacy and recorder recovery
+            # paths serve the same recorder. A bound Agent must still pick up a
+            # legacy interval opened before it upgraded, and a legacy Agent (after
+            # a rollback) must still pick up a recorder-scoped one.
+            legacy_window = (datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc),
+                             datetime(2026, 10, 2, 12, 5, tzinfo=timezone.utc))
+            reopened = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_b, key_b, rec_c, legacy_window[0], legacy_window[1], "1",
+            )[0]
+            step(reopened.get("duplicate") is True
+                 and str(reopened.get("id")) == str(legacy_open["id"]),
+                 "one-recorder site: re-reporting a legacy window on the recorder path stays idempotent",
+                 json.dumps(reopened, default=str))
+            by_recorder = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_b, key_b, rec_c,
+            )[0]
+            picked = [x for x in by_recorder if str(x["id"]) == str(legacy_open["id"])]
+            step(len(picked) == 1 and picked[0]["channels"] == ["1"],
+                 "one-recorder site: the bound Agent claims a legacy interval with its channels",
+                 json.dumps(by_recorder, default=str))
+            done_by_recorder = as_anon(
+                "select wl_complete_recorder_recovery(%s,%s,%s,%s,'recovered',1,'{}'::jsonb,'{}'::jsonb)",
+                agent_b, key_b, rec_c, legacy_open["id"],
+            )[0]
+            step(done_by_recorder.get("ok") is True,
+                 "one-recorder site: the bound Agent completes that legacy interval",
+                 json.dumps(done_by_recorder, default=str))
+
+            recorder_open = as_anon(
+                "select wl_open_recorder_recovery_interval(%s,%s,%s,%s,%s,array[%s::text])",
+                agent_b, key_b, rec_c,
+                datetime(2026, 10, 2, 13, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 13, 5, tzinfo=timezone.utc), "1",
+            )[0]
+            by_legacy = as_anon(
+                "select wl_agent_claim_recovery(%s,%s,5,900)", agent_b, key_b,
+            )[0]
+            step(any(str(x["id"]) == str(recorder_open["id"]) for x in by_legacy),
+                 "one-recorder site: a legacy Agent after rollback claims a recorder-scoped interval",
+                 json.dumps(by_legacy, default=str))
+            done_by_legacy = as_anon(
+                "select wl_complete_recovery(%s,%s,%s,'unrecoverable',0,'{}'::jsonb,'{}'::jsonb)",
+                agent_b, key_b, recorder_open["id"],
+            )[0]
+            step(done_by_legacy.get("ok") is True,
+                 "one-recorder site: the legacy Agent completes that recorder-scoped interval",
+                 json.dumps(done_by_legacy, default=str))
+
+            # Deployed 5.0.x Agents open legacy intervals with no cameras ('{}'):
+            # a whole-site gap. On a one-recorder site that is every configured
+            # camera of the recorder, so the recorder claim must name those
+            # channels; with no channels the bound Agent would close the gap
+            # 'unrecoverable' without reading the archive.
+            sync_camera(agent_b, key_b, rec_c, "2")
+            as_anon(
+                "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
+                agent_b, key_b, rec_c,
+                json.dumps([{"channel": "3", "name": "Camera 3", "is_configured": False}]),
+            )
+            siteless = as_anon(
+                "select wl_open_recovery_interval(%s,%s,%s,%s,'{}'::uuid[])",
+                agent_b, key_b,
+                datetime(2026, 10, 2, 14, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 14, 5, tzinfo=timezone.utc),
+            )[0]
+            by_recorder = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_b, key_b, rec_c,
+            )[0]
+            picked = [x for x in by_recorder if str(x["id"]) == str(siteless.get("id"))]
+            step(siteless.get("status") == "pending" and len(picked) == 1
+                 and picked[0]["channels"] == ["1", "2"] and picked[0]["cameras"] == [],
+                 "one-recorder site: a camera-less legacy interval is claimed with every "
+                 "configured channel of the recorder (never an empty slot)",
+                 json.dumps(by_recorder, default=str))
+            stored = cur.execute(
+                "select recorder_id,cameras from recovery_intervals where id=%s",
+                (siteless["id"],),
+            ).fetchone()
+            step(stored == (None, []),
+                 "the camera-less legacy interval itself stays site-wide (NULL recorder, no cameras)",
+                 str(stored))
+
+            # A one-recorder site whose recorder has no configured camera yet:
+            # the bound Agent cannot name an archive target, so it must not
+            # claim (and so falsely close) the whole-site gap; it stays pending
+            # for a later claim and for a legacy Agent.
+            ud, td, sd = bootstrap("health-d@watchlog.test", "Health D", "Kiosk D")
+            key_d = "health-agent-d"
+            agent_d = add_agent(td, sd, key_d, "d")
+            rec_d = sync_recorders(agent_d, key_d, [{
+                "local_key": "rec-d", "display_name": "Recorder D",
+                "is_primary": True, "is_configured": True,
+            }])["rec-d"]
+            as_anon(
+                "select wl_sync_recorder_cameras(%s,%s,%s,%s::jsonb)",
+                agent_d, key_d, rec_d,
+                json.dumps([{"channel": "1", "name": "Camera 1", "is_configured": False}]),
+            )
+            siteless_d = as_anon(
+                "select wl_open_recovery_interval(%s,%s,%s,%s,'{}'::uuid[])",
+                agent_d, key_d,
+                datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc),
+                datetime(2026, 10, 2, 15, 5, tzinfo=timezone.utc),
+            )[0]
+            by_recorder_d = as_anon(
+                "select wl_agent_claim_recorder_recovery(%s,%s,%s,5,900)",
+                agent_d, key_d, rec_d,
+            )[0]
+            state_d = cur.execute(
+                "select status,attempts from recovery_intervals where id=%s",
+                (siteless_d.get("id"),),
+            ).fetchone()
+            step(siteless_d.get("status") == "pending"
+                 and all(x.get("channels") for x in by_recorder_d)
+                 and all(str(x["id"]) != str(siteless_d.get("id")) for x in by_recorder_d)
+                 and state_d == ("pending", 0),
+                 "one-recorder site without a configured camera: the recorder claim leaves a "
+                 "camera-less legacy interval pending instead of returning it without channels",
+                 json.dumps([by_recorder_d, state_d], default=str))
+            by_legacy_d = as_anon(
+                "select wl_agent_claim_recovery(%s,%s,5,900)", agent_d, key_d,
+            )[0]
+            step(any(str(x["id"]) == str(siteless_d.get("id")) for x in by_legacy_d),
+                 "that camera-less legacy interval stays claimable by a legacy Agent",
+                 json.dumps(by_legacy_d, default=str))
 
             # Site-wide coverage function must explicitly ignore recorder-specific
             # recovery. This is a truth guard: no partial-recorder recovery can

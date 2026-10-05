@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Production-order upgrade rehearsal for the multi-recorder chain (0146-0155).
 
-Production runs 0001-0143 today (0144/0145 are reserved for production-only
-portal migrations) with 5.0.x Agents writing data. The `integration` job applies
+Production runs 0001-0145 today (0144/0145 are the production-only portal
+QA migrations) with 5.0.x Agents writing data. The `integration` job applies
 the whole chain to an EMPTY database, so no backfill there ever meets a real row.
 This script reproduces the real upgrade on its OWN fresh, disposable database:
 
-  stage 1  apply 0001..0143 with apply_migrations.py (WATCHLOG_MIGRATIONS_DIR
+  stage 1  apply 0001..0145 with apply_migrations.py (WATCHLOG_MIGRATIONS_DIR
            pointed at a staged copy), exactly the production baseline;
   seed     5.0.x-shaped legacy data through the 5.0.x RPCs: tenant, site,
            enrolled Agent, 8 configured cameras plus 8 hidden non-canonical
            ONVIF profile rows (the Al-Khalid shape), events with site:channel
            dedupe keys, snapshots, nvr_health, and recovery_intervals in
-           pending, in_progress and recovered states; plus a pre-provisioned
+           pending, in_progress and recovered states; a 5.0.x recorder push
+           token (plus an older live duplicate), which must end up scoped to
+           the site's recorder and keep working; plus a pre-provisioned
            site with no Agent or camera yet;
   stage 2  apply the rest (0146..0155) with the same runner and the real
            migrations directory, as the production deploy will;
@@ -23,9 +25,10 @@ This script reproduces the real upgrade on its OWN fresh, disposable database:
            single-recorder site; pending/in-progress recovery still claimable
            by the legacy Agent; recovered history still RECOVERED.
 
-Steps marked "[gated: MNVR-015]" exercise the 0147 recovery_intervals backfill
-(MNVR-015, owned by a later work package). They are expected to FAIL until that
-fix lands and must stay in place so they gate it.
+Steps marked "[gated: MNVR-015]" guard the 0147 recovery_intervals fix
+(MNVR-015): pre-upgrade intervals stay legacy (recorder_id NULL), so the legacy
+Agent keeps claiming and completing them and recovered history keeps counting.
+They must stay in place so a reintroduced backfill fails here.
 
 Disposable plain Postgres only (WATCHLOG_CI_PLAIN_POSTGRES=1, local host): the
 script creates and drops its own database, <SUPABASE_DB_NAME>_upgrade_rehearsal,
@@ -48,7 +51,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "supabase" / "migrations"
 APPLY = ROOT / "supabase" / "apply_migrations.py"
 PRELUDE = ROOT / "supabase" / "ci_prelude.sql"
-BASELINE_LAST = 143          # production baseline: 0001..0143
+BASELINE_LAST = 145          # production baseline: 0001..0145
 MNVR_015 = "[gated: MNVR-015] "
 
 ENV = {}
@@ -206,6 +209,19 @@ def seed_legacy(s: Session) -> dict:
     s.anon("select wl_report_health(%s,%s,%s::jsonb)", agent_id, agent_key, json.dumps(HEALTH))
     s.anon("select wl_ingest_events(%s,%s,%s::jsonb)",
            agent_id, agent_key, json.dumps(LEGACY_EVENTS))
+    # Setup provisioned recorder push for this site (5.0.x site-level token).
+    push_token = s.anon("select wl_agent_issue_push_token(%s,%s)",
+                        agent_id, agent_key)[0]["token"]
+    # An older live duplicate (two Setup runs racing): it must not block the
+    # one-live-token-per-recorder index, and keeps working as a legacy token.
+    dup_agent = s.one("""insert into agents(tenant_id,site_id,agent_key_hash,hostname,
+                                            device_driver,last_seen_at)
+                         values (%s,%s,md5(gen_random_uuid()::text),'Recorder push',
+                                 'recorder-push',now()) returning id""",
+                      tenant_id, site_id)[0]
+    dup_token = s.one("""insert into push_sources(tenant_id,site_id,agent_id,created_at)
+                         values (%s,%s,%s,now()-interval '1 day') returning token""",
+                      tenant_id, site_id, dup_agent)[0]
 
     canonical = str(camera_map["2"])
     for start, end in (W_RECOVERED, W_IN_PROGRESS, W_PENDING):
@@ -238,7 +254,8 @@ def seed_legacy(s: Session) -> dict:
         "uid": uid, "tenant_id": tenant_id, "site_id": site_id,
         "agent_id": agent_id, "agent_key": agent_key, "camera_map": camera_map,
         "recovered_id": recovered_id, "in_progress_id": in_progress_id,
-        "pending_id": pending_id, "new_site_id": boot2["site_id"],
+        "pending_id": pending_id, "push_token": push_token, "dup_token": dup_token,
+        "new_site_id": boot2["site_id"],
         "new_site_code": boot2["enrollment_code"],
     }
 
@@ -277,7 +294,7 @@ def run() -> int:
         with psycopg.connect(**dsn(rehearsal_db, autocommit=True)) as c:
             c.execute(PRELUDE.read_text(encoding="utf-8"))
 
-        # ---------------- stage 1: production baseline 0001..0143 ----------------
+        # ---------------- stage 1: production baseline 0001..0145 ----------------
         baseline = [p for p in sorted(MIGRATIONS.glob("*.sql"))
                     if migration_number(p) <= BASELINE_LAST]
         pending = [p for p in sorted(MIGRATIONS.glob("*.sql"))
@@ -286,9 +303,9 @@ def run() -> int:
             shutil.copy2(p, stage / p.name)
         out1 = apply_migrations(rehearsal_db, stage)
         step(f"{len(baseline)} migration(s) executed" in out1
-             and baseline[-1].name == "0143_site_period_facts.sql"
+             and baseline[-1].name == "0145_camera_preview_performance.sql"
              and pending and migration_number(pending[0]) == 146,
-             "stage 1 applies exactly the 0001..0143 production baseline",
+             "stage 1 applies exactly the 0001..0145 production baseline",
              f"{len(baseline)} baseline, {len(pending)} pending")
 
         with psycopg.connect(**dsn(rehearsal_db)) as conn:
@@ -417,6 +434,43 @@ def run() -> int:
             step(bool(opened) and opened[0].get("ok") is True
                  and opened[0].get("status") == "pending",
                  "legacy wl_open_recovery_interval with uuid[] opens a new window", msg)
+
+            # Recorder push provisioned by 5.0.x is scoped to the site's recorder.
+            src = s.one("select to_jsonb(p)->>'recorder_id', enabled from push_sources p "
+                        "where token=%s", seed["push_token"])
+            dup = s.one("select to_jsonb(p)->>'recorder_id', enabled from push_sources p "
+                        "where token=%s", seed["dup_token"])
+            step(src is not None and src[0] == str(rec_id) and src[1] is True
+                 and dup == (None, True),
+                 "the newest pre-upgrade push token is backfilled to the site's single "
+                 "recorder; an older live duplicate stays a legacy token",
+                 str((src, dup)))
+            dup_push, msg = s.anon_try(
+                "select wl_ingest_push(%s,%s::jsonb)", seed["dup_token"],
+                json.dumps([{"channel": "6", "event_type": "motion",
+                             "device_ts": "2026-10-05T10:30:00Z"}]))
+            step(bool(dup_push) and dup_push[0]["inserted"] == 1,
+                 "the legacy duplicate still ingests while the site has one recorder", msg)
+            pushed, msg = s.anon_try(
+                "select wl_ingest_push(%s,%s::jsonb)", seed["push_token"],
+                json.dumps([{"channel": "4", "event_type": "motion",
+                             "device_ts": "2026-10-05T10:00:00Z", "snapshot_b64": "anps"}]))
+            push_row = s.one(
+                """select e.recorder_id,e.camera_id,e.dedupe_key,s.camera_id
+                     from events e left join snapshots s on s.event_id=e.id
+                    where e.site_id=%s and e.device_ts='2026-10-05T10:00:00Z'""", site)
+            push_key = s.one(
+                "select wl_dedupe_key(%s,'4',null,'2026-10-05T10:00:00Z'::timestamptz,'motion')",
+                site)[0]
+            step(bool(pushed) and pushed[0]["inserted"] == 1 and push_row is not None
+                 and str(push_row[0]) == str(rec_id)
+                 and str(push_row[1]) == str(seed["camera_map"]["4"])
+                 and push_row[2] == push_key and str(push_row[3]) == str(push_row[1]),
+                 "the pre-upgrade push token still ingests on the recorder's camera, legacy key",
+                 msg or str(push_row))
+            reissued, msg = s.anon_try("select wl_agent_issue_push_token(%s,%s)", agent, key)
+            step(bool(reissued) and reissued[0].get("token") == seed["push_token"],
+                 "the 5.0.x token RPC returns the same token after the upgrade", msg)
 
             # A site first contacted after the upgrade gets its owner lazily.
             enrolled, msg = s.anon_try("select wl_enroll(%s,%s,%s,%s,%s,%s,%s)",

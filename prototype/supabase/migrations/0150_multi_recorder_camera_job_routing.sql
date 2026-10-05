@@ -216,6 +216,33 @@ update public.site_commands c
    and c.tenant_id=x.tenant_id
    and c.site_id=x.site_id;
 
+-- Managed pre-authorization names the recorder it was given for (MNVR-049).
+-- An authorization given while only Recorder A existed must not auto-run a
+-- write on a Recorder B added later. Existing rows on a site with exactly one
+-- configured recorder are scoped to it; any other row stays NULL and never
+-- auto-queues a write (the proposal then waits for human approval).
+alter table public.site_managed_actions
+  add column if not exists recorder_id uuid
+    references public.recorders(id) on delete cascade;
+
+alter table public.site_managed_actions
+  drop constraint if exists site_managed_actions_site_id_action_key;
+
+create unique index if not exists site_managed_actions_site_recorder_action_idx
+  on public.site_managed_actions(site_id,recorder_id,action);
+
+update public.site_managed_actions m
+   set recorder_id=x.recorder_id
+  from (
+    select site_id,(array_agg(id order by id))[1] as recorder_id
+      from public.recorders
+     where is_configured
+     group by site_id
+    having count(*)=1
+  ) x
+ where m.recorder_id is null
+   and m.site_id=x.site_id;
+
 create or replace function public.wl_site_command_enqueue(
   p_site_id uuid,
   p_action text,
@@ -253,11 +280,12 @@ begin
     raise exception 'P1 Site Control allows the read tier only'
       using errcode='42501';
   end if;
+  -- Exactly the Agent's site_control.READ_ACTIONS (MNVR-069). An action the
+  -- Agent cannot run would be claimed and always fail, so it is not accepted.
   if p_action not in (
     'get_recorder_identity','get_channels','get_clock_config',
     'get_video_loss_state','get_analytics_config','get_recording_status',
-    'get_storage_status','request_snapshot','inspect_recorder',
-    'get_configuration_drift','get_recorder_capabilities'
+    'get_storage_status','request_snapshot','inspect_recorder'
   ) then
     raise exception 'action % is not in the read catalog',p_action
       using errcode='42501';
@@ -310,6 +338,7 @@ declare
   v_status text;
   v_id uuid;
   v_params jsonb;
+  v_role text;
 begin
   select tenant_id into v_tenant
     from public.sites
@@ -318,10 +347,25 @@ begin
   if v_tenant is null then
     raise exception 'no such site' using errcode='22023';
   end if;
-  if public.wl_platform_role() is null
-     and v_tenant is distinct from public.wl_my_tenant()
-  then
-    raise exception 'not authorised for this site' using errcode='42501';
+  if public.wl_platform_role() is null then
+    if v_tenant is distinct from public.wl_my_tenant() then
+      raise exception 'not authorised for this site' using errcode='42501';
+    end if;
+    -- The recommend tier wl_my_site_diagnosis advertises is enforced here:
+    -- a viewer cannot propose a recorder write (MNVR-050). The role is the
+    -- one held in THIS site's account, read the way wl_my_site_diagnosis
+    -- reads it; wl_my_role() is account-blind and may return a role the
+    -- caller holds in another account.
+    select m.role
+      into v_role
+      from public.memberships m
+     where m.user_id=auth.uid()
+       and m.tenant_id=v_tenant;
+    if v_role is null or not (v_role = any(array['owner','admin','manager'])) then
+      raise exception 'this needs the owner or admin or manager role; you are %',
+        coalesce(v_role,'not a member')
+        using errcode='42501';
+    end if;
   end if;
 
   if p_action ~* '(firmware|format|factory|reset|reboot|deleterec|delete_rec|adduser|user_|network_|password|wipe|erase)' then
@@ -364,9 +408,10 @@ begin
       using errcode='42501';
   end if;
 
-  v_capjson := public.wl_recorder_capability(
-    v_recorder.vendor,
-    v_recorder.model,
+  -- FIELD_VERIFIED must come from evidence taken on THIS recorder (same
+  -- identity and firmware), never from another unit of the same model.
+  v_capjson := public.wl_recorder_capability_for_recorder(
+    v_recorder.id,
     v_cap
   );
 
@@ -375,6 +420,7 @@ begin
     and (v_capjson->>'write')::boolean is true
     and v_capjson->>'safety_class'='safe_write'
     and v_capjson->>'evidence_class'='FIELD_VERIFIED'
+    and (v_capjson->>'field_write_verified')::boolean is true
   ) then
     raise exception
       'action % is not a FIELD-VERIFIED safe write for target recorder % (%)',
@@ -387,6 +433,7 @@ begin
        select 1
          from public.site_managed_actions m
         where m.site_id=p_site_id
+          and m.recorder_id=v_recorder.id
           and m.action=p_action
      )
   then
@@ -425,6 +472,98 @@ revoke all on function public.wl_site_command_propose_write(
 grant execute on function public.wl_site_command_propose_write(
   uuid,text,jsonb,text,text,text
 ) to authenticated,service_role;
+
+-- Approving makes a proposed recorder write executable. The approve tier
+-- wl_my_site_diagnosis advertises (owner/admin) is enforced here, not only in
+-- the portal (MNVR-050). Platform staff keep their existing access.
+create or replace function public.wl_site_command_approve(
+  p_command_id uuid,
+  p_approved_by text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_cmd public.site_commands;
+  v_capjson jsonb;
+  v_role text;
+begin
+  select *
+    into v_cmd
+    from public.site_commands
+   where id=p_command_id
+   for update;
+
+  if v_cmd.id is null then
+    raise exception 'no such command' using errcode='22023';
+  end if;
+  if public.wl_platform_role() is null then
+    if v_cmd.tenant_id is distinct from public.wl_my_tenant() then
+      raise exception 'not authorised' using errcode='42501';
+    end if;
+    -- The role held in the command's own account (never an account-blind
+    -- wl_my_role() that may come from another membership).
+    select m.role
+      into v_role
+      from public.memberships m
+     where m.user_id=auth.uid()
+       and m.tenant_id=v_cmd.tenant_id;
+    if v_role is null or not (v_role = any(array['owner','admin'])) then
+      raise exception 'this needs the owner or admin role; you are %',
+        coalesce(v_role,'not a member')
+        using errcode='42501';
+    end if;
+  end if;
+
+  if v_cmd.status<>'proposed' then
+    return jsonb_build_object(
+      'ok',false,'reason','not_proposed','status',v_cmd.status
+    );
+  end if;
+
+  -- Re-check write eligibility now (MNVR-049): the target recorder's
+  -- identity, firmware or evidence may have changed since the proposal, and a
+  -- proposal without a recorder target is never approvable.
+  if v_cmd.recorder_id is not null then
+    v_capjson := public.wl_recorder_capability_for_recorder(
+      v_cmd.recorder_id,
+      v_cmd.detail->>'capability'
+    );
+  end if;
+  if v_capjson is null
+     or not (
+       v_capjson->>'verdict'='supported'
+       and (v_capjson->>'write')::boolean is true
+       and v_capjson->>'safety_class'='safe_write'
+       and v_capjson->>'evidence_class'='FIELD_VERIFIED'
+       and (v_capjson->>'field_write_verified')::boolean is true
+     )
+  then
+    raise exception
+      'action % is no longer a FIELD-VERIFIED safe write for its target recorder',
+      v_cmd.action
+      using errcode='42501';
+  end if;
+
+  update public.site_commands
+     set status='queued',
+         detail=coalesce(detail,'{}'::jsonb)
+                || jsonb_build_object(
+                     'approved_by',coalesce(p_approved_by,'operator')
+                   )
+   where id=p_command_id;
+
+  return jsonb_build_object('ok',true,'status','queued');
+end
+$function$;
+
+revoke all on function public.wl_site_command_approve(
+  uuid,text
+) from public,anon,authenticated,service_role;
+grant execute on function public.wl_site_command_approve(
+  uuid,text
+) to authenticated;
 
 create or replace function public.wl_agent_claim_command(
   p_agent_id uuid,
@@ -553,6 +692,36 @@ begin
      and expires_at<=now()
      and status in ('pending','processing','ready');
 
+  -- A request that can never reach a recorder input (camera gone, or a blank
+  -- channel) fails now. It is neither left pending for 24 h, blocking a new
+  -- request, nor handed to the Agent without a channel (MNVR-033).
+  with unroutable as (
+    select r.id
+      from public.incident_clip_requests r
+     where r.site_id=v_agent.site_id
+       and r.tenant_id=v_agent.tenant_id
+       and r.status='pending'
+       and r.expires_at>now()
+       and not exists (
+         select 1
+           from public.cameras c
+          where c.id=r.camera_id
+            and c.tenant_id=v_agent.tenant_id
+            and c.site_id=v_agent.site_id
+            and c.recorder_id is not null
+            and nullif(btrim(c.channel),'') is not null
+       )
+     for update of r skip locked
+  )
+  update public.incident_clip_requests r
+     set status='failed',
+         error_message='WatchLog could not confirm which recorder input this camera uses, so recorded footage was not retrieved.',
+         completed_at=now()
+    from unroutable u
+   where r.id=u.id;
+
+  -- started_at is the processing lease the 0142 finalizer
+  -- (wl_finalize_stale_incident_clips) measures; every claim sets it.
   with picked as (
     select r.id
       from public.incident_clip_requests r
@@ -561,6 +730,7 @@ begin
        and c.tenant_id=v_agent.tenant_id
        and c.site_id=v_agent.site_id
        and c.recorder_id is not null
+       and nullif(btrim(c.channel),'') is not null
      where r.site_id=v_agent.site_id
        and r.tenant_id=v_agent.tenant_id
        and r.status='pending'
@@ -643,6 +813,51 @@ begin
      and expires_at<=now()
      and status in ('pending','processing','ready');
 
+  -- Bounded lease (MNVR-033): the 5 minute claim lease is re-claimable only
+  -- within the same 3-attempt budget wl_agent_fail_incident_still applies, and
+  -- work that can never reach a recorder input fails instead of being skipped.
+  with spent as (
+    select e.id,
+           routed.ok is null as unroutable
+      from public.operations_incident_evidence e
+      left join lateral (
+        select true as ok
+          from public.cameras c
+         where c.id=e.camera_id
+           and c.tenant_id=v_agent.tenant_id
+           and c.site_id=v_agent.site_id
+           and c.recorder_id is not null
+           and nullif(btrim(c.channel),'') is not null
+      ) routed on true
+     where e.site_id=v_agent.site_id
+       and e.tenant_id=v_agent.tenant_id
+       and e.expires_at>now()
+       and (
+         e.status='pending'
+         or (
+           e.status='processing'
+           and coalesce(e.claim_expires_at,now())<=now()
+         )
+       )
+       and (
+         routed.ok is null
+         or (e.status='processing' and e.attempts>=3)
+       )
+     for update of e skip locked
+  )
+  update public.operations_incident_evidence e
+     set status='failed',
+         claimed_by_agent_id=null,
+         claim_expires_at=null,
+         error_message=case
+           when s.unroutable then
+             'WatchLog could not confirm which recorder input this camera uses, so no camera view was captured.'
+           else 'The camera view was not captured after several attempts.'
+         end,
+         completed_at=now()
+    from spent s
+   where e.id=s.id;
+
   with picked as (
     select e.id
       from public.operations_incident_evidence e
@@ -651,6 +866,7 @@ begin
        and c.tenant_id=v_agent.tenant_id
        and c.site_id=v_agent.site_id
        and c.recorder_id is not null
+       and nullif(btrim(c.channel),'') is not null
      where e.site_id=v_agent.site_id
        and e.tenant_id=v_agent.tenant_id
        and e.expires_at>now()
@@ -709,6 +925,189 @@ revoke all on function public.wl_agent_claim_incident_stills(
 grant execute on function public.wl_agent_claim_incident_stills(
   uuid,text,integer
 ) to anon,authenticated,service_role;
+
+-- ---------------------------------------------------------------------
+-- A restarted Agent releases its OWN in-flight evidence at startup instead
+-- of leaving it to the lease (MNVR-033). A clip fails exactly as the 0142
+-- finalizer fails an abandoned request (partial chunks deleted), so the owner
+-- can request it again at once; a still returns to pending within its
+-- 3-attempt budget. Only the current site Agent may release, and only rows it
+-- claimed itself; other identities' rows stay with the lease and 0142.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_agent_release_inflight_evidence(
+  p_agent_id uuid,
+  p_agent_key text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_agent public.agents;
+  v_clips int := 0;
+  v_released int := 0;
+  v_failed int := 0;
+begin
+  v_agent := public.wl_auth_agent(p_agent_id,p_agent_key);
+  if v_agent.id is null then
+    raise exception 'agent not recognised' using errcode='28000';
+  end if;
+
+  perform public.wl_assert_current_agent_authority(
+    v_agent.id,v_agent.site_id
+  );
+
+  with mine as (
+    select r.id
+      from public.incident_clip_requests r
+     where r.tenant_id=v_agent.tenant_id
+       and r.site_id=v_agent.site_id
+       and r.claimed_by_agent_id=v_agent.id
+       and r.status='processing'
+     for update
+  ), removed_chunks as (
+    delete from public.incident_clip_chunks c
+     using mine m
+     where c.request_id=m.id
+    returning c.request_id
+  ), finalized as (
+    update public.incident_clip_requests r
+       set status='failed',
+           error_message='Footage retrieval did not complete. Please retry.',
+           completed_at=now(),
+           claimed_by_agent_id=null
+      from mine m
+     where r.id=m.id
+    returning r.id
+  )
+  select count(*) into v_clips from finalized;
+
+  with mine as (
+    select e.id,e.attempts
+      from public.operations_incident_evidence e
+     where e.tenant_id=v_agent.tenant_id
+       and e.site_id=v_agent.site_id
+       and e.claimed_by_agent_id=v_agent.id
+       and e.status='processing'
+     for update
+  ), released as (
+    update public.operations_incident_evidence e
+       set status=case when m.attempts>=3 then 'failed' else 'pending' end,
+           claimed_by_agent_id=null,
+           claim_expires_at=null,
+           error_message=case
+             when m.attempts>=3
+             then 'The camera view was not captured after several attempts.'
+           end,
+           completed_at=case when m.attempts>=3 then now() end
+      from mine m
+     where e.id=m.id
+    returning e.status
+  )
+  select count(*) filter (where status='pending'),
+         count(*) filter (where status='failed')
+    into v_released,v_failed
+    from released;
+
+  return jsonb_build_object(
+    'ok',true,
+    'clips_failed',v_clips,
+    'stills_released',v_released,
+    'stills_failed',v_failed,
+    'server_time',now()
+  );
+end
+$function$;
+
+revoke all on function public.wl_agent_release_inflight_evidence(
+  uuid,text
+) from public,anon,authenticated,service_role;
+grant execute on function public.wl_agent_release_inflight_evidence(
+  uuid,text
+) to anon;
+
+-- ---------------------------------------------------------------------
+-- Server-side still lease (MNVR-033), in the style of the production 0142
+-- clip finalizer. The claim-time lease rules above run only while an Agent
+-- polls; an Agent that is replaced, removed or offline never polls again, so
+-- its claimed stills would keep showing processing until the 0107 retention
+-- deletes them at expiry. Once a claim lease has passed nobody is capturing
+-- the still: it returns to pending within its 3-attempt budget, or fails
+-- once the budget is spent. Stills past their expiry are left alone: the
+-- hourly 0107 retention (wl_evidence_enforce_retention, the single retention
+-- source) deletes pending/processing/ready rows at expiry, and an 'expired'
+-- row would escape it. Ready, failed and unsupported stills are never
+-- touched and no capture is ever fabricated. service_role only.
+-- ---------------------------------------------------------------------
+create or replace function public.wl_finalize_stale_incident_stills()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_released int := 0;
+  v_failed int := 0;
+begin
+  with lapsed as (
+    select e.id,e.attempts
+      from public.operations_incident_evidence e
+     where e.status='processing'
+       and e.expires_at>now()
+       and coalesce(e.claim_expires_at,now())<=now()
+     for update skip locked
+  ), finalized as (
+    update public.operations_incident_evidence e
+       set status=case when l.attempts>=3 then 'failed' else 'pending' end,
+           claimed_by_agent_id=null,
+           claim_expires_at=null,
+           error_message=case
+             when l.attempts>=3
+             then 'The camera view was not captured after several attempts.'
+           end,
+           completed_at=case when l.attempts>=3 then now() end
+      from lapsed l
+     where e.id=l.id
+    returning e.status
+  )
+  select count(*) filter (where status='pending'),
+         count(*) filter (where status='failed')
+    into v_released,v_failed
+    from finalized;
+
+  return jsonb_build_object(
+    'released',v_released,
+    'failed',v_failed,
+    'ran_at',now()
+  );
+end
+$function$;
+
+comment on function public.wl_finalize_stale_incident_stills() is
+  'WatchLog 0150: return lapsed unexpired processing stills to pending within the attempt budget and fail spent ones; expiry stays with the 0107 retention';
+
+revoke all on function public.wl_finalize_stale_incident_stills()
+  from public,anon,authenticated,service_role;
+grant execute on function public.wl_finalize_stale_incident_stills()
+  to service_role;
+
+-- Scheduled exactly like 0142: independent of any Agent poll.
+do $$
+begin
+  if exists (select 1 from pg_available_extensions where name = 'pg_cron') then
+    create extension if not exists pg_cron;
+    perform cron.unschedule(jobid)
+      from cron.job
+     where jobname = 'watchlog-finalize-stale-incident-stills';
+    perform cron.schedule(
+      'watchlog-finalize-stale-incident-stills',
+      '*/2 * * * *',
+      'select public.wl_finalize_stale_incident_stills()'
+    );
+  end if;
+exception when others then
+  raise notice 'stale incident still scheduling skipped: %', sqlerrm;
+end $$;
 
 -- ---------------------------------------------------------------------
 -- Analytics/config snapshot work includes recorder identity end-to-end.

@@ -581,6 +581,59 @@ def run() -> int:
                 "legacy storage keeps nvr_health + NULL recorder ledger compatibility",
             )
 
+            # MNVR-047: the owner read model reads recorder_health.storage_state.
+            # Legacy (recorder-less) storage transitions of a one-recorder site
+            # must keep it current, not frozen at the migration-time copy.
+            as_anon(
+                "select wl_report_health(%s,%s,%s::jsonb)", agent_b, key_b,
+                json.dumps({"nvr": {"reachable": True, "auth_ok": True, "reason": "ok"},
+                            "channels": {"enumerated": True,
+                                         "reported": [{"channel": "1", "enabled": True}]}}),
+            )
+
+            def legacy_storage(seq, to, reason, device_ts):
+                return as_anon(
+                    "select wl_reconcile_recording_storage(%s,%s,%s::jsonb,300)",
+                    agent_b, key_b,
+                    json.dumps([{
+                        "id": f"{agent_b}:{legacy_epoch}:{seq}",
+                        "store_epoch": legacy_epoch, "seq": seq,
+                        "layer": "nvr_storage", "entity": "nvr",
+                        "from": "unknown", "to": to, "reason": reason,
+                        "source": "probe", "device_ts": device_ts,
+                    }]),
+                )[0]
+
+            def singleton_storage():
+                rh = cur.execute(
+                    """select storage_state,storage_reason_code from recorder_health
+                        where recorder_id=%s and agent_id=%s""", (rec_c, agent_b),
+                ).fetchone()
+                owner = as_auth(ub, "select wl_my_site_recorders(%s)", sb)[0]["recorders"]
+                return rh, [(r["state"], r["issue"]) for r in owner]
+
+            legacy_storage(4, "fault", "disk_error", "2026-10-02T14:00:03Z")
+            rh_state, owner = singleton_storage()
+            step(
+                rh_state == ("fault", "disk_error") and owner == [("attention", "storage")],
+                "one-recorder site: a legacy storage fault reaches recorder health and the "
+                "owner recorder card",
+                str((rh_state, owner)),
+            )
+            legacy_storage(5, "ok", "ok", "2026-10-02T14:00:04Z")
+            legacy_storage(6, "fault", "disk_error", "2026-10-02T13:59:00Z")
+            rh_state, owner = singleton_storage()
+            nvr_state = cur.execute(
+                "select storage_state from nvr_health where agent_id=%s", (agent_b,),
+            ).fetchone()[0]
+            step(
+                rh_state == ("ok", "ok") and nvr_state == "ok"
+                and owner == [("healthy", None)],
+                "one-recorder site: storage recovery is reflected and an older replayed "
+                "fault does not regress it",
+                str((rh_state, nvr_state, owner)),
+            )
+
             # Exact execute ACLs remain the deployed surface.
             def execute_grantees(sig):
                 rows = cur.execute(

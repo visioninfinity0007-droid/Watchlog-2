@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""Site Control write roles (MNVR-050): real Postgres execution.
+
+Rolled back after execution. Proves the recommend/approve tiers that
+wl_my_site_diagnosis advertises are enforced by the database itself:
+- a viewer cannot propose a recorder write (recommend or managed);
+- a viewer cannot approve a proposed write, and the command stays proposed;
+- an admin can propose, and an owner or admin can approve;
+- another tenant's owner still cannot approve;
+- with memberships in several accounts, the role that counts is the one held
+  in the site's account: a viewer here who owns another account can neither
+  propose nor approve, and an admin here who is a viewer elsewhere can do both;
+- the propose/approve EXECUTE ACLs stay authenticated-facing.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+ENV = {}
+env_path = ROOT.parent / ".env"
+for line in env_path.read_text(errors="ignore").splitlines() if env_path.exists() else []:
+    m = re.match(r"^([A-Za-z0-9_]+)=(.*)$", line)
+    if m:
+        ENV.setdefault(m.group(1), m.group(2).strip().strip('"').strip("'"))
+for k in ("SUPABASE_DB_HOST", "SUPABASE_DB_PORT", "SUPABASE_DB_USER",
+          "SUPABASE_DB_PASSWORD", "SUPABASE_DB_NAME"):
+    if os.environ.get(k):
+        ENV[k] = os.environ[k]
+
+import psycopg  # noqa: E402
+
+STEPS: list[bool] = []
+
+# The only recorder model whose safe writes are graded FIELD_VERIFIED in 0061.
+VENDOR, MODEL = "Dahua", "DH-XVR1B08-I"
+FIRMWARE, FINGERPRINT = "authz-fw-1", "authz-fingerprint-1"
+
+
+def step(ok: bool, name: str, detail: str = "") -> None:
+    STEPS.append(bool(ok))
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail else ""))
+
+
+def run() -> int:
+    dsn = dict(
+        host=ENV["SUPABASE_DB_HOST"],
+        port=int(ENV.get("SUPABASE_DB_PORT", 5432)),
+        user=ENV["SUPABASE_DB_USER"],
+        password=ENV["SUPABASE_DB_PASSWORD"],
+        dbname=ENV.get("SUPABASE_DB_NAME", "postgres"),
+        connect_timeout=30,
+        autocommit=False,
+    )
+
+    with psycopg.connect(**dsn) as conn, conn.cursor() as cur:
+        try:
+            def claims(uid):
+                return json.dumps({"sub": str(uid), "role": "authenticated"})
+
+            def as_auth(uid, sql, *params):
+                cur.execute("savepoint auth_sp")
+                cur.execute("select set_config('request.jwt.claims', %s, true)", (claims(uid),))
+                cur.execute("set local role authenticated")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                finally:
+                    cur.execute("reset role")
+                    cur.execute("release savepoint auth_sp")
+                return row
+
+            def as_auth_raises(uid, sql, *params):
+                cur.execute("savepoint auth_err")
+                cur.execute("select set_config('request.jwt.claims', %s, true)", (claims(uid),))
+                cur.execute("set local role authenticated")
+                raised, message = False, ""
+                try:
+                    cur.execute(sql, params or None).fetchone()
+                except psycopg.Error as exc:
+                    raised, message = True, str(exc).splitlines()[0]
+                cur.execute("rollback to savepoint auth_err")
+                cur.execute("reset role")
+                return raised, message
+
+            def as_auth_try(uid, sql, *params):
+                cur.execute("savepoint auth_try")
+                cur.execute("select set_config('request.jwt.claims', %s, true)", (claims(uid),))
+                cur.execute("set local role authenticated")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                    cur.execute("reset role")
+                    cur.execute("release savepoint auth_try")
+                    return row, ""
+                except psycopg.Error as exc:
+                    cur.execute("rollback to savepoint auth_try")
+                    cur.execute("reset role")
+                    return None, str(exc).splitlines()[0]
+
+            def as_anon(sql, *params):
+                cur.execute("savepoint anon_sp")
+                cur.execute("set local role anon")
+                try:
+                    row = cur.execute(sql, params or None).fetchone()
+                finally:
+                    cur.execute("reset role")
+                    cur.execute("release savepoint anon_sp")
+                return row
+
+            def new_user(email):
+                return cur.execute(
+                    "insert into auth.users(id,email) values (gen_random_uuid(),%s) returning id",
+                    (email,),
+                ).fetchone()[0]
+
+            def bootstrap(email, company, site_name):
+                uid = new_user(email)
+                boot = as_auth(uid, "select wl_bootstrap_tenant(%s,%s)", company, site_name)[0]
+                site = cur.execute(
+                    "select id from sites where tenant_id=%s order by created_at limit 1",
+                    (boot["tenant_id"],),
+                ).fetchone()[0]
+                return uid, boot["tenant_id"], site
+
+            def member(tenant_id, email, role):
+                uid = new_user(email)
+                cur.execute(
+                    "insert into memberships(user_id,tenant_id,role) values (%s,%s,%s)",
+                    (uid, tenant_id, role),
+                )
+                return uid
+
+            def add_agent(tenant_id, site_id, key):
+                return cur.execute(
+                    """insert into public.agents(
+                         tenant_id,site_id,agent_key_hash,hostname,platform,
+                         agent_version,last_seen_at
+                       ) values (
+                         %s,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'),
+                         'authz-agent','windows','5.0.27',now()
+                       ) returning id""",
+                    (tenant_id, site_id, key),
+                ).fetchone()[0]
+
+            owner, tenant, site = bootstrap(
+                "authz-owner@watchlog.test", "Authz Tenant", "Authz Site"
+            )
+            admin = member(tenant, "authz-admin@watchlog.test", "admin")
+            viewer = member(tenant, "authz-viewer@watchlog.test", "viewer")
+            other_owner, _other_tenant, _other_site = bootstrap(
+                "authz-other@watchlog.test", "Other Tenant", "Other Site"
+            )
+
+            key = "authz-agent-key"
+            agent = add_agent(tenant, site, key)
+            recorder = as_anon(
+                "select wl_sync_recorders(%s,%s,%s::jsonb)",
+                agent, key, json.dumps([{
+                    "local_key": "rec-a",
+                    "display_name": "Recorder A",
+                    "vendor": VENDOR,
+                    "model": MODEL,
+                    "firmware": FIRMWARE,
+                    "identity_fingerprint": FINGERPRINT,
+                    "driver": "dahua-cgi",
+                    "is_primary": True,
+                    "is_configured": True,
+                }]),
+            )[0]["rec-a"]
+            # Write eligibility is recorder-scoped (MNVR-049): this recorder has
+            # its own read-back-verified field evidence for the time write.
+            cur.execute(
+                """insert into recorder_field_evidence(
+                     id,site_id,recorder_id,identity_fingerprint,vendor,model,
+                     firmware,capability,operation,result,evidence_class,
+                     test_date,read_back_verified
+                   ) values (
+                     'TEST-AUTHZ-TIME',%s,%s,%s,%s,%s,%s,'time_ntp_config',
+                     'read_write','write applied and read back','FIELD_VERIFIED',
+                     current_date,true
+                   )""",
+                (site, recorder, FINGERPRINT, VENDOR, MODEL, FIRMWARE),
+            )
+            cur.execute("update sites set site_control_enabled=true where id=%s", (site,))
+
+            propose_sql = (
+                "select wl_site_command_propose_write("
+                "%s,'configure_time',%s::jsonb,%s,'test','role test')"
+            )
+            params = json.dumps({"recorder_id": str(recorder), "ntp_enabled": True})
+
+            # ----------------------------------------------------------
+            # Viewer: neither recommend nor managed.
+            # ----------------------------------------------------------
+            for mode in ("recommend", "managed"):
+                raised, msg = as_auth_raises(viewer, propose_sql, site, params, mode)
+                step(
+                    raised and "role" in msg.lower(),
+                    f"viewer cannot propose a recorder write ({mode})",
+                    msg,
+                )
+
+            # ----------------------------------------------------------
+            # Admin proposes; viewer cannot approve; owner can.
+            # ----------------------------------------------------------
+            proposed = as_auth(admin, propose_sql, site, params, "recommend")[0]
+            step(
+                proposed["status"] == "proposed",
+                "admin can recommend a FIELD-VERIFIED safe write",
+                json.dumps(proposed, default=str),
+            )
+            cmd = proposed["id"]
+
+            raised, msg = as_auth_raises(
+                viewer, "select wl_site_command_approve(%s,'viewer')", cmd
+            )
+            status = cur.execute(
+                "select status from site_commands where id=%s", (cmd,)
+            ).fetchone()[0]
+            step(
+                raised and "role" in msg.lower() and status == "proposed",
+                "viewer cannot approve a proposed write; it stays proposed",
+                f"{msg} / status={status}",
+            )
+
+            raised, msg = as_auth_raises(
+                other_owner, "select wl_site_command_approve(%s,'other')", cmd
+            )
+            step(raised, "another tenant's owner cannot approve", msg)
+
+            approved = as_auth(owner, "select wl_site_command_approve(%s,'owner')", cmd)[0]
+            status = cur.execute(
+                "select status, detail->>'approved_by' from site_commands where id=%s",
+                (cmd,),
+            ).fetchone()
+            step(
+                approved.get("ok") is True and status == ("queued", "owner"),
+                "owner can approve a proposed write",
+                f"{json.dumps(approved, default=str)} / {status}",
+            )
+
+            second = as_auth(owner, propose_sql, site, params, "recommend")[0]
+            approved = as_auth(admin, "select wl_site_command_approve(%s,'admin')", second["id"])[0]
+            step(approved.get("ok") is True, "admin can approve a proposed write",
+                 json.dumps(approved, default=str))
+
+            # ----------------------------------------------------------
+            # Memberships in several accounts: only the role held in the
+            # site's account counts, never a role from another account.
+            # ----------------------------------------------------------
+            def other_account(account_id, name):
+                return cur.execute(
+                    "insert into tenants(id,name,account_status) values (%s,%s,'active') "
+                    "returning id",
+                    (account_id, name),
+                ).fetchone()[0]
+
+            # The other accounts get the lowest ids and their memberships are
+            # written first, so an account-blind role lookup meets them first
+            # whether it scans the table or the (user_id, tenant_id) key.
+            owned_elsewhere = other_account(
+                "00000000-0000-0000-0000-0000000000b1", "Authz Owned Elsewhere"
+            )
+            viewed_elsewhere = other_account(
+                "00000000-0000-0000-0000-0000000000c1", "Authz Viewed Elsewhere"
+            )
+            multi_viewer = new_user("authz-multi-viewer@watchlog.test")
+            multi_admin = new_user("authz-multi-admin@watchlog.test")
+            cur.execute(
+                "insert into memberships(user_id,tenant_id,role) values (%s,%s,'owner')",
+                (multi_viewer, owned_elsewhere),
+            )
+            cur.execute(
+                "insert into memberships(user_id,tenant_id,role) values (%s,%s,'viewer')",
+                (multi_admin, viewed_elsewhere),
+            )
+            # Their membership of the site's account is the oldest, so it is
+            # the account they act in (wl_my_tenant).
+            for uid, role in ((multi_viewer, "viewer"), (multi_admin, "admin")):
+                cur.execute(
+                    "insert into memberships(user_id,tenant_id,role,created_at) "
+                    "values (%s,%s,%s,now()-interval '30 days')",
+                    (uid, tenant, role),
+                )
+            acting = {
+                name: as_auth(uid, "select wl_my_tenant()::text, wl_my_role()")
+                for name, uid in (("viewer-here", multi_viewer), ("admin-here", multi_admin))
+            }
+            print(f"  info  wl_my_tenant/wl_my_role: {acting}")
+            step(
+                all(t == str(tenant) for t, _ in acting.values()),
+                "multi-account users act in the site's account",
+                str(acting),
+            )
+
+            for mode in ("recommend", "managed"):
+                raised, msg = as_auth_raises(multi_viewer, propose_sql, site, params, mode)
+                step(
+                    raised and "role" in msg.lower(),
+                    f"a viewer here who owns another account cannot propose ({mode})",
+                    msg,
+                )
+
+            waiting = as_auth(admin, propose_sql, site, params, "recommend")[0]
+            raised, msg = as_auth_raises(
+                multi_viewer, "select wl_site_command_approve(%s,'multi-viewer')",
+                waiting["id"],
+            )
+            status = cur.execute(
+                "select status from site_commands where id=%s", (waiting["id"],)
+            ).fetchone()[0]
+            step(
+                raised and "role" in msg.lower() and status == "proposed",
+                "a viewer here who owns another account cannot approve; it stays proposed",
+                f"{msg} / status={status}",
+            )
+
+            row, err = as_auth_try(multi_admin, propose_sql, site, params, "recommend")
+            step(
+                row is not None and row[0].get("status") == "proposed",
+                "an admin here who is a viewer elsewhere can propose",
+                err or json.dumps(row[0], default=str),
+            )
+            row, err = as_auth_try(
+                multi_admin, "select wl_site_command_approve(%s,'multi-admin')",
+                waiting["id"],
+            )
+            step(
+                row is not None and row[0].get("ok") is True,
+                "an admin here who is a viewer elsewhere can approve",
+                err or json.dumps(row[0], default=str),
+            )
+
+            # ----------------------------------------------------------
+            # ACLs stay authenticated-facing (no anon).
+            # ----------------------------------------------------------
+            def execute_grantees(sig):
+                rows = cur.execute(
+                    """select case when a.grantee=0 then 'PUBLIC'
+                                    else a.grantee::regrole::text end,
+                              p.proowner::regrole::text
+                         from pg_proc p,
+                              aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+                        where p.oid=%s::regprocedure
+                          and a.privilege_type='EXECUTE'""",
+                    (sig,),
+                ).fetchall()
+                owner_role = rows[0][1] if rows else None
+                return {g for g, _ in rows if g != owner_role}
+
+            for sig in (
+                "public.wl_site_command_propose_write(uuid,text,jsonb,text,text,text)",
+                "public.wl_site_command_approve(uuid,text)",
+            ):
+                got = execute_grantees(sig)
+                step(
+                    "anon" not in got and "PUBLIC" not in got and "authenticated" in got,
+                    f"{sig} is authenticated-facing only",
+                    str(sorted(got)),
+                )
+
+        finally:
+            conn.rollback()
+
+    passed = sum(1 for s in STEPS if s)
+    print(f"\n  {passed}/{len(STEPS)} steps passed")
+    return 0 if passed == len(STEPS) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(run())
