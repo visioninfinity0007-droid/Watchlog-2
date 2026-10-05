@@ -506,6 +506,23 @@ def _send_bootstrap_once(cloud, state, cfg):
             "reason": "no installer analytics profile",
         })
         return False
+    # wl_agent_bootstrap_analytics matches cameras by channel across the whole site. Once a
+    # second recorder exists (configured or disabled, its cameras stay), channel N names
+    # several cameras, and the continuity recorder's profiles would rename and re-purpose
+    # every one of them. Setup writes this marker on a multi-recorder first install; a
+    # recorder added later through Manage Recorders is caught here.
+    try:
+        recorder_rows = len(recorder_registry.recorders())
+    except Exception:  # noqa: BLE001 — unknown: do not send, ask again next poll
+        return False
+    if recorder_rows > 1:
+        _write_json_atomic(cfg.analytics_bootstrap_marker, {
+            "site_id": state.get("site_id"), "skipped": True,
+            "reason": "multi-recorder site: channel-keyed purposes are ambiguous",
+        })
+        core.log("analytics: installer profile not sent: this site has more than one "
+                 "recorder, and the profile names cameras by channel only")
+        return False
     res = cloud.call("wl_agent_bootstrap_analytics",
                      p_agent_id=state["agent_id"],
                      p_agent_key=state["agent_key"],
