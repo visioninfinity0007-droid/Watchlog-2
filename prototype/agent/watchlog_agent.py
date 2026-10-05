@@ -1508,10 +1508,15 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
     event upload. Jittered interval so a fleet does not probe in lockstep. When the main loop
     signals a resume (site PC woke from sleep), reconcile IMMEDIATELY instead of waiting a full
     interval — so a camera that failed while the PC was asleep is caught right away (the H2
-    recorder-state reconciliation runs inside health_cycle)."""
+    recorder-state reconciliation runs inside health_cycle). Like the recovery and Site Control
+    threads it outlives any fault: the fan-out runs one per recorder, and nothing restarts a
+    thread that has ended."""
     stop.wait(min(10, cfg.health_seconds))              # let enrollment/sync settle first
     while not stop.is_set():
-        health_cycle(cloud, state, cfg, holder)
+        try:
+            health_cycle(cloud, state, cfg, holder)
+        except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
+            worker_fault("health", e)
         jitter = random.uniform(0, max(1.0, cfg.health_seconds * 0.2))
         if resume_evt is not None:
             if resume_evt.wait(cfg.health_seconds + jitter):
