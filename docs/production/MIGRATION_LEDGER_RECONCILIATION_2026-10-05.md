@@ -17,6 +17,12 @@ record the 32 files that a bare `apply_migrations.py` run would treat as `PENDIN
 (section 5). The body of commit 20c11f2 says "Fixes MNVR-064". That trailer is wrong
 and does not close the item.
 
+`0156_production_truth_hotfix.sql` (section 9) is a standalone production hotfix. It
+redefines `wl_agent_semver_triplet` to production's body, adds
+`config_snapshot_requests` to `wl_known_capabilities()` (NEW-L1) and adds a bounded
+expiry for snapshot requests (NEW-L6). It has **not** been applied to production and
+needs explicit approval before it is.
+
 ## 1. Two ledgers
 
 | Ledger | Written by | Key | Identity column |
@@ -239,8 +245,69 @@ Derived from the code and the ledger above, not executed against production:
   maturity contract`, which needs PHP (absent on this machine); unrelated to this
   branch. `portal-contracts` job: 6 pass.
 - `tools/reserved_migrations.json` on this branch never reserved 0144 or 0145
-  (only 0094), so there was nothing to remove here. `mr/db-contracts` reserves both;
-  that reservation has to be dropped there once this branch is merged.
+  (only 0094), so there was nothing to remove here. `mr/db-contracts` (at `e3ab17f`)
+  already carries `0144_portal_qa_truth_contracts.sql` and
+  `0145_camera_preview_performance.sql` and dropped its 0144/0145 reservation in
+  `44c1453`; nothing is left to clean up there.
+- Open hand-off (the reverse direction): this branch reserves 0146..0155 for the
+  `mr/db-contracts` chain (section 9). Those reservations must be removed from
+  `tools/reserved_migrations.json` when the `mr/db-contracts` files merge.
+  `tools/lint_migrations.py` only warns ("reserved migration(s) ... are present")
+  until then; it does not fail.
+
+## 9. 0156: standalone production hotfix (NOT applied; needs explicit approval)
+
+`prototype/supabase/migrations/0156_production_truth_hotfix.sql`. Numbers 0146-0155
+belong to the multi-recorder chain on `mr/db-contracts` and are reserved in
+`tools/reserved_migrations.json` so migration lint passes here (`ok, 147 files,
+0001..0156`). Nothing in it has been applied to production. Applying it is a
+production change that needs explicit approval, recorded in both ledgers (the
+Supabase migration API row and `public.schema_migrations` with the file's sha256).
+Because of the 32 unrecorded files in section 7, a bare `apply_migrations.py` run
+would try those first, so 0156 must be applied on its own.
+
+What it changes, and what production showed on 2026-10-05 (read-only queries E1-E6):
+
+| Item | Production today | 0156 |
+|---|---|---|
+| NEW-L1 `wl_known_capabilities()` | Body md5 `1d4e5e4acc69645dd01143cf90115b41` (= repo 0119), 9 entries, no `config_snapshot_requests`; `search_path=public`; execute for PUBLIC, anon, authenticated, service_role. `wl_agent_report_capabilities` (md5 `53bf6b70407dd58fadf2b4e6b75c9329` = repo 0119) is the only writer of `agents.capabilities` and keeps only known entries. 0 of 2 live Agents carry `config_snapshot_requests`. `watchlog-restaurant-snapshot-scheduler` ran 21,185 times (all succeeded, since 2026-09-28 02:53 UTC); 0 `restaurant_analytics` requests have ever existed; 5 restaurant camera profiles are enabled for interval sampling. | Production body plus one appended element `'config_snapshot_requests'` (new md5 `490daaf501a1b3829cd5cda615560270`). `CREATE OR REPLACE` keeps the ACL; `search_path=public` is restated. Nothing else changes. |
+| `wl_agent_semver_triplet(text)` | Body md5 `8a4f5c64381d1080dbc565c409b84a27` (single-backslash regex); returns `{5,0,27}` for `'5.0.27'`. | The production body exactly (same md5). No production change. On a fresh chain it fixes `{0,0,0}`, so a 5.0.22+ Agent keeps `site_control_runtime` / `remote_update_v1`. |
+| NEW-L6 snapshot request expiry | `camera_snapshot_requests` has no expiry column or job. 22 `manual` requests are open, oldest 2026-09-05 12:10 UTC, newest 2026-09-28 13:07 UTC, all older than 24 h, at 4 sites. Of 49 delivered requests: p50 latency 23 s, max 12.9 h, none longer than 24 h. The Agent's config poll returns open requests oldest first and the Agent services 2 per poll, so stale requests stay at the head of the queue; one open request per camera blocks a new one for that camera. | Adds `camera_snapshot_requests.expired_at` and `wl_expire_stale_snapshot_requests(manual minutes default 1440, analytics minutes default 30)` (clamped to 60-10080 and 5-1440): sets `completed_at` and `expired_at` together on open requests older than the window, `for update skip locked`. SECURITY DEFINER, `search_path=public, pg_temp`, execute for service_role only. Guarded pg_cron job `watchlog-expire-stale-snapshot-requests` every 5 minutes, in the 0142_stale style. Its first production run would expire the 22 open manual requests. |
+
+Effects to weigh before approval:
+
+- Applying 0156 lets `wl_agent_report_capabilities` keep `config_snapshot_requests`
+  when an Agent sends it, which turns on the 0125 restaurant capture scheduler for
+  sites with enabled restaurant camera profiles. That is the intended 0125 behaviour,
+  but it is new traffic (up to 2 requests per site per 30 s cycle).
+- Unknown: whether the deployed Agents send `config_snapshot_requests`. Production
+  stores `[operations_evidence_still, recorder_probe_v2, remote_update_v1]` and
+  `[operations_evidence_still, recorder_probe_v2]` for the two live 5.0.26 Agents.
+  The 5.0.26 source in git (`analytics_agent.RUNTIME_CAPABILITIES`) also lists
+  `operations_runtime` and other entries that are known and would have been kept, so
+  the deployed Agents do not send that list. Whether the scheduler starts selecting
+  them after 0156 stays unverified until a capability report keeps the entry.
+- An expired request is closed with `expired_at` set and is never read as a
+  delivered image: nothing in the repo treats `completed_at` as capture proof, and the
+  image itself lives in `camera_config_snapshots`. The 0125 scheduler uses the latest
+  `completed_at` of a camera's restaurant requests only as its pacing cursor, so an
+  expired restaurant request delays the next one by that camera's interval.
+
+Overlap check with `mr/db-contracts` (0146-0155 at `e3ab17f`): `git grep` finds no
+definition of `wl_known_capabilities`, `wl_agent_semver_triplet`,
+`wl_agent_report_capabilities`, `wl_restaurant_schedule_snapshot_requests`,
+`wl_expire_stale_snapshot_requests` or `expired_at`. 0150 reads and completes
+`camera_snapshot_requests` (`completed_at is null` filter) and redefines
+`wl_agent_analytics_config` and `wl_upload_config_snapshot`, which 0156 does not
+touch. Applying 0156 after that chain reverts nothing.
+
+Local verification (disposable postgres:16 only):
+
+- `prototype/tests/e2e_production_hotfix_0156_pg.py` (CI `integration` job): 38 steps.
+  Before 0156: 12 steps fail (capability stripped, triplet `{0,0,0}`, scheduler
+  requests 0, no expiry function or column). After: 38 pass, on this branch's chain
+  and on `mr/db-contracts` `e3ab17f` with 0156 appended.
+- The 0144/0145 `--pg` contract and the 0059 runtime-capability integration still pass.
 
 ## Appendix: exact queries
 
@@ -572,4 +639,53 @@ order by 1;
 select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('wl_agent_semver_triplet','wl_agent_preflight_auth') order by 1;
 -- immutable, side-effect-free call:
 select public.wl_agent_semver_triplet('5.0.27') as triplet, current_setting('standard_conforming_strings') as scs, (select provolatile from pg_proc where oid = 'public.wl_agent_semver_triplet(text)'::regprocedure) as volatility
+```
+
+### E. 0156 evidence (read-only, 2026-10-05)
+
+```sql
+-- E1. bodies, config and ACL of the two redefined functions
+select p.oid::regprocedure::text as sig, p.prosecdef, p.provolatile, array_to_string(p.proconfig,';') as cfg, md5(p.prosrc) as src_md5, length(p.prosrc) as len, p.prosrc, pg_get_functiondef(p.oid) as def, p.proacl::text as acl, pg_get_userbyid(p.proowner) as owner
+from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+where n.nspname='public' and p.proname in ('wl_known_capabilities','wl_agent_semver_triplet') order by 1;
+-- E2. camera_snapshot_requests shape, open requests, latency, constraints, cron jobs
+select 'cols' k, string_agg(column_name||':'||data_type||':'||coalesce(column_default,''), ' | ' order by ordinal_position) v from information_schema.columns where table_schema='public' and table_name='camera_snapshot_requests'
+union all select 'open_by_source', string_agg(x, ' | ') from (select request_source||' open='||count(*)||' oldest='||min(requested_at)::text||' newest='||max(requested_at)::text as x from public.camera_snapshot_requests where completed_at is null group by request_source) s
+union all select 'all_by_source', string_agg(x, ' | ') from (select request_source||' n='||count(*)||' done='||count(completed_at)||' p50_latency_s='||coalesce(round(extract(epoch from percentile_cont(0.5) within group (order by completed_at-requested_at)))::text,'-')||' p99_latency_s='||coalesce(round(extract(epoch from percentile_cont(0.99) within group (order by completed_at-requested_at)))::text,'-')||' max_latency_s='||coalesce(round(extract(epoch from max(completed_at-requested_at)))::text,'-') as x from public.camera_snapshot_requests group by request_source) s
+union all select 'constraints', string_agg(conname||'='||pg_get_constraintdef(oid), ' | ') from pg_constraint where conrelid='public.camera_snapshot_requests'::regclass
+union all select 'cron', string_agg(jobname||' @ '||schedule||' active='||active::text||' :: '||left(command,160), E'\n') from cron.job;
+-- E3. latency buckets, open ages, live Agents with the capability
+select
+ count(*) filter (where completed_at is not null and completed_at-requested_at > interval '5 minutes') as done_gt_5m,
+ count(*) filter (where completed_at is not null and completed_at-requested_at > interval '1 hour') as done_gt_1h,
+ count(*) filter (where completed_at is not null and completed_at-requested_at > interval '6 hours') as done_gt_6h,
+ count(*) filter (where completed_at is not null and completed_at-requested_at > interval '24 hours') as done_gt_24h,
+ count(*) filter (where completed_at is null and requested_at < now()-interval '24 hours') as open_gt_24h,
+ count(*) filter (where completed_at is null and requested_at >= now()-interval '24 hours') as open_le_24h,
+ count(distinct site_id) filter (where completed_at is null) as open_sites,
+ count(distinct q.site_id) filter (where completed_at is null and exists(select 1 from public.agents a where a.site_id=q.site_id and a.last_seen_at>now()-interval '5 minutes')) as open_sites_with_live_agent,
+ (select count(*) from public.agents a where a.last_seen_at>now()-interval '5 minutes') as live_agents,
+ (select count(*) from public.agents a where a.last_seen_at>now()-interval '5 minutes' and coalesce(a.capabilities,'[]'::jsonb) ? 'config_snapshot_requests') as live_agents_with_cap,
+ (select count(*) from public.restaurant_camera_profiles p where p.enabled and p.sampling_mode in ('interval','hybrid')) as rest_profiles,
+ now() as now_utc
+from public.camera_snapshot_requests q;
+-- E4. functions that use the capability list or touch snapshot requests
+select p.oid::regprocedure::text as sig, md5(p.prosrc) as md5, p.prosrc ~ 'wl_known_capabilities' as uses_known, p.prosrc ~ 'config_snapshot_requests' as mentions_cap, p.prosrc ~ 'camera_snapshot_requests' as touches_csr
+from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+where n.nspname='public' and (p.prosrc ~ 'wl_known_capabilities' or p.prosrc ~ 'config_snapshot_requests' or p.prosrc ~ 'camera_snapshot_requests' or p.proname ~ 'expire')
+order by 1;
+-- E5. scheduler run history and restaurant requests ever created
+select j.jobname, count(d.*) as runs, count(d.*) filter (where d.status='succeeded') as succeeded, min(d.start_time) as first_run, max(d.start_time) as last_run,
+ (select count(*) from public.camera_snapshot_requests where request_source='restaurant_analytics') as restaurant_requests_ever
+from cron.job j left join cron.job_run_details d on d.jobid=j.jobid
+where j.jobname='watchlog-restaurant-snapshot-scheduler' group by j.jobname;
+-- E6. stored capabilities of recently seen Agents, and every writer of agents.capabilities
+select a.agent_version, a.capabilities, a.capabilities_reported_at, a.last_seen_at > now()-interval '5 minutes' as live
+from public.agents a where a.last_seen_at > now()-interval '7 days' order by a.last_seen_at desc;
+select p.oid::regprocedure::text as sig, md5(p.prosrc) as md5, substring(p.prosrc from '(?i)set[^;]{0,200}capabilities\s*=[^;]{0,200}') as snippet
+from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+where n.nspname='public' and p.prosrc ~* 'capabilities\s*=' and p.prosrc ~* 'update\s+(public\.)?agents'
+order by 1;
+select 'fn' k, p.oid::regprocedure::text as name from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.prosrc ~ 'capabilities_reported_at'
+union all select 'trigger', t.tgname||' -> '||t.tgfoid::regproc::text from pg_trigger t where t.tgrelid='public.agents'::regclass and not t.tgisinternal;
 ```
