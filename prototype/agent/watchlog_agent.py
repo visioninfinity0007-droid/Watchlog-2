@@ -2544,7 +2544,8 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
 
             # Claimed intervals carry camera UUIDs; without the mapping they cannot be read. The
             # recorder archive is opened (and closed) by the runner only for a claimed interval
-            # that needs reading, so an idle cycle never logs in to the recorder.
+            # that needs reading, so an idle cycle never logs in to the recorder. An archive that
+            # cannot be opened hands the claim back as pending, its retry budgets untouched.
             if camera_ids:
                 try:
                     runner = rec.RecoveryRunner(

@@ -103,6 +103,7 @@ class RecoveryRunner:
         # the recorder.
         self.driver_factory = driver_factory
         self._opened = False
+        self._unopenable = None            # why the archive could not be opened in this run_once
         # {cloud camera UUID: recorder channel}. Intervals name cameras by UUID
         # (recovery_intervals.cameras is uuid[]); the archive driver reads channels.
         self.camera_channels = {str(k): str(v) for k, v in (camera_channels or {}).items()}
@@ -152,10 +153,31 @@ class RecoveryRunner:
         return {"id": iv["id"], "status": status, "recovered": 0, "yielded": False, "reason": reason}
 
     def _open_archive(self):
-        if self.driver is None and self.driver_factory is not None:
-            self.driver = self.driver_factory()
-            self._opened = True
-        return self.driver
+        """Open the archive for a claimed interval; the reason it could not be, or None."""
+        if self.driver is None and self.driver_factory is not None and self._unopenable is None:
+            try:
+                self.driver = self.driver_factory()
+                self._opened = True
+            except (Exception, SystemExit) as e:    # noqa: BLE001 — offline, login refused, no config
+                self._unopenable = type(e).__name__
+                self._log(f"recovery: recorder archive could not be opened: {self._unopenable}; "
+                          "the claimed interval stays pending")
+        return self._unopenable
+
+    def _release(self, iv, checkpoint, progress, failure) -> dict:
+        """Hand a claimed interval back as pending because the archive could not be opened.
+
+        Nothing of it was examined, so this is not a failed read: the checkpoint (cursor, seen-set,
+        failed-read count, verdict so far) is kept as claimed, and the no-progress count starts one
+        claim later so this claim does not count toward the attempts cap. The interval is read once
+        the recorder answers again, as when the worker used to skip the cycle."""
+        kept = dict(checkpoint)
+        kept["progress_attempt"] = progress + 1
+        self.cloud.call("wl_complete_recovery", p_agent_id=self.agent_id,
+                        p_agent_key=self.agent_key, p_id=iv["id"], p_status="pending",
+                        p_recovered_count=0, p_checkpoint=kept)
+        return {"id": iv["id"], "status": "pending", "recovered": 0, "yielded": False,
+                "error": failure}
 
     def _close_archive(self):
         if self._opened:
@@ -237,18 +259,15 @@ class RecoveryRunner:
                            progress=attempts if moved else progress,
                            examined=seen_part, incomplete=missed_part)
 
-        try:
-            self._open_archive()
-        except Exception as e:              # noqa: BLE001 — an archive that cannot be opened is a failed read
-            failed_at, failure = start, type(e).__name__
-            self._log(f"recovery: recorder archive could not be opened: {failure}")
+        unopenable = self._open_archive()
+        if unopenable is not None:
+            return self._release(iv, checkpoint, progress, unopenable)
         # A recorder whose recorded footage is searchable (Hikvision, Dahua) but whose own event
         # log is not is judged by its footage: the event replay it cannot offer is not a part of
         # the interval that went unrecovered.
-        footage = self._segments_capability() if failed_at is None else None
+        footage = self._segments_capability()
 
-        chunks = () if failed_at is not None else backfill._windows(start, end, self.chunk_seconds)
-        for chunk_start, chunk_end in chunks:
+        for chunk_start, chunk_end in backfill._windows(start, end, self.chunk_seconds):
             if self.live_pending():
                 if failed_at is not None and errors + 1 >= self.max_error_attempts:
                     break                   # out of retries: settle below instead of yielding
@@ -328,6 +347,7 @@ class RecoveryRunner:
             return []                  # never start recovery while live work is pending
         claimed = self.cloud.call("wl_agent_claim_recovery", p_agent_id=self.agent_id,
                                   p_agent_key=self.agent_key, p_limit=limit) or []
+        self._unopenable = None
         try:
             return [self._recover_interval(iv) for iv in claimed]
         finally:

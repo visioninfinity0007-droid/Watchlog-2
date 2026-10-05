@@ -6,8 +6,10 @@ RecoveryRunner.run_once had claimed anything. On an ONVIF Dahua or Hikvision sit
 therefore sent the ONVIF open, the vendor-native probe (a credentialed login), two GetProfiles and
 a channel list. Now the runner is given a driver factory and opens the archive only once
 wl_agent_claim_recovery returned an interval that needs reading, and closes it after the claim.
-An archive that cannot be opened is a failed read of the claimed interval: it backs off, and ends
-after the same bounded number of claims as any other archive failure.
+An archive that cannot be opened (recorder offline, login refused) is not a failed read: nothing of
+the interval was examined, so the claim is handed back as pending with its checkpoint, failed-read
+count and no-progress count untouched, and the interval is read once the recorder answers again
+(as before, when the worker skipped the cycle). It is never ended unrecoverable for it.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import backfill  # noqa: E402
 import recovery  # noqa: E402
 import watchlog_agent as core  # noqa: E402
-from drivers.base import NvrUnreachable  # noqa: E402
+from drivers.base import NvrAuthFailed, NvrUnreachable  # noqa: E402
 from test_recovery_rpc_contract import (  # noqa: E402
     CHANNELS, STATE, StrictCloud, _Archive, _Cycles, _Patch, _Recorder, _Spool)
 
@@ -104,21 +106,48 @@ class LazyArchive(unittest.TestCase):
             self.assertNotIn(ledger.intervals[0]["status"], ("pending", "in_progress"))
         self.assertEqual(opened, [])
 
-    def test_an_archive_that_cannot_be_opened_backs_off_then_ends(self):
+    def test_an_archive_that_cannot_be_opened_leaves_the_interval_pending(self):
+        # More claims than the failed-read budget and the no-progress cap together: neither is
+        # spent on a recorder that could not be opened, because nothing of the gap was examined.
+        claims = recovery.DEFAULT_MAX_ATTEMPTS + recovery.DEFAULT_MAX_ERROR_ATTEMPTS + 2
+        for fault in (NvrUnreachable("recorder offline"), NvrAuthFailed("login refused")):
+            with self.subTest(fault=type(fault).__name__):
+                def unopenable():
+                    raise fault
+
+                ledger = _Ledger([_interval()])
+                runner = self._runner(ledger, unopenable)
+                for _ in range(claims):
+                    self.assertEqual(runner.run_once()[0]["status"], "pending")
+                iv = ledger.intervals[0]
+                self.assertEqual(iv["status"], "pending")
+                self.assertIsNone(iv["checkpoint"].get("cursor"))
+                self.assertEqual(iv["checkpoint"].get("seen_keys") or [], [])
+                self.assertNotIn("errors", iv["checkpoint"])
+                self.assertNotIn("reason", iv.get("detail") or {})
+                self.assertEqual({c["p_status"] for c in ledger.completes}, {"pending"})
+                # The recorder answers again: the interval is read and recovered.
+                runner.driver_factory = _ClosingArchive
+                self.assertEqual(runner.run_once()[0]["status"], "recovered")
+                self.assertEqual(iv["status"], "recovered")
+
+    def test_an_unopenable_archive_keeps_the_progress_already_made(self):
+        cursor = (T0 + timedelta(minutes=30)).isoformat()
+        checkpoint = {"cursor": cursor, "seen_keys": ["ev:E0"], "errors": 1,
+                      "progress_attempt": 2, "examined": True, "incomplete": False}
+
         def unreachable():
             raise NvrUnreachable("recorder offline")
 
-        ledger = _Ledger([_interval()])
-        runner = self._runner(ledger, unreachable)
-        runner.run_once()
+        ledger = _Ledger([dict(_interval(attempts=2), checkpoint=dict(checkpoint))])
+        self._runner(ledger, unreachable).run_once()
         iv = ledger.intervals[0]
-        self.assertEqual(iv["status"], "in_progress")
-        self.assertEqual((iv["checkpoint"]["cursor"], iv["checkpoint"].get("errors")),
-                         (T0.isoformat(), 1))
-        for _ in range(recovery.DEFAULT_MAX_ERROR_ATTEMPTS - 1):
-            runner.run_once()
-        self.assertEqual(iv["status"], "unrecoverable")
-        self.assertEqual(iv["detail"].get("reason"), "archive_error")
+        self.assertEqual(iv["status"], "pending")
+        kept = {k: v for k, v in iv["checkpoint"].items() if k != "progress_attempt"}
+        self.assertEqual(kept, {k: v for k, v in checkpoint.items() if k != "progress_attempt"})
+        # The claim that could not open the archive is not counted toward the no-progress cap.
+        self.assertEqual(iv["attempts"] - iv["checkpoint"]["progress_attempt"],
+                         2 - checkpoint["progress_attempt"])
 
     def test_an_open_driver_is_still_used_as_given(self):
         archive = _ClosingArchive()
@@ -128,6 +157,22 @@ class LazyArchive(unittest.TestCase):
                                       log=lambda *a: None).run_once()
         self.assertEqual(out[0]["status"], "recovered")
         self.assertFalse(archive.closed, "a driver the caller passed in is the caller's to close")
+
+
+class _StaleReoffer(StrictCloud):
+    """The 0098 claim also re-offers an in_progress row once its claim went stale (900 s): every
+    cycle here is treated as past that, as when the recorder stays offline for hours."""
+
+    def call(self, fn, **params):
+        if fn == "wl_agent_claim_recovery":
+            self._check(fn, params)
+            self.calls.append(fn)
+            due = [iv for iv in self.intervals
+                   if iv["status"] in ("pending", "in_progress")][:params["p_limit"]]
+            for iv in due:
+                iv["status"], iv["attempts"] = "in_progress", iv["attempts"] + 1
+            return [dict(iv) for iv in due]
+        return super().call(fn, **params)
 
 
 class RecoveryWorkerOpensOnlyForClaimedWork(unittest.TestCase):
@@ -160,6 +205,32 @@ class RecoveryWorkerOpensOnlyForClaimedWork(unittest.TestCase):
         self._work(cloud, _Spool(), cycles=3)
         self.assertIn("wl_agent_claim_recovery", cloud.calls)
         self.assertEqual(self.opens, 0)
+
+    def test_an_offline_recorder_never_ends_a_claimed_interval(self):
+        # The recorder is offline (no live stream, archive open refused) for many cycles while the
+        # ledger re-offers stale claims: the interval stays pending, then recovers once it answers.
+        def offline(_cfg):
+            self.opens += 1
+            raise NvrUnreachable("recorder offline")
+
+        cloud = _StaleReoffer()
+        cloud.intervals.append({"id": "iv-1", "started_at": T0.isoformat(),
+                                "ended_at": (T0 + timedelta(hours=1)).isoformat(),
+                                "cameras": [CAM1], "checkpoint": {}, "attempts": 0,
+                                "status": "pending"})
+        cycles = recovery.DEFAULT_MAX_ERROR_ATTEMPTS + 3
+        with _Patch(core, open_archive_driver=offline, open_driver=_Recorder().open,
+                    log=lambda *_a: None):
+            core.recovery_worker(self.cfg, STATE, cloud, _Cycles(cycles), _Spool(), CHANNELS,
+                                 {"recorder_live_at": 0.0})
+        iv = cloud.intervals[0]
+        self.assertEqual(self.opens, cycles)
+        self.assertEqual(iv["status"], "pending")
+        self.assertNotIn("errors", iv["checkpoint"])
+        self.assertFalse({"recovered", "partial", "unrecoverable"}
+                         & {c["p_status"] for c in cloud.completes})
+        self._work(cloud, _Spool(), cycles=1)
+        self.assertEqual(iv["status"], "recovered")
 
     def test_a_cycle_with_claimed_work_opens_it_once(self):
         gap = (T0.isoformat(), (T0 + timedelta(hours=1)).isoformat())
