@@ -156,11 +156,21 @@ Recorded media:
   customer-visible text; still failures always read as still failures; clips are labelled by
   their container.
 - **MNVR-031 (Hikvision)**: footage downloads are bounded to the requested window.
-- **MNVR-019 / MNVR-034 / MNVR-035 / MNVR-062 (Dahua)**: archive segment times come back on the
-  agent clock; clip downloads have a total time budget; clip windows respect the clock that
-  stamped the event (an ONVIF-live site asks for the recorder clock and falls back to the agent
-  clock only when the recorder clock is more than 5 minutes from every civil offset); archive
-  search pages through all results.
+- **MNVR-019 / MNVR-034 / MNVR-062 (Dahua)**: archive segment times come back on the agent
+  clock; clip downloads have a total time budget; archive search pages through all results.
+- **MNVR-035 (clip clock, ONVIF-live Dahua site through the mapped dahua-cgi archive)**: the
+  clip claim does not say which clock stamped an event's time, so the Agent chooses by request
+  source. An operations/rule clip (no event) uses the agent clock. An incident clip on an event
+  uses the recorder clock, as for a live ONVIF event stamped by the recorder, and the agent clock
+  only when the recorder clock is more than 5 minutes from every civil offset. That is a best
+  guess, not provenance. Until the claim carries the event's `payload.clock_source` (a database
+  change, not in 5.0.28) these windows are placed wrongly: a recovered event, or an event
+  uploaded by an Agent before 5.0.28, is off by the recorder's drift (up to 5 minutes); an ONVIF
+  event stamped with receive time whose recorder clock comes within 5 minutes of another civil
+  offset is off by up to 5 minutes. When a claim does carry `clock_source`, the Agent follows it
+  and fails a recorder-stamped window it can no longer place instead of guessing (CI-covered
+  with fakes; the server side is not built). Dahua-live sites keep the agent clock; the
+  Hikvision archive takes no clock argument.
 - **U-3**: the shipped run loop honours `spool_max_rows`.
 
 Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
@@ -200,6 +210,9 @@ Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
   - ONVIF `device_ts` follows the recorder's UtcTime while it is within 300 s of the PC; a
     recorder clock further off gives receive time plus `clock_skew_s`.
   - ONVIF `Initialized` states at subscribe time are no longer emitted as new occurrences.
+  - On an ONVIF-live Dahua site whose recorder clock drifts, incident clips on recovered or
+    pre-5.0.28 events can miss by that drift (see MNVR-035 above). Read
+    `event_stream.last_clock_skew_s` and the XVR clock before judging a clip that missed.
   - A recorder that answers a 401 offering Digest but accepts only Basic, or a 401 with no
     `WWW-Authenticate` challenge, would now fail login instead of being retried with Basic
     (not expected; not field-checked).

@@ -38,10 +38,13 @@ STILL_FAILED = "Recorder could not provide a still for this camera."
 UNSUPPORTED_STILL = ("This recorder does not provide incident stills through the validated "
                      "WatchLog path.")
 # dahua_archive refuses a recorder-clock window with this text when the recorder clock is more
-# than 5 minutes from every civil UTC offset (its MAX_ZONE_DRIFT_SECONDS). That matches the
-# ONVIF driver's CLOCK_SKEW_TOLERANCE_SECONDS: beyond it the ONVIF event was stamped with the
-# PC receive time, so its window is on the agent clock.
+# than 5 minutes from every civil UTC offset (its MAX_ZONE_DRIFT_SECONDS).
 _ZONE_REFUSAL = "too far off to tell its time zone"
+# Customer-visible reason when a recorder-stamped window cannot be placed on the recorder now.
+CLOCK_UNREADABLE = ("The recorder's clock is too far off to find this footage window. Check the "
+                    "recorder's date and time, then request it again.")
+# payload.clock_source values that name the recorder's own clock (Hikvision uses recorder_local).
+_RECORDER_CLOCK_SOURCES = ("recorder", "recorder_local")
 # open_archive_driver keeps the ONVIF driver for these recorders only when the vendor-native
 # archive attempt failed (timeout, refused login), so their missing footage is not a verdict.
 NATIVE_ARCHIVE_VENDORS = ("dahua", "hikvision")
@@ -108,31 +111,50 @@ def _no_footage_outcome(driver, info) -> tuple[bool, str]:
     return True, UNSUPPORTED_FOOTAGE
 
 
-def _recorder_stamped_events(driver) -> bool:
-    """True when the site's live events came from the ONVIF driver and this archive reader can
-    take a recorder-clock window.
+def _onvif_mapped_dahua(driver) -> bool:
+    """True when this archive reader is the dahua-cgi reader of an ONVIF-live recorder.
 
     open_archive_driver returns a reader addressed by ONVIF camera channels (channel_map) only
-    when the live transport is ONVIF. Since 5.0.28 an ONVIF event's device_ts is the recorder's
-    own UtcTime while the recorder clock is within 5 minutes of the PC. Only dahua-cgi's
-    get_clip takes a clock; the Hikvision archive searches the recorder in UTC on its own clock
-    and has no such argument.
+    when the live transport is ONVIF, and since 5.0.28 an ONVIF event's device_ts is the
+    recorder's own UtcTime while the recorder clock is within 5 minutes of the PC. Only
+    dahua-cgi's get_clip takes a clock; the Hikvision archive searches the recorder in UTC on its
+    own clock and has no such argument. A Dahua-live site's events carry receive time, which is
+    dahua_archive's default agent clock.
     """
     return (getattr(driver, "name", "") == "dahua-cgi"
             and getattr(driver, "channel_map", None) is not None)
 
 
-def _get_clip(driver, channel: str, start: datetime, end: datetime):
-    """The clip for [start, end), in the clock that stamped the event the window came from.
+def _get_clip(driver, row: dict, channel: str, start: datetime, end: datetime):
+    """The clip for [start, end), in the clock that stamped the claimed row's window.
 
-    The claimed request carries no event payload, so clock_source cannot be read per event.
-    The ONVIF driver's rule is applied instead: recorder clock while the recorder clock is
-    within 5 minutes of a civil offset, agent clock when dahua_archive refuses because it is
-    not (the ONVIF driver then stamped the event with receive time, payload.clock_skew_s).
+    - No event_id: an operations / rule clip, whose window is the Agent's analytics time or the
+      server's clock: agent clock.
+    - The row names the event's clock_source (a server that passes payload.clock_source): the
+      recorder clock for a recorder stamp, otherwise (receive time, a recovered event's archive
+      time, an event from an Agent before 5.0.28, no value) the agent clock. A recorder-stamped
+      window is not guessed when the recorder clock can no longer be placed in a zone.
+    - An event row without clock_source (the clip claim today): the recorder clock, as for a
+      live ONVIF event, and the agent clock when dahua_archive refuses because the recorder clock
+      is more than 5 minutes from every civil offset. This is a best guess, not provenance: a
+      recovered or pre-5.0.28 event lands off by the recorder's drift, and a receive-stamped
+      event whose recorder clock comes within 5 minutes of another civil offset lands off by up
+      to 5 minutes.
     """
-    if not _recorder_stamped_events(driver):
+    if not _onvif_mapped_dahua(driver):
         return driver.get_clip(channel, start, end)
     import dahua_archive
+    if not row.get("event_id"):
+        return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+    if "clock_source" in row:
+        if row.get("clock_source") not in _RECORDER_CLOCK_SOURCES:
+            return driver.get_clip(channel, start, end, clock=dahua_archive.AGENT_CLOCK)
+        try:
+            return driver.get_clip(channel, start, end, clock=dahua_archive.RECORDER_CLOCK)
+        except DriverError as error:
+            if _ZONE_REFUSAL not in str(error):
+                raise
+            raise DriverError(CLOCK_UNREADABLE) from error
     try:
         return driver.get_clip(channel, start, end, clock=dahua_archive.RECORDER_CLOCK)
     except DriverError as error:
@@ -273,7 +295,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     f"incident footage: retrieving {int((end-start).total_seconds())}s "
                     f"from ch{channel} via {driver.name}"
                 )
-                data = _get_clip(driver, channel, start, end)
+                data = _get_clip(driver, row, channel, start, end)
                 if not data:
                     unsupported, reason = _no_footage_outcome(driver, info)
                     cloud.call(
