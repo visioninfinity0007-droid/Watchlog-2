@@ -2291,6 +2291,12 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
             result["recorders_total"] = len(report)
             if any(entry["credential"] != "ok" for entry in report):
                 raise RuntimeError("a configured recorder credential cannot be decrypted")
+            result["legacy_mirror"] = _legacy_mirror_state(rows)
+            if result["legacy_mirror"] == "differs":
+                # Reported, not fatal: Repair cannot know which login is right. Re-entering
+                # the recorder login in Manage Recorders rewrites both.
+                result["warning"] = ("the original recorder's login differs from the copy older "
+                                     "WatchLog versions use; re-enter it in Manage Recorders")
 
             base = backend.core.Config(Path(config_path), read_only_credentials=True)
             contexts = {ctx.local_id: ctx for ctx in recorder_runtime.load_contexts(base)}
@@ -2310,6 +2316,27 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
     except BaseException as exc:  # noqa: BLE001 - includes SystemExit from strict config
         result["error"] = f"{type(exc).__name__}: {exc}"[:300]
     return _finish(result_path, result)
+
+
+def _legacy_mirror_state(rows: list[dict]) -> str:
+    """Does the continuity recorder's login match the legacy singleton copy (nvr_credential)?
+
+    Both are written together (mirror_legacy); a failed restore can leave them different, and
+    then a rollback to 5.0.x, or the single-recorder runtime, silently uses the other login
+    (credential audit P4-c). matches | differs | absent | unreadable. Read-only."""
+    continuity = next((row for row in rows if row.get("continuity_owner")), None)
+    if continuity is None:
+        return "absent"
+    try:
+        legacy = credential_store.load_nvr_credential_readonly()
+        if legacy is None:
+            return "absent"
+        current = credential_store.load_recorder_credential(continuity["local_id"])
+    except Exception:  # noqa: BLE001 - reported, the per-recorder check above already passed
+        return "unreadable"
+    same = all(str(legacy.get(key) or "") == str(current.get(key) or "")
+               for key in ("username", "password"))
+    return "matches" if same else "differs"
 
 
 def _recorder_blob_names() -> set[str]:
