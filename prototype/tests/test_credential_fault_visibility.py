@@ -54,3 +54,20 @@ def test_quarantine_moves_the_quarantined_recorders_logins_aside():
         assert any(p.name.startswith("recorders.quarantine-") and p.parent.name == "Secrets"
                    for p in moved)
         assert any((p / f"{b}.dpapi").exists() for p in moved if p.parent.name == "Secrets")
+
+
+def test_a_failed_details_update_after_a_verified_login_change_says_what_is_true(monkeypatch):
+    # P4-b: the verified login is saved; a registry failure afterwards must not read as
+    # "nothing changed" while the new login is already in use.
+    with trm._Env():
+        a, _b = trm._seed_two()
+        proven = {"url": "http://192.0.2.10", "vendor": "V", "model": "M", "driver": "onvif",
+                  "channels": [{"channel": "1"}]}
+
+        def broken(*_a, **_k):
+            raise PermissionError("registry locked")
+        monkeypatch.setattr(trm.rr, "update_observed_identity", broken)
+        with pytest.raises(ValueError, match="verified and saved"):
+            trm.sb.repair_managed_recorder_credential(a, "new-user", "new-pw",
+                                                      verified_recorder=proven)
+        assert trm.cs.load_recorder_credential(a)["username"] == "new-user"

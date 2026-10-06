@@ -1010,18 +1010,26 @@ def repair_managed_recorder_credential(
         local_id, username.strip(), password,
         mirror_legacy=bool(row.get("continuity_owner")),
     )
-    updated = recorder_registry.update_observed_identity(
-        local_id,
-        vendor=_observed(proven, "vendor"),
-        model=_observed(proven, "model"),
-        firmware=proven.get("firmware"),
-        driver=proven.get("driver") or row.get("driver") or "auto",
-        identity_fingerprint=(
-            f"serial:{proven.get('serial')}" if proven.get("serial")
-            else row.get("identity_fingerprint")
-        ),
-        verified_by_setup=True,
-    )
+    try:
+        updated = recorder_registry.update_observed_identity(
+            local_id,
+            vendor=_observed(proven, "vendor"),
+            model=_observed(proven, "model"),
+            firmware=proven.get("firmware"),
+            driver=proven.get("driver") or row.get("driver") or "auto",
+            identity_fingerprint=(
+                f"serial:{proven.get('serial')}" if proven.get("serial")
+                else row.get("identity_fingerprint")
+            ),
+            verified_by_setup=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — say exactly what is now true
+        # The login is already saved and was proven against this recorder, so it is kept
+        # (the old one may be what the recorder now refuses). Only the details failed.
+        _setup_log(f"recorder details not recorded after login change ({type(exc).__name__})")
+        raise ValueError(
+            "The recorder login was verified and saved, but WatchLog could not record the "
+            "recorder's details. Test this recorder again.") from exc
     out = _public_recorder_row(updated, credential_state="available")
     out["channels"] = list(proven.get("channels") or [])
     out["verified_against_hardware"] = bool(proven.get("verified_against_hardware"))
