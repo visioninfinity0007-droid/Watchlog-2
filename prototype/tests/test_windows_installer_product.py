@@ -128,6 +128,10 @@ def main():
         "Windows product name is WatchLog": 'MUI_WELCOMEPAGE_TITLE "Install WatchLog"' in nsis and '"DisplayName" "WatchLog"' in nsis,
         "customer guide avoids Site Agent product name": "WatchLog Site Agent" not in readme and "install the Site Agent" not in readme,
         "customer guide avoids DPAPI implementation detail": "machine-scoped DPAPI" not in readme,
+        "customer guide states the logs-only uninstall": "Only the support logs are kept" in readme
+            and "connection history" not in readme,
+        "Repair logs a differing legacy login copy": "legacy login copy: " in text(
+            "prototype/installer/wl-repair-upgrade.ps1"),
         "enrollment honours the site code (no skip-enroll on stale state)":
             "def establish_identity" in backend and "def _enroll" in backend and "core.heartbeat" in backend,
         "camera-sync failures are classified, not the misleading swallow":

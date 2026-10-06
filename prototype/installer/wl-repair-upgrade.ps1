@@ -365,6 +365,12 @@ function Invoke-CandidateSetupUi([string[]]$Arguments, [string]$Label) {
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
   }
   Write-Repair "$Label exit=$rc ok=$([bool]$obj.ok) error=$([string]$obj.error)"
+  if ($obj.legacy_mirror) {
+    # matches | differs | absent | unreadable. "differs" is reported, not fatal: Repair cannot
+    # know which login is right; re-entering it in Manage Recorders rewrites both copies.
+    Write-Repair "  legacy login copy: $([string]$obj.legacy_mirror)"
+  }
+  if ($obj.warning) { Write-Repair "  WARNING: $([string]$obj.warning)" }
   foreach ($r in @($obj.recorders | Where-Object { $null -ne $_ })) {
     Write-Repair ("  recorder '{0}' continuity={1} credential={2} live={3} {4}" -f
                   [string]$r.display_name, [bool]$r.continuity_owner, [string]$r.credential,
