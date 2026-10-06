@@ -30,6 +30,8 @@ Generic schema:
 
 If RESTAURANT_ANALYTICS.enabled is true, ALSO return top-level "restaurant" using the exact restaurant contract supplied in the prompt. Use RESTAURANT_INTELLIGENCE_CONTEXT as the business meaning contract, never as evidence that a value occurred. "visible_customers" means concurrent visibly present customers, never unique footfall. "food_present" means visible food at a calibrated table and says nothing about quality or correctness. Use null when evidence is not reliable. Only populate fields supported by the current camera_role. For configured dining tables, return one row for every listed table_key so occupancy transitions can be measured. If adjacent movable tables are visibly joined into one party, give those table rows the same short combined_group value. Otherwise combined_group must be null.
 
+For dining tables, ALSO return "service_interaction_observed". It is true only when a person is visibly performing a defensible table-service action for or at that occupied table (approaching, serving, clearing, or interacting). It does not establish employment, identity, attendance, headcount, or productivity. Mirror the same boolean into the legacy "staff_present" field for backward-compatible storage only. If restaurant.staff_count is populated, it means people visibly performing role-appropriate service actions at that moment, not unique staff or shift headcount. Never infer gender, age, ethnicity, relationship status, or other customer demographics from appearance.
+
 For every restaurant frame, ALSO return restaurant.analytics_quality:
 {
   "visibility_quality": number|null,
