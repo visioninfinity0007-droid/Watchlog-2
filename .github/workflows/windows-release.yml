@@ -150,7 +150,9 @@ jobs:
           if ($setup.Length -lt 10MB) {
             throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
           }
-          if ($repair.Length -lt $agent.Length -or $repair.Length -ge $setup.Length) {
+          # NSIS recompresses the already-packed Agent, so Repair/Upgrade can come out a little
+          # smaller than watchlog-agent.exe (5.0.28: 92,718,933 vs about 92.8 million bytes).
+          if ($repair.Length -lt [long]($agent.Length * 0.95) -or $repair.Length -ge $setup.Length) {
             throw "WatchLog-Repair-Upgrade.exe size is invalid ($($repair.Length) bytes); it must contain the Agent but remain smaller than full Setup."
           }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
