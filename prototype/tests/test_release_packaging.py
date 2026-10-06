@@ -396,6 +396,16 @@ def test_payload_proof_rejects_a_wrong_build_sha_or_version(tmp_path, monkeypatc
     assert any("baked BUILD_SHA" in p for p in r["problems"])
 
 
+def test_payload_proof_requires_the_field_hikvision_slice_in_the_frozen_agent(tmp_path, monkeypatch):
+    content, expected = _good_content(tmp_path)
+    inst = _fake_installer(tmp_path, "setup", list(R134_SETUP), content, monkeypatch)
+    monkeypatch.setattr(payload, "runtime_version",
+                        lambda _p: ["5.1.0", f"build_sha={SHA}", "build_channel=production"])
+    r = payload.prove("setup", inst, sevenzip="7z", nsi=payload.NSI["setup"], expected=expected,
+                      version="5.1.0", expected_sha=SHA, run_agent=True, workdir=tmp_path / "w")
+    assert any("Hikvision stream slice" in p for p in r["problems"]), r["problems"]
+
+
 def test_an_uninstaller_is_allowed_only_when_the_script_writes_one(tmp_path, monkeypatch):
     content, expected = _good_content(tmp_path)
     nsi = tmp_path / "no-uninstaller.nsi"
@@ -479,6 +489,8 @@ def test_agent_version_keeps_line_one_bare_and_adds_the_build_sha():
     assert lines[0] == _version()
     assert re.fullmatch(r"build_sha=([0-9a-f]{40})?", lines[1])
     assert lines[2].startswith("build_channel=")
+    # Field Build 69 Hikvision safety, readable from the frozen binary by the payload proof.
+    assert lines[3] == "hikvision_stream_slice_seconds=30"
 
 
 def test_version_consumers_read_only_the_first_line():

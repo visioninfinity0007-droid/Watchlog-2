@@ -2963,6 +2963,9 @@ def main() -> None:
         import wl_version
         print(f"build_sha={wl_version.BUILD_SHA}")
         print(f"build_channel={wl_version.BUILD_CHANNEL}")
+        # Field Build 69 behaviour the frozen binary must carry (release payload proof).
+        import drivers.hikvision as _hikvision_driver
+        print(f"hikvision_stream_slice_seconds={_hikvision_driver.HIKVISION_STREAM_SLICE_SECONDS}")
         return
 
     if args.selftest:

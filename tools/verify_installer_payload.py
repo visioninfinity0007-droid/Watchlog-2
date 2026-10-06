@@ -237,6 +237,9 @@ def prove(kind: str, installer: Path, *, sevenzip: str, nsi: Path, expected: dic
                     problems.append(f"{rel}: --version line 1 {lines[:1]} != {version!r}")
                 if expected_sha and f"build_sha={expected_sha}" not in lines:
                     problems.append(f"{rel}: --version does not report build_sha={expected_sha}")
+                # Field Build 69 Hikvision safety (30 s bounded alert stream) must be in THIS binary.
+                if "hikvision_stream_slice_seconds=30" not in lines:
+                    problems.append(f"{rel}: --version does not report the 30 s Hikvision stream slice")
             except (OSError, subprocess.SubprocessError, ProofError) as exc:
                 problems.append(f"{rel}: --version could not be run ({exc})")
         identity[name] = info
