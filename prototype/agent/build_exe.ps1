@@ -49,7 +49,7 @@ $common = @(
     # setuptools is only the venv's installer; urllib3's optional `backports.zstd` import made
     # PyInstaller bundle it (~131 modules). Nothing at runtime uses it (supply-chain audit).
     "--exclude-module","setuptools","--exclude-module","pkg_resources",
-    "--exclude-module","_distutils_hack","--exclude-module","backports"
+    "--exclude-module","_distutils_hack"
 )
 
 $entry = "agent\release_agent.py"

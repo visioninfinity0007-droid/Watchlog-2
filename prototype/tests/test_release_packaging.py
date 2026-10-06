@@ -552,7 +552,7 @@ def test_neither_exe_bundles_the_venv_installer():
     # optional backports.zstd import; nothing at runtime uses it.
     for script in ("prototype/agent/build_exe.ps1", "prototype/agent/build_setup_gui.ps1"):
         text = _read(script).replace(" ", "")
-        for module in ("setuptools", "pkg_resources", "_distutils_hack", "backports"):
+        for module in ("setuptools", "pkg_resources", "_distutils_hack"):
             assert f'"--exclude-module","{module}"' in text, (script, module)
 
 

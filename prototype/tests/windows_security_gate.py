@@ -183,9 +183,13 @@ def _acl(path: Path) -> tuple[set[str], bool]:
               "$a.Access | Where-Object { $_.AccessControlType -eq 'Allow' } | ForEach-Object { "
               "$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }; "
               "'PROTECTED=' + $a.AreAccessRulesProtected")
-    out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                         capture_output=True, text=True, env={**os.environ, "WL_ACL_PATH": str(path)},
-                         check=True).stdout.split()
+    # A PowerShell 7 step's PSModulePath breaks Windows PowerShell 5.1's Get-Acl module load.
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, env={**env, "WL_ACL_PATH": str(path)})
+    out = proc.stdout.split()
+    if proc.returncode != 0 or not any(line.startswith("PROTECTED=") for line in out):
+        raise RuntimeError(f"Get-Acl failed for {path}: {proc.stderr.strip()[:300]}")
     return ({line for line in out if line.startswith("S-1-")},
             "PROTECTED=True" in out)
 
