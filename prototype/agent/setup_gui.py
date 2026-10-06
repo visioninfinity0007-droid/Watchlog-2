@@ -16,6 +16,36 @@ import tempfile
 import time
 from pathlib import Path
 
+# FORENSICS (not for merge): startup phase timing, written only when WATCHLOG_UI_TIMING_FILE is set.
+_TIMING: dict = {"python_entry": time.time()}
+
+
+def _mark(name: str) -> None:
+    _TIMING.setdefault(name, time.time())
+
+
+def _write_timing() -> None:
+    path = os.environ.get("WATCHLOG_UI_TIMING_FILE")
+    if not path:
+        return
+    _TIMING["exit"] = time.time()
+    try:
+        import json, psutil
+        me = psutil.Process()
+        _TIMING["child_process_start"] = me.create_time()
+        parent = me.parent()
+        if parent is not None and parent.name().lower() == me.name().lower():
+            _TIMING["bootloader_process_start"] = parent.create_time()
+        _TIMING["frozen"] = bool(getattr(sys, "frozen", False))
+        _TIMING["meipass"] = getattr(sys, "_MEIPASS", "")
+        Path(path).write_text(json.dumps(_TIMING, indent=1), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        Path(path).write_text(repr(exc), encoding="utf-8")
+
+
+import atexit as _atexit
+_atexit.register(_write_timing)
+
 # A PyInstaller --windowed process has no console streams. Existing recorder
 # libraries use print() for diagnostics, so give them a local file instead of
 # letting a diagnostic print crash the GUI.
@@ -36,6 +66,7 @@ if os.name == "nt":
         except Exception:  # noqa: BLE001 - logging may never prevent setup from running
             _LOG_HANDLE = None
 
+_mark("log_ready")
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
@@ -45,8 +76,10 @@ from PySide6.QtWidgets import (
     QWidget, QHeaderView,
 )
 
+_mark("qt_imported")
 import setup_backend as backend
 from status_controller import StatusController
+_mark("backend_imported")
 
 ICE = "#72D4FF"
 BLUE = "#1748D3"
@@ -976,16 +1009,33 @@ def _emit_line(line: str) -> None:
 def _run_ui_selftest(*, installer_child: bool = False) -> int:
     """Exercise the exact packaged Qt recorder-selection and installer lifecycle."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    _mark("selftest_entry")
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    _mark("qapplication")
     old_pd = os.environ.get("PROGRAMDATA")
     try:
         with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
             os.environ["PROGRAMDATA"] = td
             window = SetupWindow(Path(td) / "watchlog.ini", installer_child=installer_child)
+            _mark("window_constructed")
+
+            from PySide6.QtCore import QEvent as _QEvent
+
+            class _FirstPaint(QObject):
+                def eventFilter(self, obj, ev):  # noqa: N802
+                    if ev.type() == _QEvent.Paint:
+                        _mark("first_paint")
+                    return False
+
+            _fp = _FirstPaint()
+            window.installEventFilter(_fp)
             # Show the real window even on the offscreen Qt platform so the lifecycle
             # assertion can prove that installer-child mode actually closes it.
             window.show()
+            _mark("show_called")
             app.processEvents()
+            _mark("first_visible")
+            _mark("discovery_flow_start")
             window.go(2)
             window.show_recorders([{
                 "ip": "10.10.10.2",
@@ -1146,6 +1196,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 timed.close()
             else:
                 window.close()
+            _mark("selftest_flow_end")
             return 0
     finally:
         if old_pd is None:

@@ -130,6 +130,44 @@ jobs:
             if ($pfx -and (Test-Path $pfx)) { Remove-Item -Force $pfx }
           }
 
+      - name: FORENSICS - Setup UI startup phase timing (5 runs)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $exe = (Resolve-Path prototype\dist\watchlog-setup-ui.exe).Path
+          New-Item -ItemType Directory -Force -Path timing | Out-Null
+          $runs = @(@('cold','--ui-selftest --installer-child'), @('warm1','--ui-selftest --installer-child'),
+                    @('warm2','--ui-selftest --installer-child'), @('warm3','--ui-selftest --installer-child'),
+                    @('standalone','--ui-selftest'))
+          foreach ($r in $runs) {
+            $file = Join-Path (Resolve-Path timing).Path "$($r[0]).json"
+            $env:WATCHLOG_UI_TIMING_FILE = $file
+            $t0 = Get-Date
+            $p = Start-Process -FilePath $exe -ArgumentList $r[1] -Wait -PassThru
+            $wall = ((Get-Date) - $t0).TotalSeconds
+            $j = Get-Content $file -Raw | ConvertFrom-Json
+            $launch = [double](([DateTimeOffset]$t0).ToUnixTimeMilliseconds()) / 1000.0
+            $boot = if ($j.bootloader_process_start) { [double]$j.bootloader_process_start } else { $launch }
+            $row = [ordered]@{
+              run = $r[0]; exit = $p.ExitCode; wall_s = [math]::Round($wall, 2)
+              launch_to_bootloader = [math]::Round($boot - $launch, 2)
+              unpack_bootloader_to_child = [math]::Round([double]$j.child_process_start - $boot, 2)
+              child_to_python_entry = [math]::Round([double]$j.python_entry - [double]$j.child_process_start, 2)
+              qt_import = [math]::Round([double]$j.qt_imported - [double]$j.log_ready, 2)
+              backend_import = [math]::Round([double]$j.backend_imported - [double]$j.qt_imported, 2)
+              qapplication = [math]::Round([double]$j.qapplication - [double]$j.selftest_entry, 2)
+              window_construct = [math]::Round([double]$j.window_constructed - [double]$j.qapplication, 2)
+              to_first_paint = [math]::Round([double]$j.first_paint - [double]$j.window_constructed, 2)
+              launch_to_first_paint = [math]::Round([double]$j.first_paint - $launch, 2)
+              selftest_flow = [math]::Round([double]$j.selftest_flow_end - [double]$j.discovery_flow_start, 2)
+              shutdown_after_flow = [math]::Round(([double]$launch + $wall) - [double]$j.selftest_flow_end, 2)
+            }
+            [pscustomobject]$row | Format-List | Out-String | Write-Host
+            ($row | ConvertTo-Json) | Set-Content -Path "timing/$($r[0])-summary.json" -Encoding utf8
+          }
+          Remove-Item Env:\WATCHLOG_UI_TIMING_FILE
+
       - name: Verify real payloads, setup UI, AI self-test and checksum
         shell: powershell
         run: |
@@ -340,6 +378,7 @@ jobs:
             prototype/build-setup-ui/**/*.toc
             prototype/build-setup-ui/**/warn-*.txt
             prototype/build-setup-ui/**/xref-*.html
+            timing/*.json
             dist-installer/WatchLog-Setup.exe
             dist-installer/WatchLog-Setup.exe.sha256
             dist-installer/WatchLog-Repair-Upgrade.exe
