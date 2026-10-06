@@ -52,13 +52,83 @@ function Protect-WatchLogData([string]$Path) {
 }
 Protect-WatchLogData $data
 
-# The Site Agent is only useful while the site PC is awake.
-try {
-  powercfg /change standby-timeout-ac 0
-  powercfg /change hibernate-timeout-ac 0
-  powercfg /change disk-timeout-ac 0
-  powercfg /hibernate off
-} catch { Write-Host "  (power settings: $($_.Exception.Message))" }
+# The Site Agent is only useful while the site PC is awake, so WatchLog keeps it from sleeping
+# on mains power. These are machine-wide changes WatchLog owns for its lifetime: the values
+# they replace are recorded ONCE, before the first change, in Secrets\power-baseline.json
+# (never overwritten by Repair, rollback or a re-run), and the uninstaller restores them
+# (wl-upgrade.ps1 -Stage uninstall). A site first installed before 5.1.1 had these changed
+# without a record; its first baseline holds WatchLog's own values, so uninstall changes
+# nothing there. See WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md "Machine changes and uninstall".
+$PowerCfg = Join-Path $env:SystemRoot "System32\powercfg.exe"
+$PowerBaselinePath = Join-Path $data "Secrets\power-baseline.json"
+$PowerSettings = @(
+  @{ name = "standby-timeout-ac";   subgroup = "SUB_SLEEP"; setting = "STANDBYIDLE" },
+  @{ name = "hibernate-timeout-ac"; subgroup = "SUB_SLEEP"; setting = "HIBERNATEIDLE" },
+  @{ name = "disk-timeout-ac";      subgroup = "SUB_DISK";  setting = "DISKIDLE" }
+)
+
+function Read-PowerAcValue([string]$Subgroup, [string]$Setting) {
+  # powercfg /query prints, for one setting: min, max, increment, then the current AC index
+  # and the current DC index, each as 0x%08x. The labels are localised; the order is not.
+  try {
+    $out = (& $PowerCfg /query SCHEME_CURRENT $Subgroup $Setting 2>$null) -join "`n"
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $hex = [regex]::Matches($out, '0x[0-9a-fA-F]{8}')
+    if ($hex.Count -lt 2) { return $null }
+    return [Convert]::ToInt64($hex[$hex.Count - 2].Value.Substring(2), 16)
+  } catch { return $null }
+}
+
+function Get-ActivePowerScheme {
+  try {
+    $out = (& $PowerCfg /getactivescheme 2>$null) -join " "
+    if ($out -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') { return $Matches[1] }
+  } catch {}
+  return ""
+}
+
+function Get-HibernateEnabled {
+  try {
+    return [int](Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name HibernateEnabled -ErrorAction Stop).HibernateEnabled
+  } catch { return $null }
+}
+
+function Save-PowerBaseline {
+  if (Test-Path -LiteralPath $PowerBaselinePath) {
+    Write-Host "  power baseline already recorded; not overwritten"
+    return
+  }
+  $rows = @(foreach ($s in $PowerSettings) {
+    [ordered]@{ name = $s.name; subgroup = $s.subgroup; setting = $s.setting
+                ac_value = (Read-PowerAcValue $s.subgroup $s.setting) }
+  })
+  $baseline = [ordered]@{
+    schema = "watchlog.power_baseline.v1"
+    captured_at = [DateTimeOffset]::UtcNow.ToString("o")
+    scheme_guid = (Get-ActivePowerScheme)
+    hibernate_enabled = (Get-HibernateEnabled)
+    settings = $rows
+  }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PowerBaselinePath) | Out-Null
+  $tmp = $PowerBaselinePath + ".tmp"
+  $baseline | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $tmp -Encoding UTF8
+  Move-Item -LiteralPath $tmp -Destination $PowerBaselinePath -Force
+  Write-Host "  power baseline recorded for uninstall"
+}
+
+function Set-SiteAwakePower {
+  foreach ($s in $PowerSettings) {
+    & $PowerCfg /change $s.name 0 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "  (power setting $($s.name) not changed: exit $LASTEXITCODE)" }
+  }
+  & $PowerCfg /hibernate off 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) { Write-Host "  (hibernation not turned off: exit $LASTEXITCODE)" }
+}
+
+# Record first. If the record cannot be written the site is still kept awake (monitoring
+# needs it), and the log says the old values cannot be restored on uninstall.
+try { Save-PowerBaseline } catch { Write-Host "  (power baseline not recorded; uninstall cannot restore power settings: $($_.Exception.Message))" }
+try { Set-SiteAwakePower } catch { Write-Host "  (power settings: $($_.Exception.Message))" }
 
 # Clear any prior instance, running or merely RECORDED as running. An unclean shutdown can
 # leave Task Scheduler believing an instance is still alive; combined with

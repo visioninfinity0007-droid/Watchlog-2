@@ -25,6 +25,14 @@ sys.path.insert(0, str(AGENT))
 
 import updater  # noqa: E402
 import watchlog_agent as wa  # noqa: E402
+import wl_version  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+# A newer release on the running Agent's own minor line: the only kind an Agent-only update may
+# install without an explicit update_class (5.1.1 contract). The installed component set is
+# stood in as the running version (the real registry is not read in tests).
+_MAJOR, _MINOR, _PATCH = updater.parse_version(wl_version.VERSION)
+SAME_LINE = f"{_MAJOR}.{_MINOR}.99"
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -288,7 +296,8 @@ def _update_cfg(**over):
 
 def _run_check(cfg, fetch):
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    with redirect_stdout(buf), patch.object(updater, "installed_components_version",
+                                            return_value=wl_version.VERSION):
         code = wa.cmd_check_update(cfg, _fetch=fetch)
     out = buf.getvalue()
     plan = json.loads(out.split("UPDATE_JSON ", 1)[1].splitlines()[0]) if "UPDATE_JSON " in out else None
@@ -322,7 +331,7 @@ class CmdCheckUpdate(unittest.TestCase):
 
     def test_update_available_when_signature_not_required(self):
         cfg = _update_cfg(update_require_signature=False)
-        code, out, plan = _run_check(cfg, lambda url: json.dumps(base_manifest(version="99.0.0")))
+        code, out, plan = _run_check(cfg, lambda url: json.dumps(base_manifest(version=SAME_LINE)))
         self.assertEqual(code, 0)
         self.assertEqual(plan["action"], "update")
         self.assertIn("update available", out)
@@ -332,7 +341,7 @@ class CmdCheckUpdate(unittest.TestCase):
         priv = Ed25519PrivateKey.generate()
         pub_b64 = base64.b64encode(priv.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
-        m = base_manifest(version="99.0.0")
+        m = base_manifest(version=SAME_LINE)
         m["signature"] = base64.b64encode(priv.sign(updater.canonical_manifest_bytes(m))).decode()
         code, _out, plan = _run_check(_update_cfg(update_public_key=pub_b64),
                                       lambda url: json.dumps(m))
@@ -343,7 +352,8 @@ class CmdCheckUpdate(unittest.TestCase):
 class CmdUpdate(unittest.TestCase):
     def _run(self, cfg, fetch, apply_fn):
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with redirect_stdout(buf), patch.object(updater, "installed_components_version",
+                                                return_value=wl_version.VERSION):
             code = wa.cmd_update(cfg, _fetch=fetch, _apply=apply_fn)
         return code, buf.getvalue()
 
@@ -354,9 +364,9 @@ class CmdUpdate(unittest.TestCase):
             captured.update(target=target, url=url, sha=sha, kw=kw)
             return {"ok": True, "stage": "commit", "rolled_back": False, "detail": "updated"}
         code, out = self._run(_update_cfg(update_require_signature=False),
-                              lambda u: json.dumps(base_manifest(version="99.0.0")), fake_apply)
+                              lambda u: json.dumps(base_manifest(version=SAME_LINE)), fake_apply)
         self.assertEqual(code, 0)
-        self.assertEqual(captured["target"], "99.0.0")
+        self.assertEqual(captured["target"], SAME_LINE)
         self.assertTrue(captured["url"].endswith("watchlog-agent.exe"))
         self.assertIn("install_dir", captured["kw"])
         self.assertIn("applying transactionally", out)
@@ -380,7 +390,7 @@ class CmdUpdate(unittest.TestCase):
             called["n"] += 1
             return {}
         code, _out = self._run(_update_cfg(),        # require_signature True + no key -> unsigned
-                               lambda u: json.dumps(base_manifest(version="99.0.0")), fake_apply)
+                               lambda u: json.dumps(base_manifest(version=SAME_LINE)), fake_apply)
         self.assertEqual(code, 2)
         self.assertEqual(called["n"], 0)
 
@@ -388,7 +398,7 @@ class CmdUpdate(unittest.TestCase):
         def fake_apply(*a, **k):
             return {"ok": False, "stage": "commit", "rolled_back": True, "detail": "verify failed"}
         code, _out = self._run(_update_cfg(update_require_signature=False),
-                               lambda u: json.dumps(base_manifest(version="99.0.0")), fake_apply)
+                               lambda u: json.dumps(base_manifest(version=SAME_LINE)), fake_apply)
         self.assertEqual(code, 2)
 
 
