@@ -268,7 +268,10 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # registration + task start (no readiness wait)
+# Fresh install: registration + start + up to 60 s for the background Agent to prove it
+# reached WatchLog and identified the recorder (register-service -RequireRecorderReadiness).
+BACKGROUND_READY_TIMEOUT_SECONDS = 100
 RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
 RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
@@ -1353,7 +1356,7 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
 
 
 def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
-                            _run=None) -> dict:
+                            _run=None, *, require_readiness: bool = False) -> dict:
     """Register and START the background agent as soon as the site is genuinely connected.
 
     WHY THIS EXISTS (0.4.7). The NSIS installer runs the setup wizard under ExecWait and
@@ -1395,12 +1398,22 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
     cmd = [str(powershell),
            "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
            "-File", str(script), "-InstallDir", str(base)]
+    if require_readiness:
+        # Field Build 41/69: a running task is not proof the background Agent reached
+        # WatchLog and the recorder; register-service.ps1 waits for that proof (exit 3 =
+        # running but not proven). The Agent keeps running either way.
+        cmd.append("-RequireRecorderReadiness")
     try:
         code, out = runner(cmd, timeout)
     except Exception as exc:  # noqa: BLE001 — never block a connected site
         return {"started": False, "detail": f"could not start background agent ({type(exc).__name__})"}
     if code == 0:
-        return {"started": True, "detail": "background agent registered and started"}
+        return {"started": True, "proven": bool(require_readiness),
+                "detail": ("background agent reached WatchLog and identified the recorder"
+                           if require_readiness else "background agent registered and started")}
+    if code == 3 and require_readiness:
+        return {"started": True, "proven": False,
+                "detail": "background agent is running but has not yet confirmed the recorder"}
     return {"started": False,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
 
@@ -2304,7 +2317,8 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # integration is therefore NEVER run by first-run setup.
     # =================================================================
     progress("Starting WatchLog in the background…")
-    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
+    agent_start = ensure_background_agent(timeout=BACKGROUND_READY_TIMEOUT_SECONDS,
+                                          require_readiness=True)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 
