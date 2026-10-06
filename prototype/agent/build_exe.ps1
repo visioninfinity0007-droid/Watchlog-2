@@ -10,9 +10,9 @@
 #     ...\build_exe.ps1 -WithAI -Python <venv python.exe>
 #
 # The packaged entrypoint is release_agent.py. It delegates the normal runtime
-# to analytics_agent.py and gives the NSIS --setup path strict finite-process
-# semantics: setup failure returns non-zero; successful setup validates WatchLog
-# enrollment and returns control to the installer instead of running forever.
+# to analytics_agent.py and refuses the retired console setup wizard (--setup, or
+# no recorder configured): it exits 2 without prompting or writing anything, because
+# WatchLog Setup (watchlog-setup-ui.exe) configures the site.
 # --selftest and every non-setup command still delegate to the existing core.
 #
 # Reproducibility (docs/release/WINDOWS_PACKAGING.md): the Agent is frozen in its OWN venv,
