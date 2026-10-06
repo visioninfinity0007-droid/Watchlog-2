@@ -94,14 +94,18 @@ begin
 
   select count(*)::integer into v_dining_cameras
     from public.restaurant_camera_profiles p
+    join public.cameras c on c.id=p.camera_id
    where p.site_id=p_site_id and p.tenant_id=v_tenant
-     and p.enabled and p.analytics_role='dining_floor';
+     and p.enabled and p.analytics_role='dining_floor'
+     and c.is_configured and coalesce(c.is_canonical,true);
 
   select count(*)::integer into v_configured_tables
     from public.restaurant_tables t
     join public.restaurant_camera_profiles p on p.camera_id=t.camera_id
+    join public.cameras c on c.id=t.camera_id
    where t.site_id=p_site_id and t.tenant_id=v_tenant and t.active
-     and p.enabled and p.analytics_role='dining_floor';
+     and p.enabled and p.analytics_role='dining_floor'
+     and c.is_configured and coalesce(c.is_canonical,true);
 
   if v_dining_cameras=1 and v_configured_tables>0 then
     -- With one dining view there is no cross-camera table duplication. Existing table_key is a
@@ -113,16 +117,20 @@ begin
         select 1
           from public.restaurant_tables t
           join public.restaurant_camera_profiles p on p.camera_id=t.camera_id
+          join public.cameras c on c.id=t.camera_id
          where t.site_id=p_site_id and t.tenant_id=v_tenant and t.active
            and p.enabled and p.analytics_role='dining_floor'
+           and c.is_configured and coalesce(c.is_canonical,true)
            and nullif(trim(t.physical_table_key),'') is null
       )
       and not exists (
         select 1
           from public.restaurant_tables t
           join public.restaurant_camera_profiles p on p.camera_id=t.camera_id
+          join public.cameras c on c.id=t.camera_id
          where t.site_id=p_site_id and t.tenant_id=v_tenant and t.active
            and p.enabled and p.analytics_role='dining_floor'
+           and c.is_configured and coalesce(c.is_canonical,true)
          group by t.physical_table_key
         having count(*) filter(where t.metrics_primary) <> 1
       )
@@ -140,8 +148,10 @@ begin
   select count(*)::integer into v_primary_tables
   from public.restaurant_tables t
   join public.restaurant_camera_profiles p on p.camera_id=t.camera_id
+  join public.cameras c on c.id=t.camera_id
   where t.site_id=p_site_id and t.tenant_id=v_tenant and t.active
     and p.enabled and p.analytics_role='dining_floor'
+    and c.is_configured and coalesce(c.is_canonical,true)
     and (v_dining_cameras=1 or t.metrics_primary);
 
   v_coverage := public.wl_effective_site_coverage(
@@ -167,8 +177,10 @@ begin
         coalesce(nullif(trim(t.physical_table_key),''),t.table_key) as physical_table_key
       from public.restaurant_tables t
       join public.restaurant_camera_profiles p on p.camera_id=t.camera_id
+      join public.cameras c on c.id=t.camera_id
       where t.site_id=p_site_id and t.tenant_id=v_tenant and t.active
         and p.enabled and p.analytics_role='dining_floor'
+        and c.is_configured and coalesce(c.is_canonical,true)
         and (v_dining_cameras=1 or t.metrics_primary)
     ),
     raw_observations as (
