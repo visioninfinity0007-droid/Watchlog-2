@@ -209,6 +209,7 @@ function framePrompt(item: Json): string {
     `OWNER_PRIORITIES: ${JSON.stringify(bc.owner_insight_priorities || [])}`,
     `RESTAURANT_INTELLIGENCE_CONTEXT: ${JSON.stringify(bc.restaurant_intelligence_context || {})}`,
     `RESTAURANT_ANALYTICS: ${JSON.stringify(restaurant)}`,
+    "RESTAURANT_REPORTING_RULE: Build evidence for de-duplicated table sessions, represented-period covers, neutral party-size mix and service responsiveness. Never infer customer demographics from appearance.",
     "Return the JSON review now.",
   ].join("\n");
 }
