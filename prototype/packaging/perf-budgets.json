@@ -1,12 +1,15 @@
 {
   "schema": "watchlog.perf_budgets.v1",
-  "source": "Setup UI budgets from the selective-Qt measurement on a GitHub windows-latest runner (Build 69 forensic report section 7: cold first paint 3.95 s, warm 4.14-7.68 s, release-gate lifecycle 9.1 s). Agent budgets are PROVISIONAL ceilings until the first 5.1.1 Windows Release run records a baseline; tighten them from that run's WatchLog-Perf-Report.json.",
-  "runs": 5,
+  "source": "Measured on GitHub windows-latest: 5.1.1 Windows Release run 37471949394 (399ba36f) - warm Setup UI p50 unpack 2.8 s / first visible 3.3 s / lifecycle 7.2 s, cold run 9.3 / 9.5 / 13.3 s; Agent --version p95 3.6 s, --selftest 6.1 s. Selective-Qt forensic baseline (Build 69 report section 7): lifecycle 9.1 s. Budgets keep about 2x margin on warm runs; the cold run keeps the release gate's 15 s lifecycle ceiling.",
+  "runs": 6,
   "budgets": {
-    "setup_ui.first_visible_s":      {"p95": 8.0,  "max": 12.0},
     "setup_ui.unpack_s":             {"p95": 6.0},
-    "setup_ui.lifecycle_s":          {"p95": 12.0, "max": 15.0},
-    "agent.version_s":               {"p95": 15.0, "provisional": true},
-    "agent.selftest_s":              {"max": 120.0, "provisional": true}
+    "setup_ui.first_visible_s":      {"p95": 8.0},
+    "setup_ui.lifecycle_s":          {"p95": 12.0},
+    "setup_ui.cold.unpack_s":        {"max": 12.0},
+    "setup_ui.cold.first_visible_s": {"max": 12.0},
+    "setup_ui.cold.lifecycle_s":     {"max": 15.0},
+    "agent.version_s":               {"p95": 8.0},
+    "agent.selftest_s":              {"max": 20.0}
   }
 }

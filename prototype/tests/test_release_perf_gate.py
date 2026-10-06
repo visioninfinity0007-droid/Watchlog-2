@@ -43,11 +43,11 @@ def test_budgets_breach_and_a_missing_metric_fails():
 def test_the_committed_budgets_are_strict():
     spec = json.loads((ROOT / "prototype" / "packaging" / "perf-budgets.json").read_text(encoding="utf-8"))
     b = spec["budgets"]
-    assert spec["runs"] >= 5
-    assert b["setup_ui.lifecycle_s"]["max"] <= 15.0 and b["setup_ui.lifecycle_s"]["p95"] <= 12.0
-    assert b["setup_ui.first_visible_s"]["p95"] <= 8.0
-    assert not b["setup_ui.first_visible_s"].get("provisional")
-    assert not b["setup_ui.lifecycle_s"].get("provisional")
+    assert spec["runs"] >= 6                      # one cold launch + at least five warm ones
+    assert b["setup_ui.lifecycle_s"]["p95"] <= 12.0 and b["setup_ui.first_visible_s"]["p95"] <= 8.0
+    assert b["setup_ui.unpack_s"]["p95"] <= 6.0
+    assert b["setup_ui.cold.lifecycle_s"]["max"] <= 15.0      # never looser than the old gate
+    assert not any(budget.get("provisional") for budget in b.values())
 
 
 def test_the_release_workflow_runs_the_gate_on_the_frozen_exes():
@@ -96,7 +96,8 @@ def test_the_gate_end_to_end_with_stand_in_exes(tmp_path):
     assert gate.main(["--setup-ui", str(ui), "--agent", str(agent), "--runs", "2",
                       "--json", str(report)]) == 0
     body = json.loads(report.read_text(encoding="utf-8"))
-    assert body["ok"] and body["metrics"]["setup_ui.lifecycle_s"]["n"] == 2
+    assert body["ok"] and body["metrics"]["setup_ui.cold.lifecycle_s"]["n"] == 1
+    assert body["metrics"]["setup_ui.lifecycle_s"]["n"] == 1     # the first launch is the cold one
     agent.write_text("@exit /b 3\r\n", encoding="ascii")
     assert gate.main(["--setup-ui", str(ui), "--agent", str(agent), "--runs", "1",
                       "--json", str(report)]) == 1

@@ -7,6 +7,7 @@ Runs the frozen EXEs several times and gates percentiles against committed budge
   setup_ui.unpack_s         launch -> Python running (one-file unpack; the 5.0.26 regression)
   setup_ui.first_visible_s  launch -> the setup window is shown
   setup_ui.lifecycle_s      launch -> the installer-child lifecycle self-test has exited
+  setup_ui.cold.*           the same, for the first (cold) launch alone
   agent.version_s           launch -> `watchlog-agent.exe --version` has exited
   agent.selftest_s          launch -> `watchlog-agent.exe --selftest` has exited (once)
 
@@ -69,10 +70,15 @@ def _timed(cmd: list[str], env: dict, timeout: float) -> tuple[float, float, int
 
 
 def measure_setup_ui(exe: Path, runs: int) -> tuple[dict[str, list[float]], list[str]]:
-    out: dict[str, list[float]] = {"setup_ui.unpack_s": [], "setup_ui.first_visible_s": [],
-                                   "setup_ui.lifecycle_s": []}
+    # The first launch is cold (one-file unpack of ~50 MB onto a fresh disk, scanned by Defender:
+    # what a technician sees once); the rest are warm. They are gated separately: mixing them
+    # makes p95 just "the cold run" and the gate flaky.
+    out: dict[str, list[float]] = {f"setup_ui{tag}.{name}": []
+                                   for tag in (".cold", "")
+                                   for name in ("unpack_s", "first_visible_s", "lifecycle_s")}
     failures = []
     for i in range(runs):
+        key = "setup_ui.cold" if i == 0 else "setup_ui"
         with tempfile.TemporaryDirectory(prefix="wl-perf-ui-") as td:
             timing = Path(td) / "timing.json"
             env = {**os.environ, "QT_QPA_PLATFORM": "offscreen",
@@ -83,11 +89,11 @@ def measure_setup_ui(exe: Path, runs: int) -> tuple[dict[str, list[float]], list
                 continue
             try:
                 phases = json.loads(timing.read_text(encoding="utf-8"))["phases"]
-                out["setup_ui.unpack_s"].append(phases["python_start"] - launched)
-                out["setup_ui.first_visible_s"].append(phases["first_visible"] - launched)
+                out[f"{key}.unpack_s"].append(phases["python_start"] - launched)
+                out[f"{key}.first_visible_s"].append(phases["first_visible"] - launched)
             except (OSError, ValueError, KeyError) as exc:
                 failures.append(f"setup UI run {i + 1}: no phase timings ({type(exc).__name__})")
-            out["setup_ui.lifecycle_s"].append(wall)
+            out[f"{key}.lifecycle_s"].append(wall)
     return out, failures
 
 
