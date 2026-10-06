@@ -12,6 +12,14 @@ on:
         required: false
         type: boolean
         default: false
+      previous_version:
+        description: Version on the update channel now (update contract; empty = Repair package required)
+        required: false
+        type: string
+      previous_ref:
+        description: Source commit of that version (update contract; empty = Repair package required)
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -51,6 +59,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The update contract compares installed scripts, Setup UI and data formats with the
+          # previous release's source commit.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -377,6 +389,25 @@ jobs:
           $manifestLines | ForEach-Object { Write-Host $_ }
           Write-Host '-----------------------------------------------'
 
+      - name: Update contract and update payload (written, never published)
+        shell: powershell
+        env:
+          PREVIOUS_VERSION: ${{ inputs.previous_version }}
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Agent-only vs Repair package (tools/release_update_contract.py). An unknown previous
+          # release is classified REQUIRES_REPAIR_PACKAGE. Publishing the payload to the update
+          # channel is a separate, owner-approved step; this build uploads nothing there.
+          $version = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          python tools/release_update_contract.py --version $version `
+            --previous-version "$env:PREVIOUS_VERSION" --previous-ref "$env:PREVIOUS_REF" `
+            --ref $env:GITHUB_SHA --build-sha $env:GITHUB_SHA `
+            --out .\dist-installer\WatchLog-Update-Contract.json `
+            --agent .\prototype\dist\watchlog-agent.exe `
+            --payload-out .\dist-installer\watchlog-update-payload.json
+          if ($LASTEXITCODE -ne 0) { throw 'update contract failed' }
+
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
         with:
@@ -390,5 +421,7 @@ jobs:
             dist-installer/WatchLog-Build-Manifest.json
             dist-installer/WatchLog-Payload-Proof.json
             dist-installer/WatchLog-Size-Report.json
+            dist-installer/WatchLog-Update-Contract.json
+            dist-installer/watchlog-update-payload.json
           if-no-files-found: error
           retention-days: 30

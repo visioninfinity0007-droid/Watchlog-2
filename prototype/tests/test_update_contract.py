@@ -207,9 +207,13 @@ def test_release_tooling_classifies_5_1_1_as_requiring_the_repair_package():
     assert any("major/minor" in r for r in c["reasons"])
     # Agents before 5.1.1 ignore update_class; min_agent_version makes them refuse it too.
     assert c["min_agent_version"] == "5.1.1"
-    old_agent = updater.plan_update(manifest("5.1.1", min_agent_version=c["min_agent_version"]),
-                                    "5.0.26", "production", signature_state=True)
-    assert old_agent["reason"] == "agent_too_old"
+    # The 5.0.17 and 5.0.26 updaters (3d02a7b2 / a3266326 updater.py:163-165) block on exactly:
+    #   min_agent and parse_version(current) < parse_version(min_agent) -> "agent_too_old"
+    for fielded in ("5.0.17", "5.0.26"):
+        assert updater.parse_version(fielded) < updater.parse_version(c["min_agent_version"])
+    this_agent = updater.plan_update(manifest("5.1.1", min_agent_version=c["min_agent_version"]),
+                                     "5.0.26", "production", signature_state=True)
+    assert this_agent["action"] == "blocked" and this_agent["reason"] == "requires_repair_package"
     c = contract.classify("5.1.1", "5.1.0", ["prototype/installer/apply-remote-update.ps1",
                                              "prototype/installer/run-agent.ps1"])
     assert c["update_class"] == REPAIR
@@ -225,6 +229,104 @@ def test_release_tooling_allows_a_clean_patch_agent_only():
                                                    ("5.1.1", [], "registry format changed")])
 def test_release_tooling_is_conservative_when_unsure(previous, changed, flag):
     assert contract.classify("5.1.2", previous, changed, requires_repair=flag)["update_class"] == REPAIR
+
+
+@pytest.mark.parametrize("kw", [{"changed_formats": ["recorder registry schema"]},
+                                {"changed_formats": None},
+                                {"changed_setup_ui": ["prototype/agent/setup_gui.py"]},
+                                {"changed_setup_ui": None}])
+def test_a_setup_ui_or_data_format_change_requires_the_repair_package(kw):
+    # An Agent-only runtime must never need a newer Setup UI, registry schema or credential
+    # format than the installed components provide (A-Z section 25).
+    c = contract.classify("5.1.2", "5.1.1", [], **kw)
+    assert c["update_class"] == REPAIR and c["min_agent_version"] == "5.1.2"
+
+
+def _git_tree(tmp_path, files):
+    import subprocess
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    git("init", "-q")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    refs = []
+    for snapshot in files:
+        for rel, text in snapshot.items():
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "x")
+        out = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], check=True,
+                             capture_output=True, text=True)
+        refs.append(out.stdout.strip())
+    return refs
+
+
+def test_release_tooling_detects_a_changed_declared_format(tmp_path, monkeypatch):
+    reg = "prototype/agent/recorder_registry.py"
+    cred = "prototype/agent/windows_secret.py"
+    a, b, c = _git_tree(tmp_path, [
+        {reg: 'REGISTRY_SCHEMA = "watchlog.recorders.v1"\n', cred: "CREDENTIAL_STORE_VERSION = 2\n"},
+        {reg: 'REGISTRY_SCHEMA = "watchlog.recorders.v1"  # same\nX = 1\n'},
+        {cred: "CREDENTIAL_STORE_VERSION = 3\n"}])
+    monkeypatch.setattr(contract, "ROOT", tmp_path)
+    assert contract.changed_contract_formats(a, b) == []
+    assert contract.changed_contract_formats(b, c) == ["credential store format"]
+    assert contract.changed_contract_formats(a, "no-such-ref") is None
+
+
+def test_release_tooling_watches_the_real_contract_constants():
+    for path, name, _label in contract.CONTRACT_CONSTANTS:
+        text = (ROOT / path).read_text(encoding="utf-8")
+        assert f"\n{name} = " in text, (path, name)
+    for path in contract.SETUP_UI_SOURCES + contract.COMPONENT_SCRIPTS:
+        assert (ROOT / path).is_file(), path
+    # The camera-choices schema is written by Setup and read by the Agent: one value.
+    import periodic_stills, setup_backend
+    assert periodic_stills.RECORDER_CAMERA_PROFILES_SCHEMA == setup_backend.RECORDER_CAMERA_PROFILES_SCHEMA
+
+
+BOOT = {"release_tag": "watchlog-production", "min_remote_update_version": "5.0.24"}
+
+
+def test_a_repair_release_is_enforced_through_the_deployed_manifest_builder():
+    # The deployed watchlog-update-manifest signs min_agent_version (not update_class): the
+    # payload's min_agent_version is the release's own version, which every fielded Agent refuses.
+    c = contract.classify("5.1.1", "5.0.26", ["prototype/installer/run-agent.ps1"], build_sha="abc")
+    p = contract.update_payload(c, BOOT, "A" * 64, 40_000_000, "2026-10-06T00:00:00Z")
+    assert p["min_agent_version"] == "5.1.1" and p["update_class"] == REPAIR
+    assert p["url"] == ("https://github.com/visioninfinity0007-droid/Watchlog-2/releases/download/"
+                        "watchlog-production/watchlog-agent-5.1.1.exe")
+    assert p["sha256"] == "a" * 64 and p["size"] == 40_000_000
+    signed = {k: p[k] for k in ("version", "url", "sha256", "size", "min_agent_version")}
+    for fielded in ("5.0.17", "5.0.26", "5.1.0"):
+        r = updater.plan_update(manifest(**signed), fielded, "production", signature_state=True)
+        assert r["action"] == "blocked", fielded
+    # A 5.1.1+ Agent reads the same signed marker as "needs the Repair package", not "too old".
+    later = contract.update_payload(contract.classify("5.1.2", "5.1.1", None), BOOT, "b" * 64, 1,
+                                    "x")
+    r = updater.plan_update(manifest(**{k: later[k] for k in signed}), "5.1.1", "production",
+                            signature_state=True)
+    assert r["reason"] == "requires_repair_package" and r["target"] == "5.1.2"
+
+
+def test_an_agent_only_release_keeps_the_channel_floor():
+    c = contract.classify("5.1.2", "5.1.1", [], changed_formats=[], changed_setup_ui=[])
+    p = contract.update_payload(c, BOOT, "c" * 64, 1, "x")
+    assert c["update_class"] == AGENT_ONLY and p["min_agent_version"] == "5.0.24"
+    r = updater.plan_update(manifest(**{k: p[k] for k in ("version", "url", "sha256", "size",
+                                                          "min_agent_version")}),
+                            "5.1.1", "production", signature_state=True, installed_components="5.1.1")
+    assert r["action"] == "update"
+
+
+def test_the_release_build_writes_the_contract_but_never_publishes_it():
+    wf = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(encoding="utf-8")
+    assert "tools/release_update_contract.py" in wf and "--payload-out" in wf
+    assert "fetch-depth: 0" in wf                  # the contract diffs against the previous release
+    assert "dist-installer/watchlog-update-payload.json" in wf
+    assert "gh release upload" not in wf and "gh release create" not in wf
 
 
 def test_release_tooling_output_is_accepted_by_the_agent():

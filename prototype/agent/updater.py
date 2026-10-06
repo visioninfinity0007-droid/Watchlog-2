@@ -188,6 +188,14 @@ def installed_components_version(_read=None) -> str | None:
     return None
 
 
+def _names_itself_minimum(rel: dict) -> bool:
+    """A release whose min_agent_version is its own version is the signed marker for
+    REQUIRES_REPAIR_PACKAGE. The deployed manifest builder signs min_agent_version (and not yet
+    update_class), and every fielded Agent (5.0.17+) refuses such a release as agent_too_old."""
+    version, min_agent = rel.get("version"), rel.get("min_agent_version")
+    return bool(version and min_agent) and parse_version(min_agent) == parse_version(version)
+
+
 def release_update_class(rel: dict, current_version: str) -> str:
     """The release's declared update class, or the conservative default when absent."""
     declared = str(rel.get("update_class") or "").strip().upper()
@@ -195,6 +203,8 @@ def release_update_class(rel: dict, current_version: str) -> str:
         return declared
     if declared:
         return REQUIRES_REPAIR_PACKAGE            # unknown value: never guess "agent only"
+    if _names_itself_minimum(rel):
+        return REQUIRES_REPAIR_PACKAGE
     same_line = parse_version(rel.get("version") or "")[:2] == parse_version(current_version)[:2]
     return AGENT_ONLY_COMPATIBLE if same_line else REQUIRES_REPAIR_PACKAGE
 
@@ -250,6 +260,10 @@ def plan_update(manifest: dict, current_version: str, channel: str, *,
 
     min_agent = rel.get("min_agent_version")
     if min_agent and parse_version(current_version) < parse_version(min_agent):
+        if _names_itself_minimum(rel):
+            # Not "too old": this release must be installed with the Repair/Upgrade package.
+            return {"action": "blocked", "target": target, "current": current_version,
+                    "channel": channel, "required": min_agent, **agent_only_refusal(rel, current_version)}
         return {"action": "blocked", "reason": "agent_too_old", "required": min_agent,
                 "current": current_version, "channel": channel}
 

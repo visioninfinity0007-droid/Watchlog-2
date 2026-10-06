@@ -537,11 +537,34 @@ Concrete **5.0.26 -> 5.1.x** incompatibilities of an Agent-only update (installe
    uninstaller, which an Agent-only update leaves at 5.0.26.
 
 So **5.0.26 -> 5.1.1 is `REQUIRES_REPAIR_PACKAGE`**, and so is **5.1.0 -> 5.1.1**: 5.1.1 changes
-`apply-remote-update.ps1`, `register-service.ps1`, `run-agent.ps1` and `wl-upgrade.ps1`. The
-deployed manifest builder (edge function `watchlog-update-manifest`) does not emit these fields
-yet; until it does, the Agent's default already refuses the minor change from 5.0.x, but a
-5.1.0 site offered 5.1.1 without the field would take it Agent-only. Emitting the fields is an
-owner-approved deployment (see the lifecycle workstream summary).
+`apply-remote-update.ps1`, `register-service.ps1`, `run-agent.ps1` and `wl-upgrade.ps1`.
+
+**How the contract reaches Agents today (no new deployment needed).** The deployed manifest
+builder (edge function `watchlog-update-manifest`, read 2026-10-06) reads
+`watchlog-update-payload.json` from the `watchlog-production` release and signs `version`,
+`url`, `sha256`, `size`, `notes`, `generated_at` and `min_agent_version`; it drops any other
+field. `min_agent_version` is therefore the signed contract: for a `REQUIRES_REPAIR_PACKAGE`
+release it is the release's own version. Every fielded Agent (5.0.17, 5.0.26: `updater.py`
+163-165) refuses such a release (`agent_too_old`), and a 5.1.1+ Agent reads the same marker as
+`requires_repair_package` and says the Repair/Upgrade package is needed. An
+`AGENT_ONLY_COMPATIBLE` release keeps the bootstrap floor (`min_remote_update_version`,
+5.0.24). `update_class`, `min_installed_components` and `build_sha` are written into the payload
+as well, for when the builder passes them through (an owner-approved edge deployment; not
+required for safety).
+
+The Windows Release workflow writes `WatchLog-Update-Contract.json` and
+`watchlog-update-payload.json` as build artifacts (inputs `previous_version` and
+`previous_ref`; empty = `REQUIRES_REPAIR_PACKAGE`). It uploads nothing to the update channel.
+Publishing the payload is a separate owner-approved step. Never republish through the field
+line's workflow (`a3266326`): it uploads on every production build with `min_agent_version`
+fixed at 5.0.24, so a 5.1.x payload published that way would be installed Agent-only by 5.0.26
+sites.
+
+The tool classifies `REQUIRES_REPAIR_PACKAGE` automatically when, since the previous release's
+source commit, any of these changed: a script installed beside the Agent; a Setup UI source
+(`SETUP_UI_SOURCES`); the declared recorder registry schema, credential store format or
+per-recorder camera-choices schema (`CONTRACT_CONSTANTS`). It does the same when the previous
+release cannot be compared.
 
 ### Machine changes and uninstall
 
