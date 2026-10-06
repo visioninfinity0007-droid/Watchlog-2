@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -135,7 +136,11 @@ class StagedPublicDefaults(unittest.TestCase):
                 "update_public_key = \n",
                 encoding="utf-8",
             )
-            with patch.object(wa, "base_dir", return_value=root):
+            # Config lets WATCHLOG_<KEY> override the files; the Windows Release job exports
+            # WATCHLOG_UPDATE_URL/_PUBLIC_KEY, so keep them out of this file-level contract.
+            clean_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("WATCHLOG_")}
+            with patch.object(wa, "base_dir", return_value=root), \
+                    patch.dict(os.environ, clean_env, clear=True):
                 cfg = wa.Config(existing, read_only_credentials=True)
             self.assertEqual(cfg.update_url, "https://updates.example/watchlog/manifest.json")
             self.assertEqual(cfg.update_public_key, "TEST-PUBLIC-KEY")
