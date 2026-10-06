@@ -67,7 +67,7 @@ $args = @(
   "--hidden-import", "PySide6.QtCore",
   "--hidden-import", "PySide6.QtGui",
   "--hidden-import", "PySide6.QtWidgets",
-  "--collect-all", "PySide6",
+  # EXPERIMENT: no --collect-all PySide6; rely on PyInstaller's PySide6 hooks for the imported modules.
   "--exclude-module", "torch", "--exclude-module", "ultralytics",
   "--exclude-module", "matplotlib", "--exclude-module", "pandas",
   "--exclude-module", "scipy", "--exclude-module", "pytest",
