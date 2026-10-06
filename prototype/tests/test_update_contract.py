@@ -205,6 +205,11 @@ def test_release_tooling_classifies_5_1_1_as_requiring_the_repair_package():
     c = contract.classify("5.1.1", "5.0.26", ["prototype/installer/apply-remote-update.ps1"])
     assert c["update_class"] == REPAIR and c["min_installed_components"] == "5.1.0"
     assert any("major/minor" in r for r in c["reasons"])
+    # Agents before 5.1.1 ignore update_class; min_agent_version makes them refuse it too.
+    assert c["min_agent_version"] == "5.1.1"
+    old_agent = updater.plan_update(manifest("5.1.1", min_agent_version=c["min_agent_version"]),
+                                    "5.0.26", "production", signature_state=True)
+    assert old_agent["reason"] == "agent_too_old"
     c = contract.classify("5.1.1", "5.1.0", ["prototype/installer/apply-remote-update.ps1",
                                              "prototype/installer/run-agent.ps1"])
     assert c["update_class"] == REPAIR

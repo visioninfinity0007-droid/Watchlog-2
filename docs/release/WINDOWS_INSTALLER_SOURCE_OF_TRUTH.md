@@ -380,9 +380,8 @@ configuration change is implied by this repository state.
 - **Multi-recorder first install.** Setup can add further recorders on the camera step before
   Connect; each gets its own registry row, credential and camera choices, and Setup binds all
   of them to WatchLog before the Agent starts. The installer child process carries the
-  multi-recorder wiring, and the Repair/Upgrade gate commits only once the continuity recorder
-  and every recorder that answered before the upgrade are live again, otherwise it restores
-  the previous install (CI-covered; not field-proven).
+  multi-recorder wiring. The Repair/Upgrade gate as shipped in 5.1.0 was unreachable (its
+  5.0.28 guard refused every multi-recorder site); 5.1.1 makes it per recorder (section 1D).
 
 ### What is proven, and what is not
 
@@ -430,9 +429,147 @@ recorder (the continuity recorder). With more than one, disable the extra record
 Recorders first: otherwise database contract v4 refuses the 5.0.x legacy calls with `42501`
 while the 5.0.x heartbeat still looks online. Procedure, health-ledger behaviour and checks:
 `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
-"Deliberate downgrade from 5.1.0 to 5.0.x". The 5.0.28 Repair/Upgrade guard that refuses
-multi-recorder registries is being added on the 5.0.28 branch separately; until it ships, the
-check is manual.
+"Deliberate downgrade from 5.1.0 to 5.0.x". `wl-repair-upgrade.ps1` refuses a multi-recorder
+registry (exit 24/25) only when its candidate is older than 5.1.0; a 5.0.x package that does not
+carry that script version does not check, so the one-recorder check stays manual for it.
+
+---
+
+## 1D. 5.1.1 installer / upgrade lifecycle (`wip/5.1.1-lifecycle`, candidate)
+
+Status: implemented and covered by executing tests (fakes, sandbox ProgramData, real Windows
+PowerShell; listed per row in the lifecycle fault matrix). **Not field-proven, no artifact.**
+Steps that need an elevated PC (registering SYSTEM tasks, powercfg on the real scheme, NSIS
+compile) run only in the Windows CI jobs. This section replaces any older claim in this file
+that a rollback "verified" the previous Agent by the task state alone.
+
+### Repair/Upgrade (`wl-repair-upgrade.ps1`, `nsis/wl-upgrade.ps1`)
+
+- **Multi-recorder guard is version-aware.** The refusal of a site with more than one configured
+  recorder (exit 24) or an unreadable `recorders.json` (exit 25) applies only when the candidate
+  is older than 5.1.0 (a 5.0.x Repair package). A 5.1.x candidate manages multi-recorder sites;
+  an unreadable registry is refused by its own registry validation before anything is paused
+  (exit 30). 5.1.0 shipped the 5.0.28 guard unchanged and refused every two-recorder site.
+- **Per-recorder proof.** Before the pause, Repair reads what the running Agent itself last
+  proved (protected `Secrets\runtime-health.json`: heartbeat within 15 minutes, each recorder's
+  row). A recorder is required to be live after the update when it was live before (that proof,
+  or the candidate's probe after the pause). A recorder already offline before may stay offline:
+  it is reported as "still offline (it was offline before the update; not verified by this
+  update)", counted in `not_live_after`, never reported healthy. This now also applies to a
+  one-recorder site, which 5.1.0 could not repair while its recorder was offline. Without recent
+  proof from the old Agent the continuity recorder stays required. A recorder live before and
+  unreachable by the candidate rolls back before any file is replaced.
+- **Fresh, not future.** `heartbeat_at`, `remote_update_poll_at`, `recorder_seen_at` and each
+  recorder's `last_live_at` must be at or after the phase start and at most 120 s in the future.
+- **Rollback proves the previous Agent.** Order: restore the previous payload with the task
+  suspended (`rollback-restore`), remove a recorder registry staged by this run, then start the
+  task and require a fresh runtime-health heartbeat from the restored version
+  (`rollback-start -ProveHealth`, up to 240 s). Rollback success is reported only with that
+  proof. Helper exit codes: 0 proven; 15 task running, no fresh heartbeat; 14 task could not be
+  started; 16 a payload file could not be restored (the task is re-enabled anyway and the backup
+  kept); 17 no proof possible because the site was not heartbeating before (full installer on a
+  partial site only). The full installer's "restart was verified" message is shown only on 0.
+- **Interrupted upgrade.** Repair's preflight arms a SYSTEM task "WatchLog Agent Upgrade
+  Recovery" (at startup and every 5 minutes) and writes `ProgramData\WatchLog\upgrade-in-progress.json`
+  (owner PID and start time). If the orchestrator is killed or the PC loses power while WatchLog
+  is paused, the task restores the previous payload, removes a staged registry (when the
+  protected candidate Setup UI is still there), re-enables the task and requires the heartbeat;
+  bounded to 3 attempts; it writes `repair-upgrade-result.ini` with stage "interrupted upgrade
+  recovery". It runs a copy of the helper in the install folder (administrators only). Commit
+  and every completed rollback remove it. `run-agent.ps1` cannot do this: a Disabled task never
+  starts it. The full installer does not arm it (connected sites are sent to Repair/Upgrade).
+- **Stale remote update.** While paused, Repair removes a staged remote update and the
+  `.remote.bak` image, and closes an unconfirmed remote-update request as "superseded by
+  Repair/Upgrade" so the new launcher can neither apply an old package nor revert the repair.
+- **Uninstaller.** Repair/Upgrade now writes the current `uninstall.exe` (same Uninstall section
+  as the full installer, compared by a test) and `ComponentsVersion` after success.
+
+### Remote update success (`remote_update.py`, `apply-remote-update.ps1`, `run-agent.ps1`)
+
+- Staging records the old Agent's recorder baseline (`remote-update\baseline.json`) and a
+  commit window (default 900 s, clamped 300-1800 s). The swap records `applied_at`,
+  `commit_deadline`, `previous_version` and the SHA-256 of the rollback image.
+- The new Agent commits only when it runs the applied version (and the released build when the
+  manifest names `build_sha`; runtime-health now carries `build_sha`), a cloud heartbeat and an
+  update poll exist after the swap (not future-dated), and every recorder live before is live
+  again. Commit deletes `.remote.bak` at once, so a later cloud-report failure can never revert a
+  proven update; reports are retried for 7 days, then dropped.
+- Not proven by the deadline: the Agent marks `rollback_requested` and exits; the launcher
+  restores the image only if its hash matches the recorded one. It also rolls back on an exit
+  within 60 s or an exit after the deadline while uncommitted. The restored Agent reports the
+  rollback only after its own fresh heartbeat and update poll (or, after 10 minutes, as "NOT
+  proven running").
+- Limit: an Agent that hangs without exiting and whose worker thread is dead is not rolled
+  back by the launcher (it is blocked on the Agent); the result stays uncommitted and reported.
+- **Site Status "Update WatchLog"** no longer swaps the installed Agent from inside itself
+  (that ran `wl-upgrade.ps1 preflight`, which stops the very process and window running it and
+  left the task Disabled). It reports what is available and directs to the portal (remote
+  update) or to `WatchLog-Repair-Upgrade.exe`.
+
+### Agent-only vs full-component updates
+
+Every in-app path replaces `watchlog-agent.exe` only. The signed manifest's channel entry now
+carries `update_class` (`AGENT_ONLY_COMPATIBLE` | `REQUIRES_REPAIR_PACKAGE`) and
+`min_installed_components`, produced by `tools/release_update_contract.py`. The Agent refuses an
+Agent-only update (`requires_repair_package`) when the release requires the Repair package, when
+the field is absent across a major/minor change, for an unknown class, or when the installed
+component set (ARP `ComponentsVersion`, else `DisplayVersion`, 32-bit registry view) is older
+than `min_installed_components` (default: the release's own `major.minor.0`) or unreadable.
+For a `REQUIRES_REPAIR_PACKAGE` release the tool also emits `min_agent_version` = the release's
+own version: Agents older than 5.1.1 ignore `update_class` but honour `min_agent_version`, so they
+refuse it ("agent_too_old") instead of installing it Agent-only.
+
+Concrete **5.0.26 -> 5.1.x** incompatibilities of an Agent-only update (installer/update audit C):
+
+1. the 5.0.26 `register-service.ps1` deletes `background-ready.json` and fails after 25 s unless
+   the Agent rewrites it; the 5.1 Agent never writes it, so the old Setup UI's reconnect/setup
+   fails (and the old rollback ignores that);
+2. once a recorder registry exists, the 5.1 Agent runs from per-recorder credentials while the
+   5.0.26 Setup UI still writes only the legacy credential: a credential fix is silently ignored;
+3. no Manage Recorders (it comes only with the 5.1 Setup UI from the full or Repair package);
+4. the 5.0.26 uninstaller does not remove `recorders.json`, `Secrets\recorders` or the 5.1
+   shortcuts;
+5. 5.1 adds `recorder_id` to spool payloads and `health.sqlite` columns; 5.0.x reading them
+   after a rollback is unverified;
+6. 5.1 needs database contract v4; the updater has no server-capability gate;
+7. the 5.1.1 security and lifecycle fixes (remote-update stage-trust gate, commit gate,
+   proven rollback, recovery task, uninstall policy, power baseline) live in the scripts and the
+   uninstaller, which an Agent-only update leaves at 5.0.26.
+
+So **5.0.26 -> 5.1.1 is `REQUIRES_REPAIR_PACKAGE`**, and so is **5.1.0 -> 5.1.1**: 5.1.1 changes
+`apply-remote-update.ps1`, `register-service.ps1`, `run-agent.ps1` and `wl-upgrade.ps1`. The
+deployed manifest builder (edge function `watchlog-update-manifest`) does not emit these fields
+yet; until it does, the Agent's default already refuses the minor change from 5.0.x, but a
+5.1.0 site offered 5.1.1 without the field would take it Agent-only. Emitting the fields is an
+owner-approved deployment (see the lifecycle workstream summary).
+
+### Machine changes and uninstall
+
+- **Power (option B).** `register-service.ps1` keeps the site PC awake on mains power
+  (standby, hibernate and disk timeouts AC = 0; `powercfg /hibernate off`). Before the first
+  change it records the previous AC values, the active scheme GUID and `HibernateEnabled` in
+  `ProgramData\WatchLog\Secrets\power-baseline.json`; Repair, rollback and re-runs never
+  overwrite it. Uninstall (`wl-upgrade.ps1 -Stage uninstall`) restores exactly those values
+  (`/setacvalueindex`, `/setactive` when that scheme is active, `/hibernate on` if it was on).
+  DC (battery), lid, sleep button, Modern Standby, NIC and USB power settings are not changed.
+  A site first installed before 5.1.1 was changed without a record: its first baseline holds
+  WatchLog's own values, so uninstall changes nothing there (the originals are unknown).
+- **Uninstall policy.** WatchLog has no "keep this site for a reinstall" choice, so uninstall
+  removes every identity, credential, queue, cache and staging file it created and keeps only
+  support logs (`agent.log`, `agent.log.old`, `upgrade.log`, `repair-upgrade.log`,
+  `repair-upgrade-result.ini`, `setup.log`). Removed in addition to the 5.1.0 list: install
+  folder `watchlog.defaults.ini`, `watchlog-agent.exe.remote.bak`, `watchlog-agent.next.verify`,
+  `wl-upgrade-recover.ps1`; ProgramData `upgrade-backup\`, `remote-update\`, `repair-candidate\`,
+  `analytics_*`, `recorder_identity.json`, `camera_profiles.json`, `recorder_auth_backoff.json`,
+  `recorders.json.quarantine-*`, `recorders.quarantine-*`, `upgrade-in-progress.json`; scheduled
+  tasks "WatchLog Agent", "WatchLog Agent Upgrade Recovery" and any orphaned "WatchLog Candidate
+  Preflight *". The uninstall stage no longer makes a 100 MB payload backup.
+- **Start menu** shortcuts are created for all users; uninstall removes both the all-users and
+  the installing admin's per-user copies.
+- **Uninstall registry view (documented, not changed).** NSIS is 32-bit, so the ARP key is under
+  `HKLM\Software\WOW6432Node\...\Uninstall\WatchLog`. Moving it to the 64-bit view would orphan
+  every existing site's entry (Repair/Upgrade reads `InstallLocation` from it); the Agent reads
+  `ComponentsVersion` from the 32-bit view.
 
 ---
 
@@ -647,7 +784,7 @@ Phase 3 — atomic replacement and health commit:
   - fresh `remote_update_poll_at` written only after the updater successfully
     reaches the production update-claim RPC;
 - a merely-running process is not success;
-- any failed health gate triggers full rollback and old-Agent restart verification.
+- any failed health gate triggers full rollback and old-Agent restart verification (until 5.1.1 that "verification" was only the task state Running; 5.1.1 requires a fresh heartbeat from the restored version, section 1D).
 
 ### Current Windows validation branch
 

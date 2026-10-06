@@ -8,6 +8,8 @@ carries (see prototype/agent/updater.py):
 
   update_class             AGENT_ONLY_COMPATIBLE | REQUIRES_REPAIR_PACKAGE
   min_installed_components oldest installed component set the new Agent can run beside
+  min_agent_version        (REQUIRES_REPAIR_PACKAGE only) the release's own version, so Agents
+                           older than 5.1.1, which ignore update_class, refuse it too
 
 This tool decides them from facts, conservatively:
 
@@ -68,13 +70,19 @@ def classify(version: str, previous_version: str | None, changed_scripts: list[s
     if requires_repair:
         reasons.append(requires_repair)
     update_class = updater.REQUIRES_REPAIR_PACKAGE if reasons else updater.AGENT_ONLY_COMPATIBLE
-    return {
+    contract = {
         "version": version,
         "update_class": update_class,
         "min_installed_components": min_installed_components or f"{target[0]}.{target[1]}.0",
         "build_sha": build_sha or None,
         "reasons": reasons or ["patch release; no installed script changed"],
     }
+    if update_class == updater.REQUIRES_REPAIR_PACKAGE:
+        # Agents older than 5.1.1 ignore update_class but honour min_agent_version: naming
+        # this release's own version makes every older Agent refuse it ("agent_too_old")
+        # instead of installing it Agent-only.
+        contract["min_agent_version"] = version
+    return contract
 
 
 def changed_component_scripts(previous_ref: str, ref: str) -> list[str] | None:
