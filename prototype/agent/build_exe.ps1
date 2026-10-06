@@ -6,17 +6,32 @@
 #   Production build (bundles onnxruntime + numpy + PIL + tzdata + model):
 #     powershell -ExecutionPolicy Bypass -File agent\build_exe.ps1 -WithAI
 #
+#   Developer build with an already-prepared interpreter (the exact-set lock check still runs):
+#     ...\build_exe.ps1 -WithAI -Python <venv python.exe>
+#
 # The packaged entrypoint is release_agent.py. It delegates the normal runtime
 # to analytics_agent.py and gives the NSIS --setup path strict finite-process
 # semantics: setup failure returns non-zero; successful setup validates WatchLog
 # enrollment and returns control to the installer instead of running forever.
 # --selftest and every non-setup command still delegate to the existing core.
+#
+# Reproducibility (docs/release/WINDOWS_PACKAGING.md): the Agent is frozen in its OWN venv,
+# created here from prototype/packaging/requirements-agent.lock (hash-locked, --no-deps, exact
+# set verified). It never shares an environment with the Setup UI.
 
-param([switch]$WithAI)
+param(
+  [switch]$WithAI,
+  [string]$Python = "",
+  [switch]$AllowPythonMismatch
+)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+. (Join-Path $root "packaging\build_env.ps1")
+
+Write-Host "Preparing the isolated Agent build environment (hash-locked)..." -ForegroundColor Cyan
+$py = New-WatchLogBuildVenv -Name "agent" -Python $Python -AllowPythonMismatch:$AllowPythonMismatch
 
 $common = @(
     "--onefile","--name","watchlog-agent","--console","--clean","--noconfirm",
@@ -37,23 +52,12 @@ $entry = "agent\release_agent.py"
 
 # PE version metadata from the single version source (wl_version.py) so Windows
 # and CI can read watchlog-agent.exe ProductVersion directly (no console tricks).
-$agentVer = (Select-String -Path (Join-Path $root "agent\wl_version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-if (-not $agentVer) { throw "could not read VERSION from wl_version.py" }
+$agentVer = Get-WatchLogVersion -AgentDir (Join-Path $root "agent")
 
-# Stamp the exact build identity into a bundled module so the SHIPPED exe reports its source
-# commit on a customer machine that has no build environment (Section 2: exact build metadata).
-$buildSha = $env:WATCHLOG_BUILD_SHA
-if (-not $buildSha) { $buildSha = $env:GITHUB_SHA }
-if (-not $buildSha) { try { $buildSha = (git -C $root rev-parse HEAD 2>$null) } catch { $buildSha = "" } }
-$buildChannel = $env:WATCHLOG_BUILD_CHANNEL
-if (-not $buildChannel) { $buildChannel = "production" }
-$buildInfo = Join-Path $root "agent\build_info.py"
-@"
-# GENERATED at build time by build_exe.ps1 — do not edit, do not commit (gitignored).
-BUILD_SHA = "$("$buildSha".Trim())"
-BUILD_CHANNEL = "$("$buildChannel".Trim())"
-"@ | Set-Content -Path $buildInfo -Encoding UTF8
-Write-Host "  Build SHA stamped into build_info.py: $("$buildSha".Trim())" -ForegroundColor Gray
+# Stamp the exact build identity (BUILD_SHA) into build_info.py, bundled into the exe, so the
+# SHIPPED Agent reports its source commit on a customer machine (--version line 2, --selftest,
+# support bundle). build_windows_release.ps1 fails the release if it differs from the source SHA.
+$null = Write-WatchLogBuildInfo -AgentDir (Join-Path $root "agent")
 $common += @("--hidden-import", "build_info")
 $vt = ((($agentVer -split '[.+]') + @('0','0','0'))[0..2]) -join ','
 New-Item -ItemType Directory -Force -Path (Join-Path $root "build") | Out-Null
@@ -79,8 +83,6 @@ if ($WithAI) {
   yolo export model=yolov8n.pt format=onnx
 then copy it there."
     }
-    Write-Host "Installing production dependencies (AI + bundled FFmpeg archive decoder)..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata cryptography imageio-ffmpeg
     $ai = @(
         "--hidden-import","numpy",
         "--hidden-import","onnxruntime","--collect-all","onnxruntime",
@@ -89,13 +91,13 @@ then copy it there."
         "--add-data","$model;."
     )
     Write-Host "Freezing WatchLog agent + Analytics Studio runtime..." -ForegroundColor Cyan
-    python -m PyInstaller @common @ai $entry
+    & $py -m PyInstaller @common @ai $entry
+    if ($LASTEXITCODE -ne 0) { throw "Agent PyInstaller build failed (exit $LASTEXITCODE)" }
 } else {
     $lean = @("--exclude-module","onnxruntime","--exclude-module","numpy","--exclude-module","PIL")
-    Write-Host "Installing lean build dependencies..." -ForegroundColor Cyan
-    python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil tzdata cryptography
     Write-Host "Freezing lean diagnostic build (analytics measurement pauses without AI)..." -ForegroundColor Cyan
-    python -m PyInstaller @common @lean $entry
+    & $py -m PyInstaller @common @lean $entry
+    if ($LASTEXITCODE -ne 0) { throw "Agent PyInstaller build failed (exit $LASTEXITCODE)" }
 }
 
 $exe = Join-Path $root "dist\watchlog-agent.exe"

@@ -2480,7 +2480,8 @@ def main() -> int:
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:
-        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
+        import wl_version  # BUILD_SHA is baked into the frozen Setup UI too (build_info)
+        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION} build_sha={wl_version.BUILD_SHA}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
 

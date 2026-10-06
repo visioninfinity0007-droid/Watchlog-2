@@ -298,7 +298,8 @@ def test_the_worker_exits_for_rollback_when_the_gate_fails(site, monkeypatch):
 
 
 def test_runtime_health_names_the_build():
-    src = (ROOT / "prototype" / "agent" / "watchlog_agent.py").read_text(encoding="utf-8")
+    # update_runtime_health lives in agent_core.py (shared with Setup; re-exported by watchlog_agent).
+    src = (ROOT / "prototype" / "agent" / "agent_core.py").read_text(encoding="utf-8")
     fn = src[src.index("def update_runtime_health("):]
     assert '"build_sha": _runtime_build_sha()' in fn[:fn.index("\ndef ")]
 

@@ -139,7 +139,10 @@ class StagedPublicDefaults(unittest.TestCase):
             # Config lets WATCHLOG_<KEY> override the files; the Windows Release job exports
             # WATCHLOG_UPDATE_URL/_PUBLIC_KEY, so keep them out of this file-level contract.
             clean_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("WATCHLOG_")}
+            # Config reads base_dir() where it is defined: agent_core (shared with Setup).
+            import agent_core
             with patch.object(wa, "base_dir", return_value=root), \
+                    patch.object(agent_core, "base_dir", return_value=root), \
                     patch.dict(os.environ, clean_env, clear=True):
                 cfg = wa.Config(existing, read_only_credentials=True)
             self.assertEqual(cfg.update_url, "https://updates.example/watchlog/manifest.json")
@@ -187,7 +190,8 @@ class InstallerContract(unittest.TestCase):
 
     def test_candidate_and_health_proof_are_integrity_protected(self):
         ps = (ROOT / "prototype/installer/wl-repair-upgrade.ps1").read_text(encoding="utf-8")
-        agent = (ROOT / "prototype/agent/watchlog_agent.py").read_text(encoding="utf-8")
+        # runtime_health_path() moved with the heartbeat into agent_core.py (shared with Setup).
+        agent = (ROOT / "prototype/agent/agent_core.py").read_text(encoding="utf-8")
         self.assertIn("Protect-CandidateDirectory", ps)
         self.assertIn('S-1-5-18', ps)
         self.assertIn('S-1-5-32-544', ps)

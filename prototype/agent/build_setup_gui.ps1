@@ -1,29 +1,42 @@
 # Build the customer-facing WatchLog setup UI as a windowed one-file EXE.
 # The long-running Site Agent is built separately; this executable exists only
 # for setup/migration/diagnostics and therefore never opens a console window.
+#
+#   powershell -ExecutionPolicy Bypass -File agent\build_setup_gui.ps1
+#   ...\build_setup_gui.ps1 -Python <prepared venv python.exe>    (developer build)
+#
+# Reproducibility (docs/release/WINDOWS_PACKAGING.md):
+#   * frozen in its OWN venv, created here from prototype/packaging/requirements-setup-ui.lock
+#     (hash-locked, --no-deps, exact set verified). Nothing from the Agent environment
+#     (onnxruntime, numpy, Pillow, imageio-ffmpeg, cryptography) is installed, and Setup imports
+#     agent_core, not the Agent runtime, so none of it can be collected.
+#   * selective Qt: PyInstaller's PySide6 hooks collect what QtCore/QtGui/QtWidgets need (the
+#     platform, style, image-format, icon-engine and TLS plugins). `--collect-all PySide6` is
+#     NOT used: it bundled every importable Qt Addon (WebEngine, QML/Quick, 3D, Multimedia,
+#     Designer), 206 MB, whenever the build image could import them, and cost ~18 s of cold
+#     start (BUILD69-FORENSIC-REPORT.md section 7).
+#   * BUILD_SHA is stamped into build_info.py and bundled, like the Agent.
+param(
+  [string]$Python = "",
+  [switch]$AllowPythonMismatch
+)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+. (Join-Path $root "packaging\build_env.ps1")
 
-# Release reproducibility: 0.4.1 and the first 0.4.2 candidate had identical
-# recorder-discovery source but were rebuilt on different mutable windows-latest
-# images. Pin the freezer version that produced the known-good 0.4.1 release and
-# explicitly retain every recorder-discovery/driver module in the frozen setup UI.
-# psutil is intentionally included because reliable multi-NIC discovery on the
-# customer PC must enumerate active adapters, not only the default internet route.
-Write-Host "Installing WatchLog setup UI build dependencies..." -ForegroundColor Cyan
-python -m pip install --disable-pip-version-check --quiet "pyinstaller==6.22.2" requests pyside6 psutil
-if ($LASTEXITCODE -ne 0) { throw "setup UI dependency install failed (exit $LASTEXITCODE)" }
-python -m pip show pyinstaller requests pyside6 psutil | Select-String '^(Name|Version):' | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+Write-Host "Preparing the isolated Setup UI build environment (hash-locked)..." -ForegroundColor Cyan
+$py = New-WatchLogBuildVenv -Name "setup-ui" -Python $Python -AllowPythonMismatch:$AllowPythonMismatch
+& $py -m pip show pyinstaller requests pyside6 psutil | Select-String '^(Name|Version):' | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
 
 $icon = Join-Path $root "installer\setup.ico"
 
 # PE version metadata from the single version source (wl_version.py) so Windows
 # and CI can read watchlog-setup-ui.exe ProductVersion directly (no console tricks
 # on a windowed exe).
-$uiVer = (Select-String -Path (Join-Path $root "agent\wl_version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-if (-not $uiVer) { throw "could not read VERSION from wl_version.py" }
+$uiVer = Get-WatchLogVersion -AgentDir (Join-Path $root "agent")
+$null = Write-WatchLogBuildInfo -AgentDir (Join-Path $root "agent")
 $uvt = ((($uiVer -split '[.+]') + @('0','0','0'))[0..2]) -join ','
 New-Item -ItemType Directory -Force -Path (Join-Path $root "build-setup-ui") | Out-Null
 $verFile = Join-Path $root "build-setup-ui\watchlog-setup-ui.version.txt"
@@ -46,12 +59,14 @@ $args = @(
   "--icon", $icon,
   "--version-file", $verFile,
   "--add-data", "$icon;.",
+  "--hidden-import", "build_info",
   "--hidden-import", "requests",
   "--hidden-import", "psutil",
   # Recorder setup is release-critical. Keep these explicit even though most
   # are statically imported, so a PyInstaller graph change cannot silently
   # strip discovery or a vendor driver from a future installer.
   "--hidden-import", "setup_backend",
+  "--hidden-import", "agent_core",
   # Site Status panel (opened via --status) is lazily imported, so name it and its Qt-free
   # controller explicitly or a graph change could strip the post-install status/control window.
   "--hidden-import", "site_status_gui",
@@ -64,10 +79,12 @@ $args = @(
   "--hidden-import", "drivers.dahua",
   "--hidden-import", "drivers.hikvision",
   "--hidden-import", "drivers.onvif_driver",
+  # The only Qt modules the code imports (setup_gui.py, site_status_gui.py). PyInstaller's
+  # PySide6 hooks add their plugins: platforms (qwindows, qoffscreen for CI), styles,
+  # imageformats (setup.ico), iconengines and the TLS backends.
   "--hidden-import", "PySide6.QtCore",
   "--hidden-import", "PySide6.QtGui",
   "--hidden-import", "PySide6.QtWidgets",
-  "--collect-all", "PySide6",
   "--exclude-module", "torch", "--exclude-module", "ultralytics",
   "--exclude-module", "matplotlib", "--exclude-module", "pandas",
   "--exclude-module", "scipy", "--exclude-module", "pytest",
@@ -75,7 +92,7 @@ $args = @(
 )
 
 Write-Host "Freezing branded WatchLog setup UI..." -ForegroundColor Cyan
-python -m PyInstaller @args
+& $py -m PyInstaller @args
 if ($LASTEXITCODE -ne 0) { throw "setup UI PyInstaller build failed (exit $LASTEXITCODE)" }
 
 $exe = Join-Path $root "dist\watchlog-setup-ui.exe"
@@ -83,3 +100,8 @@ if (-not (Test-Path $exe)) { throw "setup UI build produced no exe" }
 $bytes = (Get-Item $exe).Length
 if ($bytes -lt 5MB) { throw "setup UI is suspiciously small ($bytes bytes)" }
 Write-Host "Built $exe ($([math]::Round($bytes / 1MB, 1)) MB)" -ForegroundColor Green
+
+# Content proof of the frozen archive (not its size): no Agent runtime, no AI/FFmpeg stack,
+# the expected Qt plugin families present and no Qt Addon family, BUILD_SHA baked.
+& $py (Join-Path (Split-Path -Parent $root) "tools\release_size_report.py") --check-setup-ui $exe
+if ($LASTEXITCODE -ne 0) { throw "frozen setup UI content check failed (exit $LASTEXITCODE)" }

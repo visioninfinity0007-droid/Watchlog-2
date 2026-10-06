@@ -96,9 +96,10 @@ def test_finalize_install_requires_readiness():
 
 
 def test_heartbeat_stamps_identity_only_when_this_run_proved_the_recorder(monkeypatch):
+    import agent_core
     import watchlog_agent as core
     written = []
-    monkeypatch.setattr(core, "update_runtime_health", lambda **f: written.append(f))
+    monkeypatch.setattr(agent_core, "update_runtime_health", lambda **f: written.append(f))  # heartbeat lives in agent_core (shared with Setup); patch its own collaborator
     cloud = SimpleNamespace(call=lambda *a, **k: {})
     state = {"agent_id": "a", "agent_key": "k"}
     core.heartbeat(cloud, state, SimpleNamespace(vendor="Hikvision", model="M", driver="hikvision-isapi"))
