@@ -222,6 +222,13 @@ jobs:
           }
           Write-Host 'Packaged setup UI recorder discovery behavior PASSED.'
 
+          # Release performance gate: repeated runs of the frozen Setup UI and Agent, p50/p95/max
+          # against prototype/packaging/perf-budgets.json (unpack, first visible window,
+          # installer-child lifecycle, Agent --version and --selftest).
+          python tools/release_perf_gate.py --setup-ui $setupUi.FullName --agent $agent.FullName `
+            --size $setup.FullName --size $repair.FullName --json .\dist-installer\WatchLog-Perf-Report.json
+          if ($LASTEXITCODE -ne 0) { throw 'release performance gate failed (see WatchLog-Perf-Report.json)' }
+
           # Prove the packaged AI runtime/model, not just the Python source tree.
           $agentSelftest = & $agent.FullName --selftest 2>&1 | Out-String
           Write-Host $agentSelftest
@@ -430,6 +437,7 @@ jobs:
             dist-installer/WatchLog-Payload-Proof.json
             dist-installer/WatchLog-Size-Report.json
             dist-installer/WatchLog-Update-Contract.json
+            dist-installer/WatchLog-Perf-Report.json
             dist-installer/watchlog-update-payload.json
           if-no-files-found: error
           retention-days: 30
