@@ -4,7 +4,9 @@ The agent runs on a Windows PC on the **same LAN** as the recorder and connects 
 issues are on-site (network, credentials, firmware quirks). Work top-down.
 
 Diagnostics live in the agent: `watchlog-agent.exe --probe` prints a checklist against the configured
-recorder; `--setup` re-runs discovery + connection test.
+recorder. To find the recorder again, test its login or change it, use **WatchLog Setup** (Start
+menu: WatchLog Setup, or WatchLog Manage Recorders). The console `--setup` wizard is retired: the
+packaged Agent refuses it (exit 2) and writes nothing.
 
 ---
 
@@ -23,12 +25,16 @@ recorder; `--setup` re-runs discovery + connection test.
   that the NVR's web UI opens from that PC.
 - Vendor API disabled: Hikvision needs **ISAPI** enabled; Dahua needs **CGI**; ONVIF needs the ONVIF
   service on and an ONVIF user. Enable in the recorder's web UI.
-- Non-standard port: set it in `watchlog.ini`.
+- Non-standard port: WatchLog Setup tries the common recorder web and native ports for the address
+  it is given (port list: `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` section 4). If the
+  recorder answers only on another port, capture `watchlog-agent.exe --scan <nvr-ip>` and escalate.
 - **Xiongmai/Hisilicon no-name DVRs (port 34567)** are not supported and ONVIF is often broken on
   them — flagged by discovery, not a bug.
 
 ## 3. Authentication fails
-- `--probe` reports a 401. Re-check the recorder admin username/password in `watchlog.ini`.
+- `--probe` reports a 401. Re-check the recorder username/password and re-enter it in Manage
+  Recorders. The password is not in `watchlog.ini`; it is stored encrypted under
+  `C:\ProgramData\WatchLog\Secrets`.
 - Some Dahua/Hikvision units lock out after failed logins — wait or clear the lockout in the NVR UI.
 - Digest vs basic auth is handled automatically; no action needed.
 
