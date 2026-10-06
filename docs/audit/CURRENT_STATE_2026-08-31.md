@@ -1,5 +1,7 @@
 # WatchLog — Live System Audit
 
+> Dated snapshot. Its installer findings (Inno/ZIP, `Install-WatchLog.ps1`, `run-agent.cmd`) are superseded: see `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
+
 **Date:** 2026-08-31 · **Auditor:** Vision Infinity (automated live inspection)
 **Method:** direct inspection of GitHub, Coolify API, the live Coolify host (SSH), the
 Supabase Postgres database, PostgREST/Auth over HTTP, and the running services.
