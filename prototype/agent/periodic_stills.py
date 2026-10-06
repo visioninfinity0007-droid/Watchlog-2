@@ -46,6 +46,7 @@ from pathlib import Path
 import requests
 
 import nvr_health
+import server_capture
 import watchlog_agent as core
 from drivers import DriverError
 from drivers.base import Event, NvrAuthFailed, NvrUnreachable
@@ -248,6 +249,11 @@ class Schedule:
         if channel in self.next_due:
             self.next_due[channel] = now + self.interval()
 
+    def skip(self, channel: str, now: float) -> None:
+        """Next turn for a camera this round did not ask the recorder about (no spacing)."""
+        if channel in self.next_due:
+            self.next_due[channel] = now + self.interval()
+
     def seconds_until_due(self, now: float) -> float:
         if not self.next_due:
             return TICK_SECONDS
@@ -420,6 +426,11 @@ class StreamStillSampler:
         channel = self.schedule.due(now)
         if channel is None:
             return []
+        if server_capture.owned_by_server(getattr(self.cfg, "recorder_cloud_id", None), channel,
+                                          now):
+            # The server is scheduling this camera's stills; ours would duplicate them.
+            self.schedule.skip(channel, now)
+            return []
         waiting = self.spool.count()
         if waiting >= _high_water(self.spool):
             self.schedule.done(channel, now)
@@ -567,6 +578,11 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                 channel = schedule.due(now)
                 if channel is None:
                     stop.wait(min(TICK_SECONDS, max(0.05, schedule.seconds_until_due(now))))
+                    continue
+                if server_capture.owned_by_server(getattr(cfg, "recorder_cloud_id", None),
+                                                  channel, now):
+                    # The server is scheduling this camera's stills; ours would duplicate.
+                    schedule.skip(channel, now)
                     continue
 
                 waiting = spool.count()

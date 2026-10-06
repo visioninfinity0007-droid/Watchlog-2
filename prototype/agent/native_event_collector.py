@@ -19,6 +19,7 @@ import watchlog_agent as core
 import native_verification
 import nvr_health
 import periodic_stills
+import server_capture
 from drivers import DriverError
 
 # A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
@@ -168,6 +169,8 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     cfg, driver, spool,
                     profiles=(holder or {}).get("still_profiles"),
                     label=getattr(cfg, "recorder_display_name", None))
+                # Server capture requests for this recorder use this same session.
+                server_capture.register_live_driver(driver)
 
             last_shot: dict[str, float] = {}
             events = (_LiveEvents(driver, stop, cfg, stream, last_gen) if reports_stream
@@ -307,6 +310,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
             core.log(f"ERROR: driver crashed: {type(error).__name__}: {error}")
         finally:
             if driver:
+                server_capture.unregister_live_driver(driver)
                 if holder is not None and holder.get("live_driver") is driver:
                     holder.pop("live_driver", None)
                     # Keep the dropped driver's last real stream activity visible, so

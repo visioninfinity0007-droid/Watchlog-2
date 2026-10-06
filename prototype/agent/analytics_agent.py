@@ -29,6 +29,7 @@ import credential_store
 import periodic_stills
 import watchlog_agent as core
 import recorder_runtime
+import server_capture
 import recorder_registry
 import recorder_analytics
 import multi_recorder_orchestrator
@@ -592,8 +593,13 @@ def _service_snapshot_requests(cloud, state, cfg, driver, requests_list):
             job_cfg = recorder_runtime.config_for_cloud_recorder(
                 cfg, request_row.get("recorder_id")
             )
+            live = server_capture.live_driver_for(getattr(job_cfg, "nvr_url", ""))
             if job_cfg is cfg and driver is not None:
                 job_driver = driver
+            elif live is not None:
+                # Hikvision: the live collector's own session (its recorder lock takes
+                # turns with the stream), never a new login per capture request.
+                job_driver = live
             else:
                 job_driver = _open_analytics_driver(job_cfg)
                 close_job_driver = True
@@ -741,6 +747,9 @@ def analytics_worker(cfg: Config, state: dict, detector,
                         core.log(f"analytics: config updated to v{version}; "
                                  f"{mux.camera_count} camera(s) active")
                     snapshot_requests = payload.get("snapshot_requests") or []
+                    # The server schedules these cameras' stills: this Agent's own periodic
+                    # stills skip them while it does (owner decision, server_capture).
+                    server_capture.note_requests(snapshot_requests)
                     if snapshot_requests and (snapshot_thread is None
                                               or not snapshot_thread.is_alive()):
                         # Each request resolves its own recorder. A dead primary
