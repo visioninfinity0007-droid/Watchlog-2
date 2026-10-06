@@ -193,11 +193,10 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.0**
+**5.1.1**
 
-That is the version string the code carries. The release candidate on it is **5.1.1**
-(section 0 and 1D, local branch `release/5.1.1`); its version bump is part of the RC freeze
-(section 0.1).
+That is the version string the code carries: the release candidate (section 0 and 1D, branch
+`release/5.1.1`), not promoted.
 
 5.1.0 (section 1C, branch `mr/agent-5.1.0`, merged to `main`) is the multi-recorder Agent and
 installer **candidate, not promoted**: no Windows artifact has been built from it, none is
