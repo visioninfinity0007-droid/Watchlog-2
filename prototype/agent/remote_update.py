@@ -141,12 +141,32 @@ def _fetch_manifest(cfg) -> dict:
     return plan
 
 
+def _protect_staging(root: Path) -> None:
+    """SYSTEM + Administrators only, verified, before anything is staged (T0-SEC1).
+
+    %ProgramData% lets a standard user create files in a new folder; run-agent.ps1 applies
+    what is staged here as SYSTEM. apply-remote-update.ps1 refuses a stage in a folder that
+    is not protected or files not owned by SYSTEM/Administrators, so an update that cannot
+    be protected here is not staged at all. Leftovers this Agent did not write are removed."""
+    root.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        return
+    import windows_secret
+    try:
+        windows_secret.ensure_secure_dir(root)
+    except Exception as error:                        # noqa: BLE001
+        raise RuntimeError(f"update staging folder could not be protected: "
+                           f"{type(error).__name__}") from error
+    for leftover in ("pending.json", "watchlog-agent.next.exe", "watchlog-agent.next.exe.part"):
+        _safe_unlink(root / leftover)
+
+
 def _download_verified(cfg, plan: dict) -> Path:
     url = str(plan.get("url") or "")
     if not url.lower().startswith("https://"):
         raise RuntimeError("release package is not HTTPS")
     root = _root(cfg)
-    root.mkdir(parents=True, exist_ok=True)
+    _protect_staging(root)
     part = root / "watchlog-agent.next.exe.part"
     final = _package_path(cfg)
     _safe_unlink(part)

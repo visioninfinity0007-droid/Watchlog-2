@@ -15,6 +15,39 @@ $resultPath = Join-Path $root "result.json"
 $packagePath = Join-Path $root "watchlog-agent.next.exe"
 $agentPath = Join-Path $InstallDir "watchlog-agent.exe"
 $backupPath = Join-Path $InstallDir "watchlog-agent.exe.remote.bak"
+# The staged package is copied here (Program Files: administrators only) and verified on
+# THIS copy, so nothing in ProgramData can change between verification and installation.
+$verifyPath = Join-Path $InstallDir "watchlog-agent.next.verify"
+
+# Only SYSTEM or Administrators may have staged an update that SYSTEM is about to run.
+# %ProgramData% lets standard users create files in new folders, so without these checks a
+# local account could plant pending.json plus its own exe and get it run as SYSTEM.
+$TrustedSids = @('S-1-5-18', 'S-1-5-32-544')
+
+function Get-OwnerSid([string]$Path) {
+  return (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+}
+
+function Get-UntrustedStageReason {
+  $acl = Get-Acl -LiteralPath $root
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if ($TrustedSids -notcontains $owner) { return "staging folder is owned by $owner" }
+  if (-not $acl.AreAccessRulesProtected) { return "staging folder inherits permissions" }
+  foreach ($rule in $acl.Access) {
+    if ($rule.AccessControlType -ne 'Allow') { continue }
+    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($TrustedSids -notcontains $sid) { return "staging folder grants access to $sid" }
+  }
+  foreach ($file in @($pendingPath, $packagePath)) {
+    if (Test-Path -LiteralPath $file) {
+      $fileOwner = Get-OwnerSid $file
+      if ($TrustedSids -notcontains $fileOwner) {
+        return "$(Split-Path -Leaf $file) is owned by $fileOwner"
+      }
+    }
+  }
+  return $null
+}
 
 function Write-Result([string]$RequestId, [bool]$Ok, [string]$Detail, [string]$Version = "", [int]$HealthDelaySec = 0) {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
@@ -36,6 +69,17 @@ function Write-Result([string]$RequestId, [bool]$Ok, [string]$Detail, [string]$V
 
 if (-not (Test-Path $pendingPath)) { exit 0 }
 
+$untrusted = $null
+try { $untrusted = Get-UntrustedStageReason } catch { $untrusted = "staging folder permissions unreadable: $($_.Exception.Message)" }
+if ($untrusted) {
+  # Never read, never run: discard the stage. The running Agent re-stages a genuine update
+  # into a protected folder at its next poll.
+  Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $packagePath -Force -ErrorAction SilentlyContinue
+  Write-Result "" $false ("remote update refused: " + $untrusted) ""
+  exit 3
+}
+
 $requestId = ""
 $target = ""
 try {
@@ -48,10 +92,12 @@ try {
   }
   if (-not (Test-Path $packagePath)) { throw "staged update package is missing" }
 
-  $gotHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToUpperInvariant()
+  Remove-Item -LiteralPath $verifyPath -Force -ErrorAction SilentlyContinue
+  Copy-Item -LiteralPath $packagePath -Destination $verifyPath -Force
+  $gotHash = (Get-FileHash -LiteralPath $verifyPath -Algorithm SHA256).Hash.ToUpperInvariant()
   if ($gotHash -ne $expectedHash) { throw "staged package SHA-256 does not match" }
 
-  $packageVersion = ([string](Get-Item -LiteralPath $packagePath).VersionInfo.ProductVersion).Trim()
+  $packageVersion = ([string](Get-Item -LiteralPath $verifyPath).VersionInfo.ProductVersion).Trim()
   if ($packageVersion -ne $target) {
     throw "staged package ProductVersion '$packageVersion' does not match '$target'"
   }
@@ -75,7 +121,7 @@ try {
   Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
   Copy-Item -LiteralPath $agentPath -Destination $backupPath -Force
 
-  Copy-Item -LiteralPath $packagePath -Destination $agentPath -Force
+  Copy-Item -LiteralPath $verifyPath -Destination $agentPath -Force
 
   $installedVersion = ([string](Get-Item -LiteralPath $agentPath).VersionInfo.ProductVersion).Trim()
   $installedHash = (Get-FileHash -LiteralPath $agentPath -Algorithm SHA256).Hash.ToUpperInvariant()
@@ -94,6 +140,7 @@ try {
   Write-Result $requestId $true "signed remote update applied; awaiting runtime health confirmation" $target 60
   Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $packagePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $verifyPath -Force -ErrorAction SilentlyContinue
   exit 0
 }
 catch {
@@ -110,5 +157,6 @@ catch {
   }
   Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $packagePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $verifyPath -Force -ErrorAction SilentlyContinue
   exit 2
 }

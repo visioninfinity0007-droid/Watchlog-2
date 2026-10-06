@@ -18,6 +18,40 @@ $runner = Join-Path $InstallDir "run-agent.ps1"
 if (-not (Test-Path $runner)) { throw "WatchLog runner not found: $runner" }
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 
+# T0-SEC1: %ProgramData% lets a standard user create files and folders in a new subfolder.
+# WatchLog's SYSTEM launcher acts on files under this folder (staged remote updates, the
+# upgrade backup it restores into Program Files), so a local account must not be able to plant
+# anything here. Owner Administrators; inheritance from ProgramData cut; SYSTEM and
+# Administrators full control; Users read only. A subfolder that already has its own
+# protected DACL (Secrets, the repair candidate, remote-update) keeps it. Fails closed.
+function Protect-WatchLogData([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+  $acl.SetAccessRuleProtection($true, $false)
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+  $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+  $none = [System.Security.AccessControl.PropagationFlags]::None
+  foreach ($grant in @(@('S-1-5-18', 'FullControl'), @('S-1-5-32-544', 'FullControl'),
+                       @('S-1-5-32-545', 'ReadAndExecute'))) {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($grant[0])
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $sid, $grant[1], $inherit, $none, 'Allow')))
+  }
+  Set-Acl -LiteralPath $Path -AclObject $acl
+  $check = Get-Acl -LiteralPath $Path
+  if (-not $check.AreAccessRulesProtected) { throw "WatchLog data folder still inherits permissions" }
+  foreach ($rule in $check.Access) {
+    if ($rule.AccessControlType -ne 'Allow') { continue }
+    $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $rights = [int]$rule.FileSystemRights
+    $writeMask = [int]([System.Security.AccessControl.FileSystemRights]'WriteData,AppendData,WriteExtendedAttributes,WriteAttributes,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership')
+    if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $sid -and ($rights -band $writeMask)) {
+      throw "WatchLog data folder still lets $sid write"
+    }
+  }
+}
+Protect-WatchLogData $data
+
 # The Site Agent is only useful while the site PC is awake.
 try {
   powercfg /change standby-timeout-ac 0
