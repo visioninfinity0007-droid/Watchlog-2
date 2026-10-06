@@ -521,7 +521,7 @@ RESTAURANT ANALYTICS CONTRACT
 - For a dining_floor camera, return one table row for EVERY configured table_key above, even when uncertain.
 - For each table row, service_interaction_observed is true only when a person is visibly performing a defensible table-service action at/for that occupied table (approach, serve, clear, interact). It does NOT establish employment, identity, attendance or productivity.
 - Also mirror service_interaction_observed into staff_present for backward-compatible storage; interpret that legacy field only as visible service action presence.
-- If adjacent movable tables are visibly joined for one party, keep the underlying table keys and give them the same short combined_group.
+- If adjacent movable tables are visibly joined for one party, keep the underlying table keys and give them the same deterministic combined_group made from the joined table_key values sorted and joined with "+" (for example F1-03+F1-04).
 - food_present means food is visibly present; never infer order correctness, payment, food quality or a completed order.
 - staff_count, when populated, means the number of people visibly performing role-appropriate service actions at this moment, not unique staff or shift headcount.
 - Never infer gender, age, ethnicity, relationship status or any other customer demographic from appearance.
