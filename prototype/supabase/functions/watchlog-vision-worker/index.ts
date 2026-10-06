@@ -163,12 +163,15 @@ function normalize(raw: Json, item: Json): Json {
       };
     });
     const aq = isObject(rr.analytics_quality) ? rr.analytics_quality : {};
+    const serviceInteraction = asBool(rr.service_interaction_observed)
+      ?? (role === "dining_floor" ? tables.some((row: any) => row.service_interaction_observed === true) : null);
     out.restaurant = {
-      schema_version: "restaurant-vision-v3",
+      schema_version: "restaurant-vision-v4",
       visible_customers: role === "dining_floor" ? asInt(rr.visible_customers) : null,
       staff_count: asInt(rr.staff_count),
       occupied_tables: role === "dining_floor" ? asInt(rr.occupied_tables) : null,
       served_tables: role === "dining_floor" ? asInt(rr.served_tables) : null,
+      service_interaction_observed: serviceInteraction,
       kitchen_load: role === "kitchen" ? as01(rr.kitchen_load) : null,
       handoff_load: role === "service_handoff" ? as01(rr.handoff_load) : null,
       counter_active: role === "cash_counter" ? asBool(rr.counter_active) : null,
