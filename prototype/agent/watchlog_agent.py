@@ -3130,6 +3130,8 @@ def main() -> None:
         import site_runtime
         site_runtime.ensure_runtime_belongs(cfg.state_path.parent, state["site_id"],
                                             state.get("tenant_id"), log=log)
+        import recorder_registry
+        recorder_registry.ensure_registry_belongs(state["site_id"], log=log)
 
     if channels:
         try:

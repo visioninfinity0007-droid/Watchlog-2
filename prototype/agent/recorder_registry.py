@@ -129,7 +129,13 @@ def validate_registry(payload: dict) -> dict:
     if normalized and not configured_primaries:
         raise ValueError("a non-empty recorder registry needs one configured primary")
 
-    return {"schema": REGISTRY_SCHEMA, "recorders": normalized}
+    out = {"schema": REGISTRY_SCHEMA, "recorders": normalized}
+    site = payload.get("site_id")
+    if site is not None:
+        if not isinstance(site, str) or not site.strip():
+            raise ValueError("recorder registry site_id must be a non-empty string")
+        out["site_id"] = site.strip()
+    return out
 
 
 # --- registry file trust ----------------------------------------------------
@@ -333,7 +339,21 @@ def load_registry() -> dict:
     return validate_registry(raw)
 
 
+def _stamped_site(path: Path) -> str | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    site = raw.get("site_id") if isinstance(raw, dict) else None
+    return site.strip() if isinstance(site, str) and site.strip() else None
+
+
 def save_registry(payload: dict) -> dict:
+    # The site stamp (ensure_registry_belongs) survives every rewrite that does not set one.
+    if "site_id" not in payload:
+        site = _stamped_site(registry_path())
+        if site:
+            payload = {**payload, "site_id": site}
     normalized = validate_registry(payload)
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -644,6 +664,35 @@ def reusable_continuity_id(url, identity_fingerprint=None) -> str | None:
     if same is not None and same["local_id"] != continuity["local_id"]:
         return None
     return continuity["local_id"]
+
+
+def ensure_registry_belongs(site_id: str, log=lambda _m: None) -> list[Path]:
+    """Agent start: a registry stamped for another site is quarantined with its recorders'
+    queues, state and logins (never deleted); an unstamped one is stamped as this site's.
+
+    site_runtime.json covers the continuity recorder's queue; this covers the registry and the
+    other recorders' data under recorders/<local_id>, which would otherwise be monitored and
+    drained under this site's identity (audit P8-a, G9-b). Returns the moved paths."""
+    path = registry_path()
+    site = str(site_id or "").strip()
+    if not site or not path.exists():
+        return []
+    stamped = _stamped_site(path)
+    if stamped is None:
+        try:
+            current = load_registry()
+            if current["recorders"]:
+                save_registry({**current, "site_id": site})
+        except (OSError, ValueError, RegistryUntrusted) as exc:
+            log(f"recorder registry not stamped ({type(exc).__name__}); load reports it")
+        return []
+    if stamped == site:
+        return []
+    moved = quarantine_registry()
+    log(f"set aside the recorder configuration of another site (site {stamped[:8]}): "
+        f"{len(moved)} item(s) kept, never used here; run WatchLog Setup to add this "
+        "site's recorders")
+    return moved
 
 
 def quarantine_registry() -> list[Path]:
