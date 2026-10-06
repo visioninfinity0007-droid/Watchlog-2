@@ -143,7 +143,10 @@ finally {
   # This isolated test deliberately starts with no Scheduled Task. Field recovery
   # must restore the payload AND reconstruct/start the WatchLog supervision task
   # instead of leaving the site dark because a prior task was missing/disabled.
-  Assert ($LASTEXITCODE -eq 0) "rollback should repair/restart the missing task, got $LASTEXITCODE"
+  # 5.1.1: exit 0 now also needs a fresh heartbeat from the restored Agent. This stand-in Agent
+  # never heartbeats and none was recorded before the upgrade, so the honest result is 17:
+  # payload restored and task Running, proof impossible (never a claimed "verified" restart).
+  Assert ($LASTEXITCODE -eq 17) "rollback should repair/restart the missing task and report that no heartbeat proof was possible (17), got $LASTEXITCODE"
   $repairedTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   Assert ($null -ne $repairedTask) "rollback did not recreate the missing WatchLog task"
   Assert ([string]$repairedTask.State -eq "Running") "recreated WatchLog task is not Running"

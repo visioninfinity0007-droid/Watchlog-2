@@ -185,6 +185,8 @@ jobs:
         run: python -m pytest prototype/tests/test_support_bundle.py -q
       - name: In-app update engine — signed manifest (Ed25519), channels, version + SHA-256 integrity gating
         run: python -m pytest prototype/tests/test_updater.py -q
+      - name: 5.1.1 update lifecycle — Agent-only vs Repair-package contract, remote-update commit gate, installer/uninstall contracts (PowerShell parts run in setup-ui-build)
+        run: python -m pytest prototype/tests/test_update_contract.py prototype/tests/test_remote_update_commit_gate.py prototype/tests/test_installer_lifecycle_contract.py prototype/tests/test_remote_maintenance_hikvision.py -q
       - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract
@@ -363,6 +365,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "test dependency install failed ($LASTEXITCODE)" }
           python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py prototype/tests/test_remote_update_stage_trust.py
           if ($LASTEXITCODE -ne 0) { throw "Repair/Upgrade, registry and elevation tests failed ($LASTEXITCODE)" }
+          # 5.1.1 lifecycle: per-recorder Repair gate, proven rollback, interrupted-upgrade
+          # recovery, uninstall policy and power baseline, remote-update launcher rollback. They
+          # run the real scripts; the runner is elevated, so task registration runs for real.
+          python -m pytest -q prototype/tests/test_repair_lifecycle_gate.py prototype/tests/test_upgrade_helper_lifecycle.py prototype/tests/test_remote_update_commit_gate.py prototype/tests/test_update_contract.py prototype/tests/test_installer_lifecycle_contract.py
+          if ($LASTEXITCODE -ne 0) { throw "5.1.1 installer/upgrade lifecycle tests failed ($LASTEXITCODE)" }
       - name: Repair downgrade guard under Windows PowerShell 5.1 (whole orchestrator, sandbox ProgramData)
         shell: powershell
         run: |
