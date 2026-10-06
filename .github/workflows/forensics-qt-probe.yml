@@ -1,0 +1,29 @@
+name: Forensics Qt collection probe
+# Not for merge. Does collect_all('PySide6') pick up the Addons modules, and does that depend on the AI packages?
+on:
+  push:
+    branches: ['forensics/qt-probe']
+jobs:
+  probe:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [setup-ui-only, after-ai-agent-deps]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Runner image
+        shell: pwsh
+        run: Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+      - name: AI agent dependencies first (as the release build does)
+        if: matrix.env == 'after-ai-agent-deps'
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --quiet pyinstaller requests psutil onnxruntime numpy pillow tzdata cryptography imageio-ffmpeg
+      - name: Setup UI dependencies (exactly as build_setup_gui.ps1)
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --quiet "pyinstaller==6.22.2" requests pyside6 psutil
+      - name: Probe
+        shell: pwsh
+        run: python forensics/qt_probe.py
