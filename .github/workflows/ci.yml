@@ -137,6 +137,8 @@ jobs:
         run: python prototype/tests/test_lease_client.py
       - name: Recorder connection hardening — ports/HTTPS/discovery/trust
         run: python prototype/tests/test_recorder_probe.py
+      - name: Discovery at real timeouts (Build 69 eight-network reach and the Build 74 bound)
+        run: python -m pytest prototype/tests/test_discovery_field_timing.py -q
       - name: Evidence action runtime — truthful unsupported
         run: python prototype/tests/test_action_runtime.py
       - name: Archive runtime — reprocess + honest retrieval

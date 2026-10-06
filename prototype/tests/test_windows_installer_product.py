@@ -49,7 +49,7 @@ def main():
         "recorder discovery preserves Build 69 reach and cannot spinner-forever":
             "DISCOVERY_DEADLINE_SECONDS = 32.0" in discover
             and "MAX_AUTO_SUBNETS = 8" in discover
-            and "SWEEP_WORKERS = 256" in discover
+            and "SWEEP_WORKERS = 512" in discover
             and "_VIRTUAL_ADAPTER_TOKENS" in discover
             and "return primary + secondary" in discover
             and "SWEEP_FAST_PORTS = [37777, 8000, 80, 443]" in discover
