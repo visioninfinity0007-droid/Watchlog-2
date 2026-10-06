@@ -582,6 +582,59 @@ def _is_auth_failure(err: Exception) -> bool:
 
 # --- upload + heartbeat (also used by Setup) ---------------------------
 
+# wl_ingest_events rejections that belong to particular rows, not to this Agent: a data error
+# (SQLSTATE class 22/23) or a row naming a recorder that is not configured for this site
+# (0146). Identity (28000), privilege for the whole Agent, server and transport errors are not
+# row rejections: the batch is kept and retried.
+_ROW_REJECTION_CLASSES = ("22", "23")
+_ROW_REJECTION_42501 = "event recorder not configured for this agent site"
+
+
+def _row_rejection(error: "CloudError") -> bool:
+    code = str(getattr(error, "code", "") or "")
+    if code[:2] in _ROW_REJECTION_CLASSES:
+        return True
+    return code == "42501" and _ROW_REJECTION_42501 in str(getattr(error, "message", "") or "")
+
+
+def _set_aside(spool, row_id: int, event: dict, error: "CloudError") -> None:
+    """Keep a rejected row next to its queue (never deleted, never retried), then ack it."""
+    path = Path(str(spool.path) + ".rejected.jsonl")
+    record = {"rejected_at": iso(now_utc()), "code": str(error.code or ""),
+              "reason": str(error.message or "")[:300], "event": event}
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    spool.ack([row_id])
+
+
+def _upload_isolating(cloud: Cloud, state: dict, spool, ids: list, events: list) -> int:
+    """Deliver a batch the server rejected because of particular rows: halve it until each
+    rejected row stands alone, set those aside, deliver every other row."""
+    inserted = 0
+    stack = [(list(ids), list(events))]
+    while stack:
+        part_ids, part_events = stack.pop()
+        try:
+            res = cloud.call("wl_ingest_events", p_agent_id=state["agent_id"],
+                             p_agent_key=state["agent_key"], p_events=part_events)
+        except CloudError as error:
+            if not _row_rejection(error):
+                raise
+            if len(part_ids) == 1:
+                _set_aside(spool, part_ids[0], part_events[0], error)
+                log(f"WARNING: one queued event was rejected ({error.code}: "
+                    f"{str(error.message)[:120]}); kept aside, not retried")
+                continue
+            half = len(part_ids) // 2
+            stack.append((part_ids[half:], part_events[half:]))
+            stack.append((part_ids[:half], part_events[:half]))
+            continue
+        spool.ack(part_ids)
+        inserted += int((res or {}).get("inserted") or 0)
+    log(f"uploaded around rejected events: {inserted} new; {spool.count()} left in spool")
+    return inserted
+
+
 def upload_once(cloud: Cloud, state: dict, spool) -> int:
     ids, events = spool.take(UPLOAD_BATCH)
     if not ids:
@@ -599,8 +652,15 @@ def upload_once(cloud: Cloud, state: dict, spool) -> int:
             break
     ids, events = ids[:cut], events[:cut]
 
-    res = cloud.call("wl_ingest_events", p_agent_id=state["agent_id"],
-                     p_agent_key=state["agent_key"], p_events=events)
+    try:
+        res = cloud.call("wl_ingest_events", p_agent_id=state["agent_id"],
+                         p_agent_key=state["agent_key"], p_events=events)
+    except CloudError as error:
+        if not _row_rejection(error):
+            raise                       # identity, server or transport: retry the batch later
+        # One undeliverable row must not hold every event behind it forever: isolate the
+        # rejected rows, keep them aside locally, deliver the rest.
+        return _upload_isolating(cloud, state, spool, ids, events)
     # Only acknowledge after the server has committed.
     spool.ack(ids)
     shots = res.get("snapshots") or 0

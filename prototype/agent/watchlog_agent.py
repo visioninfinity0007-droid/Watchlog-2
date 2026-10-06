@@ -83,7 +83,8 @@ from agent_core import (  # noqa: F401  (re-exported)
     _open_driver_unverified, _parse_host_port_scheme, _registry_configures_recorders,
     base_dir, default_state_dir, heartbeat, iso, load_state, log, mask, now_utc, open_driver,
     require_recorder_identity, runtime_health_path, save_state, update_runtime_health,
-    upload_once,
+    upload_once, _row_rejection, _set_aside, _upload_isolating,
+    _ROW_REJECTION_CLASSES, _ROW_REJECTION_42501,
 )
 
 RECONCILE_BATCH = 500         # max retained transitions/checkpoints per reconcile upload

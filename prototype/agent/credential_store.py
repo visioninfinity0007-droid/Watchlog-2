@@ -261,21 +261,29 @@ def snapshot_secret_files(paths) -> dict:
     return {Path(p): (Path(p).read_bytes() if Path(p).exists() else None) for p in paths}
 
 
-def restore_secret_files(snapshot: dict) -> None:
+def restore_secret_files(snapshot: dict) -> list[Path]:
     """Put secret files back exactly as snapshot_secret_files() found them.
 
     The ciphertext is restored as-is (no re-encryption); the replacement is
-    created inside the same hardened directory, so it inherits its DACL."""
+    created inside the same hardened directory, so it inherits its DACL. Every file is
+    attempted; the ones that could not be put back are returned (and their bytes
+    verified), so a caller never reports a clean restore that did not happen."""
+    failed: list[Path] = []
     for path, raw in snapshot.items():
         try:
             if raw is None:
                 path.unlink(missing_ok=True)
+                if path.exists():
+                    failed.append(path)
                 continue
             tmp = path.with_name(path.name + ".restore")
             tmp.write_bytes(raw)
             os.replace(tmp, path)
+            if path.read_bytes() != raw:
+                failed.append(path)
         except OSError:
-            pass
+            failed.append(path)
+    return failed
 
 
 def replace_recorder_credential(local_id: str, username: str, password: str, *,
@@ -303,8 +311,10 @@ def replace_recorder_credential(local_id: str, username: str, password: str, *,
             legacy = read_json_secret(nvr_credential_path())
             if (legacy.get("username"), legacy.get("password")) != (username, password):
                 raise SecretError("legacy credential verification failed")
-    except BaseException:
-        restore_secret_files(snapshot)
+    except BaseException as exc:
+        if restore_secret_files(snapshot):
+            raise SecretError("the recorder login change failed and the previous login could "
+                              "not be put back; repair this recorder's login") from exc
         raise
 
 

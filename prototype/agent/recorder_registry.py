@@ -709,8 +709,10 @@ def update_recorder_connection(local_id: str, *, url: str, driver: str,
 
     try:
         return _replace_record(wanted, update)
-    except Exception:
-        credential_store.restore_secret_files(snapshot)
+    except Exception as exc:
+        if credential_store.restore_secret_files(snapshot):
+            raise SecretError("the recorder change failed and its previous login could not be "
+                              "put back; repair this recorder's login") from exc
         raise
 
 
