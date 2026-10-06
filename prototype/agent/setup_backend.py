@@ -2155,9 +2155,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # any failure or refusal puts those files back as they were, so the two
     # stores never point at different recorders.
     state_path = programdata_dir() / "agent_state.json"
+    # The Agent identity (agent_state.json + its key) is snapshotted too: enrollment
+    # rewrites it inside this block, and a failed site switch must not leave the new
+    # site's identity beside the old site's configuration (audit P8-c).
     legacy_store = credential_store.snapshot_secret_files([
         config_path, credential_store.nvr_credential_path(),
         state_path.parent / "recorder_identity.json",
+        state_path, credential_store.agent_key_path(),
     ])
     try:
         progress("Encrypting recorder credentials on this PC…")
@@ -2233,8 +2237,14 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
             if added_now:
                 added.append(row["local_id"])
             extra_rows.append(row)
-    except BaseException:
-        credential_store.restore_secret_files(legacy_store)
+    except BaseException as exc:
+        not_restored = credential_store.restore_secret_files(legacy_store)
+        if not_restored:
+            _setup_log("setup rollback incomplete: "
+                       + ", ".join(p.name for p in not_restored))
+            raise ValueError(
+                "Setup stopped and WatchLog could not put this PC's previous settings "
+                "back. Run Repair before using WatchLog on this PC.") from exc
         raise
 
     # A first recorder that WatchLog already knows (Setup run again on a site whose

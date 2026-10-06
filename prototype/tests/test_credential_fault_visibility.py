@@ -71,3 +71,31 @@ def test_a_failed_details_update_after_a_verified_login_change_says_what_is_true
             trm.sb.repair_managed_recorder_credential(a, "new-user", "new-pw",
                                                       verified_recorder=proven)
         assert trm.cs.load_recorder_credential(a)["username"] == "new-user"
+
+
+def test_restore_reports_files_it_could_not_put_back(tmp_path, monkeypatch):
+    # P4-a: a restore that silently failed let callers report a clean rollback.
+    good, bad = tmp_path / "good.dpapi", tmp_path / "bad.dpapi"
+    good.write_bytes(b"old-good")
+    bad.write_bytes(b"old-bad")
+    snap = trm.cs.snapshot_secret_files([good, bad])
+    good.write_bytes(b"new")
+    bad.write_bytes(b"new")
+    real_replace = trm.cs.os.replace
+
+    def flaky(src, dst):
+        if Path(dst).name == "bad.dpapi":
+            raise PermissionError("locked")
+        return real_replace(src, dst)
+    monkeypatch.setattr(trm.cs.os, "replace", flaky)
+    assert trm.cs.restore_secret_files(snap) == [bad]
+    assert good.read_bytes() == b"old-good"
+
+
+def test_a_failed_site_switch_puts_the_previous_agent_identity_back():
+    # P8-c: the snapshot taken before Setup's critical section covers the Agent identity.
+    text = (AGENT / "setup_backend.py").read_text(encoding="utf-8")
+    block = text[text.index("legacy_store = credential_store.snapshot_secret_files(["):]
+    block = block[:block.index("])")]
+    assert "state_path" in block and "credential_store.agent_key_path()" in block
+    assert "could not put this PC's previous settings" in text
