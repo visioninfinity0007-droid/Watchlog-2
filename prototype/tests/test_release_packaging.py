@@ -319,7 +319,9 @@ def _payload_names(listing: list[str]) -> list[str]:
 def test_expected_file_list_derived_from_the_nsi_matches_a_real_release(kind, listing):
     expected = sorted(item["target_name"].lower() for item in payload.nsi_payload(payload.NSI[kind]))
     assert expected == _payload_names(listing)
-    assert payload.writes_uninstaller(payload.NSI[kind]) == (kind == "setup")
+    # Setup always wrote an uninstaller; Repair does from 5.1.1 (audit finding 8). The proof
+    # allows uninstall.exe exactly when the script writes one.
+    assert payload.writes_uninstaller(payload.NSI["setup"])
 
 
 def _fake_installer(tmp_path: Path, kind: str, listing: list[str], content: dict[str, bytes],
@@ -394,12 +396,19 @@ def test_payload_proof_rejects_a_wrong_build_sha_or_version(tmp_path, monkeypatc
     assert any("baked BUILD_SHA" in p for p in r["problems"])
 
 
-def test_repair_may_not_carry_an_uninstaller(tmp_path, monkeypatch):
+def test_an_uninstaller_is_allowed_only_when_the_script_writes_one(tmp_path, monkeypatch):
     content, expected = _good_content(tmp_path)
+    nsi = tmp_path / "no-uninstaller.nsi"
+    nsi.write_text("\n".join(l for l in payload.NSI["repair"].read_text(encoding="utf-8-sig").splitlines()
+                             if "WriteUninstaller" not in l), encoding="utf-8")
     inst = _fake_installer(tmp_path, "repair", R134_REPAIR + ["uninstall.exe"], content, monkeypatch)
-    r = payload.prove("repair", inst, sevenzip="7z", nsi=payload.NSI["repair"], expected=expected,
+    r = payload.prove("repair", inst, sevenzip="7z", nsi=nsi, expected=expected,
                       version="5.1.0", expected_sha=SHA, run_agent=False, workdir=tmp_path / "w")
     assert any("uninstall.exe" in p for p in r["problems"])
+    if payload.writes_uninstaller(payload.NSI["repair"]):
+        r = payload.prove("repair", inst, sevenzip="7z", nsi=payload.NSI["repair"], expected=expected,
+                          version="5.1.0", expected_sha=SHA, run_agent=False, workdir=tmp_path / "w2")
+        assert r["ok"], r["problems"]
 
 
 def test_payload_proof_fails_clearly_without_7zip(monkeypatch, tmp_path):

@@ -224,8 +224,8 @@ Refresh the baseline after a reviewed release: `--write-baseline`.
    with a clear message without it;
 2. lists (`7z l -slt`) and extracts each installer;
 3. derives the expected payload from the installer's `.nsi` `File` commands (`/oname=` targets
-   included); allows only NSIS's own `$PLUGINSDIR\*.dll|bmp` and, for Setup (the only script
-   with `WriteUninstaller`), `uninstall.exe`; fails on any missing file, unexpected file, or
+   included); allows only NSIS's own `$PLUGINSDIR\*.dll|bmp` and, for a script that has
+   `WriteUninstaller` (Setup; Repair from 5.1.1), `uninstall.exe`; fails on any missing file, unexpected file, or
    executable other than `watchlog-agent.exe` / `watchlog-setup-ui.exe`;
 4. hashes every embedded file: both EXEs must equal the pre-NSIS dist files, scripts / readme /
    icon must equal their source files, `watchlog.defaults.ini` (and Setup's `watchlog.ini`

@@ -139,7 +139,9 @@ class UpgradeAndUninstallLifecycleTests(unittest.TestCase):
         """schtasks /End kills the launcher; the agent grandchild survives it, so the
         exe delete silently fails and a ghost agent keeps running."""
         un = NSI[NSI.find('Section "Uninstall"'):]
-        stop = un.find("-Stage preflight")
+        # 5.1.1: the dedicated uninstall stage stops task, launcher, UI and Agent (and proves
+        # the files unlocked) without making a payload backup.
+        stop = un.find("-Stage uninstall")
         delete = un.find('Delete "$INSTDIR\\watchlog-agent.exe"')
         self.assertNotEqual(-1, stop, "uninstall must stop the agent, not just the task")
         self.assertLess(stop, delete, "the process must be stopped BEFORE files are deleted")

@@ -206,16 +206,21 @@ class InstallerContract(unittest.TestCase):
 
     def test_full_setup_never_claims_rollback_restart_without_proof(self):
         nsis = (ROOT / "prototype/installer/nsis/watchlog.nsi").read_text(encoding="utf-8")
+        helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
         self.assertIn("rollback restart not proven", nsis)
+        # NSIS says "verified" only on helper exit 0, which since 5.1.1 requires a fresh
+        # heartbeat from the restored version (Invoke-RollbackStart / Complete-Rollback).
         self.assertIn("Agent restart was verified", nsis)
+        self.assertIn("previous Agent proven by a fresh heartbeat", helper)
         self.assertNotIn("so the previous working version has been restored", nsis)
 
     def test_remote_update_health_marker_is_written_only_after_claim_rpc(self):
         src = (ROOT / "prototype/agent/remote_update.py").read_text(encoding="utf-8")
-        claim = src.index('"wl_agent_claim_update_request"')
-        marker = src.index("remote_update_poll_at")
+        worker = src[src.index("def update_worker("):]
+        claim = worker.index('"wl_agent_claim_update_request"')
+        marker = worker.index("remote_update_poll_at")
         self.assertLess(claim, marker)
-        self.assertIn("update_runtime_health", src)
+        self.assertIn("update_runtime_health", worker)
 
     def test_repair_shutdown_helper_only_checks_files_the_repair_replaces(self):
         helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
@@ -263,7 +268,9 @@ class InstallerContract(unittest.TestCase):
     def test_rollback_repairs_task_even_if_previous_task_was_disabled(self):
         helper = (ROOT / "prototype/installer/nsis/wl-upgrade.ps1").read_text(encoding="utf-8")
         rollback = helper.split("'rollback' {", 1)[1]
-        self.assertIn('Ensure-WatchLogBackgroundTask "rollback recovery"', rollback)
+        self.assertIn("Invoke-RollbackStart", rollback)
+        start = helper[helper.index("function Invoke-RollbackStart"):]
+        self.assertIn('Ensure-WatchLogBackgroundTask "rollback recovery"', start[:start.index("\n}\n")])
         self.assertIn("register-service.ps1", helper)
         self.assertNotIn("there is no enabled background task to restart it", rollback)
 
@@ -400,7 +407,8 @@ class RepairRecorderGate(unittest.TestCase):
         self.assertIn("Primary Recorder | id=aaaaaaaa-0000-4000-8000-000000000001 | "
                       "continuity=yes | credential=ok | before=live | after=live", result)
         self.assertIn("Warehouse", result)
-        self.assertIn("before=offline (web_unreachable) | after=not seen since the update",
+        # Honest, never "healthy": offline before, still offline, not verified by this update.
+        self.assertIn("before=offline before the update (web_unreachable) | after=still offline",
                       result)
 
     def test_recovery_off_secondary_offline_before_does_not_force_rollback(self):
@@ -520,8 +528,11 @@ class RepairRegistryStagingRollback(unittest.TestCase):
             capture_output=True, text=True, timeout=120)
         self.assertIn("RESTORED=True STAGED=[]", proc.stdout, proc.stdout + proc.stderr)
         log = calls.read_text(encoding="ascii", errors="replace").splitlines()
-        self.assertEqual(log[0].strip(), "helper:rollback")
+        # The staged registry is removed while nothing runs: after the files are restored and
+        # BEFORE the previous Agent is started (it could otherwise bind to the staged row).
+        self.assertEqual(log[0].strip(), "helper:rollback-restore")
         self.assertIn("--registry-rollback aaaaaaaa-0000-4000-8000-000000000001", log[1])
+        self.assertEqual(log[2].strip(), "helper:rollback-start")
         result = (work / "repair-upgrade-result.ini").read_text(encoding="ascii")
         self.assertIn("registry=staging removed", result)
 
@@ -622,7 +633,7 @@ class RepairRegistryOrchestration(unittest.TestCase):
         pause = ps.index('$rc = Invoke-UpgradeHelper "preflight"')
         recorder_agent = ps.index("phase 2/2: current WatchLog paused/backed up")
         probe = ps.index("Run-RegistryRecorderCandidate", recorder_agent)
-        baseline = ps.index("Set-RecorderBaseline $reg", probe)
+        baseline = ps.index("Get-RecorderRegressions $reg", probe)
         replace = ps.index("Install-CandidatePayload", recorder_agent)
         self.assertLess(passive_agent, passive_registry)
         self.assertLess(passive_registry, pause)
@@ -653,8 +664,10 @@ class RepairRegistryOrchestration(unittest.TestCase):
         ps = self.PS
         restore = ps[ps.index("function Restore-Previous"):]
         restore = restore[:restore.index("\n}\n")]
-        self.assertLess(restore.index('Invoke-UpgradeHelper "rollback"'),
+        self.assertLess(restore.index('Invoke-UpgradeHelper "rollback-restore"'),
                         restore.index("Undo-RegistryStaging"))
+        self.assertLess(restore.index("Undo-RegistryStaging"),
+                        restore.index('Invoke-UpgradeHelper "rollback-start"'))
         self.assertIn('@("--registry-rollback", $script:StagedRecorderId)', ps)
         # 5.1 still runs a one-recorder site from the legacy singleton: Repair/Upgrade
         # must keep it until a runtime cutover is proven.
@@ -732,14 +745,14 @@ class RepairUnexpectedErrorRestoresPreviousState(unittest.TestCase):
     def test_an_unexpected_error_after_the_pause_restores_the_previous_watchlog(self):
         code, calls, result = self.run_unexpected("paused")
         self.assertEqual(code, 49)
-        self.assertEqual(calls, ["helper:rollback"])
+        self.assertEqual(calls, ["helper:rollback-restore", "helper:rollback-start"])
         self.assertIn("previous WatchLog restored", result)
-        self.assertIn("Agent restart was verified", result)
+        self.assertIn("proven running: its Agent sent a fresh cloud heartbeat", result)
 
     def test_an_unproven_restore_is_reported_as_such(self):
         code, calls, result = self.run_unexpected("paused-rollback-fails")
         self.assertEqual(code, 48)
-        self.assertEqual(calls, ["helper:rollback"])
+        self.assertEqual(calls, ["helper:rollback-restore", "helper:rollback-start"])
         self.assertIn("could not be proven running", result)
 
     def test_before_the_pause_nothing_is_rolled_back(self):
@@ -834,8 +847,8 @@ class RepairTimedOutRegistryStaging(unittest.TestCase):
         self.assertIn(f"STAGED=[{local_id}] RESULT=False", out)
         self.assertIn("RESTORED=True", out)
         log = [row.strip() for row in calls.read_text(encoding="ascii").splitlines()]
-        self.assertEqual(log, ["setup-ui:migrate", "helper:rollback",
-                               f"setup-ui:rollback {local_id}"])
+        self.assertEqual(log, ["setup-ui:migrate", "helper:rollback-restore",
+                               f"setup-ui:rollback {local_id}", "helper:rollback-start"])
         self.assertIn("registry=staging removed",
                       (work / "repair-upgrade-result.ini").read_text(encoding="ascii"))
 

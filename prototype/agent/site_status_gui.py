@@ -252,20 +252,12 @@ class SiteStatusWindow(QMainWindow):
                   lambda r: self._notify("Software Update", r.get("headline", "")), "Checking for updates…")
 
     def act_update(self):
-        def after_check(r):
-            if r.get("action") != "update":
-                self._notify("Software Update", r.get("headline", "WatchLog is up to date."))
-                return
-            reply = QMessageBox.question(self, "Update WatchLog",
-                                        f"{r.get('headline')}\n\nUpdate now? WatchLog keeps running while it "
-                                        f"downloads, and automatically rolls back if the new version fails.",
-                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if reply != QMessageBox.Yes:
-                return
-            self._run(self.controller.apply_update,
-                      lambda res: (self._notify("Software Update", res.get("message", "")), self.refresh()),
-                      "Updating WatchLog…")
-        self._run(self.controller.check_update, after_check, "Checking for updates…")
+        # 5.1.1: this window never replaces WatchLog itself. The installed Agent's in-place swap
+        # stopped this window and that very process and left the background task disabled with
+        # nobody to roll back (audit B). It says what is available and how it is installed.
+        self._run(self.controller.check_update,
+                  lambda r: self._notify("Software Update", r.get("headline", "WatchLog is up to date.")),
+                  "Checking for updates…")
 
     def act_support_bundle(self):
         dest, _ = QFileDialog.getSaveFileName(self, "Save Support Bundle", "watchlog-support.zip",

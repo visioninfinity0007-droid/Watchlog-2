@@ -90,6 +90,14 @@ def runtime_health_path() -> Path:
     return default_state_dir() / "Secrets" / "runtime-health.json"
 
 
+def _runtime_build_sha() -> str:
+    try:
+        import wl_version
+        return str(wl_version.BUILD_SHA or "")
+    except Exception:
+        return ""
+
+
 def update_runtime_health(**fields) -> None:
     """Atomically publish non-secret local proof that the runtime is actually healthy.
 
@@ -108,6 +116,8 @@ def update_runtime_health(**fields) -> None:
             current.update({
                 "schema": "watchlog.runtime_health.v1",
                 "agent_version": AGENT_VERSION,
+                # The build, so a remote update can prove the exact released build runs.
+                "build_sha": _runtime_build_sha(),
                 "updated_at": iso(now_utc()),
             })
             current.update({k: v for k, v in fields.items() if v is not None})

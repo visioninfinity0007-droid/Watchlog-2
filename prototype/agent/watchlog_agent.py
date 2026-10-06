@@ -83,7 +83,7 @@ from agent_core import (  # noqa: F401  (re-exported)
     _open_driver_unverified, _parse_host_port_scheme, _registry_configures_recorders,
     base_dir, default_state_dir, heartbeat, iso, load_state, log, mask, now_utc, open_driver,
     require_recorder_identity, runtime_health_path, save_state, update_runtime_health,
-    upload_once, _row_rejection, _set_aside, _upload_isolating,
+    _runtime_build_sha, upload_once, _row_rejection, _set_aside, _upload_isolating,
     _ROW_REJECTION_CLASSES, _ROW_REJECTION_42501,
 )
 
@@ -2072,7 +2072,8 @@ def cmd_check_update(cfg: Config, *, _fetch=None) -> int:
     signature_state = updater.verify_manifest_signature(manifest, cfg.update_public_key)
     plan = updater.plan_update(manifest, current, cfg.update_channel,
                               signature_state=signature_state,
-                              require_signature=cfg.update_require_signature)
+                              require_signature=cfg.update_require_signature,
+                              installed_components=_components(updater))
     action = plan.get("action")
     if action == "up-to-date":
         print(f"up to date ({current} on {cfg.update_channel})")
@@ -2082,21 +2083,38 @@ def cmd_check_update(cfg: Config, *, _fetch=None) -> int:
             print(f"  notes: {plan['notes']}")
     else:
         print(f"update blocked: {plan.get('reason')} (channel {cfg.update_channel})")
+        if plan.get("detail"):
+            print(f"  {plan['detail']}")
     print("UPDATE_JSON " + _json.dumps(plan, separators=(",", ":")))
     return 0 if action in ("up-to-date", "update") else 2
 
 
-def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
-    """0.4.4 §13/§36 — APPLY an update transactionally (auto-rollback).
+def _components(updater):
+    """Installed component-set version for the Agent-only contract (None = unknown)."""
+    return updater.installed_components_version()
 
-    Fetches + verifies the signed manifest; if a newer signed release exists for this channel,
-    downloads the package, verifies its SHA-256 + size, and hands it to the transactional
-    wl-upgrade sequence (preflight -> stage -> verify-version -> register -> commit), rolling back
-    on ANY failure. Identity/config/secrets are preserved (only the binary is swapped). Exit 0 =
-    updated or already up-to-date, 2 = blocked/refused/rolled-back, 1 = error.
+
+UPDATE_HANDOFF_DETAIL = (
+    "This PC does not replace WatchLog from the Site Status window. Request the update from "
+    "the WatchLog portal: the background service installs it between Agent runs and restores "
+    "the previous version automatically if the new one does not prove itself."
+)
+
+
+def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
+    """0.4.4 §13/§36 — the Site Status "Update WatchLog" action.
+
+    Fetches + verifies the signed manifest and reports what is available. On the installed
+    appliance it does NOT swap the binary itself (5.1.1, audit B): this process IS the installed
+    watchlog-agent.exe, and wl-upgrade.ps1 preflight disables the task and stops every process
+    of that path (this one and the Site Status window too), leaving the task Disabled with
+    nobody to roll back. The supported in-app path is the signed remote update, applied by the
+    SYSTEM launcher between Agent runs with a bounded commit gate and automatic rollback
+    (remote_update.py). A release that needs the Repair/Upgrade package is refused here too.
+    ``_apply`` keeps the transactional sequence injectable for its own tests. Exit 0 = updated
+    or already up-to-date, 2 = blocked/refused/handed off/rolled-back, 1 = error.
     """
     import json as _json
-    import platform as _platform
     import shutil
     import subprocess
     import tempfile
@@ -2119,21 +2137,30 @@ def cmd_update(cfg: Config, *, _fetch=None, _apply=None) -> int:
     signature_state = updater.verify_manifest_signature(manifest, cfg.update_public_key)
     plan = updater.plan_update(manifest, current, cfg.update_channel,
                               signature_state=signature_state,
-                              require_signature=cfg.update_require_signature)
+                              require_signature=cfg.update_require_signature,
+                              installed_components=_components(updater))
     if plan.get("action") == "up-to-date":
         print(f"already up to date ({current})")
         return 0
     if plan.get("action") != "update":
         print(f"update blocked: {plan.get('reason')}")
+        refused = {"ok": False, "stage": "plan", "rolled_back": False,
+                   "reason": plan.get("reason"),
+                   "detail": plan.get("detail") or f"update blocked: {plan.get('reason')}"}
+        print("UPDATE_APPLY_JSON " + _json.dumps(refused, separators=(",", ":")))
+        return 2
+    if _apply is None:
+        print(f"update available: {current} -> {plan['target']}")
+        print(UPDATE_HANDOFF_DETAIL)
+        handoff = {"ok": False, "stage": "handoff", "rolled_back": False,
+                   "handoff": "remote_update", "target": plan["target"],
+                   "detail": UPDATE_HANDOFF_DETAIL}
+        print("UPDATE_APPLY_JSON " + _json.dumps(handoff, separators=(",", ":")))
         return 2
     print(f"update available: {current} -> {plan['target']}; applying transactionally…")
 
-    apply_fn = _apply or updater.apply_update
+    apply_fn = _apply
     install_dir = str(base_dir())
-    if _apply is None and _platform.system() != "Windows":
-        # The dangerous binary swap only runs on the installed Windows appliance.
-        print("apply is only available on the installed Windows appliance; use --check-update here")
-        return 2
 
     def _download(url):
         resp = requests.get(url, timeout=180, stream=True)

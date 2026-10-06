@@ -222,7 +222,8 @@ def main():
         "registration verifies the task reaches Running (no false success)":
             'ne "Running"' in register and "throw" in register,
         "installer keeps the site PC awake on AC (H3 coverage) via power policy":
-            "standby-timeout-ac 0" in register,
+            # 5.1.1: driven from the recorded-and-restored settings table (power baseline).
+            'name = "standby-timeout-ac"' in register and "/change $s.name 0" in register,
     }
 
     failed = [name for name, ok in checks.items() if not ok]
