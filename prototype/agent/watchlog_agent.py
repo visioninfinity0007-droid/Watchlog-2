@@ -1620,6 +1620,55 @@ def _retry_recorder_cloud_inventory(cloud: Cloud, state: dict, cfg: Config,
         )
 
 
+# Field Build 69 (Hikvision DS-7608NI-Q1): while the live collector's stream is proving the
+# recorder, the health cycle must not open a competing session merely to prove it again. It
+# reports connectivity from the live stream, reuses the last REAL enumeration (never a
+# synthetic channel list, which the server would turn into "missing" cameras), judges cameras
+# by their fresh stills from that stream, and leaves recording/storage unobserved. A real,
+# serialized assessment (including recording/storage) still runs at least this often.
+LIVE_STREAM_HEALTH_MAX_AGE_SECONDS = 900.0
+# A camera whose last still from the live stream is older than this is not proven healthy.
+LIVE_STREAM_STILL_FRESH_SECONDS = 900.0
+# The live stream proves the recorder only while it showed activity this recently.
+LIVE_STREAM_FRESH_SECONDS = 150.0
+
+
+class _LiveStreamProven(Exception):
+    """Control flow inside health_cycle: this cycle is proven by the live stream."""
+
+
+def _live_stream_health(cfg: Config, holder: dict) -> dict | None:
+    """The health assessment proven by the live stream, or None when a real one is needed."""
+    live = holder.get("live_driver")
+    if live is None or not getattr(live, "samples_in_stream", False):
+        return None
+    try:
+        import periodic_stills
+        if not periodic_stills.load_settings(cfg)["enabled"]:
+            return None      # no stills from the stream: cameras need a real probe
+    except Exception:                                   # noqa: BLE001
+        return None
+    stream = getattr(live, "event_stream", None) or {}
+    activity = float(getattr(live, "last_activity_monotonic", 0.0) or 0.0)
+    now = time.monotonic()
+    if stream.get("connected") is not True or not activity or now - activity >= LIVE_STREAM_FRESH_SECONDS:
+        return None
+    real = holder.get("real_assessment") or {}
+    if not real or now - float(real.get("at") or 0.0) >= LIVE_STREAM_HEALTH_MAX_AGE_SECONDS:
+        return None
+    channels = real.get("channels") or {}
+    if not channels.get("enumerated"):
+        return None
+    nvr = {k: v for k, v in (real.get("nvr") or {}).items()
+           if k in ("vendor", "model", "firmware", "channel_count")}
+    nvr.update(reachable=True, auth_ok=True, state="ok", reason="ok")
+    return {"nvr": nvr,
+            "channels": {"enumerated": True,
+                         "reported": [dict(row) for row in channels.get("reported") or []],
+                         # Present-tense faults need a recorder read; not re-observed here.
+                         "current_faults": {"supported": False}}}
+
+
 def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     """One combined recorder assessment feeding BOTH reports:
       * NVR connectivity/auth + channel inventory (increment 3), and
@@ -1635,7 +1684,11 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
     driver = None
     try:
         _reload_credential_if_changed(cfg)
+        from_stream = _live_stream_health(cfg, holder)
         try:
+            if from_stream is not None:
+                assessment = from_stream
+                raise _LiveStreamProven()
             if cfg.nvr_driver in ("auto", ""):
                 driver, _ = autodetect(cfg.nvr_url, cfg.nvr_username,
                                        cfg.nvr_password, log=lambda *a, **k: None)
@@ -1660,9 +1713,18 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
                 except Exception:                      # noqa: BLE001
                     pass
                 driver = None
+        except _LiveStreamProven:
+            pass
         except DriverError as e:
             assessment = nvr_health.assess_from_error(e)   # still report the classified state
             driver = None
+        if driver is not None and (assessment.get("channels") or {}).get("enumerated"):
+            holder["real_assessment"] = {
+                "at": time.monotonic(),
+                "nvr": dict(assessment.get("nvr") or {}),
+                "channels": {"enumerated": True,
+                             "reported": [dict(r) for r in assessment["channels"].get("reported") or []]},
+            }
 
         # --- NVR connectivity/auth + inventory (increment 3) ---
         try:
@@ -1708,6 +1770,13 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
         if mon is not None:
             if driver is not None:
                 probe = camera_health.make_probe_fn(driver)
+            elif from_stream is not None:
+                # Judged by the still each camera last gave on the live stream: no session.
+                def probe(channel):
+                    seen = float((holder.get("snapshot_ok") or {}).get(str(channel)) or 0.0)
+                    fresh = seen > 0.0 and time.monotonic() - seen < LIVE_STREAM_STILL_FRESH_SECONDS
+                    return camera_health.ProbeResult(ok=fresh, upper=None,
+                                                     reason="ok" if fresh else "probe_timeout")
             else:
                 probe = lambda _c: camera_health.ProbeResult(ok=False, upper="nvr_unreachable")
             cam = mon.run_cycle(lambda: assessment, probe)   # one assessment, bounded probing
@@ -1736,6 +1805,10 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
         # is applied by wl_reconcile_recording_storage, which solely owns the ledger AND the durable
         # ordering watermark. Nothing here can bypass that watermark and regress current state.
         try:
+            if from_stream is not None:
+                # Not observed this cycle: liveness never proves recording or storage, and
+                # writing UNKNOWN here would flap a state the last real read established.
+                raise _LiveStreamProven()
             import recording_health
             nvr_state = (assessment.get("nvr") or {}).get("state", "unknown")
             # inventory (present/disabled) from the reported channels — a disabled channel has no
@@ -1744,6 +1817,8 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
                    for c in assessment.get("channels", {}).get("reported", []) if c.get("channel")}
             rs = recording_health.assess_recording_storage(driver, chans, nvr_state, inventory=inv)
             persist_recording_storage(holder, state, rs)     # record transitions on change (durable)
+        except _LiveStreamProven:
+            pass
         except Exception as e:                          # noqa: BLE001
             log(f"recording/storage assess skipped: {type(e).__name__}: {nvr_health.redact(str(e))}")
 

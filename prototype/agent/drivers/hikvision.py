@@ -29,7 +29,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
+from typing import Callable, Iterator
 from urllib.parse import urlparse
 
 import requests
@@ -121,16 +121,66 @@ CLOCK_OFFSET_RETRY_SECONDS = 600
 SNAPSHOT_TIMEOUT = 10
 JPEG_MAGIC = bytes([0xFF, 0xD8])   # a JPEG always starts FF D8
 
-# Archive search/download helpers share the driver's requests.Session, and one recorder
-# serves one export at a time. Serialize those bounded HTTP operations PER RECORDER: two
-# transports to the same recorder take turns, but recorder A's slow export never holds
-# recorder B's (MNVR-025). Keyed by scheme, host and port of the recorder address.
-_HTTP_LOCKS: dict[tuple, threading.RLock] = {}
+# Field DS-7608NI-Q1 (Chai Wala, Build 69/75 and shipped 5.0.26): setup/auth succeeded, but a
+# permanently-open alertStream plus independent health/still/recovery logins made the
+# recorder's small web stack refuse later sessions and time out while still reachable. The
+# field fix, kept here in its per-recorder form:
+#   * ONE authenticated HTTP operation at a time per recorder: every request of every driver
+#     instance for that recorder (live stream, stills, health, archive) takes the recorder's
+#     lock below; the live stream holds it for one bounded slice;
+#   * the alert stream is cut into HIKVISION_STREAM_SLICE_SECONDS slices, and between slices
+#     the stream may take ONE rotating camera still on the same session (between_slices),
+#     so stills never open a competing session while native alarms still pass immediately.
+HIKVISION_STREAM_SLICE_SECONDS = 30
+
+# The lock is PER RECORDER (scheme, host, port), not module-global as in the single-recorder
+# field build: two transports to the same recorder take turns, but recorder A's stream or slow
+# export never holds recorder B (MNVR-025). Re-entrant, so a request made while the same
+# thread holds the slice (an event still) does not deadlock.
+# Between slices the stream hands its recorder to anyone waiting (health, archive, incident
+# clips) for up to this long before it opens the next slice, so a waiter is never starved by
+# the stream re-taking the lock first (Python locks are not fair).
+SLICE_HANDOFF_SECONDS = 2.0
+
+
+class _RecorderLock:
+    """Re-entrant per-recorder lock that knows whether another thread is waiting for it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._guard = threading.Lock()
+        self._waiting = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        with self._guard:
+            self._waiting += 1
+        try:
+            return self._lock.acquire(blocking, timeout)
+        finally:
+            with self._guard:
+                self._waiting -= 1
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def waiting(self) -> int:
+        with self._guard:
+            return self._waiting
+
+    def __enter__(self) -> "_RecorderLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+_HTTP_LOCKS: dict[tuple, _RecorderLock] = {}
 _HTTP_LOCKS_GUARD = threading.Lock()
 
 
-def recorder_http_lock(base_url: str) -> threading.RLock:
-    """The archive HTTP lock of the recorder at ``base_url``."""
+def recorder_http_lock(base_url: str) -> _RecorderLock:
+    """The HTTP lock of the recorder at ``base_url`` (every ISAPI request takes it)."""
     parsed = urlparse(str(base_url or ""))
     scheme = (parsed.scheme or "http").lower()
     try:
@@ -142,7 +192,7 @@ def recorder_http_lock(base_url: str) -> threading.RLock:
     with _HTTP_LOCKS_GUARD:
         lock = _HTTP_LOCKS.get(key)
         if lock is None:
-            lock = _HTTP_LOCKS[key] = threading.RLock()
+            lock = _HTTP_LOCKS[key] = _RecorderLock()
         return lock
 
 
@@ -157,7 +207,7 @@ class HikvisionDriver(NvrDriver):
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
-        self.s = requests.Session()
+        self.s = self.lan_session()   # no system proxy; self-signed HTTPS (Build 69)
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._burst = alarm_parsing.BurstFilter(BURST_WINDOW_SECONDS)
         # (monotonic, wall) clock of the alert being parsed, stamped by stream_events
@@ -173,17 +223,30 @@ class HikvisionDriver(NvrDriver):
         # The activity stamp before the current stream's 2xx, while that stream has not
         # delivered a single chunk yet; None once it has (or outside a stream).
         self._activity_before_up: float | None = None
+        # Set by the collector: called between alert-stream slices, outside the slice but on
+        # this driver's session, and returns the events to yield (at most one camera still).
+        # Any exception it raises is swallowed: a still never ends native monitoring.
+        self.between_slices: Callable[[], list[Event]] | None = None
+
+    # Stills come from the live stream (between_slices); a separate still worker must not
+    # open a second session to this recorder (periodic_stills stands down for this driver).
+    samples_in_stream = True
+
+    def _lock(self) -> _RecorderLock:
+        return recorder_http_lock(self.base_url)
 
     # -- event-stream liveness (MNVR-008) -------------------------------
 
-    def _stream_up(self) -> None:
+    def _stream_up(self, resumed: bool = False) -> None:
         # The 2xx counts as activity only while this stream stays open: _stream_down takes
         # it back if the stream ends before a single chunk arrives, so a recorder whose
         # alertStream answers 200 and closes at once is never live, however often it is reopened.
+        # ``resumed``: the next planned slice of a stream that was live; connected_at stays.
         self._activity_before_up = self.last_activity_monotonic
         self.last_activity_monotonic = time.monotonic()
+        keep_since = resumed and self.event_stream.get("connected") and             self.event_stream.get("connected_at")
         self.event_stream.update(connected=True, last_error=None,
-                                 connected_at=datetime.now(timezone.utc).isoformat())
+                                 connected_at=keep_since or datetime.now(timezone.utc).isoformat())
 
     def _stream_frame(self) -> None:
         self._activity_before_up = None
@@ -236,14 +299,15 @@ class HikvisionDriver(NvrDriver):
         so a transient 401 can never leave every later request sending the password in the
         clear (or failing on a Digest-only unit). RequestException propagates to the caller.
         """
-        r = self.s.request(method, url, **kw)
-        if r.status_code == 401:
-            challenge = (r.headers.get("WWW-Authenticate") or "").lower()
-            if "basic" in challenge and "digest" not in challenge:
-                r.close()
-                r = self.s.request(method, url,
-                                   auth=HTTPBasicAuth(self.username, self.password), **kw)
-        return r
+        with self._lock():
+            r = self.s.request(method, url, **kw)
+            if r.status_code == 401:
+                challenge = (r.headers.get("WWW-Authenticate") or "").lower()
+                if "basic" in challenge and "digest" not in challenge:
+                    r.close()
+                    r = self.s.request(method, url,
+                                       auth=HTTPBasicAuth(self.username, self.password), **kw)
+            return r
 
     def _get(self, path: str, **kw) -> requests.Response:
         url = self.base_url + path
@@ -569,58 +633,100 @@ class HikvisionDriver(NvrDriver):
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         """
-        Consume /ISAPI/Event/notification/alertStream.
+        Consume /ISAPI/Event/notification/alertStream in bounded slices (field Build 69).
 
-        The device holds the connection open and writes a multipart body,
-        one XML document per alarm. It also emits keep-alive
-        videoloss/heartbeat frames, which are filtered out below.
+        The device holds the connection open and writes a multipart body, one XML document
+        per alarm, plus keep-alive videoloss/heartbeat frames (filtered out below). Each slice
+        holds this recorder's HTTP lock for at most HIKVISION_STREAM_SLICE_SECONDS, then
+        closes; between slices ``between_slices`` may take ONE camera still on this session,
+        and the next slice opens at once. A planned slice end is not a dropped stream: the
+        generator only ends when the recorder ends the stream or a request fails, so the
+        collector's reopen/escalation logic sees exactly what it saw before.
         """
         url = self.base_url + "/ISAPI/Event/notification/alertStream"
-        try:
-            r = self._send("GET", url, stream=True, timeout=(self.timeout, 90))
-        except requests.RequestException as e:
-            self._stream_down(explain(e))
-            raise DriverError(f"alertStream: {e}") from e
-        if r.status_code >= 400:
-            r.close()
-            self._stream_down(f"HTTP {r.status_code}")
-            raise DriverError(f"alertStream: HTTP {r.status_code}")
-        self._stream_up()
+        resumed = False
+        while not stop.is_set():
+            started = time.monotonic()
+            planned_end = False
+            with self._lock():
+                try:
+                    r = self._send("GET", url, stream=True,
+                                   timeout=(self.timeout, HIKVISION_STREAM_SLICE_SECONDS))
+                except requests.RequestException as e:
+                    self._stream_down(explain(e))
+                    raise DriverError(f"alertStream: {e}") from e
+                if r.status_code >= 400:
+                    r.close()
+                    self._stream_down(f"HTTP {r.status_code}")
+                    raise DriverError(f"alertStream: HTTP {r.status_code}")
+                self._stream_up(resumed=resumed)
 
-        buf = b""
-        ended = "event stream ended by the recorder"
-        try:
-            for chunk in r.iter_content(chunk_size=1024):
-                if stop.is_set():
+                buf = b""
+                ended = "event stream ended by the recorder"
+                try:
+                    for chunk in r.iter_content(chunk_size=1024):
+                        if stop.is_set():
+                            ended = None
+                            break
+                        if chunk:
+                            self._stream_frame()      # keep-alive frames count: the stream is alive
+                            self._received = (time.monotonic(), datetime.now(timezone.utc))
+                            buf += chunk
+                            # Documents arrive back to back; split on the closing tag.
+                            while b"</EventNotificationAlert>" in buf:
+                                doc, _, buf = buf.partition(b"</EventNotificationAlert>")
+                                begin = doc.find(b"<EventNotificationAlert")
+                                if begin < 0:
+                                    continue
+                                raw = doc[begin:] + b"</EventNotificationAlert>"
+                                ev = self._parse_alert(raw)
+                                if ev:
+                                    yield ev
+                            if len(buf) > 1_000_000:  # runaway guard
+                                buf = b""
+                        if time.monotonic() - started >= HIKVISION_STREAM_SLICE_SECONDS:
+                            planned_end = True
+                            ended = None
+                            break
+                except GeneratorExit:                 # the collector stopped reading
                     ended = None
-                    break
-                if not chunk:
-                    continue
-                self._stream_frame()          # keep-alive frames count: the stream is alive
-                self._received = (time.monotonic(), datetime.now(timezone.utc))
-                buf += chunk
-                # Documents arrive back to back; split on the closing tag.
-                while b"</EventNotificationAlert>" in buf:
-                    doc, _, buf = buf.partition(b"</EventNotificationAlert>")
-                    start = doc.find(b"<EventNotificationAlert")
-                    if start < 0:
-                        continue
-                    raw = doc[start:] + b"</EventNotificationAlert>"
-                    ev = self._parse_alert(raw)
-                    if ev:
-                        yield ev
-                if len(buf) > 1_000_000:      # runaway guard
-                    buf = b""
-        except GeneratorExit:                 # the collector stopped reading
-            ended = None
-            raise
-        except Exception as e:
-            ended = explain(e) if isinstance(e, requests.RequestException) else type(e).__name__
-            raise
-        finally:
-            self._received = None
-            r.close()
-            self._stream_down(ended)
+                    raise
+                except requests.RequestException as e:
+                    low = str(e).lower()
+                    if "read timed out" in low or "read timeout" in low:
+                        # Nothing at all for a whole slice: end the slice, not the stream.
+                        planned_end = True
+                        ended = None
+                    else:
+                        ended = explain(e)
+                        raise
+                except Exception as e:
+                    ended = type(e).__name__
+                    raise
+                finally:
+                    self._received = None
+                    r.close()
+                    if not planned_end:
+                        self._stream_down(ended)
+                    elif self._activity_before_up is not None:
+                        # A slice with not one frame proves nothing: take the 2xx back.
+                        self._stream_down("event stream sent nothing for a whole slice")
+            if not planned_end or stop.is_set():
+                return
+            resumed = bool(self.event_stream.get("connected"))
+            # Hand the recorder to whoever waited during the slice before the next one.
+            lock = self._lock()
+            handoff = time.monotonic() + SLICE_HANDOFF_SECONDS
+            while lock.waiting() and time.monotonic() < handoff and not stop.is_set():
+                stop.wait(0.02)
+            hook = self.between_slices
+            if hook is not None:
+                try:
+                    extra = list(hook() or [])
+                except Exception:                     # noqa: BLE001 — never ends monitoring
+                    extra = []
+                for ev in extra:
+                    yield ev
 
     # -- parsing --------------------------------------------------------
 

@@ -18,6 +18,7 @@ import requests
 import watchlog_agent as core
 import native_verification
 import nvr_health
+import periodic_stills
 from drivers import DriverError
 
 # A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
@@ -160,6 +161,14 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     "this hardware family. Treat untested capabilities as pilot."
                 )
 
+            if periodic_stills.samples_in_stream(cfg, driver):
+                # Field Build 69: stills are taken between live stream slices on THIS driver's
+                # session, never on a second session beside the stream.
+                driver.between_slices = periodic_stills.StreamStillSampler(
+                    cfg, driver, spool,
+                    profiles=(holder or {}).get("still_profiles"),
+                    label=getattr(cfg, "recorder_display_name", None))
+
             last_shot: dict[str, float] = {}
             events = (_LiveEvents(driver, stop, cfg, stream, last_gen) if reports_stream
                       else driver.stream_events(stop))
@@ -172,6 +181,17 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 if holder is not None:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = core.now_utc()
+
+                if ev.event_type == periodic_stills.EVENT_TYPE and ev.snapshot_b64:
+                    # A timed still from the live stream: the row is already final. No second
+                    # still, no detector pass (it is not an alarm), straight to the spool.
+                    if holder is not None and ev.channel is not None:
+                        holder.setdefault("snapshot_ok", {})[str(ev.channel)] = time.monotonic()
+                    spool.add(spool_row(ev, core.now_utc()))
+                    dropped = spool.trim()
+                    if dropped:
+                        core.log(f"WARNING: spool over capacity, dropped {dropped} oldest events")
+                    continue
 
                 raw = None
                 # A recorder-scoped or channel-less event (channel None) has no camera
@@ -191,6 +211,8 @@ def collector(cfg, spool, stop, holder=None) -> None:
                             )
                         if raw and len(raw) <= core.SNAPSHOT_MAX_BYTES:
                             ev = ev.with_snapshot(base64.b64encode(raw).decode("ascii"))
+                            if holder is not None:
+                                holder.setdefault("snapshot_ok", {})[str(ev.channel)] =                                     time.monotonic()
                             core.log(f"snapshot ch{ev.channel} {len(raw) // 1024} KB")
                         elif raw:
                             core.log(

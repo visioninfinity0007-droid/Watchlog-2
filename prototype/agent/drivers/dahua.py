@@ -90,7 +90,7 @@ class DahuaDriver(NvrDriver):
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
-        self.s = requests.Session()
+        self.s = self.lan_session()   # no system proxy; self-signed HTTPS (Build 69)
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._burst = alarm_parsing.BurstFilter(BURST_WINDOW_SECONDS)
         # (monotonic, wall) clock of the block being parsed, stamped by stream_events
