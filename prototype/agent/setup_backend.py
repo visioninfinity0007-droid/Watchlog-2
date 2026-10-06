@@ -682,8 +682,17 @@ def _retained_event_count(local_id: str) -> int | None:
 
 
 def list_managed_recorders(config_path: Path) -> list[dict]:
-    """List the local recorder registry without exposing credentials."""
-    recorder_registry.migrate_legacy_singleton(config_path)
+    """List the local recorder registry without exposing credentials.
+
+    A recorder whose saved login cannot be read is LISTED as needing attention, never
+    hidden: the operator must be able to select it to fix it. The fail-closed migration
+    check below raises for an unreadable primary login, which used to empty the list."""
+    try:
+        recorder_registry.migrate_legacy_singleton(config_path)
+    except SecretError:
+        if not recorder_registry.recorders():
+            raise
+        _setup_log("a recorder login is unreadable; listing it as needing attention")
     out = []
     for row in recorder_registry.recorders():
         state = "available"

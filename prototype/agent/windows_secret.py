@@ -249,4 +249,14 @@ def write_json_secret(path: Path, obj: dict) -> None:
 
 
 def read_json_secret(path: Path) -> dict:
-    return json.loads(read_secret(path).decode("utf-8"))
+    """Decrypted JSON secret. A blob that decrypts but is not a JSON object is corrupt and
+    raises SecretError like any other unreadable secret (fail closed, never ValueError)."""
+    try:
+        value = json.loads(read_secret(path).decode("utf-8"))
+    except SecretError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SecretError(f"secret at {path} is corrupt: {type(exc).__name__}") from exc
+    if not isinstance(value, dict):
+        raise SecretError(f"secret at {path} is corrupt: not an object")
+    return value

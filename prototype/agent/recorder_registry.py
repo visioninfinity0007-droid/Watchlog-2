@@ -655,7 +655,10 @@ def quarantine_registry() -> list[Path]:
     different site. Returns the quarantined paths."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     moved = []
-    for src in (registry_path(), data_dir() / "recorders"):
+    # The quarantined recorders' own logins go with them (still inside the protected Secrets
+    # folder), so another installation's or site's credentials never stay live here.
+    for src in (registry_path(), data_dir() / "recorders",
+                credential_store.recorder_secrets_dir()):
         if src.exists():
             dst, n = src.with_name(f"{src.name}.quarantine-{stamp}"), 0
             while dst.exists():                 # never overwrite an earlier quarantine
