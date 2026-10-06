@@ -268,7 +268,10 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # registration + task start (no readiness wait)
+# Fresh install: registration + start + up to 60 s for the background Agent to prove it
+# reached WatchLog and identified the recorder (register-service -RequireRecorderReadiness).
+BACKGROUND_READY_TIMEOUT_SECONDS = 100
 RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
 RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
@@ -679,8 +682,17 @@ def _retained_event_count(local_id: str) -> int | None:
 
 
 def list_managed_recorders(config_path: Path) -> list[dict]:
-    """List the local recorder registry without exposing credentials."""
-    recorder_registry.migrate_legacy_singleton(config_path)
+    """List the local recorder registry without exposing credentials.
+
+    A recorder whose saved login cannot be read is LISTED as needing attention, never
+    hidden: the operator must be able to select it to fix it. The fail-closed migration
+    check below raises for an unreadable primary login, which used to empty the list."""
+    try:
+        recorder_registry.migrate_legacy_singleton(config_path)
+    except SecretError:
+        if not recorder_registry.recorders():
+            raise
+        _setup_log("a recorder login is unreadable; listing it as needing attention")
     out = []
     for row in recorder_registry.recorders():
         state = "available"
@@ -998,18 +1010,26 @@ def repair_managed_recorder_credential(
         local_id, username.strip(), password,
         mirror_legacy=bool(row.get("continuity_owner")),
     )
-    updated = recorder_registry.update_observed_identity(
-        local_id,
-        vendor=_observed(proven, "vendor"),
-        model=_observed(proven, "model"),
-        firmware=proven.get("firmware"),
-        driver=proven.get("driver") or row.get("driver") or "auto",
-        identity_fingerprint=(
-            f"serial:{proven.get('serial')}" if proven.get("serial")
-            else row.get("identity_fingerprint")
-        ),
-        verified_by_setup=True,
-    )
+    try:
+        updated = recorder_registry.update_observed_identity(
+            local_id,
+            vendor=_observed(proven, "vendor"),
+            model=_observed(proven, "model"),
+            firmware=proven.get("firmware"),
+            driver=proven.get("driver") or row.get("driver") or "auto",
+            identity_fingerprint=(
+                f"serial:{proven.get('serial')}" if proven.get("serial")
+                else row.get("identity_fingerprint")
+            ),
+            verified_by_setup=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — say exactly what is now true
+        # The login is already saved and was proven against this recorder, so it is kept
+        # (the old one may be what the recorder now refuses). Only the details failed.
+        _setup_log(f"recorder details not recorded after login change ({type(exc).__name__})")
+        raise ValueError(
+            "The recorder login was verified and saved, but WatchLog could not record the "
+            "recorder's details. Test this recorder again.") from exc
     out = _public_recorder_row(updated, credential_state="available")
     out["channels"] = list(proven.get("channels") or [])
     out["verified_against_hardware"] = bool(proven.get("verified_against_hardware"))
@@ -1353,7 +1373,7 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
 
 
 def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
-                            _run=None) -> dict:
+                            _run=None, *, require_readiness: bool = False) -> dict:
     """Register and START the background agent as soon as the site is genuinely connected.
 
     WHY THIS EXISTS (0.4.7). The NSIS installer runs the setup wizard under ExecWait and
@@ -1395,12 +1415,22 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
     cmd = [str(powershell),
            "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
            "-File", str(script), "-InstallDir", str(base)]
+    if require_readiness:
+        # Field Build 41/69: a running task is not proof the background Agent reached
+        # WatchLog and the recorder; register-service.ps1 waits for that proof (exit 3 =
+        # running but not proven). The Agent keeps running either way.
+        cmd.append("-RequireRecorderReadiness")
     try:
         code, out = runner(cmd, timeout)
     except Exception as exc:  # noqa: BLE001 — never block a connected site
         return {"started": False, "detail": f"could not start background agent ({type(exc).__name__})"}
     if code == 0:
-        return {"started": True, "detail": "background agent registered and started"}
+        return {"started": True, "proven": bool(require_readiness),
+                "detail": ("background agent reached WatchLog and identified the recorder"
+                           if require_readiness else "background agent registered and started")}
+    if code == 3 and require_readiness:
+        return {"started": True, "proven": False,
+                "detail": "background agent is running but has not yet confirmed the recorder"}
     return {"started": False,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
 
@@ -2145,6 +2175,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         # The identity this PC had before this run decides whether an existing
         # recorder registry still belongs here (see _stage_recorder_registry).
         prior_identity = _load_existing_identity(state_path)
+        # Label any older Agent's unstamped queue with the site that wrote it BEFORE this
+        # enrollment, so the new Agent sets it aside if this run moves the PC to another site.
+        try:
+            import site_runtime
+            site_runtime.stamp_prior_site(state_path.parent, prior_identity)
+        except Exception as exc:  # noqa: BLE001 - never block setup; the Agent adopts unstamped data
+            _setup_log(f"site runtime stamp skipped ({type(exc).__name__})")
         # Honour the supplied site code first; only reuse a local identity that still
         # authenticates. Never skip enrollment just because a stale agent_state.json exists.
         state = establish_identity(cloud, state_path, enrollment_code, device, progress)
@@ -2304,7 +2341,8 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # integration is therefore NEVER run by first-run setup.
     # =================================================================
     progress("Starting WatchLog in the background…")
-    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
+    agent_start = ensure_background_agent(timeout=BACKGROUND_READY_TIMEOUT_SECONDS,
+                                          require_readiness=True)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 

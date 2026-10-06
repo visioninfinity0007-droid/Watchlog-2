@@ -27,6 +27,7 @@ sys.path.insert(0, str(TESTS))
 import onvif_fake_recorder as fx  # noqa: E402
 import native_event_collector  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+import agent_core  # noqa: E402
 
 MOTION_ALARM = "tns1:VideoSource/MotionAlarm"
 T0 = datetime(2026, 10, 4, 10, 0, tzinfo=timezone.utc)
@@ -96,7 +97,7 @@ class Cloud:
 
 def test_heartbeat_publishes_the_onvif_counters(monkeypatch, tmp_path):
     path = tmp_path / "runtime-health.json"
-    monkeypatch.setattr(core, "runtime_health_path", lambda: path)
+    monkeypatch.setattr(agent_core, "runtime_health_path", lambda: path)  # heartbeat lives in agent_core (shared with Setup); patch its own collaborator
     stream = {"connected": True, "connected_at": "2026-10-04T10:00:00+00:00",
               "last_frame_at": "2026-10-04T10:00:30+00:00", "last_error": None,
               "dropped_unmapped": 3, "last_clock_skew_s": -42}
@@ -109,7 +110,7 @@ def test_heartbeat_publishes_the_onvif_counters(monkeypatch, tmp_path):
 
 def test_heartbeat_shape_is_unchanged_for_drivers_without_the_counters(monkeypatch, tmp_path):
     path = tmp_path / "runtime-health.json"
-    monkeypatch.setattr(core, "runtime_health_path", lambda: path)
+    monkeypatch.setattr(agent_core, "runtime_health_path", lambda: path)  # heartbeat lives in agent_core (shared with Setup); patch its own collaborator
     stream = {"connected": True, "connected_at": None, "last_frame_at": None, "last_error": None}
     core.heartbeat(Cloud(), {"agent_id": "a", "agent_key": "k"}, None,
                    recorder_live=True, event_stream=stream)

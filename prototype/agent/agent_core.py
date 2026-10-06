@@ -651,6 +651,10 @@ def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None =
         site_id=state.get("site_id"),
         tenant_id=state.get("tenant_id"),
         recorder_seen_at=(stamp if recorder_is_live else None),
+        # THIS process proved the recorder's identity at startup (field Build 41/69
+        # readiness): fresh only for the current run, so a fresh-install check compares it
+        # with the task start and never accepts an earlier run's identity.
+        recorder_identified_at=(stamp if device else None),
         recorder_vendor=(device.vendor if device else None),
         recorder_model=(device.model if device else None),
         recorder_driver=(device.driver if device else None),

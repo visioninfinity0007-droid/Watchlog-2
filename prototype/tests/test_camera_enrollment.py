@@ -35,7 +35,9 @@ def _private_data_root(tmp_path, monkeypatch):
     """establish_identity heartbeats (runtime health is published under the data root) and
     appends setup.log there: keep both in a temporary directory, never the real ProgramData."""
     monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
-    monkeypatch.setattr(core, "default_state_dir", lambda: tmp_path / "WatchLog")
+    # Setup resolves the shared core through agent_core (sb.core); patch both homes.
+    for mod in (core, sb.core):
+        monkeypatch.setattr(mod, "default_state_dir", lambda: tmp_path / "WatchLog")
     monkeypatch.setattr(sb, "programdata_dir", lambda: tmp_path / "WatchLog")
 
 
@@ -107,8 +109,10 @@ def _mem_state(monkeypatch):
     covered by the Windows Security Gate. These logic tests inject a simple in-memory store
     so they run identically on Windows and the Linux CI runner."""
     store = {}
-    monkeypatch.setattr(core, "save_state", lambda path, state: store.__setitem__(str(path), dict(state)))
-    monkeypatch.setattr(core, "load_state", lambda path: (dict(store[str(path)]) if str(path) in store else None))
+    for mod in (core, sb.core):   # the Agent module and Setup's agent_core
+        monkeypatch.setattr(mod, "save_state", lambda path, state: store.__setitem__(str(path), dict(state)))
+        monkeypatch.setattr(mod, "load_state",
+                            lambda path: (dict(store[str(path)]) if str(path) in store else None))
     return store
 
 

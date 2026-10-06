@@ -9,7 +9,15 @@
   variable, captures agent output to ProgramData, and restarts the agent if it
   exits unexpectedly.
 #>
-param([string]$InstallDir = "$env:ProgramFiles\WatchLog")
+param(
+  [string]$InstallDir = "$env:ProgramFiles\WatchLog",
+  # Fresh install only (Setup passes it): after the task runs, require proof that THIS
+  # background Agent reached WatchLog and identified the recorder (field Build 41/69). Not
+  # used by Repair/Upgrade or rollback, which have their own proofs and may restore an
+  # older Agent that does not write it. Exit 3 = registered and running, but not proven.
+  [switch]$RequireRecorderReadiness,
+  [int]$ReadinessTimeoutSec = 60
+)
 
 $ErrorActionPreference = "Stop"
 $task = "WatchLog Agent"
@@ -107,6 +115,7 @@ $settings  = New-ScheduledTaskSettingsSet `
 
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null
+$taskStartUtc = [DateTime]::UtcNow
 Start-ScheduledTask -TaskName $task -ErrorAction Stop
 
 $deadline = (Get-Date).AddSeconds(10)
@@ -124,3 +133,41 @@ if ($state -ne "Running") {
 }
 
 Write-Host "  WatchLog background Site Agent registered and started (state: $state)."
+
+if ($RequireRecorderReadiness) {
+  # Secrets\runtime-health.json is SYSTEM/Administrators-only, written by the running Agent:
+  # heartbeat_at only after a successful cloud heartbeat; recorder_identified_at only when
+  # this process proved the recorder identity at startup; recorder_seen_at only while the
+  # recorder (every configured recorder) is live. A stamp from before this start or more than
+  # two minutes in the future proves nothing.
+  $healthPath = Join-Path $data "Secrets\runtime-health.json"
+  $agentExe = Join-Path $InstallDir "watchlog-agent.exe"
+  $expected = ([string](Get-Item -LiteralPath $agentExe).VersionInfo.ProductVersion).Trim()
+  $notBefore = $taskStartUtc.AddSeconds(-5)
+  function Get-Stamp($value) {
+    if (-not $value) { return $null }
+    try { return [DateTimeOffset]::Parse([string]$value).UtcDateTime } catch { return $null }
+  }
+  function Test-Fresh($stamp, [datetime]$notAfter) {
+    return [bool]($stamp -and $stamp -ge $notBefore -and $stamp -le $notAfter)
+  }
+  $proven = $false
+  $deadline = (Get-Date).AddSeconds($ReadinessTimeoutSec)
+  while ((Get-Date) -lt $deadline -and -not $proven) {
+    Start-Sleep -Seconds 1
+    try {
+      if (-not (Test-Path -LiteralPath $healthPath)) { continue }
+      $h = Get-Content -LiteralPath $healthPath -Raw | ConvertFrom-Json
+      $notAfter = [DateTime]::UtcNow.AddMinutes(2)
+      $proven = ([string]$h.agent_version -eq $expected) -and
+                (Test-Fresh (Get-Stamp $h.heartbeat_at) $notAfter) -and
+                ((Test-Fresh (Get-Stamp $h.recorder_identified_at) $notAfter) -or
+                 (Test-Fresh (Get-Stamp $h.recorder_seen_at) $notAfter))
+    } catch { }
+  }
+  if (-not $proven) {
+    Write-Host "  WatchLog is running but has not yet confirmed it reached WatchLog and the recorder."
+    exit 3
+  }
+  Write-Host "  WatchLog background Site Agent reached WatchLog and identified the recorder."
+}

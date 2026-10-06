@@ -214,13 +214,20 @@ def test_planned_slice_ends_do_not_end_the_stream_or_flap_liveness():
     assert d.event_stream["connected"] is False   # the real end is still a real end
 
 
-def test_a_slice_with_no_frame_is_not_proof_of_life():
+def test_a_silent_stream_is_a_stream_error_not_a_quiet_reopen():
+    # No frame, not even a keep-alive, for the whole read window is a stale stream: it is
+    # recorded and raised to the collector's back-off. A quiet re-open here would loop
+    # against a misbehaving recorder with no delay.
     d = _driver()
     before = d.last_activity_monotonic
-    _scripted(d, [[requests.exceptions.ConnectionError("Read timed out.")], []])
-    list(d.stream_events(threading.Event()))
+    opened = []
+    d.s = SimpleNamespace(request=lambda *a, **k: opened.append(1) or StreamResp(
+        [requests.exceptions.ConnectionError("Read timed out.")]), close=lambda: None)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        list(d.stream_events(threading.Event()))
+    assert opened == [1]
     assert d.last_activity_monotonic == before
-    assert d.event_stream["connected"] is False
+    assert d.event_stream["connected"] is False and "timed out" in d.event_stream["last_error"]
 
 
 def test_native_alarms_pass_immediately_and_are_not_held_for_the_still():

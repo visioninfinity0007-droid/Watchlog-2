@@ -280,23 +280,12 @@ class DriverPushContractTests(unittest.TestCase):
     DAHUA = (ROOT / "agent" / "drivers" / "dahua.py").read_text(encoding="utf-8")
     HIK = (ROOT / "agent" / "drivers" / "hikvision.py").read_text(encoding="utf-8")
 
-    def test_dahua_protocol_follows_the_bridge_scheme(self):
-        """Hardcoding HTTP while computing port 443 told the recorder to open a PLAINTEXT
-        connection to a TLS port: every alarm dropped at the handshake."""
-        fn = self.DAHUA[self.DAHUA.find("def configure_push"):][:4200]
-        self.assertNotIn('"AlarmServer.Protocol=HTTP"', fn)
-        self.assertIn('scheme = "HTTPS" if u.scheme == "https" else "HTTP"', fn)
-
-    def test_dahua_sends_config_keys_individually(self):
-        """Dahua rejects an ENTIRE setConfig request when any single key is unknown to
-        that firmware, so batching five keys meant one unsupported key discarded all."""
-        fn = self.DAHUA[self.DAHUA.find("def configure_push"):][:4200]
-        self.assertIn("for key, value in required", fn)
-        self.assertIn("for key, value in optional", fn)
-
-    def test_dahua_read_back_catches_a_protocol_mismatch(self):
-        fn = self.DAHUA[self.DAHUA.find("def configure_push"):][:5200]
-        self.assertIn("got_proto", fn)
+    def test_dahua_push_never_writes_alarm_server(self):
+        """Generic Dahua AlarmServer is a proprietary alarm-centre protocol; WatchLog only
+        reads it and never repoints a customer's alarm centre (field W2 925885a4)."""
+        fn = self.DAHUA[self.DAHUA.find("def configure_push"):][:2600]
+        self.assertNotIn("setConfig", fn)
+        self.assertIn("left unchanged", fn)
 
     def test_hikvision_returns_the_same_contract_as_dahua(self):
         """It returned None, so provision_recorder_push read all-False and reported a

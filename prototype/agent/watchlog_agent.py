@@ -3050,7 +3050,7 @@ def main() -> None:
     # Identify the recorder ONCE and reuse the answer: enrollment, the
     # camera sync and the heartbeat all want it, and probing four times
     # on every start is noise on the wire and in the log.
-    device, channels, capabilities = None, [], None
+    device, channels = None, []
     boot_cfg = _boot_probe_config(cfg)
     if boot_cfg is None:
         log("recorder: the configured recorders are identified by their own recorder "
@@ -3061,12 +3061,10 @@ def main() -> None:
             try:
                 channels = [{"channel": c.channel, "name": c.name}
                             for c in _synced_inventory(driver)]
-                # Read analytics while the driver is open. Best-effort and
-                # read-only; never changes a setting on the device.
-                try:
-                    capabilities = driver.capabilities()
-                except Exception:                    # noqa: BLE001
-                    capabilities = None
+                # Do NOT read recorder capabilities here (field Build 41/69): on Hikvision
+                # it fans out into several ISAPI calls per channel and delayed the live
+                # collector and heartbeat by minutes. capability_sync sends them once
+                # monitoring has started (deferred below).
             finally:
                 driver.close()
         except (DriverError, SystemExit) as e:
@@ -3095,6 +3093,13 @@ def main() -> None:
     if args.enroll_only:
         return
 
+    # Tenant isolation: another site's queued events/health must never upload as this site.
+    # Before any queue is opened; a move that fails stops this start (the launcher retries).
+    if state.get("site_id"):
+        import site_runtime
+        site_runtime.ensure_runtime_belongs(cfg.state_path.parent, state["site_id"],
+                                            state.get("tenant_id"), log=log)
+
     if channels:
         try:
             mapping = cloud.call("wl_sync_cameras", p_agent_id=state["agent_id"],
@@ -3114,14 +3119,9 @@ def main() -> None:
     # Report what analytics the recorder supports, so the portal can show
     # them. Captured above while the driver was open; a failure to upload
     # must not stop the agent doing its actual job.
-    if capabilities and capabilities.get("channels"):
-        try:
-            cloud.call("wl_sync_capabilities", p_agent_id=state["agent_id"],
-                       p_agent_key=state["agent_key"], p_capabilities=capabilities)
-            log(f"analytics reported: {len(capabilities['channels'])} channel(s)")
-        except (RuntimeError, requests.RequestException, OSError) as e:
-            log(f"analytics report skipped: {str(e).splitlines()[0][:120]}")
-
+    if device is not None and boot_cfg is not None:
+        import capability_sync
+        capability_sync.defer(boot_cfg, state, cloud, open_driver, log=log)
     cmd_run(cfg, state, cloud, once=args.once, device=device, channels=channels)
 
 

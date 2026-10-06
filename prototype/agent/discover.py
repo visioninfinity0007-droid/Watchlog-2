@@ -209,7 +209,11 @@ SWEEP_DEEP_PORTS = [port for port in SWEEP_PORTS if port not in SWEEP_FAST_PORTS
 RECORDER_SIGNATURE_PORTS = {37777, 37778, 8000, 34567}
 SWEEP_TIMEOUT = 0.75
 SWEEP_DEEP_TIMEOUT = 0.35
-SWEEP_WORKERS = 256
+# Build 69 (field-proven, Chai Wala) ran 768 parallel probes. 256 only just fit the fast phase
+# of eight /24s into the 32 s Build 74 deadline when absent hosts time out (8th network at
+# ~22.6 s) and cut the alternate-port phase short; 512 reaches the 8th network at ~13 s and
+# leaves the alternate-port phase time for the first networks (test_discovery_field_timing).
+SWEEP_WORKERS = 512
 MAX_AUTO_SUBNETS = 8
 DISCOVERY_DEADLINE_SECONDS = 32.0
 
