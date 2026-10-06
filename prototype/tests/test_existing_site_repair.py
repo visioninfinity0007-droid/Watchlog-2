@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -83,7 +84,10 @@ class ExistingSitePreflight(unittest.TestCase):
 
     def test_preflight_is_read_only_and_passes_valid_site(self):
         device = SimpleNamespace(vendor="hikvision", model="DS-7608NI-Q1", driver="hikvision-isapi")
-        with tempfile.TemporaryDirectory() as td,              patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
+        # On Windows the preflight reads the machine's DPAPI store; stand it in like the
+        # identity, recorder and cloud so the test never depends on (or reads) this PC.
+        with tempfile.TemporaryDirectory() as td,              patch.object(wa, "load_state", return_value=self.state),              patch.object(wa, "open_driver", return_value=(FakeDriver(), device)),              patch.object(wa, "Cloud", FakeCloud),              patch.object(wa.credential_store, "load_nvr_credential_readonly",
+                          return_value={"username": "admin", "password": "secret"}),              patch.object(recovery_ai, "decoder_selftest", return_value={"ok": True, "reason": ""}):
             out = Path(td) / "preflight.json"
             code = wa.cmd_existing_site_preflight(FakeCfg(), result_path=str(out))
             self.assertEqual(code, 0)
@@ -128,7 +132,11 @@ class StagedPublicDefaults(unittest.TestCase):
                 "update_public_key = \n",
                 encoding="utf-8",
             )
-            with patch.object(wa, "base_dir", return_value=root):
+            # Config lets WATCHLOG_<KEY> override the files; the Windows Release job exports
+            # WATCHLOG_UPDATE_URL/_PUBLIC_KEY, so keep them out of this file-level contract.
+            clean_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("WATCHLOG_")}
+            with patch.object(wa, "base_dir", return_value=root), \
+                    patch.dict(os.environ, clean_env, clear=True):
                 cfg = wa.Config(existing, read_only_credentials=True)
             self.assertEqual(cfg.update_url, "https://updates.example/watchlog/manifest.json")
             self.assertEqual(cfg.update_public_key, "TEST-PUBLIC-KEY")
