@@ -692,14 +692,11 @@ class HikvisionDriver(NvrDriver):
                     ended = None
                     raise
                 except requests.RequestException as e:
-                    low = str(e).lower()
-                    if "read timed out" in low or "read timeout" in low:
-                        # Nothing at all for a whole slice: end the slice, not the stream.
-                        planned_end = True
-                        ended = None
-                    else:
-                        ended = explain(e)
-                        raise
+                    # Including a read timeout: the recorder sent nothing, not even a
+                    # keep-alive, for the whole read window. That is a stale stream, recorded
+                    # and handed to the collector's back-off, never a quiet re-open here.
+                    ended = explain(e)
+                    raise
                 except Exception as e:
                     ended = type(e).__name__
                     raise
@@ -708,9 +705,6 @@ class HikvisionDriver(NvrDriver):
                     r.close()
                     if not planned_end:
                         self._stream_down(ended)
-                    elif self._activity_before_up is not None:
-                        # A slice with not one frame proves nothing: take the 2xx back.
-                        self._stream_down("event stream sent nothing for a whole slice")
             if not planned_end or stop.is_set():
                 return
             resumed = bool(self.event_stream.get("connected"))

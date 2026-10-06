@@ -1178,8 +1178,11 @@ class SetupWindow(QMainWindow):
         alive while watchlog-agent.exe repeatedly failed underneath it.
         """
         info = getattr(self, "agent_start", None) or {}
-        if info.get("started"):
+        if info.get("started") and info.get("proven", True):
             return "✓ WatchLog background connector started and reached WatchLog"
+        if info.get("started"):
+            return ("! WatchLog is running but has not yet confirmed the recorder — "
+                    "Site Status shows when it connects")
         return ("! WatchLog background connector could not prove it is reporting — "
                 "retry setup or export a support bundle")
 
