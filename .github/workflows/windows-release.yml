@@ -327,14 +327,23 @@ jobs:
           Write-Host '-----------------------------------------------'
 
       - name: Upload WatchLog Windows release
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: WatchLog-Windows-${{ github.run_number }}
           path: |
+            prototype/dist/watchlog-agent.exe
+            prototype/dist/watchlog-setup-ui.exe
+            prototype/build/**/*.toc
+            prototype/build/**/warn-*.txt
+            prototype/build/**/xref-*.html
+            prototype/build-setup-ui/**/*.toc
+            prototype/build-setup-ui/**/warn-*.txt
+            prototype/build-setup-ui/**/xref-*.html
             dist-installer/WatchLog-Setup.exe
             dist-installer/WatchLog-Setup.exe.sha256
             dist-installer/WatchLog-Repair-Upgrade.exe
             dist-installer/WatchLog-Repair-Upgrade.exe.sha256
             dist-installer/WatchLog-Release.hashes.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
