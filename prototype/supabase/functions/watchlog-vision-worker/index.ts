@@ -145,13 +145,17 @@ function normalize(raw: Json, item: Json): Json {
     const tables = configured.map((cfg: any) => {
       const key = String(cfg?.table_key || "");
       const row = byKey.get(key) || {};
+      const serviceAction = asBool(row.service_interaction_observed) ?? asBool(row.staff_present);
       return {
         table_key: key,
         occupied: asBool(row.occupied),
         customer_count: asInt(row.customer_count),
         food_present: asBool(row.food_present),
         drinks_present: asBool(row.drinks_present),
-        staff_present: asBool(row.staff_present),
+        service_interaction_observed: serviceAction,
+        // Compatibility with the existing DB column. This means visible service-action
+        // presence only, never inferred staff identity, attendance, or headcount.
+        staff_present: serviceAction,
         clearing_state: asBool(row.clearing_state),
         combined_group: cleanText(row.combined_group, 80),
         visibility_quality: as01(row.visibility_quality),
