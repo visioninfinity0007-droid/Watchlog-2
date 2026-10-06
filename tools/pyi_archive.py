@@ -196,3 +196,42 @@ def qt_libraries(exe: PyInstallerExe) -> list[str]:
         if re.match(r"(?i)^qt6\w*\.dll$", base) or re.match(r"(?i)^qt\w+\.pyd$", base):
             out.append(base)
     return sorted(set(out))
+
+
+# --- PE version resource (no pywin32 / pefile needed) -----------------------------------------
+def pe_image_end(data: bytes) -> int:
+    """End of the PE image proper (last section's raw data); appended overlays (a PyInstaller
+    PKG, an NSIS payload, an Authenticode certificate) start after it. len(data) if unparsable."""
+    try:
+        if data[:2] != b"MZ":
+            return len(data)
+        lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+        if data[lfanew:lfanew + 4] != b"PE\0\0":
+            return len(data)
+        sections, = struct.unpack_from("<H", data, lfanew + 6)
+        opt_size, = struct.unpack_from("<H", data, lfanew + 20)
+        table = lfanew + 24 + opt_size
+        end = 0
+        for i in range(sections):
+            size, ptr = struct.unpack_from("<II", data, table + 40 * i + 16)
+            end = max(end, ptr + size)
+        return end or len(data)
+    except struct.error:
+        return len(data)
+
+
+def pe_version_string(data: bytes, key: str) -> str | None:
+    """A VS_VERSIONINFO StringFileInfo value (ProductVersion, FileVersion...), searched only in
+    the PE image so bytes inside an appended archive can never be mistaken for it."""
+    image = data[:pe_image_end(data)]
+    needle = (key + "\0").encode("utf-16-le")
+    i = image.rfind(needle)
+    if i < 0:
+        return None
+    j = i + len(needle)
+    while j + 1 < len(image) and image[j:j + 2] == b"\0\0":
+        j += 2
+    end = j
+    while end + 1 < len(image) and image[end:end + 2] != b"\0\0":
+        end += 2
+    return image[j:end].decode("utf-16-le", "replace").strip() or None

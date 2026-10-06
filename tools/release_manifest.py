@@ -54,17 +54,7 @@ def sha256(path: Path) -> str:
 
 
 def pe_string_bytes(data: bytes, key: str) -> str | None:
-    needle = (key + "\0").encode("utf-16-le")
-    i = data.rfind(needle)
-    if i < 0:
-        return None
-    j = i + len(needle)
-    while j + 1 < len(data) and data[j:j + 2] == b"\0\0":
-        j += 2
-    end = j
-    while end + 1 < len(data) and data[end:end + 2] != b"\0\0":
-        end += 2
-    return data[j:end].decode("utf-16-le", "replace").strip() or None
+    return pyi_archive.pe_version_string(data, key)
 
 
 def git(*args: str) -> str:
@@ -90,7 +80,7 @@ def exe_info(path: Path) -> dict:
         info["baked_build_sha"] = exe.baked_build_sha()
         info["python_library"] = exe.python_library
         info["pkg_entries"] = len(exe.entries)
-    except pyi_archive.ArchiveError:
+    except Exception:  # noqa: BLE001  (an NSIS installer is not a PyInstaller archive)
         pass
     return info
 

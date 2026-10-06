@@ -154,18 +154,7 @@ def extract_7z(sevenzip: str, installer: Path, dest: Path) -> None:
 # --- PE version --------------------------------------------------------------------------------
 def pe_string(path: Path, key: str) -> str | None:
     """A VS_VERSIONINFO StringFileInfo value (e.g. ProductVersion), read without pywin32."""
-    data = path.read_bytes()
-    needle = (key + "\0").encode("utf-16-le")
-    i = data.rfind(needle)
-    if i < 0:
-        return None
-    j = i + len(needle)
-    while j + 1 < len(data) and data[j:j + 2] == b"\0\0":
-        j += 2
-    end = j
-    while end + 1 < len(data) and data[end:end + 2] != b"\0\0":
-        end += 2
-    return data[j:end].decode("utf-16-le", "replace").strip() or None
+    return pyi_archive.pe_version_string(path.read_bytes(), key)
 
 
 def runtime_version(agent: Path) -> list[str]:
