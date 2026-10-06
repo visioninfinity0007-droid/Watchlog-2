@@ -1,0 +1,48 @@
+name: Forensics bundle inventory
+# Not for merge. Read-only inventory of earlier release artifacts (Build 69 / 5.0.17 ... 5.1.0).
+on:
+  push:
+    branches: ['forensics/bundle-inventory']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inventory:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: b69-5.0.17,       run: '36238903083' }
+          - { label: b75-5.0.17-cw,    run: '36330206109' }
+          - { label: r118-5.0.26,      run: '36575155228' }
+          - { label: r119-5.0.26,      run: '36576260654' }
+          - { label: r134-5.1.0,       run: '37426164933' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Fetch the original release artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ matrix.run }}
+          github-token: ${{ github.token }}
+          path: art
+      - name: Release-channel 5.0.26 Agent (compared to the 5.0.26 builds)
+        if: startsWith(matrix.label, 'r11')
+        shell: bash
+        run: gh release download watchlog-production -p 'watchlog-agent-5.0.26.exe' -D art/release-channel -R ${{ github.repository }}
+        env: { GH_TOKEN: '${{ github.token }}' }
+      - name: Inventory
+        shell: pwsh
+        run: |
+          python -m pip install --quiet --disable-pip-version-check "pyinstaller==6.22.3"
+          python forensics/analyze.py art out ${{ matrix.label }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inventory-${{ matrix.label }}
+          path: |
+            out/*.json
+            out/*.md
+          retention-days: 30
