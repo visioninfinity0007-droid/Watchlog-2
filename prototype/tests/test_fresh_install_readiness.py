@@ -63,7 +63,16 @@ def test_repair_and_upgrade_never_require_it():
 def backend(monkeypatch, tmp_path):
     import setup_backend
     (tmp_path / "register-service.ps1").write_text("# stub", encoding="utf-8")
-    monkeypatch.setattr(setup_backend.os, "name", "nt")
+    # Only setup_backend sees Windows: patching os.name itself makes pathlib build WindowsPath
+    # objects, which cannot exist on the Linux CI runner.
+    import os as _os
+
+    class _NtOs:
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(_os, attr)
+    monkeypatch.setattr(setup_backend, "os", _NtOs())
     return setup_backend, tmp_path
 
 

@@ -79,10 +79,20 @@ def test_install_and_repair_protect_the_whole_data_folder():
     assert "still lets $sid write" in fn
 
 
+class _NtOs:
+    """remote_update alone sees Windows; patching os.name itself makes pathlib build
+    WindowsPath objects, which cannot exist on the Linux CI runner."""
+    name = "nt"
+
+    def __getattr__(self, attr):
+        import os
+        return getattr(os, attr)
+
+
 def test_agent_refuses_to_stage_when_the_folder_cannot_be_protected(monkeypatch, tmp_path):
     import remote_update
     import windows_secret
-    monkeypatch.setattr(remote_update.os, "name", "nt")
+    monkeypatch.setattr(remote_update, "os", _NtOs())
 
     def cannot(_path):
         raise windows_secret.SecretError("Set-Acl failed")
@@ -98,7 +108,7 @@ def test_agent_removes_leftovers_it_did_not_write(monkeypatch, tmp_path):
     root.mkdir()
     for name in ("pending.json", "watchlog-agent.next.exe", "watchlog-agent.next.exe.part"):
         (root / name).write_text("planted", encoding="utf-8")
-    monkeypatch.setattr(remote_update.os, "name", "nt")
+    monkeypatch.setattr(remote_update, "os", _NtOs())
     monkeypatch.setattr(windows_secret, "ensure_secure_dir", lambda p: None)
     remote_update._protect_staging(root)
     assert sorted(p.name for p in root.iterdir()) == []

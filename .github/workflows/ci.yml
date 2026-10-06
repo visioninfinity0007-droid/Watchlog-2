@@ -365,7 +365,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           # They drive the real Repair/Upgrade orchestrator and upgrade helper through Windows
           # PowerShell, so they need this Windows job (the Linux backend job cannot run them).
-          python -m pip install --disable-pip-version-check --quiet pytest pillow
+          # The EXEs are frozen in isolated venvs, so this interpreter has none of their packages:
+          # install the same hash-locked sets the tests import (Agent + Setup UI).
+          python -m pip install --disable-pip-version-check --quiet --no-deps --require-hashes -r prototype/packaging/requirements-agent.lock
+          if ($LASTEXITCODE -ne 0) { throw "agent lock install failed ($LASTEXITCODE)" }
+          python -m pip install --disable-pip-version-check --quiet --no-deps --require-hashes -r prototype/packaging/requirements-setup-ui.lock
+          if ($LASTEXITCODE -ne 0) { throw "setup UI lock install failed ($LASTEXITCODE)" }
+          python -m pip install --disable-pip-version-check --quiet pytest
           if ($LASTEXITCODE -ne 0) { throw "test dependency install failed ($LASTEXITCODE)" }
           python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py prototype/tests/test_remote_update_stage_trust.py
           if ($LASTEXITCODE -ne 0) { throw "Repair/Upgrade, registry and elevation tests failed ($LASTEXITCODE)" }
