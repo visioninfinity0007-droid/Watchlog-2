@@ -2158,6 +2158,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         # The identity this PC had before this run decides whether an existing
         # recorder registry still belongs here (see _stage_recorder_registry).
         prior_identity = _load_existing_identity(state_path)
+        # Label any older Agent's unstamped queue with the site that wrote it BEFORE this
+        # enrollment, so the new Agent sets it aside if this run moves the PC to another site.
+        try:
+            import site_runtime
+            site_runtime.stamp_prior_site(state_path.parent, prior_identity)
+        except Exception as exc:  # noqa: BLE001 - never block setup; the Agent adopts unstamped data
+            _setup_log(f"site runtime stamp skipped ({type(exc).__name__})")
         # Honour the supplied site code first; only reuse a local identity that still
         # authenticates. Never skip enrollment just because a stale agent_state.json exists.
         state = establish_identity(cloud, state_path, enrollment_code, device, progress)

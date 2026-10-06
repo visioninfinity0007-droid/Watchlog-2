@@ -3682,6 +3682,13 @@ def main() -> None:
     if args.enroll_only:
         return
 
+    # Tenant isolation: another site's queued events/health must never upload as this site.
+    # Before any queue is opened; a move that fails stops this start (the launcher retries).
+    if state.get("site_id"):
+        import site_runtime
+        site_runtime.ensure_runtime_belongs(cfg.state_path.parent, state["site_id"],
+                                            state.get("tenant_id"), log=log)
+
     if channels:
         try:
             mapping = cloud.call("wl_sync_cameras", p_agent_id=state["agent_id"],
