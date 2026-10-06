@@ -2046,8 +2046,9 @@ def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
     * A registry of this same enrolled site: re-point its continuity recorder
       (the legacy singleton) at the newly proven address and login, keeping its
       local and cloud identity, so the registry and watchlog.ini agree.
-    * A registry left by an earlier installation (uninstall removes the identity
-      but keeps recorders.json), by another site, or unreadable: quarantine it
+    * A registry left by an earlier installation (an uninstaller before 5.1 removed the
+      identity but kept recorders.json; 5.1+ removes both), by another site, or
+      unreadable: quarantine it
       (moved aside, never deleted) and stage fresh, instead of blocking every
       reinstall. After an uninstall the site is unknown, so the fresh row keeps
       the old continuity recorder's local id: on the same site the new Agent then

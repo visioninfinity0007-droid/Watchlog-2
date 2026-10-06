@@ -425,6 +425,15 @@ Section "Uninstall"
   Delete "${DATAROOT}\background-ready.json"
   Delete "${DATAROOT}\run-agent.pid"
   Delete "${DATAROOT}\upgrade-in-progress.json"
+  ; 5.1.1: the site stamp of the queued data, another site's set-aside queue/health files
+  ; (<name>.site-<id>-<time>), rows the server rejected (<spool>.rejected.jsonl) and the
+  ; registry's write temps. All hold site data or identity.
+  Delete "${DATAROOT}\site_runtime.json"
+  Delete "${DATAROOT}\site_runtime.tmp"
+  Delete "${DATAROOT}\agent_state.tmp"
+  Delete "${DATAROOT}\*.site-*"
+  Delete "${DATAROOT}\*.rejected.jsonl"
+  Delete "${DATAROOT}\.recorders.*.tmp"
   ; Secondary recorders keep their own spool, health ledger and last-live marker here.
   RMDir /r "${DATAROOT}\recorders"
   ; Staging and rollback copies: a remote-update stage, the upgrade backup (a full payload

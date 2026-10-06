@@ -88,6 +88,18 @@ def test_nsis_never_deletes_what_the_policy_keeps():
     assert not (kept & deleted)
 
 
+def test_the_nsis_fallback_removes_the_5_1_1_site_data():
+    # If PowerShell cannot run, NSIS's own deletes are the uninstall: they must name the site
+    # stamp, another site's set-aside files and the rejected-row dead letter (5.1.1 additions).
+    import sys
+    sys.path.insert(0, str(ROOT / "prototype" / "agent"))
+    import site_runtime
+    deleted = set(re.findall(r'Delete "\$\{DATAROOT\}\\([^"]+)"', uninstall_section(FULL)))
+    assert {site_runtime.STAMP_NAME, "*.site-*", "*.rejected.jsonl", ".recorders.*.tmp"} <= deleted
+    for name in site_runtime.RUNTIME_FILES:
+        assert name in deleted, name
+
+
 def test_power_settings_are_restored_on_uninstall_from_the_install_record():
     reg = (ROOT / "prototype" / "installer" / "register-service.ps1").read_text(encoding="utf-8")
     save = reg.index("try { Save-PowerBaseline }")
