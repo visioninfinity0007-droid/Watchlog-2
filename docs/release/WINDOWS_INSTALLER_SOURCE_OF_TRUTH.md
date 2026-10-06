@@ -34,7 +34,12 @@ is installed at no site. Nothing about 5.1.1 is FIELD VERIFIED or PRODUCTION VER
 ### 0.1 Release identity
 
 - Candidate line: local branch `release/5.1.1` (nothing pushed). 5.1.1 is a candidate,
-  **not promoted**.
+  **not promoted**: no Windows artifact has been built from it.
+- Database prerequisite: contract v4 (`mr/db-contracts` migrations `0146`-`0155`, plus 0156 and
+  0157), as for 5.1.0 (section 1C); applied in production (section 0.7).
+- Deliberate downgrade to 5.0.x: the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
 - Version string: `prototype/agent/wl_version.py` and the NSIS `APPVERSION` fallbacks still read
   `5.1.0`. The bump to 5.1.1 (`tools/bump_version.py`) belongs to the RC freeze; until then
   section 1 names the version the code carries (`test_release_version_contract.py`).
