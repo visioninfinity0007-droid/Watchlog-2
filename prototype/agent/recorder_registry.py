@@ -364,6 +364,8 @@ def save_registry(payload: dict) -> dict:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(normalized, separators=(",", ":")))
+            handle.flush()
+            os.fsync(handle.fileno())       # a power cut never publishes an empty registry
         # Prove the exact staged bytes parse and satisfy the schema before publish.
         validate_registry(json.loads(tmp.read_text(encoding="utf-8")))
         os.replace(tmp, path)

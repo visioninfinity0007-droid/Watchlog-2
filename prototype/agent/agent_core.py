@@ -448,7 +448,10 @@ def save_state(path: Path, state: dict) -> None:
     public = {k: v for k, v in state.items() if k != "agent_key"}
     public.setdefault("credential_store_version", credential_store.CREDENTIAL_STORE_VERSION)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(public, indent=2), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(public, indent=2))
+        handle.flush()
+        os.fsync(handle.fileno())   # a power cut never publishes an empty identity
     tmp.replace(path)
     if os.name != "nt":
         os.chmod(path, 0o600)

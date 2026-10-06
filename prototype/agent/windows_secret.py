@@ -212,7 +212,10 @@ def write_secret(path: Path, payload: bytes) -> None:
     tmp = path.parent / (path.name + ".tmp")
     try:
         blob = protect_bytes(payload)                  # 1. encrypt in memory
-        tmp.write_bytes(blob)                           # 2. temp (inherits SYSTEM+Admins)
+        with open(tmp, "wb") as handle:                # 2. temp (inherits SYSTEM+Admins)
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())                  #    on disk before it replaces the old
         _secure_and_verify(tmp, container=False)        # 3+4. lock + verify temp
         if unprotect_bytes(tmp.read_bytes()) != payload:    # 5. round-trip compare
             raise SecretError("round-trip verification failed")
