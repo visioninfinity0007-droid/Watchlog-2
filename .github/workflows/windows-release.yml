@@ -164,7 +164,10 @@ jobs:
           $uiStarted = Get-Date
           $uiSelf = Start-Process -FilePath $setupUi.FullName -ArgumentList @('--ui-selftest','--installer-child') -Wait -PassThru
           $uiElapsed = ((Get-Date) - $uiStarted).TotalSeconds
-          if ($uiElapsed -gt 15) {
+          # 30 s, owner decision 2026-10-06: the 310 MB one-file Setup UI measured 18-22 s on
+          # GitHub's Windows runner for 5.0.28 and 5.1.0. Known issue: shrink it or add a splash.
+          Write-Host "packaged setup UI lifecycle: $([math]::Round($uiElapsed,1))s"
+          if ($uiElapsed -gt 30) {
             throw "packaged setup UI lifecycle took $([math]::Round($uiElapsed,1))s; installer would appear stuck"
           }
           if ($uiSelf.ExitCode -ne 0) {
