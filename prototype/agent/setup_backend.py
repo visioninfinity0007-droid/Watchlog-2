@@ -18,7 +18,7 @@ from typing import Callable
 
 import dahua_archive
 import discover
-import watchlog_agent as core
+import agent_core as core  # Setup needs only the shared core, never the Agent runtime
 import wsdiscovery
 from drivers import DriverError, build
 import credential_store
