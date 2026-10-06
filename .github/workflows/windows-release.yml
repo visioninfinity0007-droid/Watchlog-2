@@ -407,6 +407,14 @@ jobs:
             --agent .\prototype\dist\watchlog-agent.exe `
             --payload-out .\dist-installer\watchlog-update-payload.json
           if ($LASTEXITCODE -ne 0) { throw 'update contract failed' }
+          $contract = Get-Content '.\dist-installer\WatchLog-Update-Contract.json' -Raw | ConvertFrom-Json
+          Add-Content -Path '.\dist-installer\WatchLog-Release.hashes.txt' -Encoding ASCII -Value @(
+            "update_class=$($contract.update_class)",
+            "min_installed_components=$($contract.min_installed_components)",
+            "WatchLog-Update-Contract.json.sha256=$((Get-FileHash '.\dist-installer\WatchLog-Update-Contract.json' -Algorithm SHA256).Hash)",
+            "watchlog-update-payload.json.sha256=$((Get-FileHash '.\dist-installer\watchlog-update-payload.json' -Algorithm SHA256).Hash)"
+          )
+          Write-Host "update contract: $($contract.update_class) (min components $($contract.min_installed_components))"
 
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
