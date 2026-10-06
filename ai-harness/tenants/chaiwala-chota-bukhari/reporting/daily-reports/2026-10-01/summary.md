@@ -4,103 +4,103 @@
 **Branch:** Chota Bukhari, DHA Phase 6, Karachi  
 **Configured service day:** 4:00 PM → 4:00 AM
 
-## What management needs to know
+## Executive overview
 
-- The strongest represented dining period was roughly **12:00 AM–2:10 AM**, reaching approximately **26–30 simultaneous visible diners** across about **8–10 active table groups** after reconciling the overlapping dining views.
-- During busy periods, typically **1–2 visibly active floor-service staff** were present at once, with an observed peak of about **3**. This is concurrent visible service activity, not a unique waiter headcount.
-- Close-down overlapped with remaining trade. The Shop Front was fully shuttered by about **2:48 AM**, while a small seated party remained visible until about **3:03 AM**.
-- A cleanly traceable table session showed first visible service interaction roughly **5–15 minutes after seating** and clearly visible served items roughly **15–30 minutes after seating**. These are coarse observed ranges, not day-wide averages.
+Trade was light in the early represented evening, built after about **9:15 PM**, and was strongest from roughly **12:00 AM–2:10 AM**.
+
+At the busiest represented points, the reconciled dining views showed approximately **26–30 simultaneous visible diners** across about **8–10 active table groups**.
+
+Visible table-service activity continued through the busy period. Only **one table session** was traceable enough for service timing, so the report publishes coarse ranges rather than a day-wide average:
+
+- first visible table-service interaction: **~5–15 minutes after seating**
+- first clearly visible served items: **~15–30 minutes after seating**
+- qualifying sessions: **1**
+
+Close-down overlapped with remaining diners. Furniture consolidation was underway after about **2:15–2:20 AM**, the Shop Front was fully shuttered by about **2:48 AM**, and a small seated party remained visible until about **3:03 AM**.
 
 ## Four figures to remember
 
 | Management figure | Reading |
 | --- | --- |
-| Main visible dining peak | **~12:00 AM–2:10 AM** |
-| Peak simultaneous visible diners | **~26–30** |
+| Peak visible diners | **~26–30** |
+| Main demand window | **~12:00 AM–2:10 AM** |
 | Peak active table groups | **~8–10** |
-| Visible floor-service staffing at peak | **Typically 1–2; peak ~3** |
+| Traceable service sequence | **~5–15 min to first visible service / ~15–30 min to served items (n=1)** |
 
-## Demand through the represented service day
+## Demand & tables
 
 | Period | Demand | Business reading |
 | --- | --- | --- |
 | 4:00–~5:48 PM | Unknown | Opening period not continuously represented |
-| 5:48–6:35 PM | Low | Opening / light trade |
-| 6:40–9:10 PM | Light | Scattered early parties |
-| 9:15–11:15 PM | Rising | More simultaneous tables became active |
+| ~5:48–9:10 PM | Light | Small parties; demand built gradually |
+| 9:15–11:15 PM | Rising | More simultaneous table groups became active |
 | 11:20 PM–12:00 AM | High | Strong late trade |
 | **12:00–2:10 AM** | **High** | **Strongest sustained dining period** |
-| 2:15–2:35 AM | Falling | Demand taper and close-down |
+| 2:15–2:35 AM | Falling | Demand taper while close-down accelerated |
 | 2:36–3:03 AM | Low | Late dining continued during shutdown |
 | 3:08–3:23 AM | Closing | Dining largely ended; final cleanup |
 | ~3:23–4:00 AM | Unknown | Final configured period not represented |
 
-## Service performance
+The Floor 1 and Floor 2 views overlap; the peak figures above are reconciled and are **not added camera totals**.
 
-### Floor-service coverage
+## Service responsiveness
 
-During the busy late-night period, typically **1–2 visibly active service staff** were present on the dining floor at the same time. The observed concurrent peak was approximately **3**.
+Clear table-service actions were repeatedly visible through the busy period, so service presence was evident. The available sequence does **not** support a defensible waiter/staff headcount, shift attendance figure, or productivity measure.
 
-This does **not** mean only three waiters worked the shift. It measures how many people were visibly engaged in floor-service activity at the same moment.
+For the one qualifying table sequence:
 
-### Customer wait and food timing
+| Measure | Observed range | Qualifying sessions |
+| --- | ---: | ---: |
+| Seating → first visible table-service interaction | **~5–15 min** | **1** |
+| Seating → first clearly visible served items | **~15–30 min** | **1** |
+| Exact order placed → food delivered | **Unknown** | — |
+| Day-wide service average / median | **Unknown** | — |
 
-The current evidence supports coarse multi-minute ranges for selected clearly traceable table sessions, but it does not establish order placement precisely enough to calculate a trustworthy shift-wide average.
+The exact order-placement moment is not reliably observable, so the report does not convert these ranges into order wait, kitchen ticket time, or an average for the day.
 
-For one cleanly traceable session:
-
-- first visible service interaction: **~5–15 minutes after seating**
-- first clearly visible served items: **~15–30 minutes after seating**
-
-A true **order placed → food delivered average** is therefore **Unknown** for this service day rather than estimated.
-
-## Business operations
-
-### Dining floor
-
-Trade built gradually through the evening and accelerated after about 9:15 PM. The strongest sustained activity was from around midnight to 2:10 AM.
-
-The peak was broad rather than isolated to one party: several table groups were active at once across the outdoor floor.
+## Kitchen / handoff / counter
 
 ### Shop Front / handoff
-
-The handoff point remained intermittently active well into the late service period without a sustained visible queue.
-
-The shutter was being lowered around **2:43 AM** and was fully closed by about **2:48 AM**.
+The handoff point remained intermittently active through late trade. The shutter was being lowered around **2:43 AM** and was fully closed by about **2:48 AM**.
 
 ### Kitchen
-
-Kitchen activity remained meaningful through the late-night peak and after midnight, then shifted progressively into cleanup and storage during close-down.
-
-No obvious smoke/flame emergency or visible accident was identified in the represented period.
+Back-of-house activity continued through the late-demand period, then shifted progressively toward cleanup and storage after about **2:30 AM**. No obvious smoke/flame emergency or visible accident was identified in the represented period.
 
 ### Cash counter
+The counter was visibly occupied through much of the represented trade. Two consecutive observations around **7:09 PM** and **7:14 PM** showed it unattended; the available sequence does not establish continuous absence between those observations.
 
-The counter remained regularly active throughout the represented service period and continued to show activity deep into the closing sequence.
+No sales, revenue or transaction totals are inferred.
 
-Sales, revenue and transaction totals cannot be determined from this view.
+## Closing discipline
+
+Close-down materially overlapped with remaining dining activity:
+
+- furniture consolidation began around **2:15–2:20 AM**;
+- customer-facing capacity reduced progressively afterward;
+- the Shop Front was fully shuttered around **2:48 AM**;
+- a small seated party remained visible until about **3:03 AM**.
+
+This establishes an overlap between shutdown activity and remaining diners; it does not establish lost sales.
 
 ## Security & control
 
-- Both office views remained visibly empty throughout the represented service period.
-- Rear access activity appeared routine.
-- Chair stacks narrowed the rear/service passage around **2:30–2:50 AM**, before the route was substantially clear again by about **2:54 AM**.
+- Both office views remained visibly empty throughout the represented period.
+- Rear/service access was otherwise routine.
+- Chair stacks temporarily narrowed the rear/service passage from about **2:20 AM** until roughly **2:55 AM**, most materially around **2:30–2:50 AM**.
 - No obvious visible kitchen emergency was identified.
 
-## Top actions
+## Top 3 management actions
 
-1. **Protect the midnight–2:10 AM peak.** Keep table capacity and floor-service readiness strongest through this sustained demand window.
-2. **Introduce defensible table-service timing.** Future reporting should measure seating → first service contact → order confirmation → first served item at higher temporal resolution.
-3. **Keep the rear access route clear during shutdown.** Use a defined storage zone instead of staging chair stacks through the usable passage.
+1. **Stage close-down around remaining diners.** Delay major capacity reduction and frontage shutdown until the last seated parties have left, or keep a clearly defined service zone open for them.
+2. **Protect and measure service through the midnight peak.** Keep table-service attention strongest from **12:00–2:10 AM** and use a repeatable table-timing check so future reports can compare more than one session.
+3. **Keep the rear/service route clear during shutdown.** Move chair stacks to a defined storage zone rather than staging them through the usable passage.
 
-## Additional improvement
+## Visibility / truth notes
 
-Align frontage close-down with actual remaining dining activity. On this service day, the Shop Front was fully closed around **2:48 AM** while a small seated party remained until about **3:03 AM**.
+The configured service day is **4:00 PM–4:00 AM**. Coverage was approximately **80%**.
 
-## Visibility note
-
-The configured service day is **4:00 PM–4:00 AM**. Coverage for this service day was approximately **80%**.
-
-The opening period was not continuously represented, including a gap after an isolated dining observation around 5:11 PM, and activity after about 3:23 AM through 4:00 AM remains unknown.
-
-Visible diner and service-staff figures are simultaneous visible occupancy/activity estimates. They are not unique customer footfall or unique staff attendance.
+- clean continuous represented evidence begins around **5:48 PM**; activity before then remains **Unknown**;
+- activity after about **3:23 AM** through **4:00 AM** remains **Unknown**;
+- bright decorative lighting reduces confidence in exact diner/table counts in part of one dining view;
+- visible diners are simultaneous visible occupancy, not unique customers, footfall, orders or POS covers;
+- table utilization %, total table sessions, day-wide dwell statistics and demand-linked service slowdown remain unavailable because the day does not contain enough defensibly traceable table-session transitions.
