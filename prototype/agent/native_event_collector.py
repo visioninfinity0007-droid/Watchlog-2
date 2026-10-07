@@ -21,6 +21,7 @@ import nvr_health
 import periodic_stills
 import recorder_restart
 import server_capture
+import worker_supervisor
 from drivers import DriverError
 
 # A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
@@ -133,6 +134,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
     # recorder restart (positive evidence only).
     uptime_watch = recorder_restart.UptimeWatch()
     while not stop.is_set():
+        worker_supervisor.tick()
         driver = None
         reports_stream = None
         events = None

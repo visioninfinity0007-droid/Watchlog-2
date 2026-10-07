@@ -22,6 +22,7 @@ import requests
 
 import recovery_ai
 import watchlog_agent as core
+import worker_supervisor
 import recorder_registry
 import recorder_runtime
 from drivers import DriverError, NvrDriver
@@ -479,6 +480,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
     held = _RegistryHold("incident footage")
     try:
         while not stop.is_set():
+            worker_supervisor.tick()
             if held.holding(cfg):
                 stop.wait(POLL_SECONDS)
                 continue
@@ -498,6 +500,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                     p_limit=1,
                 ) or []
                 missing_backend_logged = False
+                worker_supervisor.success()
             except (RuntimeError, requests.RequestException) as error:
                 if _backend_missing(error):
                     if not missing_backend_logged:
@@ -507,6 +510,7 @@ def footage_worker(cfg, state: dict, stop: threading.Event) -> None:
                 else:
                     core.log("incident footage: request poll failed; will retry: "
                              + str(error).splitlines()[0][:160])
+                    worker_supervisor.record_error(error)
                     stop.wait(POLL_SECONDS)
                 continue
 
@@ -639,6 +643,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
     held = _RegistryHold("incident stills")
     try:
         while not stop.is_set():
+            worker_supervisor.tick()
             if held.holding(cfg):
                 stop.wait(STILL_POLL_SECONDS)
                 continue
@@ -657,6 +662,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                     p_agent_id=state["agent_id"], p_agent_key=state["agent_key"], p_limit=1,
                 ) or []
                 missing_backend_logged = False
+                worker_supervisor.success()
             except (RuntimeError, requests.RequestException) as error:
                 if _still_backend_missing(error):
                     if not missing_backend_logged:
@@ -666,6 +672,7 @@ def stills_worker(cfg, state: dict, stop: threading.Event) -> None:
                 else:
                     core.log("incident stills: claim failed; will retry: "
                              + str(error).splitlines()[0][:160])
+                    worker_supervisor.record_error(error)
                     stop.wait(STILL_POLL_SECONDS)
                 continue
 
@@ -691,11 +698,14 @@ def wrap_cmd_run(original):
         # Before any claim: a registry site's jobs never fall back to the legacy recorder.
         recorder_runtime.mark_registry_required(cfg)
         stop = threading.Event()
+        # Supervised (5.1.2): restarted with backoff if they die, reported to the cloud.
         workers = [
-            threading.Thread(target=footage_worker, args=(cfg, state, stop),
-                             daemon=True, name="incident-footage"),
-            threading.Thread(target=stills_worker, args=(cfg, state, stop),
-                             daemon=True, name="incident-stills"),
+            worker_supervisor.supervised("incident_footage", footage_worker,
+                                         args=(cfg, state, stop), cfg=cfg, stop=stop,
+                                         name="incident-footage"),
+            worker_supervisor.supervised("incident_stills", stills_worker,
+                                         args=(cfg, state, stop), cfg=cfg, stop=stop,
+                                         name="incident-stills"),
         ]
         for worker in workers:
             worker.start()

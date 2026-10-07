@@ -55,12 +55,21 @@ def defer(cfg, state: dict, cloud, open_fn: Callable, *, recorder_id: str | None
     wait = CAPABILITY_SYNC_DELAY_SECONDS if delay is None else float(delay)
     stop = stop or threading.Event()
 
-    def run() -> None:
-        if stop.wait(wait):
+    def run(stop_event) -> None:
+        import worker_supervisor
+        worker_supervisor.tick()
+        if stop_event.wait(wait):
             return
-        sync_once(cfg, state, cloud, open_fn, recorder_id=recorder_id, log=log)
+        if sync_once(cfg, state, cloud, open_fn, recorder_id=recorder_id, log=log):
+            worker_supervisor.success()
+        worker_supervisor.complete()
 
+    import worker_supervisor
     name = f"capability-sync-{str(recorder_id)[:8]}" if recorder_id else "capability-sync"
-    thread = threading.Thread(target=run, daemon=True, name=name)
+    # A one-shot supervised worker: reported running while it waits, completed once done.
+    thread = worker_supervisor.supervised(
+        "capability_sync", run, args=(stop,), cfg=cfg, stop=stop, name=name,
+        recorder_local_id=getattr(cfg, "recorder_local_id", None) or recorder_id,
+        recorder_id=recorder_id)
     thread.start()
     return thread

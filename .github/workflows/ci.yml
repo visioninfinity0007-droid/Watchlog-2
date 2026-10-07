@@ -58,6 +58,8 @@ jobs:
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
       - name: Multi-recorder Agent with the 5.0.28 live-site fixes (worker survival, last_live, stream liveness, recovery claims, redaction, singleton worker survival, recovery RPC contract, per-recorder periodic stills and ONVIF stream reporting)
         run: python -m pytest prototype/tests/test_fanout_stream_last_live.py prototype/tests/test_health_worker_survival.py prototype/tests/test_recorder_recovery_rules.py prototype/tests/test_incident_routed_recorder_redaction.py prototype/tests/test_fanout_recovery_worker_survival.py prototype/tests/test_fanout_quiet_stream_liveness.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_recorder_release.py prototype/tests/test_fanout_periodic_stills.py prototype/tests/test_fanout_onvif_stream_liveness.py -q
+      - name: Agent 5.1.2 worker supervision and runtime status (restart with backoff, stall detection, failed after the hourly budget, one-shots completed, recorder-scoped isolation, capabilities independent of analytics, redacted bounded runtime payload, 0162 SQL contract)
+        run: python -m pytest prototype/tests/test_worker_supervisor.py prototype/tests/test_agent_runtime_status.py -q
       - name: Multi-recorder registry trust, same-site reinstall, secondary disable, single-recorder job routing, claimed-command completion
         run: python -m pytest prototype/tests/test_registry_trust.py prototype/tests/test_recorder_registry_reinstall.py prototype/tests/test_disable_secondary_runtime.py prototype/tests/test_single_recorder_job_routing.py prototype/tests/test_claimed_command_completion.py -q
       - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write, busy registry during binding, address-swap identity refusal, channel-keyed analytics profile)
@@ -616,6 +618,8 @@ jobs:
         run: python prototype/tests/e2e_viewer_rpcs_tenant_scope_pg.py
       - name: Recording and storage truth - disk inventory RPC auth, recorder recording rollup, old Agent signatures (0161)
         run: python prototype/tests/e2e_recording_storage_truth_pg.py
+      - name: Agent runtime status — key-authenticated report, rejected rows, replace semantics, bounds, tenant-scoped read, freshness (0162)
+        run: python prototype/tests/e2e_agent_runtime_status_pg.py
       - name: In-flight evidence after an Agent restart — 0142 lease, startup release, server-side still lease (0150, MNVR-033)
         run: python prototype/tests/e2e_multi_recorder_evidence_lease_pg.py
       - name: Multi-recorder analytics — recorder attribution and final contract (0151+)

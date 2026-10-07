@@ -57,6 +57,10 @@ SNAPSHOT_MIN_INTERVAL = 60
 # stills would be a ~40 MB request.
 UPLOAD_MAX_BYTES = 4_000_000
 
+# Wall times of this process's last cloud-accepted event upload and heartbeat, reported to
+# the cloud as runtime status (5.1.2, migration 0162). None until one succeeds in this run.
+CLOUD_PROOF: dict = {"upload_ok_at": None, "heartbeat_ok_at": None}
+
 
 # --- helpers -----------------------------------------------------------
 
@@ -673,9 +677,12 @@ def upload_once(cloud: Cloud, state: dict, spool) -> int:
             raise                       # identity, server or transport: retry the batch later
         # One undeliverable row must not hold every event behind it forever: isolate the
         # rejected rows, keep them aside locally, deliver the rest.
-        return _upload_isolating(cloud, state, spool, ids, events)
+        inserted = _upload_isolating(cloud, state, spool, ids, events)
+        CLOUD_PROOF["upload_ok_at"] = now_utc()
+        return inserted
     # Only acknowledge after the server has committed.
     spool.ack(ids)
+    CLOUD_PROOF["upload_ok_at"] = now_utc()
     shots = res.get("snapshots") or 0
     log(f"uploaded {res['received']}: {res['inserted']} new, "
         f"{res['skipped']} already stored"
@@ -713,6 +720,7 @@ def heartbeat(cloud: Cloud, state: dict, device, *, recorder_live: bool | None =
                p_device_vendor=device.vendor if device else None,
                p_device_model=device.model if device else None,
                p_device_driver=device.driver if device else None)
+    CLOUD_PROOF["heartbeat_ok_at"] = now_utc()
     stamp = iso(now_utc())
     # The device object is startup identity and may remain populated long after a
     # recorder disconnects. Repair/Upgrade health proof must advance recorder_seen_at

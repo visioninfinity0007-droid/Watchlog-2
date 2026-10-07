@@ -48,6 +48,7 @@ import requests
 import nvr_health
 import server_capture
 import watchlog_agent as core
+import worker_supervisor
 from drivers import DriverError
 from drivers.base import Event, NvrAuthFailed, NvrUnreachable
 
@@ -489,11 +490,14 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
     settings = load_settings(cfg)
     if not settings["enabled"]:
         log("disabled by configuration")
+        worker_supervisor.disable("periodic stills are off in this configuration")
         return
     if not str(getattr(cfg, "nvr_url", "") or "").strip():
+        worker_supervisor.disable("no recorder address configured")
         return
     if samples_in_stream(cfg):
         log("stills come from the live event stream on its own session; no second session")
+        worker_supervisor.complete("stills are taken in the live event stream")
         return
     opener = open_driver or core.open_driver
     wall = wall or core.now_utc
@@ -516,6 +520,7 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
 
     try:
         while not stop.is_set():
+            worker_supervisor.tick()
             now = clock()
             try:
                 if now < backoff.until:
@@ -547,6 +552,7 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                             "no second session")
                         _close(driver)
                         driver = None
+                        worker_supervisor.complete("stills are taken in the live event stream")
                         return
                     vendor = vendor_family(driver)
                     credential_gen = core._credential_generation(cfg)
@@ -648,6 +654,7 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                 # the no-registry path keeps the 5.0.28 row exactly.
                 event = event.with_recorder_id(getattr(cfg, "recorder_cloud_id", None))
                 spool.add(event.to_json(wall()))
+                worker_supervisor.success()
                 dropped = spool.trim()
                 if dropped:
                     core.log(f"WARNING: spool over capacity, dropped {dropped} oldest events")
