@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -1370,6 +1371,96 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
             "if it persists, contact WatchLog support.")
     _setup_log(f"camera sync ok site={identity.get('site_id')} cameras={len(wanted)} (site total {len(mapping)})")
     return mapping
+
+
+AGENT_TASK_NAME = "WatchLog Agent"
+
+# Stop the scheduled task, then any watchlog-agent.exe running from THIS install (never a
+# same-named process elsewhere), exactly like register-service.ps1. Prints how many Agent
+# processes were running so Setup knows whether to start it again if it ends unfinished.
+_PAUSE_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$want = [System.IO.Path]::GetFullPath((Join-Path $env:WL_INSTALL_DIR 'watchlog-agent.exe'))
+$running = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
+  Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) })
+$task = Get-ScheduledTask -TaskName $env:WL_TASK
+if ($task) { Stop-ScheduledTask -TaskName $env:WL_TASK; Start-Sleep -Milliseconds 500 }
+$running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Write-Output ("WL_PAUSED running=" + $running.Count + " task=" + [bool]$task)
+"""
+
+
+def _powershell() -> str:
+    return str(Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
+               / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
+def pause_background_agent(install_dir: Path | None = None, timeout: int = 30, _run=None) -> dict:
+    """Stop a running background Agent before Setup tests the recorder login or enrolls.
+
+    Field defect (HASCO, Hikvision DS-7608NI-Q1, 2026-10-07): the upgrade stage had restarted
+    the Agent, so it held the recorder's live event session while Setup tested the login (30 s
+    timeouts, "went through after many tests") and enrolled a new identity, which then could
+    not prove itself and was rolled back. One process may talk to the recorder at a time.
+    Setup restarts the Agent itself: finalize through ensure_background_agent, an unfinished
+    Setup through resume_background_agent. Never raises.
+    {"paused": bool, "was_running": bool, "detail": str}"""
+    if os.name != "nt":
+        return {"paused": False, "was_running": False, "detail": "Windows-only"}
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    # The child inherits these two (paths are never spliced into the script text).
+    saved = {k: os.environ.get(k) for k in ("WL_INSTALL_DIR", "WL_TASK")}
+    os.environ["WL_INSTALL_DIR"], os.environ["WL_TASK"] = str(base), AGENT_TASK_NAME
+    try:
+        code, out = runner([_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                            "Bypass", "-Command", _PAUSE_SCRIPT], timeout)
+    except Exception as exc:  # noqa: BLE001 - never block Setup on this
+        return {"paused": False, "was_running": False,
+                "detail": f"could not stop the running Agent ({type(exc).__name__})"}
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    match = re.search(r"WL_PAUSED running=(\d+) task=(True|False)", out or "")
+    if code != 0 or not match:
+        return {"paused": False, "was_running": False,
+                "detail": f"stopping the running Agent exited {code}"}
+    running = int(match.group(1)) > 0
+    _setup_log(f"background agent paused for setup (was_running={running}, "
+               f"task={match.group(2)})")
+    return {"paused": True, "was_running": running or match.group(2) == "True",
+            "detail": "the running Agent was stopped for setup" if running
+            else "no Agent was running"}
+
+
+def resume_background_agent(timeout: int = 30, _run=None) -> dict:
+    """Start the existing scheduled Agent again after a Setup that did not finish, so the
+    site keeps the monitoring it had before. Never raises. {"resumed": bool, "detail": str}"""
+    if os.name != "nt":
+        return {"resumed": False, "detail": "Windows-only"}
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    schtasks = str(Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32" / "schtasks.exe")
+    try:
+        code, _out = runner([schtasks, "/Run", "/TN", AGENT_TASK_NAME], timeout)
+    except Exception as exc:  # noqa: BLE001
+        return {"resumed": False, "detail": f"could not restart the Agent ({type(exc).__name__})"}
+    _setup_log(f"background agent resumed after an unfinished setup (exit {code})")
+    return {"resumed": code == 0,
+            "detail": "the previous Agent is running again" if code == 0
+            else f"restarting the previous Agent exited {code}"}
 
 
 def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,

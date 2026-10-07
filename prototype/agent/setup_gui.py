@@ -177,6 +177,8 @@ class SetupWindow(QMainWindow):
         self.install_recorders: list[dict] = []
         self.final_result = None
         self._busy = False
+        # A running background Agent is paused for this Setup run (resumed if it ends unfinished).
+        self._agent_paused = False
         # Worker generation lets the UI abandon a timed-out recorder login safely.
         # A late result from the abandoned thread is ignored instead of jumping pages
         # minutes later after the technician has retried.
@@ -810,8 +812,15 @@ class SetupWindow(QMainWindow):
         # The backend normally finishes well before this. Keep 30 seconds as a last-resort
         # UI watchdog; Builds 70/71 cut this to 24/22 seconds and turned the Build-69
         # intermittent Dahua path into a repeatable false timeout.
+        # One process may talk to the recorder at a time (HASCO, Hikvision DS-7608NI-Q1):
+        # stop a running Agent before the first login test of this Setup run. Manage
+        # Recorders tests a login while the site keeps monitoring, so it never pauses.
+        test_fn = backend.test_recorder
+        if not self.manage_recorders and not self._agent_paused:
+            self._agent_paused = True
+            test_fn = _test_with_agent_paused
         self.run_worker(
-            backend.test_recorder, (address, user, password), self.connection_ok,
+            test_fn, (address, user, password), self.connection_ok,
             "Testing the recorder connection…", hint=self.recorder_hint,
             timeout_ms=30000,
             timeout_message=("The recorder login check reached the 30-second safety limit. "
@@ -1320,7 +1329,19 @@ class SetupWindow(QMainWindow):
         self.exit_code = 0 if getattr(self, "site_connected", False) else 1
         self.close()
 
+    def _resume_agent_if_unfinished(self) -> None:
+        # Setup paused the running Agent and the site did not connect: start the previous
+        # Agent again so the site keeps the monitoring it had. A connected site's Agent was
+        # (re)started by finalize itself.
+        if self._agent_paused and not getattr(self, "site_connected", False):
+            self._agent_paused = False
+            try:
+                backend.resume_background_agent()
+            except Exception:  # noqa: BLE001 - closing Setup must never fail
+                pass
+
     def closeEvent(self, event: QCloseEvent):
+        self._resume_agent_if_unfinished()
         # The window X / Alt+F4 does NOT go through cancel(), so it kept the exit_code=1
         # default even on a fully connected site. NSIS treats non-zero as a failed install
         # and Aborts, skipping WriteUninstaller and the Add/Remove Programs keys -- which is
@@ -1330,6 +1351,11 @@ class SetupWindow(QMainWindow):
         if getattr(self, "site_connected", False) and self.exit_code != 0:
             self.exit_code = 0
         event.accept()
+
+
+def _test_with_agent_paused(address: str, username: str, password: str):
+    backend.pause_background_agent()
+    return backend.test_recorder(address, username, password)
 
 
 def _emit_line(line: str) -> None:
