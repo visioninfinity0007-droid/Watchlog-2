@@ -70,6 +70,8 @@ export default function useReport(){
   const[restaurant,setRestaurant]=useState(null);
   const[restaurantSecurity,setRestaurantSecurity]=useState(null);
   const[restaurantPeriod,setRestaurantPeriod]=useState(null);
+  const[restaurantBusiness,setRestaurantBusiness]=useState(null);
+  const[restaurantBusinessPeriod,setRestaurantBusinessPeriod]=useState(null);
   const[restaurantConfig,setRestaurantConfig]=useState(null);
   const[officeDay,setOfficeDay]=useState(null);
   const[officePeriod,setOfficePeriod]=useState(null);
@@ -119,7 +121,7 @@ export default function useReport(){
     if(!siteId)return;
     let live=true;
     (async()=>{
-      setBusy(true);setAnswer("");setSnapshot(null);setReportWindow(null);setRestaurant(null);setRestaurantSecurity(null);setRestaurantPeriod(null);setOfficeDay(null);setOfficePeriod(null);setError("");
+      setBusy(true);setAnswer("");setSnapshot(null);setReportWindow(null);setRestaurant(null);setRestaurantSecurity(null);setRestaurantPeriod(null);setRestaurantBusiness(null);setRestaurantBusinessPeriod(null);setOfficeDay(null);setOfficePeriod(null);setError("");
       const sb=supabase();
       const [cfg,ctx,aiCtx]=await Promise.all([
         sb.rpc("wl_restaurant_site_config",{p_site_id:siteId}),
@@ -135,7 +137,7 @@ export default function useReport(){
       setSiteAi(!aiCtx.error?(aiCtx.data||null):null);
       // One registry selects the profile and composer for every site type, restaurant included.
       const selected=selectSiteProfile({restaurantConfig:config,contextType:context?.site_type,studioType:site?.site_type});
-      const chaiLayout=selected.composer==="restaurant"&&config?.report_layout_profile==="chaiwala_restaurant_ops_v1";
+      const restaurantLayout=selected.composer==="restaurant";
       const businessType=selected.composer==="business"?selected.key:null;
       const officeEnabled=Boolean(businessType);
       // A period source that is not available yet (e.g. wl_site_period before its migration) is "not
@@ -173,17 +175,16 @@ export default function useReport(){
         return;
       }
 
-      if(chaiLayout&&view==="week"){
+      if(restaurantLayout&&view==="week"){
         const structured=savedWindow?.structured_restaurant_metrics||null;
-        if(structured){
-          setRestaurantPeriod(structured);
-          setBusy(false);
-          return;
-        }
-        const period=await sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:7,p_end_date:null});
+        const [period,businessPeriod]=await Promise.all([
+          structured?Promise.resolve({data:structured,error:null}):sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:7,p_end_date:null}),
+          sb.rpc("wl_restaurant_business_period",{p_site_id:siteId,p_days:7,p_end_date:null})
+        ]);
         if(!live)return;
         if(period.error){setBusy(false);setError(say(period.error));return}
         setRestaurantPeriod(period.data||null);
+        if(!businessPeriod.error)setRestaurantBusinessPeriod(businessPeriod.data||null);
         setBusy(false);
         return;
       }
@@ -201,17 +202,16 @@ export default function useReport(){
         return;
       }
 
-      if(chaiLayout&&view==="monthly"){
+      if(restaurantLayout&&view==="monthly"){
         const structured=savedWindow?.structured_restaurant_metrics||null;
-        if(structured){
-          setRestaurantPeriod(structured);
-          setBusy(false);
-          return;
-        }
-        const period=await sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:30,p_end_date:null});
+        const [period,businessPeriod]=await Promise.all([
+          structured?Promise.resolve({data:structured,error:null}):sb.rpc("wl_restaurant_period",{p_site_id:siteId,p_days:30,p_end_date:null}),
+          sb.rpc("wl_restaurant_business_period",{p_site_id:siteId,p_days:30,p_end_date:null})
+        ]);
         if(!live)return;
         if(period.error){setBusy(false);setError(say(period.error));return}
         setRestaurantPeriod(period.data||null);
+        if(!businessPeriod.error)setRestaurantBusinessPeriod(businessPeriod.data||null);
         setBusy(false);
         return;
       }
@@ -224,12 +224,14 @@ export default function useReport(){
           if(!resolved.error&&resolved.data)date=String(resolved.data);
         }
         if(restaurantEnabled){
-          const [rr,securityDay]=await Promise.all([
+          const [rr,securityDay,businessDay]=await Promise.all([
             sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:date}),
-            sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:date})
+            sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:date}),
+            sb.rpc("wl_restaurant_business_day",{p_site_id:siteId,p_date:date})
           ]);
           if(!live)return;
           if(!rr.error)rest=rr.data||null;
+          if(!businessDay.error)setRestaurantBusiness(businessDay.data||null);
           if(!securityDay.error){
             const d=securityDay.data||{};
             setRestaurantSecurity({incidents:d.incidents||[],attention:d.attention||{},coverage:d.coverage||{}});
@@ -245,7 +247,7 @@ export default function useReport(){
         if(!live)return;
         if(!report.error)setSnapshot(report.data||null);
         setRestaurant(report.data?(report.data?.payload?.restaurant||rest):rest);
-        if(chaiLayout){
+        if(restaurantLayout){
           setBusy(false);
           return;
         }
@@ -272,14 +274,16 @@ export default function useReport(){
         return;
       }
 
-      if(chaiLayout&&view==="daily"){
-        const [rr,securityDay]=await Promise.all([
+      if(restaurantLayout&&view==="daily"){
+        const [rr,securityDay,businessDay]=await Promise.all([
           sb.rpc("wl_restaurant_day",{p_site_id:siteId,p_date:null}),
-          sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:null})
+          sb.rpc("wl_my_daily_intelligence",{p_site_id:siteId,p_date:null}),
+          sb.rpc("wl_restaurant_business_day",{p_site_id:siteId,p_date:null})
         ]);
         if(!live)return;
         if(rr.error){setBusy(false);setError(say(rr.error));return}
         setRestaurant(rr.data||null);
+        if(!businessDay.error)setRestaurantBusiness(businessDay.data||null);
         if(!securityDay.error){
           const d=securityDay.data||{};
           setRestaurantSecurity({incidents:d.incidents||[],attention:d.attention||{},coverage:d.coverage||{}});
@@ -299,9 +303,11 @@ export default function useReport(){
   },[siteId,site?.timezone,view,requestedReportDate]);
 
   const profile=selectSiteProfile({restaurantConfig,contextType:siteContext?.site_type,studioType:site?.site_type});
-  const isChaiWalaRestaurant=profile.composer==="restaurant"&&restaurantConfig?.report_layout_profile==="chaiwala_restaurant_ops_v1";
+  const isRestaurant=profile.composer==="restaurant";
+  // Backward-compatible alias while customer-workspace transitions to the site-type name.
+  const isChaiWalaRestaurant=isRestaurant;
   // isOffice: the site uses the office-model working-day reports (office, warehouse, factory, retail).
   const siteType=profile.key;
   const isOffice=profile.composer==="business";
-  return{siteType,profile,siteAi,email,siteId,site,view,setView:selectView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantSecurity,restaurantPeriod,restaurantConfig,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
+  return{siteType,profile,siteAi,email,siteId,site,view,setView:selectView,requestedReportDate,answer,snapshot,reportWindow,restaurant,restaurantSecurity,restaurantPeriod,restaurantBusiness,restaurantBusinessPeriod,restaurantConfig,isRestaurant,isChaiWalaRestaurant,officeDay,officePeriod,siteContext,isOffice,busy,error};
 }

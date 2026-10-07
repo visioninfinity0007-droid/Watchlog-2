@@ -41,7 +41,7 @@ WORKER_ID = os.getenv("WORKER_ID", socket.gethostname())[:120]
 BATCH_SIZE = max(1, min(16, int(os.getenv("VISION_BATCH_SIZE", "4"))))
 POLL_SECONDS = max(1, int(os.getenv("VISION_POLL_SECONDS", "5")))
 AUTO_PULL = os.getenv("VISION_AUTO_PULL", "true").lower() in ("1", "true", "yes", "on")
-ANALYSIS_VERSION = "snapshot-vision-v2-context"
+ANALYSIS_VERSION = "snapshot-vision-v3-restaurant"
 SUMMARY_VERSION = "visual-day-v2-context"
 PORT = int(os.getenv("PORT", "8640"))
 MEDIA_ENDPOINT = os.getenv("MEDIA_ENDPOINT", "http://minio:9000").rstrip("/")
@@ -159,6 +159,58 @@ SNAPSHOT_SCHEMA = {
                 "safety_reason": {"type": "string"},
                 "visible_smoke_or_flame": {"type": "boolean"},
                 "visible_fall_or_accident": {"type": "boolean"}
+            }
+        },
+        "restaurant": {
+            "type": "object",
+            "properties": {
+                "schema_version": {"type": "string"},
+                "visible_customers": {"type": "integer", "minimum": 0},
+                "staff_count": {"type": "integer", "minimum": 0},
+                "occupied_tables": {"type": "integer", "minimum": 0},
+                "served_tables": {"type": "integer", "minimum": 0},
+                "service_interaction_observed": {"type": "boolean"},
+                "kitchen_load": {"type": "number", "minimum": 0, "maximum": 1},
+                "handoff_load": {"type": "number", "minimum": 0, "maximum": 1},
+                "counter_active": {"type": "boolean"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "tables": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "table_key": {"type": "string"},
+                            "occupied": {"type": "boolean"},
+                            "customer_count": {"type": "integer", "minimum": 0},
+                            "food_present": {"type": "boolean"},
+                            "drinks_present": {"type": "boolean"},
+                            "service_interaction_observed": {"type": "boolean"},
+                            "staff_present": {"type": "boolean"},
+                            "clearing_state": {"type": "boolean"},
+                            "combined_group": {"type": "string"},
+                            "visibility_quality": {"type": "number", "minimum": 0, "maximum": 1},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                        },
+                        "required": ["table_key"]
+                    }
+                },
+                "analytics_quality": {
+                    "type": "object",
+                    "properties": {
+                        "visibility_quality": {"type": "number", "minimum": 0, "maximum": 1},
+                        "people_count_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "table_tracking_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "glare_level": {"type": "number", "minimum": 0, "maximum": 1},
+                        "overexposure_level": {"type": "number", "minimum": 0, "maximum": 1},
+                        "occlusion_level": {"type": "number", "minimum": 0, "maximum": 1},
+                        "obstruction_level": {"type": "number", "minimum": 0, "maximum": 1},
+                        "camera_angle_adequacy": {"type": "number", "minimum": 0, "maximum": 1},
+                        "lighting_uniformity": {"type": "number", "minimum": 0, "maximum": 1},
+                        "issues": {"type": "array", "items": {"type": "string"}},
+                        "blocked_regions": {"type": "array", "items": {"type": "string"}},
+                        "recommended_actions": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
             }
         },
         "quality": {"type": "string", "enum": ["usable", "partly_obscured", "dark", "blurred", "unusable"]}
@@ -338,6 +390,112 @@ def _business_context(job: dict) -> tuple[dict, dict]:
     return ctx, per_camera
 
 
+def _as_int(value):
+    try:
+        n = int(value)
+        return n if n >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_bool(value):
+    if value is True or value is False:
+        return value
+    if isinstance(value, str) and value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    return None
+
+
+def _as_01(value):
+    try:
+        n = float(value)
+        return n if 0 <= n <= 1 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_text(value, limit=220):
+    text = str(value or "").strip()
+    return text[:limit] if text else None
+
+
+def _normalize_restaurant(result: dict, ctx: dict) -> None:
+    analytics = ctx.get("restaurant_analytics") or {}
+    if analytics.get("enabled") is not True:
+        result.pop("restaurant", None)
+        return
+
+    raw = result.get("restaurant") if isinstance(result.get("restaurant"), dict) else {}
+    camera_role = str(analytics.get("camera_role") or "")
+    supplied = raw.get("tables") if isinstance(raw.get("tables"), list) else []
+    supplied_by_key = {
+        str(row.get("table_key")): row for row in supplied
+        if isinstance(row, dict) and row.get("table_key")
+    }
+
+    tables = []
+    configured = analytics.get("tables") if isinstance(analytics.get("tables"), list) else []
+    if camera_role == "dining_floor":
+        for cfg in configured:
+            if not isinstance(cfg, dict):
+                continue
+            key = str(cfg.get("table_key") or "")
+            if not key:
+                continue
+            row = supplied_by_key.get(key) or {}
+            service_action = _as_bool(row.get("service_interaction_observed"))
+            if service_action is None:
+                # Compatibility with the existing DB column: this field means a visibly
+                # defensible table-service action, never inferred employment/attendance.
+                service_action = _as_bool(row.get("staff_present"))
+            tables.append({
+                "table_key": key,
+                "occupied": _as_bool(row.get("occupied")),
+                "customer_count": _as_int(row.get("customer_count")),
+                "food_present": _as_bool(row.get("food_present")),
+                "drinks_present": _as_bool(row.get("drinks_present")),
+                "service_interaction_observed": service_action,
+                "staff_present": service_action,
+                "clearing_state": _as_bool(row.get("clearing_state")),
+                "combined_group": _clean_text(row.get("combined_group"), 80),
+                "visibility_quality": _as_01(row.get("visibility_quality")),
+                "confidence": _as_01(row.get("confidence")),
+            })
+
+    quality = raw.get("analytics_quality") if isinstance(raw.get("analytics_quality"), dict) else {}
+    service_seen = _as_bool(raw.get("service_interaction_observed"))
+    if service_seen is None and camera_role == "dining_floor":
+        service_seen = any(row.get("service_interaction_observed") is True for row in tables)
+
+    result["restaurant"] = {
+        "schema_version": "restaurant-vision-v3",
+        "visible_customers": _as_int(raw.get("visible_customers")) if camera_role == "dining_floor" else None,
+        "staff_count": _as_int(raw.get("staff_count")),
+        "occupied_tables": _as_int(raw.get("occupied_tables")) if camera_role == "dining_floor" else None,
+        "served_tables": _as_int(raw.get("served_tables")) if camera_role == "dining_floor" else None,
+        "service_interaction_observed": service_seen,
+        "kitchen_load": _as_01(raw.get("kitchen_load")) if camera_role == "kitchen" else None,
+        "handoff_load": _as_01(raw.get("handoff_load")) if camera_role == "service_handoff" else None,
+        "counter_active": _as_bool(raw.get("counter_active")) if camera_role == "cash_counter" else None,
+        "confidence": _as_01(raw.get("confidence")),
+        "analytics_quality": {
+            "visibility_quality": _as_01(quality.get("visibility_quality")),
+            "people_count_confidence": _as_01(quality.get("people_count_confidence")) if camera_role == "dining_floor" else None,
+            "table_tracking_confidence": _as_01(quality.get("table_tracking_confidence")) if camera_role == "dining_floor" else None,
+            "glare_level": _as_01(quality.get("glare_level")),
+            "overexposure_level": _as_01(quality.get("overexposure_level")),
+            "occlusion_level": _as_01(quality.get("occlusion_level")),
+            "obstruction_level": _as_01(quality.get("obstruction_level")),
+            "camera_angle_adequacy": _as_01(quality.get("camera_angle_adequacy")),
+            "lighting_uniformity": _as_01(quality.get("lighting_uniformity")),
+            "issues": [_clean_text(x, 180) for x in (quality.get("issues") or [])[:8] if _clean_text(x, 180)],
+            "blocked_regions": [_clean_text(x, 180) for x in (quality.get("blocked_regions") or [])[:8] if _clean_text(x, 180)],
+            "recommended_actions": [_clean_text(x, 220) for x in (quality.get("recommended_actions") or [])[:8] if _clean_text(x, 220)],
+        },
+        "tables": tables,
+    }
+
+
 def analyze_snapshot(job: dict) -> dict:
     camera = job.get("camera") or "camera"
     purpose = str(job.get("camera_purpose") or "general")
@@ -348,6 +506,28 @@ def analyze_snapshot(job: dict) -> dict:
     safety_note = str(per_camera.get("safety_note") or "")
     ai_note = str(ctx.get("ai_context_note") or "")
     watch_text = "; ".join(str(x) for x in watch_for[:12]) or "routine activity and meaningful exceptions"
+    restaurant = ctx.get("restaurant_analytics") or {}
+    restaurant_enabled = restaurant.get("enabled") is True
+    restaurant_role = str(restaurant.get("camera_role") or "")
+    restaurant_tables = restaurant.get("tables") if isinstance(restaurant.get("tables"), list) else []
+    restaurant_contract = ""
+    if restaurant_enabled:
+        restaurant_contract = f"""
+RESTAURANT ANALYTICS CONTRACT
+- Camera analytics role: {restaurant_role}
+- Configured dining tables for this view: {json.dumps(restaurant_tables, ensure_ascii=False)}
+- Return a top-level restaurant object using the supplied role. Use null/omit a value when it is not visually defensible.
+- visible_customers means simultaneous visible diners in this view, never unique footfall or a daily customer total.
+- For a dining_floor camera, return one table row for EVERY configured table_key above, even when uncertain.
+- For each table row, service_interaction_observed is true only when a person is visibly performing a defensible table-service action at/for that occupied table (approach, serve, clear, interact). It does NOT establish employment, identity, attendance or productivity.
+- Also mirror service_interaction_observed into staff_present for backward-compatible storage; interpret that legacy field only as visible service action presence.
+- If adjacent movable tables are visibly joined for one party, keep the underlying table keys and give them the same deterministic combined_group made from the joined table_key values sorted and joined with "+" (for example F1-03+F1-04).
+- food_present means food is visibly present; never infer order correctness, payment, food quality or a completed order.
+- staff_count, when populated, means the number of people visibly performing role-appropriate service actions at this moment, not unique staff or shift headcount.
+- Never infer gender, age, ethnicity, relationship status or any other customer demographic from appearance.
+- For kitchen/service_handoff/cash_counter roles, only populate the role-supported restaurant fields.
+- Include analytics_quality scores only for visible image/geometry quality; do not invent equipment faults.
+""".strip()
 
     prompt = f"""
 You are reviewing one CCTV still from camera "{camera}" at a {site_type} site for an owner-facing
@@ -382,6 +562,7 @@ GENERAL RULES
 - Keep summary, activity and business.operational_state concise, factual and useful to the owner.
 - If image quality prevents a reliable conclusion, say so through quality and use "unclear"
   where appropriate.
+{restaurant_contract}
 """.strip()
     image_b64 = load_and_mirror_image(job)
     result = ollama_chat([
@@ -410,6 +591,7 @@ GENERAL RULES
         "visible_smoke_or_flame": bool(business.get("visible_smoke_or_flame", False)),
         "visible_fall_or_accident": bool(business.get("visible_fall_or_accident", False)),
     }
+    _normalize_restaurant(result, ctx)
     return result
 
 
@@ -459,7 +641,10 @@ RULES
   pressure, service-handoff activity, kitchen activity continuity, access activity, office presence,
   late-night/after-hours exceptions, and visible safety concerns when the camera supports them.
 - Never infer sales, revenue, order accuracy, food quality, staff performance, unique customer
-  counts, confirmed fire, confirmed injury, or medical conditions from CCTV alone.
+  counts, gender, age, ethnicity, relationship status, confirmed fire, confirmed injury, or medical
+  conditions from CCTV alone.
+- For restaurants, prefer defensible covers/session/party-size/service metrics produced from the
+  structured restaurant observations. Do not manufacture a full-day total across unverified time.
 - Use Pakistan-friendly 12-hour times such as 2:15 PM.
 
 OWNER TEXT RULES (WatchLog AI harness; every sentence above is shown to the owner)

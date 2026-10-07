@@ -121,7 +121,7 @@ def test_known_evidence_gaps_are_governed_not_hidden():
 def test_visual_method_requires_full_visual_pass_before_report():
     assert "List every snapshot in the window" in METHOD
     assert "Analyze every snapshot camera-by-camera and chronologically" in METHOD
-    assert "Build sequences before derived metrics" in METHOD
+    assert "Build a table-session ledger before derived metrics" in METHOD
     assert "Missing coverage = unknown, not zero" in METHOD
     assert "Model confidence is not measured accuracy" in METHOD
 
@@ -132,6 +132,9 @@ def test_tenant_setup_skill_reproduces_context_and_reporting_setup():
         "Validate camera reality",
         "Create ai-harness/tenants/<tenant-site>/context.yaml",
         "Create reporting/README.md",
+        "physical table/zone identities",
+        "estimated covers for the represented period",
+        "Do not configure appearance-derived gender",
         "Yesterday always means the latest completed configured working/service day",
         "Compare any mirror/handoff repo against canonical",
     ):
