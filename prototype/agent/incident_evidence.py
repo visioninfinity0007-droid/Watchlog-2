@@ -87,6 +87,43 @@ _RECORDER_ADDRESS = re.compile(
 )
 
 
+class ClipNotVerified(DriverError):
+    """WatchLog refused the completed clip (its checksum over the stored bytes differed) and
+    has already failed the request; nothing is left for the Agent to report."""
+
+
+def release_inflight_evidence(cloud, state: dict) -> dict | None:
+    """Release this Agent's own in-flight clips and stills at startup (migration 0150).
+
+    A clip or still claimed by a previous run of this Agent can never finish: its worker is
+    gone. Releasing it at once (clips fail retryably with their partial bytes removed, stills
+    return to pending within their attempt budget) beats waiting for the server lease. Called
+    before any worker claims, so nothing this run holds can be released. A server without the
+    RPC, or one that refuses (this Agent is no longer the site's current Agent), is logged
+    and otherwise ignored: the server-side leases still apply."""
+    try:
+        result = cloud.call("wl_agent_release_inflight_evidence",
+                            p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
+    except Exception as error:  # noqa: BLE001 — never block the runtime on this cleanup
+        text = str(error).lower()
+        if "wl_agent_release_inflight_evidence" in text and (
+                "schema cache" in text or "function" in text or "404" in text):
+            core.log("incident evidence: this server cannot release in-flight evidence yet; "
+                     "the server lease applies")
+        else:
+            core.log("incident evidence: in-flight evidence was not released at startup: "
+                     + (str(error).splitlines() or [type(error).__name__])[0][:160])
+        return None
+    if isinstance(result, dict):
+        clips = int(result.get("clips_failed") or 0)
+        stills = int(result.get("stills_released") or 0) + int(result.get("stills_failed") or 0)
+        if clips or stills:
+            core.log(f"incident evidence: released {clips} clip(s) and {stills} still(s) "
+                     "left in flight by the previous run")
+        return result
+    return None
+
+
 def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
@@ -266,7 +303,7 @@ def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> Non
             p_sequence_no=seq,
             p_data_b64=base64.b64encode(chunk).decode("ascii"),
         )
-    cloud.call(
+    done = cloud.call(
         "wl_agent_complete_clip",
         p_agent_id=state["agent_id"],
         p_agent_key=state["agent_key"],
@@ -276,6 +313,11 @@ def _upload(cloud, state, request_id: str, data: bytes, driver_name: str) -> Non
         p_sha256=digest,
         p_total_bytes=len(data),
     )
+    if isinstance(done, dict) and done.get("ok") is False:
+        # Migration 0164: WatchLog recomputed the checksum over the stored bytes, found a
+        # different one and has already failed the request (its bytes are removed).
+        raise ClipNotVerified(
+            f"WatchLog could not verify the uploaded footage ({done.get('reason') or 'rejected'})")
 
 
 def _serve_clip_request(cloud, state: dict, cfg, hosts: tuple, row: dict) -> None:
@@ -326,14 +368,15 @@ def _serve_clip_request(cloud, state: dict, cfg, hosts: tuple, row: dict) -> Non
             # The job ran on the recorder it names: redact that recorder's host too.
             reason = _safe_reason(error, hosts + _recorder_hosts(job_cfg))
         try:
-            cloud.call(
-                "wl_agent_fail_clip",
-                p_agent_id=state["agent_id"],
-                p_agent_key=state["agent_key"],
-                p_request_id=request_id,
-                p_reason=reason,
-                p_unsupported=_is_unsupported(error),
-            )
+            if not isinstance(error, ClipNotVerified):    # already failed by WatchLog
+                cloud.call(
+                    "wl_agent_fail_clip",
+                    p_agent_id=state["agent_id"],
+                    p_agent_key=state["agent_key"],
+                    p_request_id=request_id,
+                    p_reason=reason,
+                    p_unsupported=_is_unsupported(error),
+                )
         except Exception:
             pass
         detail = getattr(error, "detail", "")
@@ -697,6 +740,8 @@ def wrap_cmd_run(original):
             return original(cfg, state, cloud, once, device, channels)
         # Before any claim: a registry site's jobs never fall back to the legacy recorder.
         recorder_runtime.mark_registry_required(cfg)
+        # Before any claim: what a previous run left in flight can never finish.
+        release_inflight_evidence(cloud, state)
         stop = threading.Event()
         # Supervised (5.1.2): restarted with backoff if they die, reported to the cloud.
         workers = [
