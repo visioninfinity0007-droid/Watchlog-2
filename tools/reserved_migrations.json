@@ -1,7 +1,10 @@
 {
   "_comment": "Migration numbers intentionally absent on some branches may be listed under reserved. Exact legacy duplicate filename sets may be listed under historical_duplicates; any other gap or duplicate still fails migration lint.",
   "reserved": {
-    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main."
+    "0094": "Reserved on fix/final-pilot-closure-1: the 0.4.4 pilot work jumps 0093 -> 0095 (incident read model). 0094 is intentionally skipped; reserving it keeps migration lint (a release gate) green. Remove once resolved on main.",
+    "0161": "Reserved for the 5.1.2 recording workstream (wip/5.1.2-a-recording). Remove when that branch merges.",
+    "0162": "Reserved for the 5.1.2 runtime workstream (wip/5.1.2-c-runtime). Remove when that branch merges.",
+    "0163": "Reserved for the 5.1.2 acceptance workstream (wip/5.1.2-d-acceptance). Remove when that branch merges."
   },
   "historical_duplicates": {
     "0115": [

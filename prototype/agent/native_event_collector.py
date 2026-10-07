@@ -97,6 +97,20 @@ def spool_row(ev, agent_ts) -> dict:
     return row
 
 
+SNAPSHOT_SOURCE_LIVE = "live_after_event"
+
+
+def mark_snapshot_capture(ev, shot_at) -> None:
+    """Record when and how the event's still was taken, in the event payload.
+
+    Migration 0164 stores payload.snapshot_captured_at as the still's captured_at (with
+    capture_source 'live_after_event') instead of the event time; a server without 0164 keeps
+    it as plain payload. Additive: wl_ingest_events copies the payload unchanged."""
+    if isinstance(ev.payload, dict):
+        ev.payload["snapshot_captured_at"] = core.iso(shot_at)
+        ev.payload["snapshot_source"] = SNAPSHOT_SOURCE_LIVE
+
+
 def _note_stream_error(stream: dict, reports_stream, error: BaseException) -> None:
     """Record a collector-level failure in the per-recorder event-stream state.
 
@@ -204,6 +218,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
                         last_shot[ev.channel] = clock
+                        # The real moment this still is taken (the request start; the
+                        # recorder grabs the frame when asked). device_ts stays the event time.
+                        shot_at = core.now_utc()
                         try:
                             raw = driver.get_snapshot(ev.channel)
                         except Exception as error:  # noqa: BLE001
@@ -214,6 +231,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
                             )
                         if raw and len(raw) <= core.SNAPSHOT_MAX_BYTES:
                             ev = ev.with_snapshot(base64.b64encode(raw).decode("ascii"))
+                            mark_snapshot_capture(ev, shot_at)
                             if holder is not None:
                                 holder.setdefault("snapshot_ok", {})[str(ev.channel)] =                                     time.monotonic()
                             core.log(f"snapshot ch{ev.channel} {len(raw) // 1024} KB")
