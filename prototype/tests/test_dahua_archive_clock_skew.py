@@ -38,6 +38,31 @@ def clip_window(drift_seconds, device_ts, *, pc_now=PC_NOW, **kwargs):
     return rec, rec.loadfile_windows()[-1]
 
 
+class ChannelNumbering(unittest.TestCase):
+    """Field-proven (Al-Khalid DH-XVR1B08-I): search and export address the camera's own
+    1-based channel. 0-based numbers searched camera N-1 (wrong recording truth, wrong clip)."""
+
+    def test_search_and_export_use_the_camera_channel_number(self):
+        for camera in ("1", "5"):
+            rec = FakeRecorder(PC_NOW, files=FILES)
+            with mock.patch.object(da, "datetime", pinned_datetime(PC_NOW)):
+                da.get_clip(FakeDahua(rec), camera, EVENT - BEFORE, EVENT + AFTER)
+            find = rec.calls_to("mediaFileFind.cgi", "findFile")[0][1]
+            load = rec.calls_to("loadfile.cgi", "startLoad")[0][1]
+            self.assertEqual(str(find["condition.Channel"]), camera)
+            self.assertEqual(str(load["channel"]), camera)
+
+    def test_recording_proof_searches_the_camera_channel(self):
+        rec = FakeRecorder(PC_NOW, files=FILES)
+        with mock.patch.object(da, "datetime", pinned_datetime(PC_NOW)):
+            da.has_recording(FakeDahua(rec), "1", EVENT - BEFORE, EVENT + AFTER)
+        self.assertEqual(str(rec.calls_to("mediaFileFind.cgi", "findFile")[0][1]["condition.Channel"]), "1")
+
+    def test_channel_zero_is_refused(self):
+        with self.assertRaises(DriverError):
+            da._native_channel("0")
+
+
 class AgentStampedEvents(unittest.TestCase):
     """Dahua CGI device_ts is the agent's receive time (true UTC, assuming an NTP-synced PC)."""
 
