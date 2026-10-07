@@ -20,6 +20,7 @@ import native_verification
 import nvr_health
 import periodic_stills
 import server_capture
+import site_maintenance
 from drivers import DriverError
 
 # A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
@@ -126,11 +127,16 @@ def collector(cfg, spool, stop, holder=None) -> None:
               "last_error": None}
     if holder is not None:
         holder["event_stream"] = stream
+    # Site Control reads this recorder's runtime evidence and can ask it to reconnect.
+    site_maintenance.register_runtime(cfg, holder)
     while not stop.is_set():
         driver = None
         reports_stream = None
         events = None
         auth_error = False
+        # reconnect_recorder ends only THIS session (SessionStop); opening a new one satisfies it.
+        site_maintenance.take_reconnect(holder)
+        session = site_maintenance.SessionStop(stop, holder)
         try:
             driver, info = core.open_driver(cfg)
             if hasattr(driver, "log"):
@@ -173,8 +179,8 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 server_capture.register_live_driver(driver)
 
             last_shot: dict[str, float] = {}
-            events = (_LiveEvents(driver, stop, cfg, stream, last_gen) if reports_stream
-                      else driver.stream_events(stop))
+            events = (_LiveEvents(driver, session, cfg, stream, last_gen) if reports_stream
+                      else driver.stream_events(session))
             for ev in events:
                 if stop.is_set():
                     break
@@ -327,6 +333,10 @@ def collector(cfg, spool, stop, holder=None) -> None:
         if isinstance(events, _LiveEvents) and events.reload and not stop.is_set():
             auth_failures = 0
             continue                           # new credential: re-open the recorder now
+        if session.is_set() and not stop.is_set():
+            auth_failures = 0
+            core.log("recorder session dropped on request (Site Control); reopening now")
+            continue
         if not stop.is_set():
             # Escalating backoff on CONFIRMED auth failure (lockout guard); short retry
             # otherwise. A credential change in Setup wakes the wait and retries immediately.

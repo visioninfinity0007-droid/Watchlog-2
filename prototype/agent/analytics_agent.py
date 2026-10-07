@@ -34,6 +34,7 @@ import recorder_registry
 import recorder_analytics
 import multi_recorder_orchestrator
 import multi_recorder_fanout
+import site_maintenance
 from action_runtime import ActionRuntime
 from archive_runtime import ArchiveRuntime
 from drivers import DriverError
@@ -1519,6 +1520,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             if restart.get("reason"):
                 core.log(f"recorder: {restart['reason']}")
                 raise SystemExit(restart["reason"])
+            site_maintenance.check_restart()             # restart_agent (Site Control)
             clock = time.monotonic()
             now_wall = time.time()
             # Suspend/resume detection (site PC sleep) — same rule as watchlog_agent.cmd_run:

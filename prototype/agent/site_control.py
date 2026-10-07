@@ -17,12 +17,23 @@ from __future__ import annotations
 
 from drivers.base import DriverError
 
+# Remote maintenance (5.1.2): read tier, outbound-only, executed by the Agent runtime
+# (site_maintenance.execute) because they need more than one recorder driver: the full
+# acceptance suite, diagnostics, inventory/capability refresh, collector reconnect and a
+# graceful restart. Kept in step with site_maintenance.MAINTENANCE_ACTIONS.
+MAINTENANCE_ACTIONS = (
+    "run_full_acceptance_test", "run_recording_check", "run_archive_check",
+    "collect_diagnostics", "refresh_inventory", "refresh_capabilities",
+    "reconnect_recorder", "restart_agent",
+)
+
 # READ actions available in P1. Writes are a separate, managed-tier plane (H6 safe-write).
+# Exactly the read catalog of wl_site_command_enqueue (test_site_control_catalog_parity).
 READ_ACTIONS = (
     "get_recorder_identity", "get_channels", "get_clock_config",
     "get_video_loss_state", "get_analytics_config", "get_recording_status",
     "get_storage_status", "request_snapshot", "inspect_recorder",
-)
+) + MAINTENANCE_ACTIONS
 
 
 def _identity(driver) -> dict:
@@ -71,6 +82,10 @@ def execute_read(driver, action: str, params: "dict | None" = None) -> dict:
     params = params or {}
     if action not in READ_ACTIONS:
         return {"action": action, "ok": False, "error": "unsupported_read_action"}
+    if action in MAINTENANCE_ACTIONS:
+        # Never run against a bare driver: the Agent routes these to site_maintenance before
+        # opening one (watchlog_agent._run_claimed_command).
+        return {"action": action, "ok": False, "error": "requires_agent_runtime"}
     try:
         if action == "get_recorder_identity":
             data = _identity(driver)
@@ -187,5 +202,5 @@ def execute_write(driver, action: str, params: "dict | None" = None) -> dict:
             "after": after, "rolled_back": _rollback(read, apply, before, desired)}
 
 
-__all__ = ["READ_ACTIONS", "WRITE_ACTIONS", "WRITE_CAPABILITY",
+__all__ = ["READ_ACTIONS", "MAINTENANCE_ACTIONS", "WRITE_ACTIONS", "WRITE_CAPABILITY",
            "execute_read", "execute_write", "inspect"]
