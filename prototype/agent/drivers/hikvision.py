@@ -11,6 +11,10 @@ ISAPI is HTTP + XML with HTTP Digest auth. The three calls used:
     GET /ISAPI/ContentMgmt/InputProxy/channels        IP channels (NVR)
     GET /ISAPI/System/Video/inputs/channels           analog channels (DVR)
     GET /ISAPI/Event/notification/alertStream         live events
+    GET /ISAPI/ContentMgmt/Storage[/hdd]              disks, capacity, free space
+    GET /ISAPI/Smart/storageDetection                 disk health / bad blocks
+    GET /ISAPI/ContentMgmt/record/tracks              recording configuration
+    GET /ISAPI/ContentMgmt/InputProxy/channels/status IP channel online state
 
 alertStream is a long-lived multipart/mixed response the device pushes
 into as things happen. The agent opens it outbound; the NVR never
@@ -35,7 +39,7 @@ from urllib.parse import urlparse
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from . import alarm_parsing
+from . import alarm_parsing, recorder_truth
 from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
                    NvrDriver, NvrUnreachable, explain)
 
@@ -93,6 +97,161 @@ def _stated_utc_offset(local_time: str | None, zone: str | None,
     if offset > timedelta(hours=14):
         return None
     return offset if m.group(1) == "-" else -offset
+
+
+# ---- storage: /ISAPI/ContentMgmt/Storage (or /ISAPI/ContentMgmt/Storage/hdd) -------------
+#
+#   <storage><hddList><hdd><id>1</id><hddName>hdd1</hddName><hddType>SATA</hddType>
+#     <status>ok</status><capacity>953869</capacity><freeSpace>120000</freeSpace>
+#     <property>RW</property></hdd></hddList><nasList/></storage>
+#
+# capacity / freeSpace are MiB. IMPLEMENTED_UNVERIFIED: shape per Hikvision's ISAPI guide; no
+# field reply has been captured yet.
+MIB = 1024 * 1024
+HDD_OK_STATES = frozenset({"ok", "normal", "sleeping"})
+HDD_FAULT_STATES = frozenset({
+    "error", "abnormal", "unformatted", "uninitialized", "idle", "notexist", "offline",
+    "smartfailed", "mismatch", "fault", "damaged", "unrecordhostformatted",
+})
+DETECTION_FAULT = frozenset({"bad", "damage", "damaged", "failed", "failure"})
+DETECTION_DEGRADED = frozenset({"warning", "degraded"})
+
+
+def _int_or_none(text) -> int | None:
+    try:
+        return int(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_storage(storage_root: ET.Element | None, detection_root: ET.Element | None) -> dict:
+    """Per-disk records and the recorder rollup from an ISAPI storage list, worsened (never
+    improved) by /ISAPI/Smart/storageDetection: health bad -> fault, warning or badBlocks > 0 ->
+    degraded. A storageDetection 'good' alone is no capacity evidence, so it never makes 'ok'.
+
+    Per disk: status ok/normal/sleeping -> ok; error/abnormal/unformatted/uninitialized/idle/
+    notexist/offline/smartFailed/mismatch -> fault; anything else (formatting, repairing...) ->
+    unknown. NAS rows carry no path: their address is the customer's LAN."""
+    if storage_root is None and detection_root is None:
+        return {"supported": False, "state": None}
+    if storage_root is not None:
+        disks = []
+        for node in storage_root.iter():
+            if node.tag not in ("hdd", "nas") or node.find("status") is None:
+                continue
+            status = (_text(node, "status") or "").strip().lower()
+            if status in HDD_FAULT_STATES:
+                state, reason = recorder_truth.DISK_FAULT, "disk_error"
+            elif status in HDD_OK_STATES:
+                state, reason = recorder_truth.DISK_OK, "ok"
+            else:
+                state, reason = recorder_truth.DISK_UNKNOWN, "disk_state_unknown"
+            ident = _text(node, "id") or str(len(disks) + 1)
+            nas = node.tag == "nas"
+            disks.append(recorder_truth.disk_record(
+                disk_id=f"{node.tag}{ident}",
+                path=None if nas else (_text(node, "hddPath") or _text(node, "hddName")),
+                disk_type=_text(node, "property") or ("NAS" if nas else _text(node, "hddType")),
+                state=state, reason=reason,
+                total_bytes=recorder_truth.to_bytes(_text(node, "capacity"), MIB),
+                free_bytes=recorder_truth.to_bytes(_text(node, "freeSpace"), MIB)))
+        out = recorder_truth.rollup_storage(disks)
+    else:
+        out = {"supported": True, "state": None, "reason": "capacity_unknown",
+               "native_fatal": False, "native_lowspace": False, "disks": [], "disk_count": 0,
+               "total_bytes": None, "free_bytes": None}
+
+    health, bad_blocks = None, None
+    if detection_root is not None:
+        health = (_text(detection_root, ".//healthState") or "").strip().lower() or None
+        counts = [_int_or_none(n.text) for n in detection_root.iter() if n.tag == "badBlocks"]
+        counts = [c for c in counts if c is not None]
+        bad_blocks = max(counts) if counts else None
+        if health in DETECTION_FAULT:
+            out = recorder_truth.worsen(out, "fault", "disk_error")
+        elif health in DETECTION_DEGRADED or (bad_blocks or 0) > 0:
+            out = recorder_truth.worsen(out, "degraded", "disk_error")
+    out["detail"] = {"health_state": health, "bad_blocks": bad_blocks}
+    return out
+
+
+# ---- recording configuration: /ISAPI/ContentMgmt/record/tracks ---------------------------
+#
+#   <TrackList><Track><id>101</id><Channel>1</Channel><Enable>true</Enable>
+#     <TrackSchedule><ScheduleBlockList><ScheduleBlock><ScheduleAction>
+#       <ScheduleActionStartTime><DayOfWeek>Monday</DayOfWeek><TimeOfDay>00:00:00</TimeOfDay>
+#       </ScheduleActionStartTime>
+#       <ScheduleActionEndTime><DayOfWeek>Monday</DayOfWeek><TimeOfDay>24:00:00</TimeOfDay>
+#       </ScheduleActionEndTime>
+#       <Actions><Record>true</Record><ActionRecordingMode>CMR</ActionRecordingMode></Actions>
+#     </ScheduleAction>...</ScheduleBlock></ScheduleBlockList></TrackSchedule></Track>...
+#
+# Track id = channel * 100 + stream; only the main-stream track (x01) is read. CMR is continuous
+# recording; MOTION/ALARM/... record only on events.
+_WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4,
+             "saturday": 5, "sunday": 6}
+_TRUE = frozenset({"true", "1", "yes", "on"})
+_FALSE = frozenset({"false", "0", "no", "off"})
+
+
+def _weekday(text) -> int | None:
+    value = str(text or "").strip().lower()
+    if value.isdigit() and 1 <= int(value) <= 7:
+        return int(value) - 1                    # some firmware number Monday..Sunday 1..7
+    return _WEEKDAYS.get(value)
+
+
+def parse_record_tracks(root: ET.Element) -> dict[str, str]:
+    """Channel -> disabled | continuous | scheduled | unknown, from the record tracks.
+
+    disabled: the track is disabled, or its schedule has no action that records. continuous: CMR
+    actions that record cover the whole week. scheduled: recording is configured for part of the
+    week or only on events. unknown: no Enable flag, no schedule, or an unreadable action."""
+    week = recorder_truth.MINUTES_PER_WEEK
+    out: dict[str, str] = {}
+    for track in root.iter("Track"):
+        tid = _int_or_none(_text(track, "id"))
+        if tid is None or tid % 100 != 1 or tid < 100:
+            continue
+        channel = str(tid // 100)
+        enable = (_text(track, "Enable") or "").strip().lower()
+        if enable in _FALSE:
+            out[channel] = recorder_truth.CONFIG_DISABLED
+            continue
+        schedule = track.find("TrackSchedule")
+        if enable not in _TRUE or schedule is None:
+            out[channel] = recorder_truth.CONFIG_UNKNOWN
+            continue
+        regular: list[tuple[int, int]] = []
+        records = malformed = False
+        for action in schedule.iter("ScheduleAction"):
+            if (_text(action, "Actions/Record") or "").strip().lower() not in _TRUE:
+                continue
+            records = True
+            sd = _weekday(_text(action, "ScheduleActionStartTime/DayOfWeek"))
+            ed = _weekday(_text(action, "ScheduleActionEndTime/DayOfWeek"))
+            st = recorder_truth.hms_minutes(_text(action, "ScheduleActionStartTime/TimeOfDay"))
+            et = recorder_truth.hms_minutes(_text(action, "ScheduleActionEndTime/TimeOfDay"))
+            if None in (sd, ed, st, et):
+                malformed = True
+                continue
+            if (_text(action, "Actions/ActionRecordingMode") or "").strip().upper() != "CMR":
+                continue
+            start = sd * recorder_truth.MINUTES_PER_DAY + st
+            end = ed * recorder_truth.MINUTES_PER_DAY + et
+            if end > start:
+                regular.append((start, end))
+            elif end < start:                    # wraps past Sunday midnight
+                regular.extend([(start, week), (0, end)])
+        if recorder_truth.covers_week(regular):
+            out[channel] = recorder_truth.CONFIG_CONTINUOUS
+        elif malformed:
+            out[channel] = recorder_truth.CONFIG_UNKNOWN
+        elif records:
+            out[channel] = recorder_truth.CONFIG_SCHEDULED
+        else:
+            out[channel] = recorder_truth.CONFIG_DISABLED
+    return out
 
 
 # One event-type map, channel rule, keep-alive filter and burst rule shared with the
@@ -568,32 +727,67 @@ class HikvisionDriver(NvrDriver):
         }
 
     def storage_status(self) -> dict:
-        """Read current storage-health state; never starts SMART/bad-sector tests."""
+        """Per-disk storage state, capacity and free space from the ISAPI storage list
+        (/ISAPI/ContentMgmt/Storage, else /ISAPI/ContentMgmt/Storage/hdd), worsened by the
+        /ISAPI/Smart/storageDetection health signal (parse_storage). Read-only: never starts a
+        SMART or bad-sector test. IMPLEMENTED_UNVERIFIED against a field reply."""
+        storage_root = None
+        for path in ("/ISAPI/ContentMgmt/Storage", "/ISAPI/ContentMgmt/Storage/hdd"):
+            try:
+                storage_root = self._xml(path)
+                break
+            except DriverError:
+                continue
         try:
-            root = self._xml("/ISAPI/Smart/storageDetection")
+            detection_root = self._xml("/ISAPI/Smart/storageDetection")
         except DriverError:
-            return {"supported": False, "state": None}
+            detection_root = None
+        return parse_storage(storage_root, detection_root)
 
-        health = (_text(root, "healthState") or "").strip().lower()
-        state = None
-        if health == "good":
-            state = "ok"
-        elif health in ("bad", "damage", "damaged", "failed", "failure"):
-            state = "fault"
-        elif health in ("warning", "degraded"):
-            state = "degraded"
+    def recording_status(self, channels=None) -> dict:
+        """Per-channel recording CONFIGURATION from /ISAPI/ContentMgmt/record/tracks.
 
-        detail = {
-            "health_state": health or None,
-            "bad_blocks": _text(root, "badBlocks"),
-        }
-        return {
-            "supported": True,
-            "state": state,
-            "native_fatal": state == "fault",
-            "native_lowspace": False,
-            "detail": detail,
-        }
+        A disabled main-stream track, or a schedule with no recording action, is 'not_recording'
+        with reason recording_disabled. Anything enabled is None (UNKNOWN): configuration is not
+        proof that frames reach the disk; ``config`` tells the archive check whether footage is
+        expected at every moment ('continuous') or only sometimes ('scheduled').
+        IMPLEMENTED_UNVERIFIED against a field reply."""
+        try:
+            config = parse_record_tracks(self._xml("/ISAPI/ContentMgmt/record/tracks"))
+        except DriverError:
+            return {"supported": False, "channels": {}}
+        if not config:
+            return {"supported": False, "channels": {}}
+        disabled = {ch for ch, c in config.items() if c == recorder_truth.CONFIG_DISABLED}
+        return {"supported": True,
+                "channels": {ch: ("not_recording" if ch in disabled else None) for ch in config},
+                "reasons": {ch: "recording_disabled" for ch in disabled},
+                "config": config}
+
+    def channel_liveness(self) -> dict:
+        """Which IP channels the recorder says are connected, from
+        /ISAPI/ContentMgmt/InputProxy/channels/status (<online>true|false</online>).
+
+        Used only to decide whether an empty recent archive on a continuously-scheduled channel
+        is a recording fault: a channel the recorder does not name stays unknown. A DVR without
+        IP channels answers nothing here, so its liveness is unsupported. IMPLEMENTED_UNVERIFIED."""
+        try:
+            root = self._xml("/ISAPI/ContentMgmt/InputProxy/channels/status")
+        except DriverError:
+            return {"supported": False, "online": [], "offline": []}
+        online, offline = [], []
+        for node in root.iter("InputProxyChannelStatus"):
+            cid = _text(node, "id")
+            value = (_text(node, "online") or "").strip().lower()
+            if not cid:
+                continue
+            if value in _TRUE:
+                online.append(cid)
+            elif value in _FALSE:
+                offline.append(cid)
+        if not online and not offline:
+            return {"supported": False, "online": [], "offline": []}
+        return {"supported": True, "online": online, "offline": offline}
 
     def get_snapshot(self, channel: str) -> bytes | None:
         """

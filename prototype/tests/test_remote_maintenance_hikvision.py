@@ -147,6 +147,11 @@ def test_hikvision_readback_clock_storage_and_motion2():
             "<NTPServerList><NTPServer><hostName>pool.ntp.org</hostName></NTPServer></NTPServerList>",
         "/ISAPI/Smart/storageDetection":
             "<storageDetection><healthState>good</healthState><badBlocks>0</badBlocks></storageDetection>",
+        # 'ok' needs the disk list: a healthy disk with free space (5.1.2 storage truth).
+        "/ISAPI/ContentMgmt/Storage":
+            "<storage><hddList><hdd><id>1</id><hddName>hdd1</hddName><status>ok</status>"
+            "<capacity>953869</capacity><freeSpace>400000</freeSpace><property>RW</property>"
+            "</hdd></hddList></storage>",
     })
     try:
         caps = d.capabilities()
@@ -166,6 +171,13 @@ def test_hikvision_readback_clock_storage_and_motion2():
         storage = d.storage_status()
         assert storage["supported"] is True
         assert storage["state"] == "ok"
+        assert storage["disks"][0]["free_bytes"] == 400000 * 1024 * 1024
+
+        # storageDetection 'good' alone says nothing about free space: never 'ok' from absence.
+        del d.docs["/ISAPI/ContentMgmt/Storage"]
+        alone = d.storage_status()
+        assert alone["supported"] is True and alone["state"] is None
+        assert alone["reason"] == "capacity_unknown"
     finally:
         d.close()
 

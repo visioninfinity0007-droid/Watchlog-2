@@ -13,6 +13,9 @@ Dahua is HTTP CGI with Digest auth. The calls used:
     /cgi-bin/magicBox.cgi?action=getDeviceType
     /cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle
     /cgi-bin/eventManager.cgi?action=attach&codes=[All]&heartbeat=5
+    /cgi-bin/storageDevice.cgi?action=getDeviceAllInfo   disks, capacity, free space
+    /cgi-bin/configManager.cgi?action=getConfig&name=RecordMode / name=Record
+                                                     recording configuration
 
 `attach` is a long-lived multipart response — the device writes an event
 block whenever something fires. Outbound only, like everything else here.
@@ -35,7 +38,7 @@ from typing import Iterator
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from . import alarm_parsing
+from . import alarm_parsing, recorder_truth
 from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
                    NvrDriver, NvrUnreachable, explain)
 
@@ -77,6 +80,159 @@ def _parse_kv(text: str) -> dict[str, str]:
         m = _KV.match(line.strip())
         if m:
             out[m.group(1).strip()] = m.group(2).strip()
+    return out
+
+
+# ---- storage: storageDevice.cgi?action=getDeviceAllInfo ----------------------------------
+#
+#   list.info[0].Name=/dev/sda
+#   list.info[0].State=Success
+#   list.info[0].Detail[0].Path=/dev/sda1
+#   list.info[0].Detail[0].Type=ReadWrite
+#   list.info[0].Detail[0].IsError=false
+#   list.info[0].Detail[0].TotalBytes=1000068870144.000000
+#   list.info[0].Detail[0].UsedBytes=999653638144.000000
+#
+# One list.info[i] per disk, one Detail[j] per partition. IMPLEMENTED_UNVERIFIED: the shape is
+# Dahua's HTTP API "getDeviceAllInfo"; no reply from a field unit has been captured yet.
+_INFO_KEY = re.compile(r"^list\.info\[(\d+)\]\.(.+)$")
+_DETAIL_KEY = re.compile(r"^Detail\[(\d+)\]\.(\w+)$")
+DISK_OK_STATES = frozenset({"success", "normal"})
+DISK_FAULT_STATES = frozenset({"error", "abnormal", "fault"})
+_FAULT_WORDS = ("error", "failed", "failure", "abnormal", "notexist", "no disk", "unformat")
+_LOWSPACE_WORDS = ("lowspace", "low space", "nospace", "full")
+
+
+def _storage_keywords(kv: dict) -> dict:
+    """Last resort for a reply with no list.info[] disks: a recognisable fault or low-space word
+    is a NEGATIVE signal; nothing here can ever produce 'ok' (absence is not health)."""
+    out = {"supported": True, "native_fatal": False, "native_lowspace": False,
+           "disks": [], "disk_count": 0, "total_bytes": None, "free_bytes": None}
+    vals = " ".join(str(v).lower() for v in kv.values())
+    if vals and any(k in vals for k in _FAULT_WORDS):
+        return {**out, "state": "fault", "reason": "storage_fault"}
+    if vals and any(k in vals for k in _LOWSPACE_WORDS):
+        return {**out, "state": "degraded", "reason": "disk_full"}
+    return {**out, "state": None, "reason": "no_disks_reported"}
+
+
+def parse_storage_all_info(kv: dict) -> dict:
+    """Per-disk records and the recorder rollup from a parsed getDeviceAllInfo reply.
+
+    Per disk: State Success/Normal -> ok; Error/Abnormal/Fault -> fault; anything else ->
+    unknown. Any partition with IsError=true faults the disk. Capacity is the sum of the
+    partitions' TotalBytes; free is that minus their UsedBytes (both or neither)."""
+    groups: dict[int, dict] = {}
+    for key, val in kv.items():
+        m = _INFO_KEY.match(key.strip())
+        if not m:
+            continue
+        disk = groups.setdefault(int(m.group(1)), {"fields": {}, "details": {}})
+        d = _DETAIL_KEY.match(m.group(2))
+        if d:
+            disk["details"].setdefault(int(d.group(1)), {})[d.group(2)] = val
+        else:
+            disk["fields"][m.group(2)] = val
+    if not groups:
+        return _storage_keywords(kv)
+
+    disks = []
+    for idx in sorted(groups):
+        fields, details = groups[idx]["fields"], groups[idx]["details"]
+        raw_state = str(fields.get("State") or "").strip().lower()
+        part_error = any(str(p.get("IsError", "")).strip().lower() == "true"
+                         for p in details.values())
+        if raw_state in DISK_FAULT_STATES or part_error:
+            state, reason = recorder_truth.DISK_FAULT, "disk_error"
+        elif raw_state in DISK_OK_STATES:
+            state, reason = recorder_truth.DISK_OK, "ok"
+        else:
+            state, reason = recorder_truth.DISK_UNKNOWN, "disk_state_unknown"
+        total = free = None
+        if details:
+            totals = [recorder_truth.to_bytes(p.get("TotalBytes")) for p in details.values()]
+            useds = [recorder_truth.to_bytes(p.get("UsedBytes")) for p in details.values()]
+            if all(v is not None for v in totals + useds):
+                total = sum(totals)
+                free = max(0, total - sum(useds))
+        first = details[min(details)] if details else {}
+        types = sorted({str(p.get("Type")) for p in details.values() if p.get("Type")})
+        disks.append(recorder_truth.disk_record(
+            disk_id=fields.get("Name") or f"disk{idx}",
+            path=first.get("Path") or fields.get("Name"),
+            disk_type=",".join(types) or None,
+            state=state, reason=reason, total_bytes=total, free_bytes=free))
+    return recorder_truth.rollup_storage(disks)
+
+
+# ---- recording configuration: RecordMode + Record schedule -------------------------------
+#
+#   table.RecordMode[0].Mode=0          0 automatic (schedule), 1 manual (always), 2 off
+#   table.Record[0].TimeSection[0][0]=1 00:00:00-24:00:00
+#       TimeSection[day][n], day 0..6 = Sunday..Saturday; the leading number is a mask:
+#       bit 0 regular (continuous) recording, bit 1 motion, bit 2 alarm, bit 3 card.
+_RECORD_MODE_KEY = re.compile(r"^table\.RecordMode\[(\d+)\]\.Mode$")
+_SECTION_KEY = re.compile(r"^table\.Record\[(\d+)\]\.TimeSection\[(\d+)\]\[(\d+)\]$")
+_SECTION_VAL = re.compile(r"^\s*(\d+)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*$")
+_MODE_OFF = frozenset({"2", "off", "close", "closed", "stop"})
+_MODE_ALWAYS = frozenset({"1", "manual", "on", "always"})
+_MODE_SCHEDULE = frozenset({"0", "auto", "automatic", "schedule"})
+
+
+def parse_record_mode(kv: dict) -> dict[str, str]:
+    """1-based channel -> disabled | continuous | scheduled | unknown, from RecordMode."""
+    out: dict[str, str] = {}
+    for key, val in kv.items():
+        m = _RECORD_MODE_KEY.match(key.strip())
+        if not m:
+            continue
+        mode = str(val).strip().lower()
+        out[str(int(m.group(1)) + 1)] = (
+            recorder_truth.CONFIG_DISABLED if mode in _MODE_OFF
+            else recorder_truth.CONFIG_CONTINUOUS if mode in _MODE_ALWAYS
+            else recorder_truth.CONFIG_SCHEDULED if mode in _MODE_SCHEDULE
+            else recorder_truth.CONFIG_UNKNOWN)
+    return out
+
+
+def parse_record_schedule(kv: dict) -> dict[str, str]:
+    """1-based channel -> continuous | scheduled | disabled | unknown, from the Record schedule.
+
+    continuous: regular (mask bit 0) sections cover every day 0..6 end to end. scheduled: some
+    section records (any mask bit) but not continuously all week. disabled: sections are present
+    and none records. unknown: a section could not be read and the week is not otherwise covered."""
+    per: dict[str, dict] = {}
+    for key, val in kv.items():
+        m = _SECTION_KEY.match(key.strip())
+        if not m:
+            continue
+        ch = str(int(m.group(1)) + 1)
+        day = int(m.group(2))
+        slot = per.setdefault(ch, {"regular": [], "records": False, "malformed": False})
+        v = _SECTION_VAL.match(str(val))
+        if not v:
+            slot["malformed"] = True
+            continue
+        mask = int(v.group(1))
+        start, end = recorder_truth.hms_minutes(v.group(2)), recorder_truth.hms_minutes(v.group(3))
+        if start is None or end is None:
+            slot["malformed"] = True
+            continue
+        if mask and end > start:
+            slot["records"] = True
+            if mask & 1 and day < 7:          # day 7 (holiday) never makes the week continuous
+                base = day * recorder_truth.MINUTES_PER_DAY
+                slot["regular"].append((base + start, base + end))
+    out = {}
+    for ch, slot in per.items():
+        if recorder_truth.covers_week(slot["regular"]):
+            out[ch] = recorder_truth.CONFIG_CONTINUOUS
+        elif slot["malformed"]:
+            out[ch] = recorder_truth.CONFIG_UNKNOWN
+        elif slot["records"]:
+            out[ch] = recorder_truth.CONFIG_SCHEDULED
+        else:
+            out[ch] = recorder_truth.CONFIG_DISABLED
     return out
 
 
@@ -278,52 +434,49 @@ class DahuaDriver(NvrDriver):
         return {"channels": out}
 
     def storage_status(self) -> dict:
-        """Dahua HDD/storage health via storageDevice.cgi. Conservative and honest:
-          * a disk failure/missing/unformatted signal -> 'fault' (no usable recording storage);
-          * a low-space / no-free-space signal -> 'degraded' (usually still recording by overwrite —
-            NOT a blanket fault);
-          * a clearly-normal signal -> 'ok';
-          * anything else / unreadable -> None (UNKNOWN).
-        NOT hardware-verified, so it fails safe to UNKNOWN rather than a false healthy."""
+        """Dahua HDD/storage health from storageDevice.cgi?action=getDeviceAllInfo, parsed per
+        disk (parse_storage_all_info): per-disk records, capacity/free totals and a rollup that is
+        'ok' only when every disk reports a healthy state and free space is above 2 %. A reply
+        with no disks is UNKNOWN (no_disks_reported); the old keyword scan survives only as a
+        last resort that can report a fault or low space, never 'ok'. Unreadable -> unsupported.
+        IMPLEMENTED_UNVERIFIED against a field reply."""
         try:
             kv = _parse_kv(self._get("/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo"))
         except DriverError:
             return {"supported": False, "state": None}
-        if not kv:
-            return {"supported": True, "state": None}
-        vals = " ".join(str(v).lower() for v in kv.values())
-        if any(k in vals for k in ("error", "failed", "failure", "abnormal", "notexist",
-                                   "no disk", "unformat")):
-            return {"supported": True, "state": "fault"}       # no usable storage
-        if any(k in vals for k in ("lowspace", "low space", "nospace", "full")):
-            return {"supported": True, "state": "degraded"}    # low space — still usable, not a fault
-        if any(k in vals for k in ("normal", "running", "sleeping", "good", "ok")):
-            return {"supported": True, "state": "ok"}
-        return {"supported": True, "state": None}
+        return parse_storage_all_info(kv)
 
     def recording_status(self, channels=None) -> dict:
-        """Per-channel recording state from Dahua RecordMode. Vendor-truth conservative:
-          * Mode 2 (off) -> 'not_recording' (recorder explicitly says the channel is not recording);
-          * Mode 0 (auto/schedule) or 1 (manual/always) -> None (UNKNOWN): this is CONFIGURATION, not
-            proof that frames are being written to disk right now. We never claim 'recording' from a
-            mode/schedule alone. Proof-of-active-recording (e.g. a recent-file check) is a future,
-            hardware-validated refinement.
+        """Per-channel recording CONFIGURATION from Dahua RecordMode (+ the Record schedule when
+        the mode follows a schedule). Vendor-truth conservative:
+          * Mode 2 / off -> 'not_recording', reason recording_disabled: the recorder explicitly
+            says the channel does not record;
+          * Mode 1 (always) or a schedule -> None (UNKNOWN): configuration is not proof that frames
+            reach the disk. ``config`` tells the archive check whether recent footage is expected
+            at every moment ('continuous') or only sometimes ('scheduled').
         Read-only; recording is never inferred from a snapshot."""
         try:
-            kv = _parse_kv(self._get(
-                "/cgi-bin/configManager.cgi?action=getConfig&name=RecordMode"))
+            modes = parse_record_mode(_parse_kv(self._get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=RecordMode")))
         except DriverError:
             return {"supported": False, "channels": {}}
-        out: dict[str, str | None] = {}
-        for key, val in kv.items():
-            m = re.match(r"table\.RecordMode\[(\d+)\]\.Mode", key)
-            if m:
-                ch = str(int(m.group(1)) + 1)          # config is 0-based; channels are 1-based
-                # only an explicit OFF is a truthful state; a schedule/mode is not proof -> UNKNOWN
-                out[ch] = "not_recording" if str(val).strip() == "2" else None
-        if not out:
+        if not modes:
             return {"supported": False, "channels": {}}
-        return {"supported": True, "channels": out}
+        schedule: dict[str, str] = {}
+        if any(m == recorder_truth.CONFIG_SCHEDULED for m in modes.values()):
+            try:
+                schedule = parse_record_schedule(_parse_kv(self._get(
+                    "/cgi-bin/configManager.cgi?action=getConfig&name=Record")))
+            except DriverError:
+                schedule = {}
+        config = {ch: (schedule.get(ch, recorder_truth.CONFIG_UNKNOWN)
+                       if mode == recorder_truth.CONFIG_SCHEDULED else mode)
+                  for ch, mode in modes.items()}
+        disabled = {ch for ch, c in config.items() if c == recorder_truth.CONFIG_DISABLED}
+        return {"supported": True,
+                "channels": {ch: ("not_recording" if ch in disabled else None) for ch in config},
+                "reasons": {ch: "recording_disabled" for ch in disabled},
+                "config": config}
 
     # -- focused reads + SAFE writes (Site Control managed tier; field-proven on DH-XVR1B08-I) --
 
@@ -474,7 +627,10 @@ class DahuaDriver(NvrDriver):
         vb = _indexes("VideoBlind")
         if vl is None and vb is None:
             return {"supported": False, "video_loss": [], "video_blind": []}
-        return {"supported": True, "video_loss": vl or [], "video_blind": vb or []}
+        # video_loss_supported: the VideoLoss index itself answered, so a channel absent from it
+        # is positively not in video loss (an empty list from a failed query proves nothing).
+        return {"supported": True, "video_loss": vl or [], "video_blind": vb or [],
+                "video_loss_supported": vl is not None}
 
     def get_snapshot(self, channel: str) -> bytes | None:
         """
