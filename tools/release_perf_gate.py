@@ -8,8 +8,9 @@ Runs the frozen EXEs several times and gates percentiles against committed budge
   setup_ui.first_visible_s  launch -> the setup window is shown
   setup_ui.lifecycle_s      launch -> the installer-child lifecycle self-test has exited
   setup_ui.cold.*           the same, for the first (cold) launch alone
-  agent.version_s           launch -> `watchlog-agent.exe --version` has exited
-  agent.selftest_s          launch -> `watchlog-agent.exe --selftest` has exited (once)
+  agent.version_s           launch -> `watchlog-agent.exe --version` has exited (warm runs)
+  agent.cold.version_s      the first (cold) `--version` launch alone
+  agent.selftest_s          launch -> `watchlog-agent.exe --selftest` has exited (3 runs)
 
 Phase times inside the Setup UI come from WATCHLOG_UI_TIMING_PATH (setup_gui._mark). Every
 run must also succeed (exit 0). Writes WatchLog-Perf-Report.json (samples, p50/p95/max, sizes,
@@ -97,19 +98,24 @@ def measure_setup_ui(exe: Path, runs: int) -> tuple[dict[str, list[float]], list
     return out, failures
 
 
-def measure_agent(exe: Path, runs: int) -> tuple[dict[str, list[float]], list[str]]:
-    out: dict[str, list[float]] = {"agent.version_s": [], "agent.selftest_s": []}
+def measure_agent(exe: Path, runs: int, selftest_runs: int = 3) -> tuple[dict[str, list[float]], list[str]]:
+    # As for the Setup UI, the first launch is cold (one-file unpack of ~90 MB, scanned by
+    # Defender) and is gated on its own; --selftest runs several times so one slow runner
+    # moment is not a release verdict, while a real slowdown still moves the median.
+    out: dict[str, list[float]] = {"agent.cold.version_s": [], "agent.version_s": [],
+                                   "agent.selftest_s": []}
     failures = []
     env = dict(os.environ)
     for i in range(runs):
         _launched, wall, code = _timed([str(exe), "--version"], env, 120)
         if code != 0:
             failures.append(f"agent --version run {i + 1}: exit {code}")
-        out["agent.version_s"].append(wall)
-    _launched, wall, code = _timed([str(exe), "--selftest"], env, 600)
-    if code != 0:
-        failures.append(f"agent --selftest: exit {code}")
-    out["agent.selftest_s"].append(wall)
+        out["agent.cold.version_s" if i == 0 else "agent.version_s"].append(wall)
+    for i in range(max(1, selftest_runs)):
+        _launched, wall, code = _timed([str(exe), "--selftest"], env, 600)
+        if code != 0:
+            failures.append(f"agent --selftest run {i + 1}: exit {code}")
+        out["agent.selftest_s"].append(wall)
     return out, failures
 
 

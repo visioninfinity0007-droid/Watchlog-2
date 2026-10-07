@@ -47,6 +47,8 @@ def test_the_committed_budgets_are_strict():
     assert b["setup_ui.lifecycle_s"]["p95"] <= 12.0 and b["setup_ui.first_visible_s"]["p95"] <= 8.0
     assert b["setup_ui.unpack_s"]["p95"] <= 6.0
     assert b["setup_ui.cold.lifecycle_s"]["max"] <= 15.0      # never looser than the old gate
+    assert b["agent.version_s"]["p95"] <= 8.0 and b["agent.cold.version_s"]["max"] <= 15.0
+    assert b["agent.selftest_s"]["p50"] <= 20.0 and b["agent.selftest_s"]["max"] <= 30.0
     assert not any(budget.get("provisional") for budget in b.values())
 
 
@@ -98,6 +100,8 @@ def test_the_gate_end_to_end_with_stand_in_exes(tmp_path):
     body = json.loads(report.read_text(encoding="utf-8"))
     assert body["ok"] and body["metrics"]["setup_ui.cold.lifecycle_s"]["n"] == 1
     assert body["metrics"]["setup_ui.lifecycle_s"]["n"] == 1     # the first launch is the cold one
+    assert body["metrics"]["agent.cold.version_s"]["n"] == 1 and body["metrics"]["agent.version_s"]["n"] == 1
+    assert body["metrics"]["agent.selftest_s"]["n"] == 3          # median of three, not one sample
     agent.write_text("@exit /b 3\r\n", encoding="ascii")
     assert gate.main(["--setup-ui", str(ui), "--agent", str(agent), "--runs", "1",
                       "--json", str(report)]) == 1
