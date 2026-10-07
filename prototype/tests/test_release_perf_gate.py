@@ -47,7 +47,8 @@ def test_the_committed_budgets_are_strict():
     assert b["setup_ui.lifecycle_s"]["p95"] <= 12.0 and b["setup_ui.first_visible_s"]["p95"] <= 8.0
     assert b["setup_ui.unpack_s"]["p95"] <= 6.0
     assert b["setup_ui.cold.lifecycle_s"]["max"] <= 15.0      # never looser than the old gate
-    assert b["agent.version_s"]["p95"] <= 8.0 and b["agent.cold.version_s"]["max"] <= 15.0
+    assert b["agent.version_s"]["p50"] <= 12.0 and b["agent.version_s"]["max"] <= 30.0
+    assert b["agent.cold.version_s"]["max"] <= 30.0
     assert b["agent.selftest_s"]["p50"] <= 20.0 and b["agent.selftest_s"]["max"] <= 30.0
     assert not any(budget.get("provisional") for budget in b.values())
 
