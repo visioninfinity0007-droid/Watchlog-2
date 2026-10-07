@@ -239,7 +239,8 @@ def run() -> int:
             step(rows[("collector", str(rec_a1))][6] is True,
                  "a future last_success_at is clamped to now()")
             step(rows[("analytics", None)][4] is False, "a disabled worker is stored disabled")
-            step(all(r[9] == tenant_a and r[10] == site_a for r in rows.values()),
+            step(all(str(r[9]) == str(tenant_a) and str(r[10]) == str(site_a)
+                     for r in rows.values()),
                  "rows carry the Agent's own tenant and site")
             recs = {str(r[0]): r for r in cur.execute(
                 """select recorder_id, event_stream, credential_unavailable, spool_depth,

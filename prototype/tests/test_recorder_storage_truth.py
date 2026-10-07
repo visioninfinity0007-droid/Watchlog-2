@@ -111,14 +111,15 @@ def test_dahua_keyword_fallback_reports_problems_only():
     assert out["state"] is None, "a 'normal'-looking word without disks is never ok"
 
 
-def test_dahua_low_space_is_degraded_disk_full():
+def test_a_nearly_full_overwriting_disk_is_healthy_and_flagged_near_full():
+    # Owner decision 2026-10-07: overwrite recorders sit near 0 % free by design; only the
+    # recorder's own low-space signal is 'disk_full'.
     used = int(TB * 0.99)                      # 1 % free: an overwriting disk
     out = dahua.parse_storage_all_info(_parse_kv(dahua_disk(used=used)))
-    assert (out["state"], out["reason"]) == ("degraded", "disk_full")
-    edge = dahua_disk(total=10**12, used=98 * 10**10)   # exactly 2 % free is still low
-    assert dahua.parse_storage_all_info(_parse_kv(edge))["reason"] == "disk_full"
-    above = dahua_disk(total=10**12, used=97 * 10**10)  # 3 % free is ok
-    assert dahua.parse_storage_all_info(_parse_kv(above))["state"] == "ok"
+    assert (out["state"], out["reason"], out["near_full"]) == ("ok", "ok", True)
+    above = dahua_disk(total=10**12, used=97 * 10**10)  # 3 % free
+    assert dahua.parse_storage_all_info(_parse_kv(above))["near_full"] is False
+    assert dahua.parse_storage_all_info({"status": "LowSpace"})["reason"] == "disk_full"
 
 
 def test_dahua_missing_sizes_are_capacity_unknown():
@@ -171,7 +172,7 @@ def test_hikvision_storage_fixture_is_ok_with_capacity_in_bytes():
     assert disk["free_bytes"] == 1310720 * 1024 * 1024
 
 
-@pytest.mark.parametrize("status", ["error", "abnormal", "unformatted", "uninitialized", "idle",
+@pytest.mark.parametrize("status", ["error", "abnormal", "unformatted", "uninitialized",
                                     "smartFailed", "notexist"])
 def test_hikvision_fault_statuses(status):
     out = hikvision.parse_storage(hik_storage(hik_hdd(status=status)), None)
@@ -183,14 +184,15 @@ def test_hikvision_healthy_statuses(status):
     assert hikvision.parse_storage(hik_storage(hik_hdd(status=status)), None)["state"] == "ok"
 
 
-def test_hikvision_unknown_status_stays_unknown():
-    out = hikvision.parse_storage(hik_storage(hik_hdd(status="formatting")), None)
+@pytest.mark.parametrize("status", ["formatting", "idle"])
+def test_hikvision_unknown_status_stays_unknown(status):
+    out = hikvision.parse_storage(hik_storage(hik_hdd(status=status)), None)
     assert (out["state"], out["reason"]) == (None, "disk_state_unknown")
 
 
-def test_hikvision_low_free_space_is_degraded():
+def test_hikvision_low_free_space_is_near_full_not_a_fault():
     out = hikvision.parse_storage(hik_storage(hik_hdd(free=0)), None)
-    assert (out["state"], out["reason"]) == ("degraded", "disk_full")
+    assert (out["state"], out["near_full"]) == ("ok", True)
 
 
 def test_hikvision_empty_disk_list_is_unknown():
@@ -365,7 +367,7 @@ def test_assessment_carries_disk_inventory_reason_and_config():
     rec = {"supported": True, "channels": {"1": None, "2": "not_recording"},
            "reasons": {"2": "recording_disabled"}, "config": {"1": "continuous", "2": "disabled"}}
     out = recording_health.assess_recording_storage(_Driver(storage, rec), ["1", "2"], "ok")
-    assert out["storage"]["state"] == "degraded" and out["storage"]["reason"] == "disk_full"
+    assert out["storage"]["state"] == "ok" and out["storage"]["near_full"] is True
     assert out["storage"]["total_bytes"] == TB and len(out["storage"]["disks"]) == 1
     rows = {r["channel"]: r for r in out["recording"]["channels"]}
     assert rows["2"] == {"channel": "2", "state": "not_recording", "reason": "recording_disabled"}

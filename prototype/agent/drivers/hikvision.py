@@ -110,7 +110,7 @@ def _stated_utc_offset(local_time: str | None, zone: str | None,
 MIB = 1024 * 1024
 HDD_OK_STATES = frozenset({"ok", "normal", "sleeping"})
 HDD_FAULT_STATES = frozenset({
-    "error", "abnormal", "unformatted", "uninitialized", "idle", "notexist", "offline",
+    "error", "abnormal", "unformatted", "uninitialized", "notexist", "offline",
     "smartfailed", "mismatch", "fault", "damaged", "unrecordhostformatted",
 })
 DETECTION_FAULT = frozenset({"bad", "damage", "damaged", "failed", "failure"})
@@ -129,9 +129,9 @@ def parse_storage(storage_root: ET.Element | None, detection_root: ET.Element | 
     improved) by /ISAPI/Smart/storageDetection: health bad -> fault, warning or badBlocks > 0 ->
     degraded. A storageDetection 'good' alone is no capacity evidence, so it never makes 'ok'.
 
-    Per disk: status ok/normal/sleeping -> ok; error/abnormal/unformatted/uninitialized/idle/
-    notexist/offline/smartFailed/mismatch -> fault; anything else (formatting, repairing...) ->
-    unknown. NAS rows carry no path: their address is the customer's LAN."""
+    Per disk: status ok/normal/sleeping -> ok; error/abnormal/unformatted/uninitialized/
+    notexist/offline/smartFailed/mismatch -> fault; anything else (idle, a sleep state on some
+    models; formatting, repairing...) -> unknown. NAS rows carry no path: their address is the customer's LAN."""
     if storage_root is None and detection_root is None:
         return {"supported": False, "state": None}
     if storage_root is not None:

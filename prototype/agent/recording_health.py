@@ -26,7 +26,7 @@ def assess_recording_storage(driver, channels, nvr_state: str, inventory=None) -
     native_fatal, native_lowspace = False, False   # storage CGI is the source; native storage events
     supported_r, rec_map, rec_reasons = False, {}, {}  # flow to the cloud via the event stream, not here
     rec_config: dict = {}
-    disks, total_bytes, free_bytes = None, None, None
+    disks, total_bytes, free_bytes, near_full = None, None, None, None
 
     if nvr_state == "ok":     # only touch the recorder when the layer above it is proven up
         try:
@@ -39,6 +39,8 @@ def assess_recording_storage(driver, channels, nvr_state: str, inventory=None) -
             if supported_s and isinstance(s.get("disks"), list):
                 disks = [_disk(d) for d in s["disks"] if isinstance(d, dict)]
                 total_bytes, free_bytes = _bytes(s.get("total_bytes")), _bytes(s.get("free_bytes"))
+                if isinstance(s.get("near_full"), bool):
+                    near_full = s["near_full"]
         except Exception:                              # noqa: BLE001 — a read failure is UNKNOWN, not a crash
             supported_s, raw_s, raw_s_reason, disks = False, None, None, None
         try:
@@ -66,7 +68,8 @@ def assess_recording_storage(driver, channels, nvr_state: str, inventory=None) -
     if disks is not None:
         # Per-disk inventory and recorder totals (no paths beyond the recorder's own disk names,
         # never an address or credential).
-        storage.update(disks=disks, total_bytes=total_bytes, free_bytes=free_bytes)
+        storage.update(disks=disks, total_bytes=total_bytes, free_bytes=free_bytes,
+                       near_full=near_full)
     report = {"storage": storage, "recording": {"supported": supported_r, "channels": out}}
     if rec_config:
         # Configuration only (disabled | continuous | scheduled | unknown): never proof of recording.

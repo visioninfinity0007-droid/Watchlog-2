@@ -98,10 +98,12 @@ def rollup_storage(disks: list[dict], *, vendor_lowspace: bool = False) -> dict:
             state, reason = "degraded", "disk_full"
         elif not ok_total:
             state, reason = None, "capacity_unknown"
-        elif ok_free / ok_total <= LOW_SPACE_FREE_FRACTION:
-            state, reason = "degraded", "disk_full"
         else:
+            # A recorder that overwrites its oldest footage runs near 0 % free by design, so a
+            # nearly full disk is healthy; 'disk_full' comes only from the recorder's own
+            # low-space signal (above). The fraction is still reported for retention views.
             state, reason = "ok", "ok"
+            out["near_full"] = ok_free / ok_total <= LOW_SPACE_FREE_FRACTION
     if vendor_lowspace and state is None and not disks:
         state, reason = "degraded", "disk_full"      # the recorder itself said space is low
     out.update(state=state, reason=reason)
