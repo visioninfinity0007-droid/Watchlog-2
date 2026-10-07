@@ -348,6 +348,21 @@ const restaurantHourly = ["16:00","17:00","18:00","19:00","20:00","21:00","22:00
   local_hour: h, samples: i === 9 ? 0 : 12, peak_visible_customers: [6, 9, 14, 22, 27, 24, 18, 11, 7, 0][i], peak_occupied_tables: [3, 4, 6, 9, 11, 10, 8, 5, 3, 0][i],
 }));
 const restaurantOverrides = {
+  // Reconciled physical-table figures (wl_restaurant_business_period, canonical 0158): since
+  // a52a01ff the 7/30-day reports chart covers only from these; 6 of 7 days reconciled, one gap.
+  wl_restaurant_business_period: {
+    enabled: true, days: 7,
+    summary: {
+      reconciled_service_days: 6, avg_estimated_covers_per_reconciled_day: 70.3,
+      avg_table_sessions_per_reconciled_day: 23.5, average_party_size: 3.0,
+      party_size_sample_sessions: 141, median_time_to_first_service_minutes: 6,
+      first_service_sample_sessions: 118,
+    },
+    daily: restaurantDaily.map(([service_date, covers]) => ({
+      service_date, reconciliation_ready: covers !== null,
+      estimated_covers: covers, table_sessions: covers === null ? null : Math.round(covers / 3),
+    })),
+  },
   wl_restaurant_site_config: { enabled: true, report_layout_profile: "chaiwala_restaurant_ops_v1" },
   wl_my_site_context: { site_type: "restaurant" },
   wl_office_period: { enabled: false, site_type: "restaurant" },
