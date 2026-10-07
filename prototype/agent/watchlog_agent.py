@@ -62,6 +62,7 @@ import nvr_health   # module scope: every worker except-handler redacts through 
 import recorder_probe
 import setup_wizard
 import vision
+import worker_supervisor   # 5.1.2: worker registry + supervisor (restart, stall, runtime status)
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
 from drivers.base import RecorderIdentityMismatch
@@ -84,7 +85,7 @@ from agent_core import (  # noqa: F401  (re-exported)
     base_dir, default_state_dir, heartbeat, iso, load_state, log, mask, now_utc, open_driver,
     require_recorder_identity, runtime_health_path, save_state, update_runtime_health,
     _runtime_build_sha, upload_once, _row_rejection, _set_aside, _upload_isolating,
-    _ROW_REJECTION_CLASSES, _ROW_REJECTION_42501,
+    _ROW_REJECTION_CLASSES, _ROW_REJECTION_42501, CLOUD_PROOF,
 )
 
 RECONCILE_BATCH = 500         # max retained transitions/checkpoints per reconcile upload
@@ -102,10 +103,16 @@ NO_SNAPSHOT_EVENTS = {"video_loss", "disk_error", "disk_full"}
 
 
 def worker_fault(worker: str, error: BaseException) -> None:
-    """Last-resort log for a background worker loop. It never raises: anything escaping a
-    worker's handler ends that thread for the life of the process, and nothing restarts it."""
+    """Last-resort log for a background worker loop. It never raises. The fault is also
+    recorded (redacted) against the calling supervised worker, which then reports unhealthy
+    until its next success; a fault escaping a worker ends that thread and the supervisor
+    (worker_supervisor) restarts it with backoff."""
     try:
         log(f"{worker}: {type(error).__name__}: {nvr_health.redact(str(error))}")
+    except BaseException:                              # noqa: BLE001
+        pass
+    try:
+        worker_supervisor.record_error(error)
     except BaseException:                              # noqa: BLE001
         pass
 
@@ -640,6 +647,7 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
     auth_failures = 0
     last_gen = _credential_generation_for_cfg(cfg)
     while not stop.is_set():
+        worker_supervisor.tick()
         driver = None
         auth_error = False
         try:
@@ -1254,10 +1262,13 @@ def health_worker(cfg: Config, state: dict, cloud: Cloud, holder: dict,
     recorder-state reconciliation runs inside health_cycle). Like the recovery and Site Control
     threads it outlives any fault: the fan-out runs one per recorder, and nothing restarts a
     thread that has ended."""
+    worker_supervisor.tick()
     stop.wait(min(10, cfg.health_seconds))              # let enrollment/sync settle first
     while not stop.is_set():
+        worker_supervisor.tick()
         try:
             health_cycle(cloud, state, cfg, holder)
+            worker_supervisor.success()
         except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
             worker_fault("health", e)
         jitter = random.uniform(0, max(1.0, cfg.health_seconds * 0.2))
@@ -1340,17 +1351,22 @@ def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event
     implements only read actions. Outbound-only and agent-authenticated; the recorder credential
     never leaves this process, and a failure here can never disturb events/heartbeat/health."""
     if not cfg.site_control_enabled:
+        worker_supervisor.disable("site control is off in this configuration")
         return
     import site_control
+    worker_supervisor.tick()
     stop.wait(min(8, cfg.site_control_seconds))         # let enrollment/sync settle first
     while not stop.is_set():
+        worker_supervisor.tick()
         busy = False
         try:
             claimed = cloud.call("wl_agent_claim_command",
                                  p_agent_id=state["agent_id"], p_agent_key=state["agent_key"])
             # Runtime capability truth: advertise Site Control only after this
-            # worker has actually reached the claim RPC recently.
+            # worker has actually reached the claim RPC recently (the worker registry
+            # records the same proof: worker_supervisor.success()).
             cfg.site_control_last_poll_monotonic = time.monotonic()
+            worker_supervisor.success()
             update_runtime_health(site_control_poll_at=iso(now_utc()))
             cmd = (claimed or {}).get("command")
             if cmd:
@@ -2670,6 +2686,8 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
         return (holder.get("event_stream") or {}).get("connected") is not None
 
     while not stop.is_set():
+        worker_supervisor.tick()
+        cycle_ok = True
         try:
             _reload_credential_if_changed(cfg)
             recorder_id = getattr(cfg, "recorder_cloud_id", None)
@@ -2767,7 +2785,11 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                         log=log)
                     runner.run_once(limit=1)
                 except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
+                    cycle_ok = False
                     log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
+                    worker_supervisor.record_error(e)
+            if cycle_ok:
+                worker_supervisor.success()
         except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
             worker_fault("recovery", e)
         stop.wait(cfg.recovery_seconds)
@@ -2811,26 +2833,37 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         return
 
     stop = threading.Event()
-    worker = threading.Thread(target=collector, args=(cfg, spool, stop, holder),
-                              daemon=True, name="collector")
+    # Every long-running worker is supervised (5.1.2): a worker that dies is restarted with
+    # backoff, a stalled one is reported, and the cloud receives each worker's state.
+    import runtime_status
+    worker = worker_supervisor.supervised(
+        "collector", target=collector, args=(cfg, spool, stop, holder), cfg=cfg, stop=stop,
+        name="collector", probe=runtime_status.collector_probe(holder))
     worker.start()
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
     import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
     resume_evt = threading.Event()
     cov = coverage.CoverageMonitor(loop_period=1.0)
-    health = threading.Thread(target=health_worker,
-                              args=(cfg, state, cloud, holder, stop, resume_evt),
-                              daemon=True, name="health")
+    health = worker_supervisor.supervised(
+        "health", target=health_worker, args=(cfg, state, cloud, holder, stop, resume_evt),
+        cfg=cfg, stop=stop, name="health")
     health.start()
-    # Site Control read plane (H6). Thread exits immediately unless enabled in the ini.
-    sitectl = threading.Thread(target=command_worker, args=(cfg, state, cloud, stop),
-                               daemon=True, name="sitecontrol")
+    # Site Control read plane (H6). Exits at once (reported disabled) unless enabled in the ini.
+    sitectl = worker_supervisor.supervised(
+        "site_control", target=command_worker, args=(cfg, state, cloud, stop), cfg=cfg,
+        stop=stop, name="sitecontrol")
     sitectl.start()
     # Automatic NVR outage recovery (§1/§2). Read-only; yields to live; OFF only if disabled in ini.
-    recov = threading.Thread(target=recovery_worker,
-                             args=(cfg, state, cloud, stop, spool, channels, holder),
-                             daemon=True, name="recovery")
+    recov = worker_supervisor.supervised(
+        "recovery", target=recovery_worker, args=(cfg, state, cloud, stop, spool, channels, holder),
+        cfg=cfg, stop=stop, name="recovery")
     recov.start()
+    # This bare loop never advertised capabilities; it reports runtime status only.
+    monitor = runtime_status.RuntimeMonitor(
+        cloud, state, cfg,
+        lambda: [runtime_status.RecorderSource(getattr(cfg, "recorder_cloud_id", None),
+                                               holder, cfg, spool)],
+        capabilities=False)
 
     log(f"running: upload every {cfg.upload_seconds}s, heartbeat every "
         f"{cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, outbound only. "
@@ -2851,6 +2884,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
                     f"(site PC sleep/suspend); reconciling recorder health now")
                 resume_evt.set()                        # immediate health reconciliation
             cov.report_pending(cloud, state)            # best-effort; retries while cloud down
+            monitor.step(clock)                         # supervise workers, report runtime status
             if clock >= next_up:
                 next_up = clock + cfg.upload_seconds
                 try:
@@ -2889,6 +2923,7 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
         health.join(timeout=5)
         sitectl.join(timeout=5)
         recov.join(timeout=5)
+        worker_supervisor.default().forget_stopped()
         spool.close()
         if holder.get("store"):
             try:

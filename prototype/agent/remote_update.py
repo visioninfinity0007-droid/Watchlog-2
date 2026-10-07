@@ -478,20 +478,26 @@ def stage_latest(cloud, state: dict, cfg, request: dict) -> dict:
 
 def update_worker(cfg, state: dict, cloud, stop: threading.Event) -> None:
     """Poll for signed-update requests. Never executes arbitrary cloud commands."""
+    import worker_supervisor
     missing_logged = False
     while not stop.is_set():
+        worker_supervisor.tick()
         try:
             if report_previous_result(cloud, state, cfg) == "restart":
                 # The applied update failed its commit gate: exit so the launcher restores the
                 # previous Agent from the verified rollback image.
                 _log("remote update: the new version did not prove its health; restarting for rollback")
+                worker_supervisor.complete("restarting the Agent for rollback")
                 _thread.interrupt_main()
                 return
             request = cloud.call(
                 "wl_agent_claim_update_request",
                 **_agent_args(state),
             )
+            # Capability truth: remote_update_v1 is advertised only while this poller is
+            # alive in the worker registry and this claim succeeded recently.
             cfg.remote_update_last_poll_monotonic = time.monotonic()
+            worker_supervisor.success()
             try:
                 import watchlog_agent as core
                 core.update_runtime_health(remote_update_poll_at=core.iso(core.now_utc()))
@@ -524,6 +530,7 @@ def update_worker(cfg, state: dict, cloud, stop: threading.Event) -> None:
                 # enhanced_cmd_run catches KeyboardInterrupt and performs its normal
                 # spool/thread cleanup. The launcher then applies the staged binary
                 # before it starts WatchLog again.
+                worker_supervisor.complete("restarting the Agent to apply a staged update")
                 _thread.interrupt_main()
                 return
         except Exception as error:  # noqa: BLE001
@@ -553,11 +560,13 @@ def wrap_cmd_run(original):
                 pass
             return original(cfg, state, cloud, once, device, channels)
 
+        import worker_supervisor
         stop = threading.Event()
-        worker = threading.Thread(
-            target=update_worker,
+        # Supervised (5.1.2): restarted with backoff if it dies, reported to the cloud.
+        worker = worker_supervisor.supervised(
+            "remote_update", update_worker,
             args=(cfg, state, cloud, stop),
-            daemon=True,
+            cfg=cfg, stop=stop,
             name="remote-update",
         )
         worker.start()

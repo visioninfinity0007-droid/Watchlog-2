@@ -20,6 +20,7 @@ import native_verification
 import nvr_health
 import periodic_stills
 import server_capture
+import worker_supervisor
 from drivers import DriverError
 
 # A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
@@ -127,6 +128,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
     if holder is not None:
         holder["event_stream"] = stream
     while not stop.is_set():
+        worker_supervisor.tick()
         driver = None
         reports_stream = None
         events = None
