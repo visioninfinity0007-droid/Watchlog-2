@@ -1,4 +1,4 @@
--- 0159 - The 0005/0007 viewer RPCs are tenant-scoped (repo only until approved).
+-- 0160 - The 0005/0007 viewer RPCs are tenant-scoped (repo only until approved).
 --
 -- Security defect (found by the 5.1.1 capability audit, confirmed read-only on production
 -- 2026-10-07): wl_get_snapshot(bigint) and wl_recent_events(int) are SECURITY DEFINER with

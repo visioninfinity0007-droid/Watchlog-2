@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Camera sync after an ONVIF-profile era (0158): real Postgres, rolled back.
+"""Camera sync after an ONVIF-profile era (0159): real Postgres, rolled back.
 
 Field defect (Al-Khalid, 2026-10-07): a site that first ran through the ONVIF fallback has
 canonical cameras '1'..'8' (channel = physical channel) plus the renamed profile rows

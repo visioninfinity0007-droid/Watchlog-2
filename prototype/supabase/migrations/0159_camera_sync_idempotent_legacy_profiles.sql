@@ -1,4 +1,4 @@
--- 0158 - Camera sync is idempotent after an ONVIF-profile era (repo only until approved).
+-- 0159 - Camera sync is idempotent after an ONVIF-profile era (repo only until approved).
 --
 -- Field defect, Al-Khalid 2026-10-07 (5.1.1 Setup, Dahua DH-XVR1B08-I over dahua-cgi):
 -- wl_sync_cameras failed with 23505 on cameras_recorder_channel_uniq. The site first ran

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Viewer RPCs are tenant-scoped (0159): real Postgres, rolled back.
+"""Viewer RPCs are tenant-scoped (0160): real Postgres, rolled back.
 
 wl_get_snapshot(bigint) and wl_recent_events(int) (0005/0007) are SECURITY DEFINER and
-granted to `authenticated`; before 0159 they had no tenant filter, so a member of tenant B
+granted to `authenticated`; before 0160 they had no tenant filter, so a member of tenant B
 could read tenant A's CCTV stills by event id and list A's recent events. Proves:
 - a member reads their own tenant's snapshot and sees their own events;
 - a member of another tenant gets null for that snapshot and never sees its events;
