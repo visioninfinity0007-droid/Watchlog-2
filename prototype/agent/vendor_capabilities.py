@@ -28,8 +28,8 @@ CAPABILITIES = [
     ("snapshot",               "get_snapshot",     "a still JPEG on demand"),
     ("native_events",          "stream_events",    "recorder-pushed events (motion / native AI)"),
     ("smart_analytics",        "capabilities",     "read which recorder-side analytics exist / are on"),
-    ("recording_verification", "recording_status", "per-channel recording state from the RECORD config"),
-    ("storage_health",         "storage_status",   "recorder HDD / storage state"),
+    ("recording_verification", "recording_status", "per-channel recording configuration (off / continuous / scheduled); recording itself is proven only by recent archive footage"),
+    ("storage_health",         "storage_status",   "recorder per-disk state, capacity and free space with a recorder rollup"),
     ("footage_retrieval",      "get_clip",         "bounded on-demand recorded clip"),
 ]
 
@@ -46,6 +46,26 @@ FIELD_PROVEN = {
     ("dahua-cgi", "inventory"):     "Dahua DH-XVR1B08-I (Al-Khalid SM-HP): 8 channels enumerated in production",
     ("dahua-cgi", "native_events"): "Dahua DH-XVR1B08-I (Al-Khalid SM-HP): motion/AI events flowing in production",
     ("dahua-cgi", "snapshot"):      "Dahua DH-XVR1B08-I (Al-Khalid SM-HP): stills captured in production",
+}
+
+# The exact recorder reads behind recording/storage truth (5.1.2). Every one is
+# IMPLEMENTED_UNVERIFIED: written to the vendor's documented reply shape and unit-tested on
+# fixtures, but no reply from a field unit has been captured. None may be listed in
+# FIELD_PROVEN until a dated field capture proves its parser (an auditable claim).
+IMPLEMENTED_UNVERIFIED_READS = {
+    ("dahua-cgi", "storage_health"): (
+        "storageDevice.cgi?action=getDeviceAllInfo: per list.info[i] State "
+        "(Success/Normal ok, Error/Abnormal/Fault fault), Detail[j].IsError, TotalBytes, UsedBytes"),
+    ("dahua-cgi", "recording_verification"): (
+        "configManager.cgi getConfig RecordMode (0 schedule, 1 always, 2 off) + Record "
+        "TimeSection schedule (mask bit 0 = regular recording)"),
+    ("hikvision-isapi", "storage_health"): (
+        "/ISAPI/ContentMgmt/Storage (else /Storage/hdd): per hdd status, capacity, freeSpace (MiB), "
+        "property; /ISAPI/Smart/storageDetection healthState and badBlocks as a worsening signal"),
+    ("hikvision-isapi", "recording_verification"): (
+        "/ISAPI/ContentMgmt/record/tracks: main-stream track Enable and TrackSchedule "
+        "(CMR all week = continuous); /ISAPI/ContentMgmt/InputProxy/channels/status online "
+        "for liveness"),
 }
 
 # Transport / discovery hardening — honest current state. These are NOT per-driver methods.
@@ -87,6 +107,9 @@ def matrix() -> dict:
                 caps[key] = {"status": "proven", "evidence": FIELD_PROVEN[(name, key)]}
             else:
                 caps[key] = {"status": "unverified", "evidence": None}
+                read = IMPLEMENTED_UNVERIFIED_READS.get((getattr(cls, "name", name), key))
+                if read and not simulator:
+                    caps[key]["read"] = read
         for key, _note in DECLARED_FUTURE:
             caps[key] = {"status": "unsupported", "evidence": "requires future agent release"}
         devices[name] = {

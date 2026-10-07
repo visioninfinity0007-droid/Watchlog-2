@@ -70,6 +70,18 @@ def test_transport_targets_declared_not_faked():
             f"transport {k} must not claim support it lacks"
 
 
+def test_recording_and_storage_reads_are_implemented_unverified():
+    # 5.1.2: Dahua and Hikvision storage/recording reads are written to the vendors' documented
+    # reply shapes and unit-tested on fixtures only. Until a dated field capture proves a parser
+    # they are IMPLEMENTED_UNVERIFIED ('unverified'), never 'proven', and name their exact read.
+    for driver in ("dahua-cgi", "hikvision-isapi"):
+        for key in ("storage_health", "recording_verification"):
+            cell = M["devices"][driver]["capabilities"][key]
+            assert cell["status"] == "unverified", f"{driver}.{key} reads {cell['status']!r}"
+            assert (driver, key) not in vc.FIELD_PROVEN, f"{driver}.{key} claimed field-proven"
+            assert cell.get("read"), f"{driver}.{key} does not name the recorder read it uses"
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted((k, v) for k, v in globals().items() if k.startswith("test_")):
         _fn()
