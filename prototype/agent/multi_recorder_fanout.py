@@ -1,7 +1,12 @@
 """True multi-recorder worker fan-out.
 
+Every worker below is registered with worker_supervisor (5.1.2): restarted with backoff when
+it dies, reported stalled when it stops ticking, and reported to the cloud with its recorder
+scope. Each recorder's workers are separate registry entries, so recorder A's failing worker
+never restarts or affects recorder B's.
+
 Site-level singletons:
-- Agent heartbeat / coverage monitor
+- Agent heartbeat / coverage monitor / runtime status + capability reporting
 - analytics authority + recorder-aware analytics sampler
 - archive analytics poller
 - Site Control poller
@@ -26,7 +31,10 @@ from pathlib import Path
 import requests
 
 import periodic_stills
+import runtime_status
+import site_maintenance
 import watchlog_agent as core
+import worker_supervisor
 from spool import Spool
 
 # A recorder whose login cannot be read on this PC is held, never contacted with an
@@ -192,15 +200,24 @@ def _queued(units) -> int:
 
 
 def _idle(*_args, **_kwargs) -> None:
-    """Stands in for a worker that needs the recorder's queue when that queue cannot open."""
+    """Stands in for a worker that needs the recorder's queue when that queue cannot open.
+    Reported failed at once (not restarted): it cannot run until the queue opens."""
+    worker_supervisor.fail("this recorder's event queue cannot be opened")
 
 
 def _gated(target, ready: threading.Event, stop: threading.Event):
     """Run ``target`` only once the recorder's login is readable."""
     def run(*args, **kwargs):
+        held_noted = False
         while not ready.wait(1.0):
             if stop.is_set():
                 return
+            # Alive but held, never healthy: the supervisor sees progress (no stall) and
+            # the reason (worker_supervisor), until the login is readable again.
+            worker_supervisor.tick()
+            if not held_noted:
+                worker_supervisor.record_error("held: the recorder login cannot be read on this PC")
+                held_noted = True
         if not stop.is_set():
             target(*args, **kwargs)
     return run
@@ -213,7 +230,9 @@ def _watch_credential(cfg, holder: dict, ready: threading.Event,
     The recorder stays UNVERIFIED meanwhile: nothing connects to it and nothing is
     reported for it. Only a changed credential file is decrypted again."""
     seen = getattr(cfg, "credential_generation_seen", None)
+    worker_supervisor.tick()
     while not stop.wait(CREDENTIAL_RECHECK_SECONDS):
+        worker_supervisor.tick()
         try:
             generation = core._credential_generation_for_cfg(cfg)
             if generation == seen:
@@ -227,6 +246,7 @@ def _watch_credential(cfg, holder: dict, ready: threading.Event,
         holder.pop("credential_unavailable", None)
         core.log(f"multi-recorder: {getattr(cfg, 'recorder_display_name', 'recorder')} "
                  "login is readable again; monitoring it now")
+        worker_supervisor.success()
         ready.set()
         return
 
@@ -255,6 +275,11 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
             # Its preflight probe is still running in its own thread (MNVR-021).
             item.on_ready(lambda done, h=holder, c=cfg: _adopt_late_probe(done, h, c))
 
+        # Supervision scope: this recorder's local and cloud identity (worker_supervisor).
+        scope = {"cfg": cfg, "stop": stop,
+                 "recorder_local_id": getattr(cfg, "recorder_local_id", None) or recorder_id,
+                 "recorder_id": recorder_id}
+
         # A recorder whose login is unreadable is bound but held (MNVR-009).
         credential_ready = credential_watch = None
         collector_target = core.collector
@@ -264,11 +289,11 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
         if getattr(cfg, "credential_error", None):
             holder["credential_unavailable"] = True
             credential_ready = threading.Event()
-            credential_watch = threading.Thread(
-                target=_watch_credential,
+            credential_watch = worker_supervisor.supervised(
+                "credential_watch", _watch_credential,
                 args=(cfg, holder, credential_ready, stop),
-                daemon=True,
                 name=f"credential-{recorder_id[:8]}",
+                **scope,
             )
             collector_target = _gated(collector_target, credential_ready, stop)
             health_target = _gated(health_target, credential_ready, stop)
@@ -286,45 +311,48 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
                      f"({holder['upload_degraded']}); the other recorders keep running")
             collector_target = recovery_target = stills_target = _idle
         resume_evt = threading.Event()
-        collector = threading.Thread(
-            target=collector_target,
+        collector = worker_supervisor.supervised(
+            "collector", collector_target,
             args=(cfg, spool, stop, holder),
-            daemon=True,
             name=f"collector-{recorder_id[:8]}",
+            probe=runtime_status.collector_probe(holder),
+            **scope,
         )
-        health = threading.Thread(
-            target=health_target,
+        health = worker_supervisor.supervised(
+            "health", health_target,
             args=(cfg, state, cloud, holder, stop, resume_evt),
-            daemon=True,
             name=f"health-{recorder_id[:8]}",
+            **scope,
         )
 
         # Always create the recovery worker, but feed it the CURRENT explicitly
         # synced channel set. If preflight saw zero cameras, recovery waits
         # fail-closed until health_cycle later syncs inventory after reconnect.
-        recovery = threading.Thread(
-            target=recovery_target,
+        recovery = worker_supervisor.supervised(
+            "recovery", recovery_target,
             args=(
                 cfg, state, cloud, stop, spool,
                 (lambda h=holder: h.get("synced_channels") or []),
                 holder,
             ),
-            daemon=True,
             name=f"recovery-{recorder_id[:8]}",
+            **scope,
         )
         # One periodic still producer per recorder: its own driver, spool, credential and
         # back-off, sampling by this recorder's own camera choices.
-        stills = threading.Thread(
-            target=stills_target,
+        still_profiles = periodic_stills.recorder_camera_profiles(
+            cfg, continuity_owner=bool(getattr(item.context, "continuity_owner", False)))
+        # The collector's in-stream sampler (Hikvision) uses the same camera choices.
+        holder["still_profiles"] = still_profiles
+        stills = worker_supervisor.supervised(
+            "periodic_stills", stills_target,
             args=(cfg, spool, stop, channels),
             kwargs={
-                "profiles": periodic_stills.recorder_camera_profiles(
-                    cfg, continuity_owner=bool(
-                        getattr(item.context, "continuity_owner", False))),
+                "profiles": still_profiles,
                 "label": getattr(cfg, "recorder_display_name", None) or recorder_id[:8],
             },
-            daemon=True,
             name=f"periodic-stills-{recorder_id[:8]}",
+            **scope,
         )
         out.append(RecorderWorkers(
             prepared=item,
@@ -448,28 +476,26 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
     core.vision.build = lambda _cfg, _log: shared_detector
 
     authority = {"ok": True}
-    analytic = threading.Thread(
-        target=analytics_worker,
+    analytic = worker_supervisor.supervised(
+        "analytics", analytics_worker,
         args=(base_cfg, state, shared_detector, stop, authority),
-        daemon=True,
-        name="analytics-site",
+        cfg=base_cfg, stop=stop, name="analytics-site",
     )
-    archive = threading.Thread(
-        target=archive_worker,
+    archive = worker_supervisor.supervised(
+        "archive", archive_worker,
         args=(base_cfg, state, stop, authority, shared_detector),
-        daemon=True,
-        name="archive-site",
+        cfg=base_cfg, stop=stop, name="archive-site",
     )
-    sitectl = threading.Thread(
-        target=core.command_worker,
+    sitectl = worker_supervisor.supervised(
+        "site_control", core.command_worker,
         args=(base_cfg, state, cloud, stop),
-        daemon=True,
-        name="sitecontrol-site",
+        cfg=base_cfg, stop=stop, name="sitecontrol-site",
     )
 
     restart = {}
-    checker = (threading.Thread(target=recorder_check, args=(stop, restart),
-                                daemon=True, name="recorder-check")
+    checker = (worker_supervisor.supervised(
+                   "recorder_check", recorder_check, args=(stop, restart),
+                   cfg=base_cfg, stop=stop, name="recorder-check")
                if recorder_check is not None and not once else None)
 
     try:
@@ -528,6 +554,12 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
             checker.start()
 
         cov = coverage.CoverageMonitor(loop_period=1.0)
+        # Capabilities and runtime status are reported from this loop (5.1.2): one row per
+        # recorder (event stream, login, queue) and per supervised worker.
+        monitor = runtime_status.RuntimeMonitor(
+            cloud, state, base_cfg,
+            lambda: [runtime_status.RecorderSource(unit.cfg.recorder_cloud_id, unit.holder,
+                                                   unit.cfg, unit.spool) for unit in units])
         core.log(
             f"running: {len(units)} recorder worker set(s), one site authority, "
             "outbound only. Ctrl-C to stop."
@@ -539,6 +571,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
             if restart.get("reason"):
                 core.log(f"recorder: {restart['reason']}")
                 raise SystemExit(restart["reason"])
+            site_maintenance.check_restart()             # restart_agent (Site Control)
             clock = time.monotonic()
             now_wall = time.time()
             gap = cov.tick(last_wall, now_wall)
@@ -551,6 +584,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 for unit in units:
                     unit.resume_evt.set()
             cov.report_pending(cloud, state)
+            monitor.step(clock)                 # supervise workers, report runtime status
 
             if clock >= next_upload:
                 next_upload = clock + base_cfg.upload_seconds
@@ -627,6 +661,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
             archive.join(timeout=5)
         if sitectl.is_alive():
             sitectl.join(timeout=5)
+        worker_supervisor.default().forget_stopped()
         _close(units)
         core.vision.build = original_build
         core.log("stopped")

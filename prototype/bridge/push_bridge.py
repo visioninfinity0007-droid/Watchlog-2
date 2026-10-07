@@ -84,6 +84,10 @@ def _event(alarm, jpeg, received_at):
         "payload": {**alarm.payload, **clock},
         "_burst": (alarm.vendor,) + tuple(alarm.burst_key),
     }
+    if alarm.phase and alarm.pair_key is not None:
+        # A fault's start/end pairing, applied by deliver() exactly as the Agent does.
+        ev["_pair"] = (alarm.vendor,) + tuple(alarm.pair_key)
+        ev["_phase"] = alarm.phase
     if jpeg:
         ev["snapshot_b64"] = base64.b64encode(jpeg).decode("ascii")
     return ev
@@ -97,7 +101,10 @@ def parse_hikvision(body: bytes, content_type: str, received_at=None):
     XML, and multipart/form-data with that XML in one part and a JPEG in
     another. Returns {channel, event_type, device_ts, device_event_id, payload,
     snapshot_b64?} or None if it is not an event (keep-alive, heartBeat, heartbeat
-    videoloss with activePostCount 0, inactive, or not an alert at all).
+    videoloss with activePostCount 0, the inactive end of an alarm that is not a fault, or
+    not an alert at all). The inactive end of video loss, tamper, an alarm input or an IP
+    camera disconnect is an event (video_restore, tamper_end, alarm_input_end,
+    camera_reconnect).
     """
     xml_bytes, jpeg = _split_multipart(body, content_type)
     if xml_bytes is None:
@@ -112,7 +119,8 @@ def parse_dahua(body: bytes, content_type: str, received_at=None):
 
     Dahua posts the same ``Code=VideoMotion;action=Start;index=0;data={...}``
     vocabulary it streams over eventManager attach, and alarm_parsing is the very
-    parser the Agent's attach path uses: action=Stop/State is ignored, the 0-based wire
+    parser the Agent's attach path uses: action=State is ignored, action=Stop is an event
+    only as the end of a fault (video restore, tamper end, alarm input end), the 0-based wire
     index becomes the 1-based channel, and a disk/alarm-input code or a missing index
     is never guessed onto a camera. Some firmware wraps the same fields in JSON, and
     some attaches a JPEG via multipart; both are handled.
@@ -237,8 +245,11 @@ def deliver(token: str, vendor: str, ev: dict, mono: float | None = None) -> int
     counted against the window, so the recorder's retry still gets through."""
     key = (token,) + tuple(ev.pop("_burst", None) or (vendor, ev.get("channel"),
                                                        ev.get("event_type")))
+    pair = ev.pop("_pair", None)
+    phase = ev.pop("_phase", None)
     now = time.monotonic() if mono is None else mono
-    if not BURST.admit(key, now):
+    if not BURST.admit(key, now, pair=((token,) + tuple(pair)) if pair else None,
+                       phase=phase):
         return 200
     ok, _detail = push(token, [ev])
     if not ok:

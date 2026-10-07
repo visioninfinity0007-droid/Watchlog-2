@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<storage version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<hddList size="8">
+<hdd version="2.0">
+<id>1</id>
+<hddName>hdd1</hddName>
+<hddPath></hddPath>
+<hddType>SATA</hddType>
+<status>ok</status>
+<capacity>3815447</capacity>
+<freeSpace>1310720</freeSpace>
+<property>RW</property>
+</hdd>
+</hddList>
+<nasList size="8">
+</nasList>
+<workMode>group</workMode>
+</storage>

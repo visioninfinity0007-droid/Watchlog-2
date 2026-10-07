@@ -64,7 +64,7 @@ def main():
         "wl_vision_claim_snapshots",
         "wl_vision_complete_snapshot",
         "wl_vision_save_day_summary",
-        "snapshot-vision-v2-context",
+        'ANALYSIS_VERSION = "snapshot-vision-v',   # versioned analysis (v3-restaurant since 6291c247)
         "Camera role:",
         "queue_pressure",
         "periodic CCTV snapshots",

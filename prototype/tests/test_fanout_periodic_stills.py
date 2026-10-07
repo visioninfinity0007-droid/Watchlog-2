@@ -16,6 +16,11 @@ Two fake recorders share channel 1, as two real recorders on one site do:
     other recorder's stills;
   * each recorder samples by its own Monitor/Ignore choices;
   * the fan-out run loop starts one producer per recorder in run mode only.
+
+The separate worker runs for Dahua and ONVIF recorders, so these recorders are Dahua. A
+Hikvision recorder takes its stills between live alert-stream slices on its own session (field
+Build 69; test_hikvision_field_safety.py), so the worker stands down for it and hands the
+recorder's camera choices to that stream instead (last test).
 """
 from __future__ import annotations
 
@@ -45,7 +50,7 @@ REC_A = "a0000000-0000-4000-8000-00000000000a"
 REC_B = "b0000000-0000-4000-8000-00000000000b"
 JPEG_A = b"\xff\xd8" + b"recorder-A" * 8 + b"\xff\xd9"
 JPEG_B = b"\xff\xd8" + b"recorder-B" * 8 + b"\xff\xd9"
-PAYLOAD = {"sample": True, "source": "periodic_snapshot", "vendor": "hikvision"}
+PAYLOAD = {"sample": True, "source": "periodic_snapshot", "vendor": "dahua"}
 
 
 def _wait_for(predicate, timeout=8.0):
@@ -58,7 +63,7 @@ def _wait_for(predicate, timeout=8.0):
 
 
 class _Driver:
-    name = "hikvision-isapi"
+    name = "dahua-cgi"
 
     def __init__(self, still, channels=("1",)):
         self.still = still
@@ -85,7 +90,7 @@ def _prepared(root: Path, name: str, rid: str, *, continuity=False, profiles=Non
     state.mkdir(parents=True, exist_ok=True)
     cfg = SimpleNamespace(
         recorder_cloud_id=rid, recorder_local_id=f"local-{name}", recorder_display_name=name,
-        recorder_state_dir=state, nvr_driver="hikvision-isapi",
+        recorder_state_dir=state, nvr_driver="dahua-cgi",
         nvr_url=f"http://192.0.2.{10 if name == 'A' else 11}",
         nvr_username="local-user", nvr_password="local-password",
         spool_path=state / "spool.sqlite", health_store_path=state / "health.sqlite",
@@ -183,7 +188,7 @@ def test_each_recorder_produces_its_own_stamped_stills_on_a_shared_channel(
             assert row["recorder_id"] == rid
             assert row["channel"] == "1" and row["event_type"] == "visual_sample"
             assert row["payload"] == PAYLOAD
-            assert re.fullmatch(r"hikvision-sample-1-\d+", row["device_event_id"])
+            assert re.fullmatch(r"dahua-sample-1-\d+", row["device_event_id"])
             # The still came from this recorder, not the other one with the same channel.
             assert base64.b64decode(row["snapshot_b64"]) == jpeg
     assert drivers[REC_A].calls and set(drivers[REC_A].calls) == {"1"}
@@ -327,3 +332,25 @@ def test_the_fanout_once_mode_takes_no_periodic_stills(monkeypatch, tmp_path, fa
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+def test_hikvision_recorders_take_stills_on_their_live_stream_not_a_second_session(
+        monkeypatch, tmp_path, fast):
+    # Field Build 69 (DS-7608NI-Q1): a still session beside the open alertStream made the
+    # recorder refuse logins. Each Hikvision recorder's worker stands down without opening a
+    # session, and its own camera choices go to that recorder's live-stream sampler.
+    a = _prepared(tmp_path, "A", REC_A, continuity=True,
+                  profiles=[{"channel": "2", "monitored": False}])
+    b = _prepared(tmp_path, "B", REC_B)
+    _write_recorder_profiles(b, [{"channel": "1", "monitored": False}])
+    for item in (a, b):
+        item.context.config.nvr_driver = "hikvision-isapi"
+    drivers = {REC_A: _Driver(JPEG_A), REC_B: _Driver(JPEG_B)}
+    with _Site(monkeypatch, [a, b], drivers) as site:
+        for unit in site.units:
+            unit.stills.join(timeout=5)
+            assert not unit.stills.is_alive()
+        assert site.opens == {REC_A: 0, REC_B: 0}
+    assert a.context.holder["still_profiles"] == [{"channel": "2", "monitored": False}]
+    assert b.context.holder["still_profiles"] == [{"channel": "1", "monitored": False}]
+    assert sum("stills come from the live event stream" in line for line in fast) == 2

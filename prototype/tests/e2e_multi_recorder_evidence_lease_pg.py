@@ -150,11 +150,14 @@ def run() -> int:
                 )[0][channel]
 
             def event(tenant_id, site_id, agent_id, camera_id, tag):
+                # Two minutes ago: since 0164 a clip is claimable only once its post-roll
+                # has been recorded (end_at <= now() - 10 s).
                 return cur.execute(
                     """insert into events(
                          tenant_id,site_id,camera_id,agent_id,event_type,
                          device_ts,agent_ts,dedupe_key
-                       ) values (%s,%s,%s,%s,'motion',now(),now(),%s) returning id""",
+                       ) values (%s,%s,%s,%s,'motion',now()-interval '2 minutes',now(),%s)
+                       returning id""",
                     (tenant_id, site_id, camera_id, agent_id, f"lease-{tag}"),
                 ).fetchone()[0]
 

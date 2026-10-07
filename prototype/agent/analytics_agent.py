@@ -29,10 +29,14 @@ import credential_store
 import periodic_stills
 import watchlog_agent as core
 import recorder_runtime
+import server_capture
 import recorder_registry
 import recorder_analytics
 import multi_recorder_orchestrator
 import multi_recorder_fanout
+import runtime_status
+import worker_supervisor
+import site_maintenance
 from action_runtime import ActionRuntime
 from archive_runtime import ArchiveRuntime
 from drivers import DriverError
@@ -68,25 +72,39 @@ MULTI_RECORDER_PROBE_WAIT_SECONDS = 0.0
 RUNTIME_CAPABILITIES = ["operations_runtime", "operations_extended_primitives",
                         "operations_evidence_still", "operations_evidence_clip",
                         "archive_processing", "multi_agent_fencing", "recorder_probe_v2",
-                        "config_snapshot_requests"]
+                        "config_snapshot_requests", "agent_runtime_status_v1"]
 
-def runtime_capabilities(cfg) -> list[str]:
+
+def runtime_capabilities(cfg, supervisor=None) -> list[str]:
+    """What this runtime can execute now (reported by runtime_status.CapabilityReporter
+    from the main loop, independent of analytics).
+
+    site_control_runtime / remote_update_v1 are advertised only while their poller is alive
+    in the worker registry and its poll succeeded recently. A poller that is not registered
+    (a runtime that does not supervise it) falls back to the poll stamp it writes on cfg."""
     caps = list(RUNTIME_CAPABILITIES)
     now = time.monotonic()
+    registry = supervisor if supervisor is not None else worker_supervisor.default()
+    registry_now = registry.clock()
 
-    site_poll = getattr(cfg, "site_control_last_poll_monotonic", None)
     site_fresh_for = max(60.0, float(getattr(cfg, "site_control_seconds", 15)) * 3.0)
-    if (getattr(cfg, "site_control_enabled", False)
-            and site_poll is not None and now - float(site_poll) <= site_fresh_for):
+    site_live = registry.poller_fresh("site_control", site_fresh_for, registry_now)
+    if site_live is None:
+        site_poll = getattr(cfg, "site_control_last_poll_monotonic", None)
+        site_live = site_poll is not None and now - float(site_poll) <= site_fresh_for
+    if getattr(cfg, "site_control_enabled", False) and site_live:
         caps.append("site_control_runtime")
 
     update_ready = bool(getattr(cfg, "update_url", "")) and (
         not getattr(cfg, "update_require_signature", True)
         or bool(getattr(cfg, "update_public_key", ""))
     )
-    update_poll = getattr(cfg, "remote_update_last_poll_monotonic", None)
-    if (update_ready and update_poll is not None
-            and now - float(update_poll) <= max(90.0, 3.0 * 30.0)):
+    update_fresh_for = max(90.0, 3.0 * 30.0)
+    update_live = registry.poller_fresh("remote_update", update_fresh_for, registry_now)
+    if update_live is None:
+        update_poll = getattr(cfg, "remote_update_last_poll_monotonic", None)
+        update_live = update_poll is not None and now - float(update_poll) <= update_fresh_for
+    if update_ready and update_live:
         caps.append("remote_update_v1")
     return caps
 
@@ -592,8 +610,13 @@ def _service_snapshot_requests(cloud, state, cfg, driver, requests_list):
             job_cfg = recorder_runtime.config_for_cloud_recorder(
                 cfg, request_row.get("recorder_id")
             )
+            live = server_capture.live_driver_for(getattr(job_cfg, "nvr_url", ""))
             if job_cfg is cfg and driver is not None:
                 job_driver = driver
+            elif live is not None:
+                # Hikvision: the live collector's own session (its recorder lock takes
+                # turns with the stream), never a new login per capture request.
+                job_driver = live
             else:
                 job_driver = _open_analytics_driver(job_cfg)
                 close_job_driver = True
@@ -652,6 +675,7 @@ def analytics_worker(cfg: Config, state: dict, detector,
     cross-thread lease mutation (this thread is the only one that calls refresh/validate)."""
     if not cfg.analytics_enabled:
         core.log("analytics: disabled by configuration")
+        worker_supervisor.disable("analytics is off in this configuration")
         return
 
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
@@ -700,6 +724,7 @@ def analytics_worker(cfg: Config, state: dict, detector,
 
     try:
         while not stop.is_set():
+            worker_supervisor.tick()
             clock = time.monotonic()
 
             if clock >= next_config:
@@ -720,14 +745,10 @@ def analytics_worker(cfg: Config, state: dict, detector,
                     # publish the single-authority verdict for the event/archive fences
                     if authority is not None:
                         authority["ok"] = lease.is_authoritative()
-                    # advertise what this runtime can execute; an older server (no 0059) or a
-                    # transient error just leaves the capability unadvertised -> server treats it
-                    # as unsupported, which is the safe default.
-                    try:
-                        cloud.call("wl_agent_report_capabilities", p_agent_id=state["agent_id"],
-                                   p_agent_key=state["agent_key"], p_capabilities=runtime_capabilities(cfg))
-                    except (RuntimeError, requests.RequestException):
-                        pass
+                    # Capabilities are no longer advertised from here: the main loop's
+                    # runtime_status.CapabilityReporter does it whether or not analytics is
+                    # enabled or alive (5.1.2).
+                    worker_supervisor.success()
                     if payload.get("changed") and payload.get("config"):
                         version = int(payload.get("version") or version)
                         analytics.save_config(cfg.analytics_config_path, version,
@@ -741,6 +762,9 @@ def analytics_worker(cfg: Config, state: dict, detector,
                         core.log(f"analytics: config updated to v{version}; "
                                  f"{mux.camera_count} camera(s) active")
                     snapshot_requests = payload.get("snapshot_requests") or []
+                    # The server schedules these cameras' stills: this Agent's own periodic
+                    # stills skip them while it does (owner decision, server_capture).
+                    server_capture.note_requests(snapshot_requests)
                     if snapshot_requests and (snapshot_thread is None
                                               or not snapshot_thread.is_alive()):
                         # Each request resolves its own recorder. A dead primary
@@ -754,9 +778,11 @@ def analytics_worker(cfg: Config, state: dict, detector,
                 except (RuntimeError, requests.RequestException, DriverError) as error:
                     core.log("analytics: config poll failed; cached rules remain active: "
                              + str(error).splitlines()[0][:180])
+                    worker_supervisor.record_error(error)
                 except Exception as error:
                     core.log(f"analytics: config error {type(error).__name__}: "
                              f"{str(error)[:160]}")
+                    worker_supervisor.record_error(error)
 
             plan = mux.sample_plan()
             capacity = sampler.summary(plan)
@@ -1021,6 +1047,7 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
                    authority: dict = None, detector=None) -> None:
     """Background historical scan using bounded vendor archive reads + local analytics."""
     if not cfg.analytics_enabled:
+        worker_supervisor.disable("analytics is off in this configuration")
         return
     cloud = core.Cloud(cfg.supabase_url, cfg.publishable_key)
     retrieve_frames, analyze_frame = _archive_scan_handlers(cfg, detector, stop)
@@ -1031,6 +1058,7 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
                            archive=archive, log=core.log)
     missing_logged = False
     while not stop.is_set():
+        worker_supervisor.tick()
         # Archive reprocessing is an authoritative write; only the lease holder runs it. A
         # standby stays idle here (no duplicate recovered results) until it becomes authority.
         if authority is not None and not authority.get("ok", True):
@@ -1038,6 +1066,7 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
             continue
         try:
             processed = runtime.poll_archive(limit=1)   # bounded: at most one scan per cycle
+            worker_supervisor.success()
             missing_logged = False
             for row in processed:
                 core.log(f"analytics: archive scan {str(row.get('scan_id', '?'))[:8]} "
@@ -1051,8 +1080,10 @@ def archive_worker(cfg: Config, state: dict, stop: threading.Event,
                 continue
             core.log("analytics: archive poll failed; will retry: "
                      + str(error).splitlines()[0][:160])
+            worker_supervisor.record_error(error)
         except Exception as error:                      # noqa: BLE001 — never kill the thread
             core.log(f"analytics: archive error {type(error).__name__}: {str(error)[:140]}")
+            worker_supervisor.record_error(error)
         stop.wait(ARCHIVE_POLL_SECONDS)
 
 
@@ -1172,7 +1203,9 @@ def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
     serve, so ask for a clean restart that binds the recorder.
     """
     attempt = 0
+    worker_supervisor.tick()
     while not stop.wait(RECORDER_RECHECK_SECONDS[min(attempt, len(RECORDER_RECHECK_SECONDS) - 1)]):
+        worker_supervisor.tick()
         attempt += 1
         try:
             multi_recorder_orchestrator.require_cloud_contract(cloud, state)
@@ -1195,6 +1228,7 @@ def _retry_recorder_preflight(cfg, state: dict, cloud, stop: threading.Event,
                                  "restarting WatchLog to bind this recorder")
         else:
             core.log("recorder: saved recorder identity confirmed with WatchLog")
+        worker_supervisor.success()
         return
 
 
@@ -1444,29 +1478,36 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
 
     stop = threading.Event()
     restart = {}          # set by the background recorder check: exit for a clean start
-    collector = threading.Thread(target=core.collector,
-                                 args=(cfg, spool, stop, holder),
-                                 daemon=True, name="collector")
-    analytic = threading.Thread(target=analytics_worker,
-                                args=(cfg, state, detector, stop, authority),
-                                daemon=True, name="analytics")
-    archive = threading.Thread(target=archive_worker,
-                               args=(cfg, state, stop, authority, detector),
-                               daemon=True, name="archive")
-    recovery = threading.Thread(target=core.recovery_worker,
-                                args=(cfg, state, cloud, stop, spool, recovery_channels, holder),
-                                daemon=True, name="recovery")
+    # Every long-running worker is supervised (5.1.2): restarted with backoff when it dies,
+    # reported stalled when it stops ticking, and reported to the cloud with its state.
+    # Each recorder-scoped worker carries this recorder's local and cloud identity.
+    scope = {"cfg": cfg, "stop": stop,
+             "recorder_local_id": getattr(cfg, "recorder_local_id", None),
+             "recorder_id": getattr(cfg, "recorder_cloud_id", None)}
+    collector = worker_supervisor.supervised(
+        "collector", core.collector, args=(cfg, spool, stop, holder), name="collector",
+        probe=runtime_status.collector_probe(holder), **scope)
+    analytic = worker_supervisor.supervised(
+        "analytics", analytics_worker, args=(cfg, state, detector, stop, authority),
+        cfg=cfg, stop=stop, name="analytics")
+    archive = worker_supervisor.supervised(
+        "archive", archive_worker, args=(cfg, state, stop, authority, detector),
+        cfg=cfg, stop=stop, name="archive")
+    recovery = worker_supervisor.supervised(
+        "recovery", core.recovery_worker,
+        args=(cfg, state, cloud, stop, spool, recovery_channels, holder),
+        name="recovery", **scope)
     # Health probing runs on its OWN thread so a stalled probe can never delay heartbeat/upload.
     import monitoring_coverage as coverage   # local module; NOT the PyPI 'coverage' tool
     resume_evt = threading.Event()
     cov = coverage.CoverageMonitor(loop_period=1.0)
-    health = threading.Thread(target=core.health_worker,
-                              args=(cfg, state, cloud, holder, stop, resume_evt),
-                              daemon=True, name="health")
+    health = worker_supervisor.supervised(
+        "health", core.health_worker, args=(cfg, state, cloud, holder, stop, resume_evt),
+        name="health", **scope)
     # Timed still per configured camera (~300 s), spooled like every other event (NEW-L2).
-    stills = threading.Thread(target=periodic_stills.periodic_still_worker,
-                              args=(cfg, spool, stop, channels),
-                              daemon=True, name="periodic-stills")
+    stills = worker_supervisor.supervised(
+        "periodic_stills", periodic_stills.periodic_still_worker,
+        args=(cfg, spool, stop, channels), name="periodic-stills", **scope)
     collector.start()
     analytic.start()
 
@@ -1492,14 +1533,21 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
     recovery.start()  # automatic LIVE-gap reconciliation from recorder archive
     health.start()    # Phase-A camera/NVR health probing on its own thread
     stills.start()    # periodic stills; run mode only
-    sitectl = threading.Thread(target=core.command_worker, args=(cfg, state, cloud, stop),
-                               daemon=True, name="sitecontrol")
-    sitectl.start()   # Site Control read plane (H6); thread exits at once unless enabled
-    recorder_check = threading.Thread(target=_retry_recorder_preflight,
-                                      args=(cfg, state, cloud, stop, restart, recheck),
-                                      daemon=True, name="recorder-check")
+    sitectl = worker_supervisor.supervised(
+        "site_control", core.command_worker, args=(cfg, state, cloud, stop),
+        cfg=cfg, stop=stop, name="sitecontrol")
+    sitectl.start()   # Site Control read plane (H6); exits at once (disabled) unless enabled
+    recorder_check = worker_supervisor.supervised(
+        "recorder_check", _retry_recorder_preflight,
+        args=(cfg, state, cloud, stop, restart, recheck), cfg=cfg, stop=stop,
+        name="recorder-check")
     if recheck:
         recorder_check.start()   # finish the recorder check startup could not
+    # Capabilities and runtime status are reported from this loop, independent of analytics.
+    monitor = runtime_status.RuntimeMonitor(
+        cloud, state, cfg,
+        lambda: [runtime_status.RecorderSource(getattr(cfg, "recorder_cloud_id", None),
+                                               holder, cfg, spool)])
     core.log(f"running: events every {cfg.upload_seconds}s, analytics enabled, "
              f"heartbeat every {cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, "
              f"outbound only. Ctrl-C to stop.")
@@ -1510,6 +1558,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
             if restart.get("reason"):
                 core.log(f"recorder: {restart['reason']}")
                 raise SystemExit(restart["reason"])
+            site_maintenance.check_restart()             # restart_agent (Site Control)
             clock = time.monotonic()
             now_wall = time.time()
             # Suspend/resume detection (site PC sleep) — same rule as watchlog_agent.cmd_run:
@@ -1521,6 +1570,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                          f"(site PC sleep/suspend); reconciling recorder health now")
                 resume_evt.set()                        # immediate health reconciliation
             cov.report_pending(cloud, state)            # best-effort; retries while cloud down
+            monitor.step(clock)                         # supervise workers, report status
             if clock >= next_upload:
                 next_upload = clock + cfg.upload_seconds
                 # Fence the authoritative event write (native recorder events + incidents) on the
@@ -1563,6 +1613,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         sitectl.join(timeout=5)
         if recorder_check.is_alive():
             recorder_check.join(timeout=5)
+        worker_supervisor.default().forget_stopped()
         spool.close()
         core.vision.build = original_build
         core.log("stopped")

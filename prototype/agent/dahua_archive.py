@@ -6,7 +6,8 @@ explicitly and installs :func:`get_clip` on ``DahuaDriver``.
 
 Safety / truth rules:
 * read-only CGI calls only;
-* WatchLog channel numbers are converted to Dahua's native zero-based indexes;
+* mediaFileFind and loadfile address cameras by WatchLog's own 1-based channel number
+  (field-proven on the DH-XVR1B08-I; only event indexes and config tables are 0-based);
 * the recorder's own clock is read once per call. Times the Agent stamped (UTC
   cloud windows, Dahua CGI event receive times) move onto recorder wall time by
   the measured offset, drift included; UTC times the recorder's own clock
@@ -232,11 +233,19 @@ def _segment_utc(value, offset: timedelta) -> str | None:
 
 
 def _native_channel(channel) -> int:
+    """The channel number mediaFileFind and loadfile address: 1-based, like WatchLog's.
+
+    Field proof (Al-Khalid DH-XVR1B08-I, 5.1.1, 2026-10-07): with 0-based numbers camera 1
+    searched channel 0 and found nothing while it was live, and cameras 5, 7 and 8 (video
+    loss) reported recording found on cameras 4, 6 and 7. The 5.0.26 field build also sent
+    1-based numbers to loadfile. Only the event stream's ``index`` and configManager tables
+    are 0-based (drivers/dahua.py).
+    """
     try:
-        native_channel = int(str(channel)) - 1
+        native_channel = int(str(channel))
     except ValueError as error:
         raise DriverError(f"invalid camera channel: {channel}") from error
-    if native_channel < 0:
+    if native_channel < 1:
         raise DriverError(f"invalid camera channel: {channel}")
     return native_channel
 
@@ -334,7 +343,7 @@ def find_recordings(driver: DahuaDriver, channel: str, start: datetime, end: dat
                     *, max_items: int = FINDER_COUNT) -> list[dict]:
     """Search recorder archive for DAV recordings overlapping ``start..end``.
 
-    Public WatchLog channels are 1-based; Dahua CGI channel indexes are 0-based.
+    WatchLog channels and the mediaFileFind/loadfile channel numbers are both 1-based.
     Returned metadata is recorder-native and used only to prove the requested
     channel/time has media before download.
     """

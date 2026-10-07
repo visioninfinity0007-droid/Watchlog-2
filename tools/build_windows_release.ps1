@@ -5,10 +5,19 @@
 #   ...\build_windows_release.ps1 -SupabaseUrl https://<project>.supabase.co -SupabasePublishableKey <public-key>
 #   ...\build_windows_release.ps1 -Lean
 #   ...\build_windows_release.ps1 -SignPfx cert.pfx -SignPassword ****
+#   ...\build_windows_release.ps1 -AllowDirty          (developer build from an uncommitted tree)
 #
 # Authoritative path:
-#   AI Site Agent -> branded setup UI -> optional inner signing -> staged
-#   public config -> NSIS -> optional installer signing -> FINAL SHA256.
+#   clean tree -> AI Site Agent (own hash-locked venv) -> branded setup UI (own hash-locked
+#   venv, selective Qt) -> optional inner signing -> staged public config -> NSIS -> optional
+#   installer signing -> build manifest (baked BUILD_SHA == source SHA, venvs == locks;
+#   dist-installer/WatchLog-Build-Manifest.json) -> size sanity report -> NSIS payload proof
+#   (7-Zip, hashes) -> FINAL SHA256. See docs/release/WINDOWS_PACKAGING.md.
+#
+# Signed remote-update public configuration: -UpdateUrl / -UpdatePublicKey, else the
+# WATCHLOG_UPDATE_URL / WATCHLOG_UPDATE_PUBLIC_KEY environment (or .env), else the committed
+# bootstrap prototype/update/production.json (the feed and Ed25519 key field 5.0.24-5.0.26
+# Agents already trust).
 
 param(
   [string]$Code = "",
@@ -21,11 +30,32 @@ param(
   [switch]$Lean,
   [switch]$Production,
   [string]$SignPfx = "",
-  [string]$SignPassword = ""
+  [string]$SignPassword = "",
+  [switch]$AllowDirty
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+# 0) Build identity. A release is built only from a committed tree, and both EXEs are stamped
+#    with exactly this commit (the manifest step below fails if either baked SHA differs).
+$porcelain = (git -C $root status --porcelain 2>$null | Out-String).Trim()
+if ($porcelain) {
+  if (-not $AllowDirty) {
+    throw "refusing to build a release from a dirty tree (commit or stash first; -AllowDirty is for developer builds):`n$porcelain"
+  }
+  Write-Host "*** DIRTY TREE (-AllowDirty): this build does not correspond to its source SHA. Developer use only. ***" -ForegroundColor Yellow
+}
+$sourceSha = (git -C $root rev-parse HEAD 2>$null | Out-String).Trim()
+if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw "could not resolve the source commit (git rev-parse HEAD)" }
+if ($env:GITHUB_SHA -and $env:GITHUB_SHA -ne $sourceSha) {
+  throw "GITHUB_SHA $env:GITHUB_SHA != checked-out HEAD $sourceSha"
+}
+if ($env:WATCHLOG_BUILD_SHA -and $env:WATCHLOG_BUILD_SHA -ne $sourceSha) {
+  throw "WATCHLOG_BUILD_SHA $env:WATCHLOG_BUILD_SHA != checked-out HEAD $sourceSha"
+}
+$env:WATCHLOG_BUILD_SHA = $sourceSha
+Write-Host "Source commit: $sourceSha" -ForegroundColor Gray
 
 $signtool = $null
 if ($SignPfx) {
@@ -83,6 +113,8 @@ $minimumAgentBytes = if ($Lean) { 1MB } else { 5MB }
 if ($agentBytes -lt $minimumAgentBytes) {
   throw "agent executable is suspiciously small ($agentBytes bytes); refusing to package a stub/incomplete build"
 }
+# The release tools below are stdlib-only; run them with the Agent's isolated build Python.
+$toolPy = Join-Path $root "prototype\build-venvs\agent\Scripts\python.exe"
 
 # 2) Build the customer-facing windowed setup application.
 Write-Host "Building branded WatchLog setup UI..." -ForegroundColor Cyan
@@ -118,6 +150,18 @@ try {
   # Public defaults only. Recorder credentials are collected/protected locally
   # by the graphical setup app and are never baked into a release artifact.
   $cfg = Read-DotEnv (Join-Path $root ".env")
+  # Committed public bootstrap of the signed production update feed (ported from the field
+  # 5.0.24-5.0.26 line, 78438641): the manifest URL and the Ed25519 PUBLIC key. Explicit
+  # parameters and the environment still win; this only removes the dependency on repository
+  # variables for the values field Agents already trust.
+  $updateBootstrap = $null
+  $updateBootstrapPath = Join-Path $root "prototype\update\production.json"
+  if (Test-Path $updateBootstrapPath) {
+    $updateBootstrap = Get-Content -LiteralPath $updateBootstrapPath -Raw | ConvertFrom-Json
+    if ($updateBootstrap.schema -ne "watchlog.update_bootstrap.v1" -or $updateBootstrap.channel -ne "production") {
+      throw "prototype\update\production.json is not a watchlog.update_bootstrap.v1 production bootstrap"
+    }
+  }
   $supaUrl = $SupabaseUrl
   if (-not $supaUrl) { $supaUrl = $env:SUPABASE_URL }
   if (-not $supaUrl) { $supaUrl = $cfg["SUPABASE_URL"] }
@@ -141,6 +185,8 @@ try {
   $updUrl = $UpdateUrl
   if (-not $updUrl) { $updUrl = $env:WATCHLOG_UPDATE_URL }
   if (-not $updUrl) { $updUrl = $cfg["WATCHLOG_UPDATE_URL"] }
+  $updSource = "parameter/environment"
+  if (-not $updUrl -and $updateBootstrap) { $updUrl = [string]$updateBootstrap.manifest_url; $updSource = "prototype\update\production.json" }
   if ($null -eq $updUrl) { $updUrl = "" }
   $updUrl = ([string]$updUrl).Trim()
   if ($updUrl -and $updUrl -notmatch '^https://') {
@@ -150,6 +196,7 @@ try {
   $updKey = $UpdatePublicKey
   if (-not $updKey) { $updKey = $env:WATCHLOG_UPDATE_PUBLIC_KEY }
   if (-not $updKey) { $updKey = $cfg["WATCHLOG_UPDATE_PUBLIC_KEY"] }
+  if (-not $updKey -and $updateBootstrap) { $updKey = [string]$updateBootstrap.public_key_b64 }
   if ($null -eq $updKey) { $updKey = "" }
   $updKey = ([string]$updKey).Trim()
   if (($updUrl -and -not $updKey) -or ($updKey -and -not $updUrl)) {
@@ -224,9 +271,9 @@ update_channel = production
     throw "staged update_public_key does not equal intended public key"
   }
   if ($updUrl -and $updKey) {
-    Write-Host "Signed remote update enabled: $updUrl" -ForegroundColor Green
+    Write-Host "Signed remote update enabled: $updUrl (from $updSource)" -ForegroundColor Green
   } else {
-    throw "5.0.24+ releases require WATCHLOG_UPDATE_URL and WATCHLOG_UPDATE_PUBLIC_KEY. Refusing to build a Repair/Upgrade that cannot bootstrap online updates."
+    throw "releases require the signed update feed (UpdateUrl/UpdatePublicKey, WATCHLOG_UPDATE_URL/WATCHLOG_UPDATE_PUBLIC_KEY, or prototype\update\production.json). Refusing to build a Repair/Upgrade that cannot bootstrap online updates."
   }
   Write-Host "Staged public config verified: exact match on Supabase / enrollment / push / update settings." -ForegroundColor Green
 
@@ -242,6 +289,8 @@ update_channel = production
     }
   }
   if (-not $makensis) { throw "makensis not found. Install NSIS: winget install NSIS.NSIS" }
+  $nsisVersion = (& $makensis /VERSION 2>&1 | Out-String).Trim()
+  Write-Host "  NSIS $nsisVersion" -ForegroundColor Gray
 
   Write-Host "Compiling WatchLog-Setup.exe with NSIS..." -ForegroundColor Cyan
   # Single version source: pass wl_version.py's VERSION into NSIS.
@@ -288,10 +337,10 @@ update_channel = production
   if ($setupBytes -lt $minimumSetupBytes) {
     throw "WatchLog-Setup.exe is suspiciously small ($setupBytes bytes); refusing to publish a stub/incomplete installer"
   }
-  # Repair/Upgrade carries the Agent AND the Setup UI (Manage Recorders), so it is close to
-  # full Setup in size; it only lacks the readme/icon and adds its own orchestrator script.
-  if ($repairBytes -lt $minimumAgentBytes -or $repairBytes -gt ($setupBytes + 1MB)) {
-    throw "WatchLog-Repair-Upgrade.exe size is implausible ($repairBytes bytes); it must contain the Agent and the Setup UI and stay within 1 MB of full Setup"
+  # What each installer CONTAINS is proven by hashes below (tools/verify_installer_payload.py),
+  # not by comparing sizes: LZMA can make Repair smaller than the Agent it carries (5.0.28).
+  if ($repairBytes -lt $minimumAgentBytes) {
+    throw "WatchLog-Repair-Upgrade.exe is suspiciously small ($repairBytes bytes)"
   }
 
   # 5) Sign final artifacts, then calculate checksums of the exact distributed bytes.
@@ -306,6 +355,35 @@ update_channel = production
   if ($Production -and -not $PublisherUrl) {
     throw "PRODUCTION release requires -PublisherUrl (verified publisher metadata)."
   }
+  # 6) Build manifest, written while the staged payload still exists. It fails the build if a
+  #    baked BUILD_SHA differs from the source SHA, a build venv did not match its lock, a PE
+  #    version differs from wl_version, or the tree was dirty without -AllowDirty.
+  $manifest = Join-Path $out "WatchLog-Build-Manifest.json"
+  $manifestArgs = @("tools\release_manifest.py", "--out", $manifest, "--agent", $agentExe,
+                    "--setup-ui", $setupUiExe, "--setup", $setup, "--repair", $repair,
+                    "--stage", $stage, "--nsis-version", $nsisVersion, "--source-sha", $sourceSha)
+  if ($Lean) { $manifestArgs += "--lean" }
+  if ($AllowDirty) { $manifestArgs += "--allow-dirty" }
+  if ($SignPfx) { $manifestArgs += "--signed" }
+  & $toolPy @manifestArgs
+  if ($LASTEXITCODE -ne 0) { throw "release invariants failed (see $manifest)" }
+
+  # 7) Size sanity (never integrity): gross bounds + largest component deltas vs the baseline.
+  $sizeArgs = @("tools\release_size_report.py", "--agent", $agentExe, "--setup-ui", $setupUiExe,
+                "--setup", $setup, "--repair", $repair, "--json", (Join-Path $out "WatchLog-Size-Report.json"))
+  if ($Lean) { $sizeArgs += "--lean" }
+  & $toolPy @sizeArgs
+  if ($LASTEXITCODE -ne 0) { throw "release size sanity bounds failed" }
+
+  # 8) Deterministic NSIS payload proof: 7-Zip lists and extracts both installers; every
+  #    embedded file must be exactly a file the .nsi names, hashed against the dist EXEs, the
+  #    source scripts and the staged defaults; PE version, baked BUILD_SHA and the extracted
+  #    Agent's --version are checked. Without 7-Zip this fails (no weaker fallback).
+  & $toolPy tools\verify_installer_payload.py --setup $setup --repair $repair `
+      --agent $agentExe --setup-ui $setupUiExe --manifest $manifest `
+      --json (Join-Path $out "WatchLog-Payload-Proof.json")
+  if ($LASTEXITCODE -ne 0) { throw "NSIS payload proof failed" }
+
   $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
   $repairHash = (Get-FileHash $repair -Algorithm SHA256).Hash
   Set-Content -Path "$setup.sha256" -Value "$hash  WatchLog-Setup.exe" -Encoding ascii

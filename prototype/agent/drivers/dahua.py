@@ -13,6 +13,9 @@ Dahua is HTTP CGI with Digest auth. The calls used:
     /cgi-bin/magicBox.cgi?action=getDeviceType
     /cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle
     /cgi-bin/eventManager.cgi?action=attach&codes=[All]&heartbeat=5
+    /cgi-bin/storageDevice.cgi?action=getDeviceAllInfo   disks, capacity, free space
+    /cgi-bin/configManager.cgi?action=getConfig&name=RecordMode / name=Record
+                                                     recording configuration
 
 `attach` is a long-lived multipart response — the device writes an event
 block whenever something fires. Outbound only, like everything else here.
@@ -35,7 +38,7 @@ from typing import Iterator
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-from . import alarm_parsing
+from . import alarm_parsing, recorder_truth
 from .base import (Channel, DeviceInfo, DriverError, Event, NvrAuthFailed,
                    NvrDriver, NvrUnreachable, explain)
 
@@ -47,9 +50,12 @@ EVENT_CODE_MAP = alarm_parsing.DAHUA_EVENT_CODE_MAP
 # recorder-scoped: channel None plus a flag, never index+1 guessed onto a camera.
 RECORDER_SCOPED_CODES = alarm_parsing.DAHUA_RECORDER_SCOPED_CODES
 
-# Events we subscribe to. "All" also works but floods the link with
-# heartbeats and config chatter on a busy NVR.
-SUBSCRIBE_CODES = ",".join(EVENT_CODE_MAP.keys())
+# Events we subscribe to (5.1.2): every code. A fixed list silently ignored anything the
+# recorder raised outside it (network abort, login failure, analytics we do not map). Codes
+# outside EVENT_CODE_MAP are stored raw (lowercased) like Hikvision's; the chatter that is
+# not an occurrence (keep-alives, clock changes, per-file and metadata notices) is
+# dropped by alarm_parsing.DAHUA_NON_EVENTS, never stored.
+SUBSCRIBE_CODES = "All"
 
 BURST_WINDOW_SECONDS = alarm_parsing.BURST_WINDOW_SECONDS
 SNAPSHOT_TIMEOUT = 10
@@ -80,6 +86,175 @@ def _parse_kv(text: str) -> dict[str, str]:
     return out
 
 
+# ---- storage: storageDevice.cgi?action=getDeviceAllInfo ----------------------------------
+#
+#   list.info[0].Name=/dev/sda
+#   list.info[0].State=Success
+#   list.info[0].Detail[0].Path=/dev/sda1
+#   list.info[0].Detail[0].Type=ReadWrite
+#   list.info[0].Detail[0].IsError=false
+#   list.info[0].Detail[0].TotalBytes=1000068870144.000000
+#   list.info[0].Detail[0].UsedBytes=999653638144.000000
+#
+# One list.info[i] per disk, one Detail[j] per partition. IMPLEMENTED_UNVERIFIED: the shape is
+# Dahua's HTTP API "getDeviceAllInfo"; no reply from a field unit has been captured yet.
+_INFO_KEY = re.compile(r"^list\.info\[(\d+)\]\.(.+)$")
+_DETAIL_KEY = re.compile(r"^Detail\[(\d+)\]\.(\w+)$")
+DISK_OK_STATES = frozenset({"success", "normal"})
+DISK_FAULT_STATES = frozenset({"error", "abnormal", "fault"})
+_FAULT_WORDS = ("error", "failed", "failure", "abnormal", "notexist", "no disk", "unformat")
+_LOWSPACE_WORDS = ("lowspace", "low space", "nospace", "full")
+
+
+def _storage_keywords(kv: dict) -> dict:
+    """Last resort for a reply with no list.info[] disks: a recognisable fault or low-space word
+    is a NEGATIVE signal; nothing here can ever produce 'ok' (absence is not health)."""
+    out = {"supported": True, "native_fatal": False, "native_lowspace": False,
+           "disks": [], "disk_count": 0, "total_bytes": None, "free_bytes": None}
+    vals = " ".join(str(v).lower() for v in kv.values())
+    if vals and any(k in vals for k in _FAULT_WORDS):
+        return {**out, "state": "fault", "reason": "storage_fault"}
+    if vals and any(k in vals for k in _LOWSPACE_WORDS):
+        return {**out, "state": "degraded", "reason": "disk_full"}
+    return {**out, "state": None, "reason": "no_disks_reported"}
+
+
+def parse_storage_all_info(kv: dict) -> dict:
+    """Per-disk records and the recorder rollup from a parsed getDeviceAllInfo reply.
+
+    Per disk: State Success/Normal -> ok; Error/Abnormal/Fault -> fault; anything else ->
+    unknown. Any partition with IsError=true faults the disk. Capacity is the sum of the
+    partitions' TotalBytes; free is that minus their UsedBytes (both or neither)."""
+    groups: dict[int, dict] = {}
+    for key, val in kv.items():
+        m = _INFO_KEY.match(key.strip())
+        if not m:
+            continue
+        disk = groups.setdefault(int(m.group(1)), {"fields": {}, "details": {}})
+        d = _DETAIL_KEY.match(m.group(2))
+        if d:
+            disk["details"].setdefault(int(d.group(1)), {})[d.group(2)] = val
+        else:
+            disk["fields"][m.group(2)] = val
+    if not groups:
+        return _storage_keywords(kv)
+
+    disks = []
+    for idx in sorted(groups):
+        fields, details = groups[idx]["fields"], groups[idx]["details"]
+        raw_state = str(fields.get("State") or "").strip().lower()
+        part_error = any(str(p.get("IsError", "")).strip().lower() == "true"
+                         for p in details.values())
+        if raw_state in DISK_FAULT_STATES or part_error:
+            state, reason = recorder_truth.DISK_FAULT, "disk_error"
+        elif raw_state in DISK_OK_STATES:
+            state, reason = recorder_truth.DISK_OK, "ok"
+        else:
+            state, reason = recorder_truth.DISK_UNKNOWN, "disk_state_unknown"
+        total = free = None
+        if details:
+            totals = [recorder_truth.to_bytes(p.get("TotalBytes")) for p in details.values()]
+            useds = [recorder_truth.to_bytes(p.get("UsedBytes")) for p in details.values()]
+            if all(v is not None for v in totals + useds):
+                total = sum(totals)
+                free = max(0, total - sum(useds))
+        first = details[min(details)] if details else {}
+        types = sorted({str(p.get("Type")) for p in details.values() if p.get("Type")})
+        disks.append(recorder_truth.disk_record(
+            disk_id=fields.get("Name") or f"disk{idx}",
+            path=first.get("Path") or fields.get("Name"),
+            disk_type=",".join(types) or None,
+            state=state, reason=reason, total_bytes=total, free_bytes=free))
+    return recorder_truth.rollup_storage(disks)
+
+
+# ---- recording configuration: RecordMode + Record schedule -------------------------------
+#
+#   table.RecordMode[0].Mode=0          0 automatic (schedule), 1 manual (always), 2 off
+#   table.Record[0].TimeSection[0][0]=1 00:00:00-24:00:00
+#       TimeSection[day][n], day 0..6 = Sunday..Saturday; the leading number is a mask:
+#       bit 0 regular (continuous) recording, bit 1 motion, bit 2 alarm, bit 3 card.
+_RECORD_MODE_KEY = re.compile(r"^table\.RecordMode\[(\d+)\]\.Mode$")
+_SECTION_KEY = re.compile(r"^table\.Record\[(\d+)\]\.TimeSection\[(\d+)\]\[(\d+)\]$")
+_SECTION_VAL = re.compile(r"^\s*(\d+)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*$")
+_MODE_OFF = frozenset({"2", "off", "close", "closed", "stop"})
+_MODE_ALWAYS = frozenset({"1", "manual", "on", "always"})
+_MODE_SCHEDULE = frozenset({"0", "auto", "automatic", "schedule"})
+
+
+def parse_record_mode(kv: dict) -> dict[str, str]:
+    """1-based channel -> disabled | continuous | scheduled | unknown, from RecordMode."""
+    out: dict[str, str] = {}
+    for key, val in kv.items():
+        m = _RECORD_MODE_KEY.match(key.strip())
+        if not m:
+            continue
+        mode = str(val).strip().lower()
+        out[str(int(m.group(1)) + 1)] = (
+            recorder_truth.CONFIG_DISABLED if mode in _MODE_OFF
+            else recorder_truth.CONFIG_CONTINUOUS if mode in _MODE_ALWAYS
+            else recorder_truth.CONFIG_SCHEDULED if mode in _MODE_SCHEDULE
+            else recorder_truth.CONFIG_UNKNOWN)
+    return out
+
+
+def parse_record_schedule(kv: dict) -> dict[str, str]:
+    """1-based channel -> continuous | scheduled | disabled | unknown, from the Record schedule.
+
+    continuous: regular (mask bit 0) sections cover every day 0..6 end to end. scheduled: some
+    section records (any mask bit) but not continuously all week. disabled: sections are present
+    and none records. unknown: a section could not be read and the week is not otherwise covered."""
+    per: dict[str, dict] = {}
+    for key, val in kv.items():
+        m = _SECTION_KEY.match(key.strip())
+        if not m:
+            continue
+        ch = str(int(m.group(1)) + 1)
+        day = int(m.group(2))
+        slot = per.setdefault(ch, {"regular": [], "records": False, "malformed": False})
+        v = _SECTION_VAL.match(str(val))
+        if not v:
+            slot["malformed"] = True
+            continue
+        mask = int(v.group(1))
+        start, end = recorder_truth.hms_minutes(v.group(2)), recorder_truth.hms_minutes(v.group(3))
+        if start is None or end is None:
+            slot["malformed"] = True
+            continue
+        if mask and end > start:
+            slot["records"] = True
+            if mask & 1 and day < 7:          # day 7 (holiday) never makes the week continuous
+                base = day * recorder_truth.MINUTES_PER_DAY
+                slot["regular"].append((base + start, base + end))
+    out = {}
+    for ch, slot in per.items():
+        if recorder_truth.covers_week(slot["regular"]):
+            out[ch] = recorder_truth.CONFIG_CONTINUOUS
+        elif slot["malformed"]:
+            out[ch] = recorder_truth.CONFIG_UNKNOWN
+        elif slot["records"]:
+            out[ch] = recorder_truth.CONFIG_SCHEDULED
+        else:
+            out[ch] = recorder_truth.CONFIG_DISABLED
+    return out
+
+
+# Keys (the part after the last '.') that name seconds since the last boot. A "total"
+# (cumulative running time across boots) never resets and is deliberately not one.
+_UPTIME_KEYS = ("up", "uptime", "last", "result")
+
+
+def parse_uptime_kv(kv: dict) -> "float | None":
+    """Seconds since boot from a Dahua key=value reply, or None when none is stated."""
+    for key, value in kv.items():
+        name = key.rsplit(".", 1)[-1].strip().lower()
+        if name in _UPTIME_KEYS:
+            text = str(value).strip()
+            if text.isdigit():
+                return float(text)
+    return None
+
+
 class DahuaDriver(NvrDriver):
     name = "dahua-cgi"
     verified_against_hardware = False
@@ -90,7 +265,7 @@ class DahuaDriver(NvrDriver):
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
-        self.s = requests.Session()
+        self.s = self.lan_session()   # no system proxy; self-signed HTTPS (Build 69)
         self.s.auth = HTTPDigestAuth(self.username, self.password)
         self._burst = alarm_parsing.BurstFilter(BURST_WINDOW_SECONDS)
         # (monotonic, wall) clock of the block being parsed, stamped by stream_events
@@ -278,52 +453,49 @@ class DahuaDriver(NvrDriver):
         return {"channels": out}
 
     def storage_status(self) -> dict:
-        """Dahua HDD/storage health via storageDevice.cgi. Conservative and honest:
-          * a disk failure/missing/unformatted signal -> 'fault' (no usable recording storage);
-          * a low-space / no-free-space signal -> 'degraded' (usually still recording by overwrite —
-            NOT a blanket fault);
-          * a clearly-normal signal -> 'ok';
-          * anything else / unreadable -> None (UNKNOWN).
-        NOT hardware-verified, so it fails safe to UNKNOWN rather than a false healthy."""
+        """Dahua HDD/storage health from storageDevice.cgi?action=getDeviceAllInfo, parsed per
+        disk (parse_storage_all_info): per-disk records, capacity/free totals and a rollup that is
+        'ok' only when every disk reports a healthy state and free space is above 2 %. A reply
+        with no disks is UNKNOWN (no_disks_reported); the old keyword scan survives only as a
+        last resort that can report a fault or low space, never 'ok'. Unreadable -> unsupported.
+        IMPLEMENTED_UNVERIFIED against a field reply."""
         try:
             kv = _parse_kv(self._get("/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo"))
         except DriverError:
             return {"supported": False, "state": None}
-        if not kv:
-            return {"supported": True, "state": None}
-        vals = " ".join(str(v).lower() for v in kv.values())
-        if any(k in vals for k in ("error", "failed", "failure", "abnormal", "notexist",
-                                   "no disk", "unformat")):
-            return {"supported": True, "state": "fault"}       # no usable storage
-        if any(k in vals for k in ("lowspace", "low space", "nospace", "full")):
-            return {"supported": True, "state": "degraded"}    # low space — still usable, not a fault
-        if any(k in vals for k in ("normal", "running", "sleeping", "good", "ok")):
-            return {"supported": True, "state": "ok"}
-        return {"supported": True, "state": None}
+        return parse_storage_all_info(kv)
 
     def recording_status(self, channels=None) -> dict:
-        """Per-channel recording state from Dahua RecordMode. Vendor-truth conservative:
-          * Mode 2 (off) -> 'not_recording' (recorder explicitly says the channel is not recording);
-          * Mode 0 (auto/schedule) or 1 (manual/always) -> None (UNKNOWN): this is CONFIGURATION, not
-            proof that frames are being written to disk right now. We never claim 'recording' from a
-            mode/schedule alone. Proof-of-active-recording (e.g. a recent-file check) is a future,
-            hardware-validated refinement.
+        """Per-channel recording CONFIGURATION from Dahua RecordMode (+ the Record schedule when
+        the mode follows a schedule). Vendor-truth conservative:
+          * Mode 2 / off -> 'not_recording', reason recording_disabled: the recorder explicitly
+            says the channel does not record;
+          * Mode 1 (always) or a schedule -> None (UNKNOWN): configuration is not proof that frames
+            reach the disk. ``config`` tells the archive check whether recent footage is expected
+            at every moment ('continuous') or only sometimes ('scheduled').
         Read-only; recording is never inferred from a snapshot."""
         try:
-            kv = _parse_kv(self._get(
-                "/cgi-bin/configManager.cgi?action=getConfig&name=RecordMode"))
+            modes = parse_record_mode(_parse_kv(self._get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=RecordMode")))
         except DriverError:
             return {"supported": False, "channels": {}}
-        out: dict[str, str | None] = {}
-        for key, val in kv.items():
-            m = re.match(r"table\.RecordMode\[(\d+)\]\.Mode", key)
-            if m:
-                ch = str(int(m.group(1)) + 1)          # config is 0-based; channels are 1-based
-                # only an explicit OFF is a truthful state; a schedule/mode is not proof -> UNKNOWN
-                out[ch] = "not_recording" if str(val).strip() == "2" else None
-        if not out:
+        if not modes:
             return {"supported": False, "channels": {}}
-        return {"supported": True, "channels": out}
+        schedule: dict[str, str] = {}
+        if any(m == recorder_truth.CONFIG_SCHEDULED for m in modes.values()):
+            try:
+                schedule = parse_record_schedule(_parse_kv(self._get(
+                    "/cgi-bin/configManager.cgi?action=getConfig&name=Record")))
+            except DriverError:
+                schedule = {}
+        config = {ch: (schedule.get(ch, recorder_truth.CONFIG_UNKNOWN)
+                       if mode == recorder_truth.CONFIG_SCHEDULED else mode)
+                  for ch, mode in modes.items()}
+        disabled = {ch for ch, c in config.items() if c == recorder_truth.CONFIG_DISABLED}
+        return {"supported": True,
+                "channels": {ch: ("not_recording" if ch in disabled else None) for ch in config},
+                "reasons": {ch: "recording_disabled" for ch in disabled},
+                "config": config}
 
     # -- focused reads + SAFE writes (Site Control managed tier; field-proven on DH-XVR1B08-I) --
 
@@ -388,96 +560,34 @@ class DahuaDriver(NvrDriver):
             self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
 
     def configure_push(self, url: str) -> dict:
+        """Fail closed: never rewrite a Dahua recorder's AlarmServer (field W2 925885a4).
+
+        Dahua's documented AlarmServer is a vendor alarm-centre protocol, not a generic
+        HTTP/HTTPS webhook. Its protocol values are Dahua/Bosch/cloud families; writing an
+        HTTPS WatchLog URL into AlarmServer.Address/Port can overwrite a customer's existing
+        alarm-centre configuration without giving WatchLog a working callback. So the generic
+        Dahua driver only READS AlarmServer and reports PC-free push as unsupported. Dahua
+        coverage stays: native live eventManager monitoring while the Agent runs, durable
+        local spooling through outages, and archive recovery when connectivity returns.
+
+        A firmware-specific HTTP push adapter may override this only after real hardware
+        proves its endpoint and payload. A rejected login still surfaces as an auth fault.
+        Returns {"applied": False, "verified": False, "detail": str}; never writes.
         """
-        Point this recorder's alarm notifications at `url` (the WatchLog push
-        bridge, with the site token in the path). This is the "PC-free /
-        recorder-push" setup: afterwards the XVR/NVR POSTs every alarm to us on
-        its own, with no agent running on site.
-
-        UNVALIDATED against real hardware, exactly like the Hikvision twin. Dahua
-        exposes this as the "Alarm Server"/alarm-centre config, and the key names
-        differ across firmware families and OEM rebadges. Written so the path is
-        complete and testable, not because it is trusted yet.
-
-        Unlike a blind setConfig, this READS THE CONFIG BACK and reports whether
-        it actually stuck. A recorder that silently ignores the write must not
-        leave us believing push is configured -- a site that thinks it is covered
-        and is not is worse than one we know needs an agent.
-
-        Returns {"applied": bool, "verified": bool, "detail": str}. Never raises
-        for an unsupported recorder; that is a normal, expected answer here.
-        """
-        import urllib.parse as _u
-        u = _u.urlparse(url)
-        host = u.hostname or ""
-        port = u.port or (443 if u.scheme == "https" else 80)
-        path = u.path or "/"
-        if not host:
-            return {"applied": False, "verified": False, "detail": "no host in push url"}
-
-        # Protocol must follow the SCHEME. Hardcoding HTTP while computing port 443 told
-        # the recorder to open a PLAINTEXT connection to a TLS port: every alarm would be
-        # dropped by the TLS handshake, and the read-back could not catch it because it
-        # only checked Enable+Address.
-        scheme = "HTTPS" if u.scheme == "https" else "HTTP"
-        # REQUIRED keys fail the call; OPTIONAL ones may legitimately not exist on entry
-        # -level firmware. Issue them ONE PER REQUEST like every other setter in this
-        # driver (set_smd, set_time_config): Dahua's configManager rejects an ENTIRE
-        # setConfig request when any single key is unknown, so batching all five meant one
-        # unsupported key silently discarded the whole configuration.
-        required = [
-            ("AlarmServer.Enable", "true"),
-            ("AlarmServer.Address", _u.quote(host, safe="")),
-            ("AlarmServer.Port", str(int(port))),
-        ]
-        optional = [
-            ("AlarmServer.Protocol", scheme),
-            ("AlarmServer.UrlPath", _u.quote(path, safe="")),
-        ]
-        skipped = []
-        try:
-            for key, value in required:
-                self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{key}={value}")
-        except NvrAuthFailed:
-            raise
-        except DriverError as e:
-            return {"applied": False, "verified": False,
-                    "detail": f"recorder rejected alarm-server config: {str(e)[:120]}"}
-        for key, value in optional:
-            try:
-                self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{key}={value}")
-            except NvrAuthFailed:
-                raise
-            except DriverError:
-                skipped.append(key.split(".")[-1])
-
-        # Read back. The recorder is the source of truth, not our request.
         try:
             kv = _parse_kv(self._get(
                 "/cgi-bin/configManager.cgi?action=getConfig&name=AlarmServer"))
-        except DriverError as e:
-            return {"applied": True, "verified": False,
-                    "detail": f"config written but could not be read back: {str(e)[:120]}"}
-
-        got_host = kv.get("table.AlarmServer.Address") or kv.get("AlarmServer.Address") or ""
-        got_on = str(kv.get("table.AlarmServer.Enable")
-                     or kv.get("AlarmServer.Enable") or "").lower() == "true"
-        got_proto = str(kv.get("table.AlarmServer.Protocol")
-                        or kv.get("AlarmServer.Protocol") or "").upper()
-        if got_on and got_host == host:
-            # A recorder that kept HTTP for an https bridge would fail every alarm at the
-            # TLS handshake, so that is NOT a verified push.
-            if got_proto and got_proto != scheme:
-                return {"applied": True, "verified": False,
-                        "detail": (f"recorder kept Protocol={got_proto} but the bridge is "
-                                   f"{scheme}; alarms would not be delivered")}
-            note = f" (firmware ignored: {', '.join(skipped)})" if skipped else ""
-            return {"applied": True, "verified": True,
-                    "detail": f"recorder will POST alarms to {host}:{port}{path}{note}"}
-        return {"applied": True, "verified": False,
-                "detail": ("recorder did not retain the alarm-server config "
-                           f"(enable={got_on!r} address={got_host!r}); this model likely "
-                           "needs an on-site agent")}
+            proto = str(kv.get("table.AlarmServer.Protocol")
+                        or kv.get("AlarmServer.Protocol") or "").strip()
+        except NvrAuthFailed:
+            raise
+        except Exception:  # noqa: BLE001 - read-only capability hint only
+            proto = ""
+        detail = ("generic Dahua AlarmServer is a proprietary alarm-centre protocol, "
+                  "not a WatchLog HTTP webhook; left unchanged")
+        if proto:
+            detail += f" (recorder protocol={proto})"
+        return {"applied": False, "verified": False, "detail": detail}
 
     def get_clock(self) -> dict:
         """Recorder clock/timezone/DST/NTP, read-only (global.cgi + Locales + NTP config)."""
@@ -536,7 +646,44 @@ class DahuaDriver(NvrDriver):
         vb = _indexes("VideoBlind")
         if vl is None and vb is None:
             return {"supported": False, "video_loss": [], "video_blind": []}
-        return {"supported": True, "video_loss": vl or [], "video_blind": vb or []}
+        # video_loss_supported: the VideoLoss index itself answered, so a channel absent from it
+        # is positively not in video loss (an empty list from a failed query proves nothing).
+        return {"supported": True, "video_loss": vl or [], "video_blind": vb or [],
+                "video_loss_supported": vl is not None}
+
+    # Paths tried, in order, for the recorder's uptime. IMPLEMENTED_UNVERIFIED: not read on
+    # a field unit yet. A unit that answers none of them reports None (no restart claim).
+    UPTIME_PATHS = ("/cgi-bin/magicBox.cgi?action=getUpTime",
+                    "/cgi-bin/global.cgi?action=getUpTime")
+
+    def uptime_seconds(self) -> "float | None":
+        """Seconds since the recorder last booted, or None when it cannot say.
+
+        Read-only. Only a plain number of seconds under a since-boot key is accepted
+        (up / upTime / uptime / last / result); a cumulative total is never read as uptime.
+        A path the recorder rejects is not asked again on this driver."""
+        rejected = getattr(self, "_uptime_rejected", set())
+        self._uptime_rejected = rejected
+        for path in self.UPTIME_PATHS:
+            if path in rejected:
+                continue
+            try:
+                kv = _parse_kv(self._get(path))
+            except NvrAuthFailed:
+                return None
+            except NvrUnreachable:
+                return None
+            except DriverError as error:
+                status = re.search(r"HTTP (\d{3})", str(error))
+                code = int(status.group(1)) if status else 0
+                if 400 <= code < 500 or code == 501:
+                    rejected.add(path)      # this firmware has no such call
+                continue                    # anything else is transient: ask next time
+            value = parse_uptime_kv(kv)
+            if value is not None:
+                return value
+            rejected.add(path)
+        return None
 
     def get_snapshot(self, channel: str) -> bytes | None:
         """
@@ -575,6 +722,9 @@ class DahuaDriver(NvrDriver):
         path = (f"/cgi-bin/eventManager.cgi?action=attach"
                 f"&codes=[{SUBSCRIBE_CODES}]&heartbeat=5")
         url = self.base_url + path
+        # A fresh open (start, or after a drop): the recorder restart check goes first.
+        for ev in self._stream_open_events():
+            yield ev
         try:
             r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
@@ -641,7 +791,8 @@ class DahuaDriver(NvrDriver):
         # block arrived. Repeats collapse on the monotonic receive clock, so a backward
         # PC clock step cannot drop every later event of this type (MNVR-023).
         received_mono, received_at = self._receive_clock()
-        if not self._burst.admit(alarm.burst_key, received_mono):
+        if not self._burst.admit(alarm.burst_key, received_mono,
+                                 pair=alarm.pair_key, phase=alarm.phase):
             return None
         ts, clock = alarm_parsing.resolve_event_time(
             alarm.raw_time, received_at, receive_source="agent_receive")

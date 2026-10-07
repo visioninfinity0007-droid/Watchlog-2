@@ -211,7 +211,7 @@ class OnvifDriver(NvrDriver):
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
-        self.s = requests.Session()
+        self.s = self.lan_session()   # no system proxy; self-signed HTTPS (Build 69)
         self.device_service = self.base_url + "/onvif/device_service"
         self.events_service: str | None = None
         self.media_service: str | None = None

@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Callable
 
 import dahua_archive
 import discover
-import watchlog_agent as core
+import agent_core as core  # Setup needs only the shared core, never the Agent runtime
 import wsdiscovery
 from drivers import DriverError, build
 import credential_store
@@ -268,7 +269,10 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # registration + task start (no readiness wait)
+# Fresh install: registration + start + up to 60 s for the background Agent to prove it
+# reached WatchLog and identified the recorder (register-service -RequireRecorderReadiness).
+BACKGROUND_READY_TIMEOUT_SECONDS = 100
 RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
 RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
@@ -679,8 +683,17 @@ def _retained_event_count(local_id: str) -> int | None:
 
 
 def list_managed_recorders(config_path: Path) -> list[dict]:
-    """List the local recorder registry without exposing credentials."""
-    recorder_registry.migrate_legacy_singleton(config_path)
+    """List the local recorder registry without exposing credentials.
+
+    A recorder whose saved login cannot be read is LISTED as needing attention, never
+    hidden: the operator must be able to select it to fix it. The fail-closed migration
+    check below raises for an unreadable primary login, which used to empty the list."""
+    try:
+        recorder_registry.migrate_legacy_singleton(config_path)
+    except SecretError:
+        if not recorder_registry.recorders():
+            raise
+        _setup_log("a recorder login is unreadable; listing it as needing attention")
     out = []
     for row in recorder_registry.recorders():
         state = "available"
@@ -998,18 +1011,26 @@ def repair_managed_recorder_credential(
         local_id, username.strip(), password,
         mirror_legacy=bool(row.get("continuity_owner")),
     )
-    updated = recorder_registry.update_observed_identity(
-        local_id,
-        vendor=_observed(proven, "vendor"),
-        model=_observed(proven, "model"),
-        firmware=proven.get("firmware"),
-        driver=proven.get("driver") or row.get("driver") or "auto",
-        identity_fingerprint=(
-            f"serial:{proven.get('serial')}" if proven.get("serial")
-            else row.get("identity_fingerprint")
-        ),
-        verified_by_setup=True,
-    )
+    try:
+        updated = recorder_registry.update_observed_identity(
+            local_id,
+            vendor=_observed(proven, "vendor"),
+            model=_observed(proven, "model"),
+            firmware=proven.get("firmware"),
+            driver=proven.get("driver") or row.get("driver") or "auto",
+            identity_fingerprint=(
+                f"serial:{proven.get('serial')}" if proven.get("serial")
+                else row.get("identity_fingerprint")
+            ),
+            verified_by_setup=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — say exactly what is now true
+        # The login is already saved and was proven against this recorder, so it is kept
+        # (the old one may be what the recorder now refuses). Only the details failed.
+        _setup_log(f"recorder details not recorded after login change ({type(exc).__name__})")
+        raise ValueError(
+            "The recorder login was verified and saved, but WatchLog could not record the "
+            "recorder's details. Test this recorder again.") from exc
     out = _public_recorder_row(updated, credential_state="available")
     out["channels"] = list(proven.get("channels") or [])
     out["verified_against_hardware"] = bool(proven.get("verified_against_hardware"))
@@ -1352,8 +1373,98 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
     return mapping
 
 
+AGENT_TASK_NAME = "WatchLog Agent"
+
+# Stop the scheduled task, then any watchlog-agent.exe running from THIS install (never a
+# same-named process elsewhere), exactly like register-service.ps1. Prints how many Agent
+# processes were running so Setup knows whether to start it again if it ends unfinished.
+_PAUSE_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$want = [System.IO.Path]::GetFullPath((Join-Path $env:WL_INSTALL_DIR 'watchlog-agent.exe'))
+$running = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
+  Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) })
+$task = Get-ScheduledTask -TaskName $env:WL_TASK
+if ($task) { Stop-ScheduledTask -TaskName $env:WL_TASK; Start-Sleep -Milliseconds 500 }
+$running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Write-Output ("WL_PAUSED running=" + $running.Count + " task=" + [bool]$task)
+"""
+
+
+def _powershell() -> str:
+    return str(Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
+               / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
+def pause_background_agent(install_dir: Path | None = None, timeout: int = 30, _run=None) -> dict:
+    """Stop a running background Agent before Setup tests the recorder login or enrolls.
+
+    Field defect (HASCO, Hikvision DS-7608NI-Q1, 2026-10-07): the upgrade stage had restarted
+    the Agent, so it held the recorder's live event session while Setup tested the login (30 s
+    timeouts, "went through after many tests") and enrolled a new identity, which then could
+    not prove itself and was rolled back. One process may talk to the recorder at a time.
+    Setup restarts the Agent itself: finalize through ensure_background_agent, an unfinished
+    Setup through resume_background_agent. Never raises.
+    {"paused": bool, "was_running": bool, "detail": str}"""
+    if os.name != "nt":
+        return {"paused": False, "was_running": False, "detail": "Windows-only"}
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    # The child inherits these two (paths are never spliced into the script text).
+    saved = {k: os.environ.get(k) for k in ("WL_INSTALL_DIR", "WL_TASK")}
+    os.environ["WL_INSTALL_DIR"], os.environ["WL_TASK"] = str(base), AGENT_TASK_NAME
+    try:
+        code, out = runner([_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                            "Bypass", "-Command", _PAUSE_SCRIPT], timeout)
+    except Exception as exc:  # noqa: BLE001 - never block Setup on this
+        return {"paused": False, "was_running": False,
+                "detail": f"could not stop the running Agent ({type(exc).__name__})"}
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    match = re.search(r"WL_PAUSED running=(\d+) task=(True|False)", out or "")
+    if code != 0 or not match:
+        return {"paused": False, "was_running": False,
+                "detail": f"stopping the running Agent exited {code}"}
+    running = int(match.group(1)) > 0
+    _setup_log(f"background agent paused for setup (was_running={running}, "
+               f"task={match.group(2)})")
+    return {"paused": True, "was_running": running or match.group(2) == "True",
+            "detail": "the running Agent was stopped for setup" if running
+            else "no Agent was running"}
+
+
+def resume_background_agent(timeout: int = 30, _run=None) -> dict:
+    """Start the existing scheduled Agent again after a Setup that did not finish, so the
+    site keeps the monitoring it had before. Never raises. {"resumed": bool, "detail": str}"""
+    if os.name != "nt":
+        return {"resumed": False, "detail": "Windows-only"}
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    schtasks = str(Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32" / "schtasks.exe")
+    try:
+        code, _out = runner([schtasks, "/Run", "/TN", AGENT_TASK_NAME], timeout)
+    except Exception as exc:  # noqa: BLE001
+        return {"resumed": False, "detail": f"could not restart the Agent ({type(exc).__name__})"}
+    _setup_log(f"background agent resumed after an unfinished setup (exit {code})")
+    return {"resumed": code == 0,
+            "detail": "the previous Agent is running again" if code == 0
+            else f"restarting the previous Agent exited {code}"}
+
+
 def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
-                            _run=None) -> dict:
+                            _run=None, *, require_readiness: bool = False) -> dict:
     """Register and START the background agent as soon as the site is genuinely connected.
 
     WHY THIS EXISTS (0.4.7). The NSIS installer runs the setup wizard under ExecWait and
@@ -1395,12 +1506,22 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
     cmd = [str(powershell),
            "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
            "-File", str(script), "-InstallDir", str(base)]
+    if require_readiness:
+        # Field Build 41/69: a running task is not proof the background Agent reached
+        # WatchLog and the recorder; register-service.ps1 waits for that proof (exit 3 =
+        # running but not proven). The Agent keeps running either way.
+        cmd.append("-RequireRecorderReadiness")
     try:
         code, out = runner(cmd, timeout)
     except Exception as exc:  # noqa: BLE001 — never block a connected site
         return {"started": False, "detail": f"could not start background agent ({type(exc).__name__})"}
     if code == 0:
-        return {"started": True, "detail": "background agent registered and started"}
+        return {"started": True, "proven": bool(require_readiness),
+                "detail": ("background agent reached WatchLog and identified the recorder"
+                           if require_readiness else "background agent registered and started")}
+    if code == 3 and require_readiness:
+        return {"started": True, "proven": False,
+                "detail": "background agent is running but has not yet confirmed the recorder"}
     return {"started": False,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
 
@@ -2016,8 +2137,9 @@ def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
     * A registry of this same enrolled site: re-point its continuity recorder
       (the legacy singleton) at the newly proven address and login, keeping its
       local and cloud identity, so the registry and watchlog.ini agree.
-    * A registry left by an earlier installation (uninstall removes the identity
-      but keeps recorders.json), by another site, or unreadable: quarantine it
+    * A registry left by an earlier installation (an uninstaller before 5.1 removed the
+      identity but kept recorders.json; 5.1+ removes both), by another site, or
+      unreadable: quarantine it
       (moved aside, never deleted) and stage fresh, instead of blocking every
       reinstall. After an uninstall the site is unknown, so the fresh row keeps
       the old continuity recorder's local id: on the same site the new Agent then
@@ -2125,9 +2247,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # any failure or refusal puts those files back as they were, so the two
     # stores never point at different recorders.
     state_path = programdata_dir() / "agent_state.json"
+    # The Agent identity (agent_state.json + its key) is snapshotted too: enrollment
+    # rewrites it inside this block, and a failed site switch must not leave the new
+    # site's identity beside the old site's configuration (audit P8-c).
     legacy_store = credential_store.snapshot_secret_files([
         config_path, credential_store.nvr_credential_path(),
         state_path.parent / "recorder_identity.json",
+        state_path, credential_store.agent_key_path(),
     ])
     try:
         progress("Encrypting recorder credentials on this PC…")
@@ -2145,6 +2271,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         # The identity this PC had before this run decides whether an existing
         # recorder registry still belongs here (see _stage_recorder_registry).
         prior_identity = _load_existing_identity(state_path)
+        # Label any older Agent's unstamped queue with the site that wrote it BEFORE this
+        # enrollment, so the new Agent sets it aside if this run moves the PC to another site.
+        try:
+            import site_runtime
+            site_runtime.stamp_prior_site(state_path.parent, prior_identity)
+        except Exception as exc:  # noqa: BLE001 - never block setup; the Agent adopts unstamped data
+            _setup_log(f"site runtime stamp skipped ({type(exc).__name__})")
         # Honour the supplied site code first; only reuse a local identity that still
         # authenticates. Never skip enrollment just because a stale agent_state.json exists.
         state = establish_identity(cloud, state_path, enrollment_code, device, progress)
@@ -2196,8 +2329,14 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
             if added_now:
                 added.append(row["local_id"])
             extra_rows.append(row)
-    except BaseException:
-        credential_store.restore_secret_files(legacy_store)
+    except BaseException as exc:
+        not_restored = credential_store.restore_secret_files(legacy_store)
+        if not_restored:
+            _setup_log("setup rollback incomplete: "
+                       + ", ".join(p.name for p in not_restored))
+            raise ValueError(
+                "Setup stopped and WatchLog could not put this PC's previous settings "
+                "back. Run Repair before using WatchLog on this PC.") from exc
         raise
 
     # A first recorder that WatchLog already knows (Setup run again on a site whose
@@ -2304,7 +2443,8 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # integration is therefore NEVER run by first-run setup.
     # =================================================================
     progress("Starting WatchLog in the background…")
-    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
+    agent_start = ensure_background_agent(timeout=BACKGROUND_READY_TIMEOUT_SECONDS,
+                                          require_readiness=True)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
 

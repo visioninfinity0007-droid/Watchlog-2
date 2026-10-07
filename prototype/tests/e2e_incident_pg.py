@@ -82,7 +82,10 @@ def main() -> None:
             "returning id", tenant, site)[0]
     event = q("insert into events (tenant_id, site_id, camera_id, agent_id, event_type, "
               "device_ts, agent_ts, dedupe_key) "
-              "values (%s,%s,%s,%s,'motion', now(), now(), 'e2e-incident-1') returning id",
+              # Two minutes ago: since 0164 a clip is claimable only once its post-roll
+              # (device_ts + 20 s) has been recorded.
+              "values (%s,%s,%s,%s,'motion', now() - interval '2 minutes', now(), "
+              "'e2e-incident-1') returning id",
               tenant, site, cam, agent)[0]
 
     # 2. owner requests a clip -> pending; a second request is idempotent (existing)

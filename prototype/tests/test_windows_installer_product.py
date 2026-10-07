@@ -49,7 +49,7 @@ def main():
         "recorder discovery preserves Build 69 reach and cannot spinner-forever":
             "DISCOVERY_DEADLINE_SECONDS = 32.0" in discover
             and "MAX_AUTO_SUBNETS = 8" in discover
-            and "SWEEP_WORKERS = 256" in discover
+            and "SWEEP_WORKERS = 512" in discover
             and "_VIRTUAL_ADAPTER_TOKENS" in discover
             and "return primary + secondary" in discover
             and "SWEEP_FAST_PORTS = [37777, 8000, 80, 443]" in discover
@@ -128,6 +128,10 @@ def main():
         "Windows product name is WatchLog": 'MUI_WELCOMEPAGE_TITLE "Install WatchLog"' in nsis and '"DisplayName" "WatchLog"' in nsis,
         "customer guide avoids Site Agent product name": "WatchLog Site Agent" not in readme and "install the Site Agent" not in readme,
         "customer guide avoids DPAPI implementation detail": "machine-scoped DPAPI" not in readme,
+        "customer guide states the logs-only uninstall": "Only the support logs are kept" in readme
+            and "connection history" not in readme,
+        "Repair logs a differing legacy login copy": "legacy login copy: " in text(
+            "prototype/installer/wl-repair-upgrade.ps1"),
         "enrollment honours the site code (no skip-enroll on stale state)":
             "def establish_identity" in backend and "def _enroll" in backend and "core.heartbeat" in backend,
         "camera-sync failures are classified, not the misleading swallow":
@@ -222,7 +226,8 @@ def main():
         "registration verifies the task reaches Running (no false success)":
             'ne "Running"' in register and "throw" in register,
         "installer keeps the site PC awake on AC (H3 coverage) via power policy":
-            "standby-timeout-ac 0" in register,
+            # 5.1.1: driven from the recorded-and-restored settings table (power baseline).
+            'name = "standby-timeout-ac"' in register and "/change $s.name 0" in register,
     }
 
     failed = [name for name, ok in checks.items() if not ok]

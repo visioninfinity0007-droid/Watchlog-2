@@ -33,6 +33,8 @@ jobs:
         run: python -m pytest prototype/tests/test_ci_runs_every_test.py prototype/tests/test_programdata_isolation_guard.py -q
       - name: Release version contract (wl_version == NSIS fallback; release recorded in the installer source of truth)
         run: python -m pytest prototype/tests/test_release_version_contract.py -q
+      - name: Windows packaging contract (hash-locked build deps, isolated venvs, Setup imports no Agent runtime, selective Qt inventory, size/payload/manifest tools, version + build SHA identity, field update bootstrap)
+        run: python -m pytest prototype/tests/test_release_packaging.py prototype/tests/test_setup_import_graph.py -q
       - name: Repair downgrade guard (5.0.28 Repair refuses a multi-recorder site; reader runs under pwsh)
         run: python -m pytest prototype/tests/test_repair_multi_recorder_guard.py -q
       - name: Agent identity + camera enrollment tests
@@ -40,7 +42,7 @@ jobs:
       - name: Multi-recorder first install (Setup add-another path, per-recorder rows, credentials, binding and cameras; Manage Recorders kept events; installer-child wiring; unknown vendor/model stays unknown)
         run: python -m pytest prototype/tests/test_multi_recorder_initial_install.py prototype/tests/test_setup_gui_multi_recorder_flow.py prototype/tests/test_manage_recorders_retained_events.py prototype/tests/test_installer_child_wiring.py prototype/tests/test_setup_unknown_recorder_identity.py -q
       - name: Phase A model + store tests (health/coverage/inventory/nvr/camera/reconcile/store/faults)
-        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py prototype/tests/test_reconcile_split.py prototype/tests/test_fault_model.py prototype/tests/test_apply_migrations.py -q
+        run: python -m pytest prototype/tests/test_health_model.py prototype/tests/test_coverage_model.py prototype/tests/test_inventory_model.py prototype/tests/test_nvr_health.py prototype/tests/test_camera_health.py prototype/tests/test_reconcile_model.py prototype/tests/test_health_store.py prototype/tests/test_recording_model.py prototype/tests/test_recording_health.py prototype/tests/test_recorder_storage_truth.py prototype/tests/test_recording_current_truth.py prototype/tests/test_reconcile_split.py prototype/tests/test_fault_model.py prototype/tests/test_apply_migrations.py -q
       - name: WordPress PHP syntax
         run: |
           php -l deploy/wordpress/themes/watchlog/front-page.php
@@ -56,6 +58,8 @@ jobs:
           python -m pytest prototype/tests/test_recovery.py prototype/tests/test_recovery_wiring.py prototype/tests/test_recovery_ai.py prototype/tests/test_*archive*.py prototype/tests/test_build_metadata.py -q
       - name: Multi-recorder Agent with the 5.0.28 live-site fixes (worker survival, last_live, stream liveness, recovery claims, redaction, singleton worker survival, recovery RPC contract, per-recorder periodic stills and ONVIF stream reporting)
         run: python -m pytest prototype/tests/test_fanout_stream_last_live.py prototype/tests/test_health_worker_survival.py prototype/tests/test_recorder_recovery_rules.py prototype/tests/test_incident_routed_recorder_redaction.py prototype/tests/test_fanout_recovery_worker_survival.py prototype/tests/test_fanout_quiet_stream_liveness.py prototype/tests/test_worker_exception_survival.py prototype/tests/test_recovery_rpc_contract.py prototype/tests/test_recovery_recorder_release.py prototype/tests/test_fanout_periodic_stills.py prototype/tests/test_fanout_onvif_stream_liveness.py -q
+      - name: Agent 5.1.2 worker supervision and runtime status (restart with backoff, stall detection, failed after the hourly budget, one-shots completed, recorder-scoped isolation, capabilities independent of analytics, redacted bounded runtime payload, 0162 SQL contract)
+        run: python -m pytest prototype/tests/test_worker_supervisor.py prototype/tests/test_agent_runtime_status.py -q
       - name: Multi-recorder registry trust, same-site reinstall, secondary disable, single-recorder job routing, claimed-command completion
         run: python -m pytest prototype/tests/test_registry_trust.py prototype/tests/test_recorder_registry_reinstall.py prototype/tests/test_disable_secondary_runtime.py prototype/tests/test_single_recorder_job_routing.py prototype/tests/test_claimed_command_completion.py -q
       - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write, busy registry during binding, address-swap identity refusal, channel-keyed analytics profile)
@@ -66,13 +70,17 @@ jobs:
         run: |
           python -m pytest prototype/tests/test_onvif_*.py prototype/tests/test_incident_*.py -q
           python -m pytest prototype/tests/test_event_stream_liveness.py prototype/tests/test_shipped_last_live.py prototype/tests/test_native_collector_reconnect.py prototype/tests/test_shipped_spool_cap.py prototype/tests/test_collector_recorder_scope.py prototype/tests/test_event_json_channel.py prototype/tests/test_probe_recorder_scoped_event.py -q
-          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_alarm_input_scope.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py -q
+          python -m pytest prototype/tests/test_hikvision_event_time.py prototype/tests/test_hikvision_burst_clock.py prototype/tests/test_hikvision_alert_channel.py prototype/tests/test_hikvision_alarm_input_scope.py prototype/tests/test_hikvision_targets.py prototype/tests/test_hikvision_auth_downgrade.py prototype/tests/test_hikvision_snapshot_outcomes.py prototype/tests/test_hikvision_field_safety.py prototype/tests/test_remote_update_stage_trust.py prototype/tests/test_dahua_event_time.py prototype/tests/test_dahua_burst_clock.py prototype/tests/test_dahua_recorder_scoped_events.py prototype/tests/test_dahua_auth_downgrade.py prototype/tests/test_dahua_push_safety.py prototype/tests/test_capability_sync_deferred.py prototype/tests/test_fresh_install_readiness.py prototype/tests/test_site_runtime_isolation.py prototype/tests/test_credential_fault_visibility.py prototype/tests/test_upload_rejected_rows.py prototype/tests/test_server_owned_stills.py prototype/tests/test_console_setup_retired.py prototype/tests/test_registry_site_isolation.py prototype/tests/test_durable_writes.py prototype/tests/test_release_perf_gate.py prototype/tests/test_acceptance_matrix.py prototype/tests/test_setup_pauses_running_agent.py -q
           python -m pytest prototype/tests/test_recovery_hikvision_terminal.py -q
           python -m pytest prototype/tests/test_periodic_stills.py prototype/tests/test_periodic_stills_recorder_identity.py -q
+      - name: Agent 5.1.2 native event correctness (fault ends, tamper health, Dahua all codes, recorder restart)
+        run: python -m pytest prototype/tests/test_native_event_restore.py prototype/tests/test_dahua_all_codes.py prototype/tests/test_safety_events_not_filtered.py prototype/tests/test_camera_tamper_health.py prototype/tests/test_recorder_restart.py -q
       - name: Migration lint
         run: python tools/lint_migrations.py
       - name: Stale incident clip recovery contract (0142, applied in production)
         run: python -m pytest prototype/tests/test_incident_clip_stale_recovery.py -q
+      - name: Native-event evidence (0164 contract on the latest definitions, Dahua/Hikvision channel + T-15..T+30 window attribution, multi-recorder export routing, startup in-flight release, checksum refusal, still capture time)
+        run: python -m pytest prototype/tests/test_native_event_evidence_contract.py prototype/tests/test_incident_native_event_attribution.py prototype/tests/test_incident_evidence_provenance_runtime.py -q
       - name: Production-only migrations contract (0144/0145, recovered from the production ledger)
         run: python -m pytest prototype/tests/test_production_only_migrations.py -q
       - name: Stale incident still recovery contract — server-side still lease schedule (0150, MNVR-033)
@@ -137,6 +145,8 @@ jobs:
         run: python prototype/tests/test_lease_client.py
       - name: Recorder connection hardening — ports/HTTPS/discovery/trust
         run: python prototype/tests/test_recorder_probe.py
+      - name: Discovery at real timeouts (Build 69 eight-network reach and the Build 74 bound)
+        run: python -m pytest prototype/tests/test_discovery_field_timing.py -q
       - name: Evidence action runtime — truthful unsupported
         run: python prototype/tests/test_action_runtime.py
       - name: Archive runtime — reprocess + honest retrieval
@@ -183,12 +193,16 @@ jobs:
         run: python -m pytest prototype/tests/test_support_bundle.py -q
       - name: In-app update engine — signed manifest (Ed25519), channels, version + SHA-256 integrity gating
         run: python -m pytest prototype/tests/test_updater.py -q
+      - name: 5.1.1 update lifecycle — Agent-only vs Repair-package contract, remote-update commit gate, installer/uninstall contracts (PowerShell parts run in setup-ui-build)
+        run: python -m pytest prototype/tests/test_update_contract.py prototype/tests/test_remote_update_commit_gate.py prototype/tests/test_installer_lifecycle_contract.py prototype/tests/test_remote_maintenance_hikvision.py -q
       - name: Report pipeline contract (n8n -> runner -> idempotent delivery)
         run: python prototype/tests/test_report_pipeline_contract.py
       - name: Site Control portal capability-aware UX contract
         run: python prototype/tests/test_site_control_portal_contract.py
       - name: Site Control catalog parity — database accepts only actions the Agent runs (MNVR-069)
         run: python -m pytest prototype/tests/test_site_control_catalog_parity.py -q
+      - name: Remote acceptance test + remote maintenance (5.1.2 D) — per-check PASS/FAIL/UNKNOWN/UNSUPPORTED on Hikvision- and Dahua-like fakes, multi-recorder sections, time budget, bounded result, redacted diagnostics, reconnect/restart, operator tool, 0163 static contract
+        run: python -m pytest prototype/tests/test_full_acceptance.py prototype/tests/test_site_maintenance.py prototype/tests/test_run_remote_acceptance.py prototype/tests/test_site_acceptance_migration.py -q
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
@@ -270,7 +284,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # build_setup_gui.ps1 freezes in a fresh venv from the hash-locked Setup UI lock,
+          # which targets the release interpreter exactly.
+          python-version: '3.12.10'
       - name: Build branded windowed setup executable
         shell: powershell
         run: |
@@ -357,10 +373,21 @@ jobs:
           $ErrorActionPreference = "Stop"
           # They drive the real Repair/Upgrade orchestrator and upgrade helper through Windows
           # PowerShell, so they need this Windows job (the Linux backend job cannot run them).
-          python -m pip install --disable-pip-version-check --quiet pytest pillow
+          # The EXEs are frozen in isolated venvs, so this interpreter has none of their packages:
+          # install the same hash-locked sets the tests import (Agent + Setup UI).
+          python -m pip install --disable-pip-version-check --quiet --no-deps --require-hashes -r prototype/packaging/requirements-agent.lock
+          if ($LASTEXITCODE -ne 0) { throw "agent lock install failed ($LASTEXITCODE)" }
+          python -m pip install --disable-pip-version-check --quiet --no-deps --require-hashes -r prototype/packaging/requirements-setup-ui.lock
+          if ($LASTEXITCODE -ne 0) { throw "setup UI lock install failed ($LASTEXITCODE)" }
+          python -m pip install --disable-pip-version-check --quiet pytest
           if ($LASTEXITCODE -ne 0) { throw "test dependency install failed ($LASTEXITCODE)" }
-          python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py
+          python -m pytest -q prototype/tests/test_existing_site_repair.py prototype/tests/test_setup_registry_selftest.py prototype/tests/test_setup_gui_elevation.py prototype/tests/test_pilot_hardening.py prototype/tests/test_remote_update_stage_trust.py
           if ($LASTEXITCODE -ne 0) { throw "Repair/Upgrade, registry and elevation tests failed ($LASTEXITCODE)" }
+          # 5.1.1 lifecycle: per-recorder Repair gate, proven rollback, interrupted-upgrade
+          # recovery, uninstall policy and power baseline, remote-update launcher rollback. They
+          # run the real scripts; the runner is elevated, so task registration runs for real.
+          python -m pytest -q prototype/tests/test_repair_lifecycle_gate.py prototype/tests/test_upgrade_helper_lifecycle.py prototype/tests/test_remote_update_commit_gate.py prototype/tests/test_update_contract.py prototype/tests/test_installer_lifecycle_contract.py
+          if ($LASTEXITCODE -ne 0) { throw "5.1.1 installer/upgrade lifecycle tests failed ($LASTEXITCODE)" }
       - name: Repair downgrade guard under Windows PowerShell 5.1 (whole orchestrator, sandbox ProgramData)
         shell: powershell
         run: |
@@ -587,10 +614,26 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_camera_job_routing_pg.py
       - name: Site Control write roles — viewers cannot propose or approve recorder writes (0150, MNVR-050)
         run: python prototype/tests/e2e_site_control_role_authz_pg.py
+      - name: Remote acceptance test — owner/admin run, tenant isolation, acceptance_runs from completion, deny-list unchanged (0163)
+        run: python prototype/tests/e2e_site_acceptance_pg.py
       - name: Site Control write eligibility — recorder-scoped field evidence and managed authorization (0149/0150, MNVR-049)
         run: python prototype/tests/e2e_multi_recorder_write_eligibility_pg.py
+      - name: Camera sync after an ONVIF-profile era — Al-Khalid 23505 regression (0159)
+        run: python prototype/tests/e2e_camera_sync_legacy_profiles_pg.py
+      - name: Viewer RPCs are tenant-scoped — no cross-tenant snapshot or event read (0160)
+        run: python prototype/tests/e2e_viewer_rpcs_tenant_scope_pg.py
+      - name: Fault, restore and raw recorder signals are never people activity (0165)
+        run: python prototype/tests/e2e_event_types_never_presence_pg.py
+      - name: Recording and storage truth - disk inventory RPC auth, recorder recording rollup, old Agent signatures (0161)
+        run: python prototype/tests/e2e_recording_storage_truth_pg.py
+      - name: Agent runtime status — key-authenticated report, rejected rows, replace semantics, bounds, tenant-scoped read, freshness (0162)
+        run: python prototype/tests/e2e_agent_runtime_status_pg.py
       - name: In-flight evidence after an Agent restart — 0142 lease, startup release, server-side still lease (0150, MNVR-033)
         run: python prototype/tests/e2e_multi_recorder_evidence_lease_pg.py
+      - name: Native-event evidence package — site switch, T-15..T+30 request, rate limit/merge, post-roll claim guard, 420 s lease, server sha256, still provenance, tenant isolation (0164)
+        run: python prototype/tests/e2e_native_event_evidence_pg.py
+      - name: Full-incident evidence window — start-15 s .. last activity+30 s in <= 55 s segments (0092/0093/0097 with the 0164 claim)
+        run: python prototype/tests/e2e_incident_evidence_orchestrator_pg.py
       - name: Multi-recorder analytics — recorder attribution and final contract (0151+)
         run: python prototype/tests/e2e_multi_recorder_analytics_pg.py
       - name: Multi-recorder owner read model — customer-safe recorder grouping (0152)

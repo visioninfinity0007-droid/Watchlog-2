@@ -1,0 +1,36 @@
+{
+  "schema": "watchlog.perf_budgets.v1",
+  "source": "Measured on GitHub windows-latest: 5.1.1 Windows Release run 37471949394 (399ba36f) - warm Setup UI p50 unpack 2.8 s / first visible 3.3 s / lifecycle 7.2 s, cold run 9.3 / 9.5 / 13.3 s; Agent --version p95 3.6 s, --selftest 6.1 s. Selective-Qt forensic baseline (Build 69 report section 7): lifecycle 9.1 s. Budgets keep about 2x margin on warm runs; the cold run keeps the release gate's 15 s lifecycle ceiling. 5.1.2 run #142 (6c7f2800): Agent --version p50 4.85 s with one cold 8.34 s run, --selftest one sample 17.6 s against 4.3-6.1 s before with unchanged code (source selftest 1.4 s on both 5.1.1 and 5.1.2): the cold Agent launch is gated alone and the selftest is the median of 3 runs with a 30 s ceiling. Run #143 (fbc321e6) on a ~2x slower runner (Setup UI unpack 5.1 s vs 2.2 s, same code): Agent --version p50 10.4 s with one 25 s run. Hosted-runner variance makes per-run Agent limits random, so the Agent --version gate is the warm median (12 s) with a 30 s ceiling; Setup UI budgets are unchanged and passed on that runner.",
+  "runs": 6,
+  "budgets": {
+    "setup_ui.unpack_s": {
+      "p95": 6.0
+    },
+    "setup_ui.first_visible_s": {
+      "p95": 8.0
+    },
+    "setup_ui.lifecycle_s": {
+      "p95": 12.0
+    },
+    "setup_ui.cold.unpack_s": {
+      "max": 12.0
+    },
+    "setup_ui.cold.first_visible_s": {
+      "max": 12.0
+    },
+    "setup_ui.cold.lifecycle_s": {
+      "max": 15.0
+    },
+    "agent.version_s": {
+      "p50": 12.0,
+      "max": 30.0
+    },
+    "agent.selftest_s": {
+      "p50": 20.0,
+      "max": 30.0
+    },
+    "agent.cold.version_s": {
+      "max": 30.0
+    }
+  }
+}

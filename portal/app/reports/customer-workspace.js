@@ -343,14 +343,14 @@ export default function CustomerReports(){
   const r=useReport();
   // One governed day dataset -> the site type's operating picture (same derivation as Home and Insights).
   const siteDay=r.isOffice&&r.officeDay&&(r.view==="daily"||r.view==="yesterday")?deriveSiteDay({profile:r.profile,daily:r.officeDay,cameras:r.siteAi?.cameras||[],hours:r.siteAi?.business_context,coverage:coverageTruth(r.officeDay.coverage)}):null;
-  const views=r.isChaiWalaRestaurant?RESTAURANT_VIEWS:r.isOffice?OFFICE_VIEWS:VIEWS;
+  const views=r.isRestaurant?RESTAURANT_VIEWS:r.isOffice?OFFICE_VIEWS:VIEWS;
   const label=views.find(([k])=>k===r.view)?.[1]||"Report";
   const restaurantName=r.site?.name||"this restaurant";
   const prompts={
-    daily:`Explain today's restaurant operations at ${restaurantName}. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.`,
-    yesterday:`Explain yesterday's restaurant report for ${restaurantName}. Focus on demand, tables, observed service timing, service pressure, coverage and any security attention.`,
-    week:`Explain the last 7 service days for ${restaurantName}. Identify repeated demand, table-utilization and observed service-time patterns, and practical improvements supported by the evidence.`,
-    monthly:`Explain the last 30 service days for ${restaurantName}. Identify weekly, weekday and hourly patterns, floor/table utilization, observed service-time trends and practical improvements supported by the evidence.`
+    daily:`Explain today's restaurant operations at ${restaurantName}. Focus on represented-period estimated covers, table sessions, party-size mix, new-session timing, table use, observed first-service/served-item timing, demand, closing discipline, coverage and any security attention. State the qualifying sample size for session-derived figures and leave unsupported figures unavailable.`,
+    yesterday:`Explain the completed restaurant service day for ${restaurantName}. Focus on represented-period or full-day estimated covers only when the evidence scope supports that label, table sessions, party-size mix, turnover, observed service responsiveness with sample sizes, demand, closing discipline and any security exception.`,
+    week:`Explain the last 7 service days for ${restaurantName}. Identify repeated covers, party-size, session-start, table-utilization/turnover and service-responsiveness patterns only across sufficiently represented days, plus practical improvements supported by the evidence.`,
+    monthly:`Explain the last 30 service days for ${restaurantName}. Identify weekly, weekday and hourly demand, covers and party-size patterns, table use, service-responsiveness trends and practical improvements only where the represented days are sufficient.`
   };
   const officePrompts={
     daily:"Explain today's office report in natural management language. Lead with what needs attention, monitoring confidence and practical improvements. Do not call activity detections unique people.",
@@ -365,16 +365,18 @@ export default function CustomerReports(){
     week:`Explain the last 7 completed ${r.profile.dayNoun}s for this ${place}. Identify repeated activity, gap and coverage patterns, and what to check next.`,
     monthly:`Explain the last 30 days for this ${place}, separating working and non-working patterns and what to check next.`
   }:officePrompts;
-  const prompt=r.isChaiWalaRestaurant?(prompts[r.view]||prompts.daily):r.isOffice?(typePrompts[r.view]||typePrompts.daily):(r.view==="yesterday"?"Explain the last completed business-day report for this site.":"Explain this management report and tell me the priority action.");
+  const prompt=r.isRestaurant?(prompts[r.view]||prompts.daily):r.isOffice?(typePrompts[r.view]||typePrompts.daily):(r.view==="yesterday"?"Explain the last completed business-day report for this site.":"Explain this management report and tell me the priority action.");
   const periodHint=r.view==="daily"?"Today, in progress":r.view==="yesterday"?(r.snapshot?.report_date?dateLabel(r.snapshot.report_date):"Last completed day"):r.view==="week"?"Last 7 days":r.view==="monthly"?"Last 30 days":"Executive summary";
 
   let reportBody=null;
-  if(r.isChaiWalaRestaurant){
+  if(r.isRestaurant){
     reportBody=<UnifiedRestaurantReport
       view={r.view}
       day={r.restaurant}
       securityDay={r.restaurantSecurity}
       period={r.restaurantPeriod}
+      businessDay={r.restaurantBusiness}
+      businessPeriod={r.restaurantBusinessPeriod}
       windowData={r.reportWindow}
       snapshot={r.snapshot}
       siteId={r.siteId}
@@ -412,15 +414,15 @@ export default function CustomerReports(){
       :<Section first title={label+" report"}>{r.answer?<div style={{fontSize:14,lineHeight:1.65}}><RichText text={r.answer}/></div>:<Empty title="No report is available yet."/>}</Section>;
   }
 
-  const lead=r.isChaiWalaRestaurant?null:reportLead({...r,siteDay});
+  const lead=r.isRestaurant?null:reportLead({...r,siteDay});
   const rr={...r,siteDay,prompt,periodLabel:label};
   const summaryCov=num(r.snapshot?.payload?.coverage?.coverage_ratio)??num(r.officeDay?.coverage?.coverage_ratio);
   return <OwnerPage active="Reports" email={r.email} siteId={r.siteId}
     kicker={["Reports",periodHint]}
     title={r.site?.name||"Management report"}
     actions={<a className="ow-btn quiet" href={withSite("/reports/delivery/",r.siteId)}>Delivery & recipients</a>}
-    rail={r.isChaiWalaRestaurant||r.busy?null:<ReportRail r={rr} lead={lead}/>}
-    summary={r.isChaiWalaRestaurant||r.busy?null:<Summary items={[
+    rail={r.isRestaurant||r.busy?null:<ReportRail r={rr} lead={lead}/>}
+    summary={r.isRestaurant||r.busy?null:<Summary items={[
       {value:r.periodLabel||label,label:"Period"},
       {value:summaryCov==null?"Not verified":Math.round(summaryCov*100)+"%",label:"Monitoring coverage",muted:summaryCov==null,ledger:summaryCov},
     ]}/>}>
