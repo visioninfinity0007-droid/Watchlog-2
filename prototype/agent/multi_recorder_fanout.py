@@ -32,6 +32,7 @@ import requests
 
 import periodic_stills
 import runtime_status
+import site_maintenance
 import watchlog_agent as core
 import worker_supervisor
 from spool import Spool
@@ -570,6 +571,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
             if restart.get("reason"):
                 core.log(f"recorder: {restart['reason']}")
                 raise SystemExit(restart["reason"])
+            site_maintenance.check_restart()             # restart_agent (Site Control)
             clock = time.monotonic()
             now_wall = time.time()
             gap = cov.tick(last_wall, now_wall)

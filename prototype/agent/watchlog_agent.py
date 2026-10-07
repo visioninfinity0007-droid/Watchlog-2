@@ -705,10 +705,15 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
     last_gen = _credential_generation_for_cfg(cfg)
     if holder is not None and spool is not None:
         holder["event_spool"] = spool       # health-derived camera transitions go here too
+    import site_maintenance
+    site_maintenance.register_runtime(cfg, holder)
     while not stop.is_set():
         worker_supervisor.tick()
         driver = None
         auth_error = False
+        # A reconnect_recorder command ends only THIS session; a new one satisfies it.
+        site_maintenance.take_reconnect(holder)
+        session = site_maintenance.SessionStop(stop, holder)
         try:
             driver, info = open_driver(cfg)
             if holder is not None:
@@ -725,7 +730,7 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
 
             last_shot: dict[str, float] = {}
 
-            for ev in driver.stream_events(stop):
+            for ev in driver.stream_events(session):
                 if stop.is_set():
                     break
                 recorder_id = getattr(cfg, "recorder_cloud_id", None)
@@ -810,6 +815,9 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
                 if holder is not None and holder.get("live_driver") is driver:
                     holder.pop("live_driver", None)
                 driver.close()
+        if session.is_set() and not stop.is_set():
+            log("recorder session dropped on request (Site Control); reopening now")
+            continue
         if not stop.is_set():
             auth_failures = auth_failures + 1 if auth_error else 0
             if not auth_error:
@@ -1406,6 +1414,9 @@ def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site
     site_control: a redacted DriverError line, otherwise only the exception type)
     instead of escaping and leaving it claimed forever."""
     action = cmd.get("action")
+    if action in getattr(site_control, "MAINTENANCE_ACTIONS", ()):
+        _run_maintenance_command(cfg, state, cloud, cmd)
+        return
     is_write = action in site_control.WRITE_ACTIONS
     try:
         job_cfg = recorder_runtime.config_for_cloud_recorder(
@@ -1433,6 +1444,34 @@ def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site
     cloud.call("wl_agent_complete_command",
                p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
                p_command_id=cmd["id"], p_status=status, p_result=result, p_error=error)
+
+
+def _run_maintenance_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict) -> None:
+    """Execute one claimed remote-maintenance command (site_maintenance) and ALWAYS complete it.
+
+    These run on the Agent runtime, not on one bare driver: the acceptance suite opens each
+    recorder's own session, reconnect signals a live collector, restart ends the run loop. A
+    restart is scheduled only AFTER the completion reached the cloud, so the caller always
+    learns the command succeeded before the Agent exits."""
+    import site_maintenance
+    after = None
+    try:
+        out = site_maintenance.execute(cfg, state, cloud, cmd, log=log) or {}
+        status = "succeeded" if out.get("ok") else "failed"
+        result, error = out.get("data"), out.get("error")
+        after = out.get("after_complete") if out.get("ok") else None
+    except Exception as e:                       # noqa: BLE001 - complete it, never strand it
+        log(f"site control: command {str(cmd.get('id'))[:8]} failed: "
+            f"{type(e).__name__}: {nvr_health.redact(str(e))}")
+        status, result = "failed", None
+        error = ((nvr_health.redact(str(e)) if isinstance(e, DriverError) else "")
+                 or type(e).__name__)
+    cloud.call("wl_agent_complete_command",
+               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+               p_command_id=cmd["id"], p_status=status, p_result=result,
+               p_error=(nvr_health.redact(error) if error else error))
+    if after is not None:
+        after()
 
 
 def command_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Event) -> None:
@@ -2079,6 +2118,43 @@ def cmd_accept(cfg: Config, *, _state=None, _open_driver=None, _cloud_factory=No
             except Exception:  # noqa: BLE001
                 pass
     return 0 if report["ready"] else 2
+
+
+def cmd_acceptance_json(cfg: Config, path: str, *, _state=None, _cloud=None, _env=None,
+                        include_clip: bool = True) -> int:
+    """5.1.2 - the full acceptance suite on THIS site, without the portal.
+
+    The same suite the remote ``run_full_acceptance_test`` command runs (full_acceptance), over
+    every configured recorder, read-only and bounded (at most 180 s). Runtime evidence (event
+    stream, heartbeat, Site Control poll) is read from the running Agent's protected
+    runtime-health proof, so run it beside the installed service. Writes the JSON result to
+    ``path`` and prints the operator table. Exit 0 = no FAIL, 2 = at least one FAIL, 1 = the
+    suite could not run."""
+    import full_acceptance
+    import site_maintenance
+
+    state = _state if _state is not None else (load_state(cfg.state_path) or {})
+    cloud = _cloud
+    if cloud is None and cfg.supabase_url and cfg.publishable_key:
+        cloud = Cloud(cfg.supabase_url, cfg.publishable_key)
+    print(f"watchlog-agent {AGENT_VERSION} - full acceptance test (read-only, at most "
+          f"{int(full_acceptance.MAX_BUDGET_SECONDS)}s)", flush=True)
+    try:
+        result = site_maintenance.run_acceptance(
+            cfg, state, cloud, all_recorders=True, include_clip=include_clip, env=_env)
+    except Exception as e:                       # noqa: BLE001 - an honest error, not a crash
+        print(f"acceptance test could not run: {type(e).__name__}: {nvr_health.redact(str(e))}")
+        return 1
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(out)
+    print()
+    for line in full_acceptance.format_table(result):
+        print(line)
+    print(f"result written: {out}")
+    return 2 if result["summary"]["failed"] else 0
 
 
 def cmd_support_bundle(cfg: Config, *, dest_dir=None, _section=None, _state=None,
@@ -2875,10 +2951,15 @@ def recovery_worker(cfg: Config, state: dict, cloud: Cloud, stop: threading.Even
                             cfg, lambda: open_archive_driver(cfg))[0],
                         log=log)
                     runner.run_once(limit=1)
+                    holder.pop("recovery_last_error", None)
+                    holder["recovery_last_ok_at"] = iso(now_utc())
                 except Exception as e:                   # noqa: BLE001 — recovery never disturbs the agent
                     cycle_ok = False
+                    holder["recovery_last_error"] = type(e).__name__
                     log(f"recovery: {type(e).__name__}: {nvr_health.redact(str(e))}")
                     worker_supervisor.record_error(e)
+            # Runtime evidence for the remote acceptance test (its Recovery check).
+            holder["recovery_cycle_at"] = time.monotonic()
             if cycle_ok:
                 worker_supervisor.success()
         except BaseException as e:                       # noqa: BLE001 — last resort; the thread must outlive any fault
@@ -2962,8 +3043,10 @@ def cmd_run(cfg: Config, state: dict, cloud: Cloud, once: bool,
 
     next_up = next_beat = 0.0
     last_wall = time.time()
+    import site_maintenance
     try:
         while True:
+            site_maintenance.check_restart()             # restart_agent (Site Control)
             clock = time.monotonic()
             now_wall = time.time()
             # Suspend/resume detection: a big wall-clock jump across the ~1 s loop means the
@@ -3062,6 +3145,9 @@ def main() -> None:
                     help="apply an available signed update transactionally (auto-rollback) and exit")
     ap.add_argument("--status-json", action="store_true",
                     help="print the machine-readable Site Status document (for the status panel) and exit")
+    ap.add_argument("--acceptance-json", metavar="PATH",
+                    help="run the full read-only acceptance suite (every recorder) and write its "
+                         "JSON result to PATH; prints the PASS/FAIL table and exits")
     ap.add_argument("--recheck-archive-json", action="store_true",
                     help="run a fresh archive proof now (with media-decode diagnostics) and exit")
     ap.add_argument("--config", metavar="PATH",
@@ -3150,6 +3236,9 @@ def main() -> None:
 
     if args.recheck_archive_json:
         raise SystemExit(cmd_recheck_archive_json(cfg))
+
+    if args.acceptance_json:
+        raise SystemExit(cmd_acceptance_json(cfg, args.acceptance_json))
 
     # The wizard runs on request, and automatically when no recorder is
     # configured yet. Someone who double-clicks the exe for the first time
