@@ -120,8 +120,9 @@ def test_restaurant_report_labels_camera_derived_metrics_honestly():
         "Peak visible diners",
         "Peak occupied tables",
         "Estimated covers",
-        "Served table sessions",
-        "Median observed time to food",
+        # a52a01ff withholds unreconciled cover trends: sessions are labelled as estimates.
+        "Estimated table sessions",
+        "New table sessions",
         "not unique footfall",
         "not POS data",
     ):
@@ -254,7 +255,8 @@ def test_restaurant_day_has_floor_totals_and_coverage_truth():
 
 def test_chaiwala_has_four_tenant_specific_report_windows():
     assert 'RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]]' in REPORT
-    assert 'report_layout_profile==="chaiwala_restaurant_ops_v1"' in HOOK
+    # Since 74a91984 every restaurant site (not only Chai Wala) gets the restaurant composer.
+    assert 'restaurantLayout=selected.composer==="restaurant"' in HOOK
     assert 'wl_restaurant_period' in HOOK
     assert 'p_days:7' in HOOK
     assert 'p_days:30' in HOOK
