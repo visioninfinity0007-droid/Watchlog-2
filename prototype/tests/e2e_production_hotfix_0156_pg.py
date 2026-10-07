@@ -62,6 +62,11 @@ EXPECTED_KNOWN_CAPS_SRC = PROD_KNOWN_CAPS_SRC.replace(
     "    'remote_update_v1'\n",
     "    'remote_update_v1',\n    'config_snapshot_requests'\n",
 )
+# 0162 (5.1.2 Agent runtime status) appends exactly one more element to that body.
+EXPECTED_KNOWN_CAPS_SRC_0162 = EXPECTED_KNOWN_CAPS_SRC.replace(
+    "    'config_snapshot_requests'\n",
+    "    'config_snapshot_requests',\n    'agent_runtime_status_v1'\n",
+)
 
 STEPS: list[tuple[bool, str, str]] = []
 
@@ -123,9 +128,13 @@ def main() -> int:
     row = proc("public.wl_known_capabilities()")
     step(row is not None, "wl_known_capabilities() exists")
     caps_src = row[0] if row else ""
-    step(caps_src == EXPECTED_KNOWN_CAPS_SRC,
-         "wl_known_capabilities body = production body + 'config_snapshot_requests' only",
-         f"md5 {md5(caps_src)} want {md5(EXPECTED_KNOWN_CAPS_SRC)}")
+    with_0162 = bool(q("select to_regprocedure('public.wl_report_agent_runtime(uuid,text,jsonb)') "
+                       "is not null")[0])
+    want_caps = EXPECTED_KNOWN_CAPS_SRC_0162 if with_0162 else EXPECTED_KNOWN_CAPS_SRC
+    step(caps_src == want_caps,
+         "wl_known_capabilities body = production body + 'config_snapshot_requests' only"
+         + (" (+ 0162's 'agent_runtime_status_v1')" if with_0162 else ""),
+         f"md5 {md5(caps_src)} want {md5(want_caps)}")
     step(row is not None and row[2] == "search_path=public",
          "wl_known_capabilities keeps search_path=public", str(row and row[2]))
     step(bool(q("select 'config_snapshot_requests' = any(public.wl_known_capabilities())")[0]),
