@@ -19,6 +19,7 @@ import watchlog_agent as core
 import native_verification
 import nvr_health
 import periodic_stills
+import recorder_restart
 import server_capture
 from drivers import DriverError
 
@@ -126,6 +127,11 @@ def collector(cfg, spool, stop, holder=None) -> None:
               "last_error": None}
     if holder is not None:
         holder["event_stream"] = stream
+        if spool is not None:
+            holder["event_spool"] = spool   # health-derived camera transitions go here too
+    # The recorder's uptime across driver re-opens: a drop + an uptime that went down is a
+    # recorder restart (positive evidence only).
+    uptime_watch = recorder_restart.UptimeWatch()
     while not stop.is_set():
         driver = None
         reports_stream = None
@@ -173,6 +179,20 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 server_capture.register_live_driver(driver)
 
             last_shot: dict[str, float] = {}
+            def _restart_check(drv=driver):
+                ev = recorder_restart.check(drv, uptime_watch)
+                if ev is not None:
+                    core.log(f"recorder restart detected: uptime "
+                             f"{ev.payload.get('previous_uptime_seconds')}s -> "
+                             f"{ev.payload.get('uptime_seconds')}s")
+                    return [ev]
+                return []
+
+            # The driver calls this as it (re)opens its event stream after a drop (not on a
+            # planned Hikvision slice), on the stream's own session and recorder lock, so the
+            # uptime read never opens a gap another session could take.
+            if hasattr(driver, "on_stream_open"):
+                driver.on_stream_open = _restart_check
             events = (_LiveEvents(driver, stop, cfg, stream, last_gen) if reports_stream
                       else driver.stream_events(stop))
             for ev in events:
@@ -181,7 +201,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
                 recorder_id = getattr(cfg, "recorder_cloud_id", None)
                 if recorder_id:
                     ev = ev.with_recorder_id(recorder_id)
-                if holder is not None:
+                # A restart found by an uptime read is not stream activity: liveness of a
+                # stream-reporting recorder stays the stream's own.
+                if holder is not None and ev.event_type != recorder_restart.EVENT_TYPE:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = core.now_utc()
 
@@ -250,10 +272,14 @@ def collector(cfg, spool, stop, holder=None) -> None:
                                 f"WARNING: ch{ev.channel} native {ev.event_type} conflicts with "
                                 f"local model ({', '.join(sorted(set(local)))}); kept but flagged unverified"
                             )
-                elif detector is not None and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
+                elif detector is not None and core.local_ai_filter_applies(ev):
                     # Generic motion still gets the existing local false-alarm
                     # filter. This retains the useful reduction in noisy DVR
                     # motion without overriding vendor-native smart analytics.
+                    # Fault and safety signals (tamper, video loss/restore, alarm
+                    # inputs, disconnects, restarts, native face/object events) and
+                    # codes stored raw are never judged here (5.1.2): a covered lens
+                    # has no person in it, and that is the tamper.
                     keep, found = detector.classify_event(raw)
                     if not keep:
                         core.log(
@@ -274,17 +300,11 @@ def collector(cfg, spool, stop, holder=None) -> None:
 
                 spool.add(spool_row(ev, core.now_utc()))
 
-                # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to the
-                # shared health monitor straight from the event stream (best-effort; a health-side
-                # error must never disturb ingestion).
-                if (holder is not None and ev.channel is not None
-                        and ev.event_type in core.NATIVE_FAULT_TYPES):
-                    mon = holder.get("monitor")
-                    if mon is not None:
-                        try:
-                            mon.record_native_fault(ev.channel)
-                        except Exception:  # noqa: BLE001
-                            pass
+                # A native VideoLoss/disconnect is an immediate camera OFFLINE, a tamper a
+                # camera fault (reason tamper), and their native end clears that fault: fed
+                # to the shared health monitor straight from the event stream (best-effort;
+                # a health-side error must never disturb ingestion).
+                core.feed_native_health(holder, ev)
 
                 dropped = spool.trim()
                 if dropped:

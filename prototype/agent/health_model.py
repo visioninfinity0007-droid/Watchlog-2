@@ -76,6 +76,7 @@ class Reason(enum.Enum):
     PROBE_TIMEOUT = "probe_timeout"        # active probe failed / timed out
     STALE_FRAME = "stale_frame"            # probe returned, but the frame was stale -> soft degrade
     VIDEO_LOSS = "video_loss"              # recorder reported native VIDEO LOSS -> authoritative
+    TAMPER = "tamper"                      # recorder reported the lens covered/blinded -> authoritative
     CHANNEL_MISSING = "channel_missing"    # inventory: operator removed the channel
     CHANNEL_DISABLED = "channel_disabled"  # inventory: channel administratively disabled
     NVR_UNREACHABLE = "nvr_unreachable"    # recorder layer down
@@ -134,8 +135,16 @@ class CameraHealthMachine:
 
     def observe(self, now, inventory: Inventory, nvr: Nvr,
                 probe: Optional[Probe] = None,
-                native_video_loss: bool = False) -> Transition:
-        """Fold one cycle of observation into the machine and return the Transition."""
+                native_video_loss: bool = False,
+                native_tamper: bool = False,
+                native_clear: Optional[Reason] = None) -> Transition:
+        """Fold one cycle of observation into the machine and return the Transition.
+
+        ``native_tamper``: the recorder reports the lens covered/blinded (OFFLINE, reason
+        TAMPER: no usable picture, authoritative, no hysteresis). ``native_clear``: the
+        recorder reports the END of the fault with that reason (video restore, tamper
+        end); it clears only an OFFLINE held for that same reason and is a no-op otherwise
+        (it is never evidence for a camera whose state we do not know)."""
         prev_state = self.state
         prev_reason = self.reason
         self.inventory = inventory
@@ -149,7 +158,8 @@ class CameraHealthMachine:
             new_state, new_reason = Health.UNKNOWN, upper
         else:
             new_state, new_reason = self._evaluate_signal(now, prev_state, probe,
-                                                          native_video_loss)
+                                                          native_video_loss, native_tamper,
+                                                          native_clear)
 
         changed = new_state != prev_state
         self.state = new_state
@@ -186,13 +196,32 @@ class CameraHealthMachine:
         return None  # PRESENT + NVR OK -> the camera is observable; judge it on its own signal
 
     def _evaluate_signal(self, now, prev_state: Health, probe: Optional[Probe],
-                         native_video_loss: bool):
+                         native_video_loss: bool, native_tamper: bool = False,
+                         native_clear: Optional[Reason] = None):
         """Camera-layer verdict when the channel is observable (PRESENT + NVR OK)."""
         # 1. Native VIDEO LOSS is an authoritative recorder fault — bypass hysteresis.
         if native_video_loss:
             self.consecutive_ok = 0
             self.consecutive_fail = max(self.consecutive_fail, self.fail_threshold)
             return Health.OFFLINE, Reason.VIDEO_LOSS
+
+        # 1b. Native TAMPER (lens covered/blinded) is authoritative too. A camera already
+        #     OFFLINE for video loss stays video loss: that is the larger fault.
+        if native_tamper:
+            self.consecutive_ok = 0
+            self.consecutive_fail = max(self.consecutive_fail, self.fail_threshold)
+            if prev_state == Health.OFFLINE and self.reason == Reason.VIDEO_LOSS:
+                return Health.OFFLINE, Reason.VIDEO_LOSS
+            return Health.OFFLINE, Reason.TAMPER
+
+        # 1c. The recorder's own END of a fault clears that fault, and only that fault.
+        if native_clear is not None:
+            if prev_state == Health.OFFLINE and self.reason == native_clear:
+                self.consecutive_fail = 0
+                self.consecutive_ok = 0
+                self.last_recovery_at = now
+                return Health.OPERATIONAL, Reason.OK
+            return prev_state, self.reason
 
         # 2. No probe evidence this cycle: hold the prior verdict, disturb nothing.
         if probe is None:

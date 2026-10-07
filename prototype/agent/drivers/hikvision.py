@@ -789,6 +789,47 @@ class HikvisionDriver(NvrDriver):
             return {"supported": False, "online": [], "offline": []}
         return {"supported": True, "online": online, "offline": offline}
 
+    def current_faults(self) -> dict:
+        """Which IP channels are offline RIGHT NOW, from the NVR's own channel status.
+
+        GET /ISAPI/ContentMgmt/InputProxy/channels/status lists each IP channel with
+        ``<online>true|false</online>``. A channel the NVR states is offline has no video
+        (an IP camera's video loss), so it is reported in ``video_loss`` with the same
+        contract as the Dahua driver: the first health cycle after startup or a reconnect
+        sees a camera that was already lost, which the event stream (transitions only)
+        never would. Only an explicit ``false`` is a fault; a channel without the element
+        is not judged. Hikvision has no present-tense tamper read, so ``video_blind`` is
+        always empty. A recorder without this API (a DVR's analogue inputs) or a failed
+        read is supported=False, never an empty, falsely clean fault set.
+        IMPLEMENTED_UNVERIFIED on field hardware."""
+        try:
+            root = self._xml("/ISAPI/ContentMgmt/InputProxy/channels/status")
+        except DriverError:
+            return {"supported": False, "video_loss": [], "video_blind": []}
+        rows = root.findall(".//InputProxyChannelStatus")
+        if not rows:
+            return {"supported": False, "video_loss": [], "video_blind": []}
+        lost = set()
+        for row in rows:
+            cid = (_text(row, "id") or "").strip()
+            online = (_text(row, "online") or "").strip().lower()
+            if cid.isdigit() and online == "false":
+                lost.add(cid)
+        return {"supported": True, "video_loss": sorted(lost, key=int), "video_blind": []}
+
+    def uptime_seconds(self) -> float | None:
+        """Seconds since the recorder last booted (/ISAPI/System/status deviceUpTime), or
+        None when it does not say. Read-only; used only as restart evidence."""
+        try:
+            root = self._xml("/ISAPI/System/status")
+        except DriverError:
+            return None
+        for node in root.iter():
+            if node.tag.lower() == "deviceuptime":
+                text = (node.text or "").strip()
+                return float(text) if text.isdigit() else None
+        return None
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         ISAPI still image.
@@ -843,6 +884,11 @@ class HikvisionDriver(NvrDriver):
             started = time.monotonic()
             planned_end = False
             with self._lock():
+                if not resumed:
+                    # A fresh open (start, or after a drop): the restart check reads the
+                    # recorder's uptime inside this same lock hold, so it opens no gap.
+                    for ev in self._stream_open_events():
+                        yield ev
                 try:
                     r = self._send("GET", url, stream=True,
                                    timeout=(self.timeout, HIKVISION_STREAM_SLICE_SECONDS))
@@ -927,7 +973,8 @@ class HikvisionDriver(NvrDriver):
         # monotonic receive clock. Comparing recorder dateTimes dropped every later event
         # of this (channel, type) after the recorder clock stepped backwards (MNVR-023).
         received_mono, received_at = self._receive_clock()
-        if not self._burst.admit(alarm.burst_key, received_mono):
+        if not self._burst.admit(alarm.burst_key, received_mono,
+                                 pair=alarm.pair_key, phase=alarm.phase):
             return None
 
         # Which clock stamped this event is explicit (MNVR-024). A naive dateTime is the
