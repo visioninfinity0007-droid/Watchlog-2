@@ -47,9 +47,12 @@ EVENT_CODE_MAP = alarm_parsing.DAHUA_EVENT_CODE_MAP
 # recorder-scoped: channel None plus a flag, never index+1 guessed onto a camera.
 RECORDER_SCOPED_CODES = alarm_parsing.DAHUA_RECORDER_SCOPED_CODES
 
-# Events we subscribe to. "All" also works but floods the link with
-# heartbeats and config chatter on a busy NVR.
-SUBSCRIBE_CODES = ",".join(EVENT_CODE_MAP.keys())
+# Events we subscribe to (5.1.2): every code. A fixed list silently ignored anything the
+# recorder raised outside it (network abort, login failure, analytics we do not map). Codes
+# outside EVENT_CODE_MAP are stored raw (lowercased) like Hikvision's; the chatter that is
+# not an occurrence (keep-alives, clock changes, per-file and metadata notices) is
+# dropped by alarm_parsing.DAHUA_NON_EVENTS, never stored.
+SUBSCRIBE_CODES = "All"
 
 BURST_WINDOW_SECONDS = alarm_parsing.BURST_WINDOW_SECONDS
 SNAPSHOT_TIMEOUT = 10
@@ -78,6 +81,22 @@ def _parse_kv(text: str) -> dict[str, str]:
         if m:
             out[m.group(1).strip()] = m.group(2).strip()
     return out
+
+
+# Keys (the part after the last '.') that name seconds since the last boot. A "total"
+# (cumulative running time across boots) never resets and is deliberately not one.
+_UPTIME_KEYS = ("up", "uptime", "last", "result")
+
+
+def parse_uptime_kv(kv: dict) -> "float | None":
+    """Seconds since boot from a Dahua key=value reply, or None when none is stated."""
+    for key, value in kv.items():
+        name = key.rsplit(".", 1)[-1].strip().lower()
+        if name in _UPTIME_KEYS:
+            text = str(value).strip()
+            if text.isdigit():
+                return float(text)
+    return None
 
 
 class DahuaDriver(NvrDriver):
@@ -476,6 +495,40 @@ class DahuaDriver(NvrDriver):
             return {"supported": False, "video_loss": [], "video_blind": []}
         return {"supported": True, "video_loss": vl or [], "video_blind": vb or []}
 
+    # Paths tried, in order, for the recorder's uptime. IMPLEMENTED_UNVERIFIED: not read on
+    # a field unit yet. A unit that answers none of them reports None (no restart claim).
+    UPTIME_PATHS = ("/cgi-bin/magicBox.cgi?action=getUpTime",
+                    "/cgi-bin/global.cgi?action=getUpTime")
+
+    def uptime_seconds(self) -> "float | None":
+        """Seconds since the recorder last booted, or None when it cannot say.
+
+        Read-only. Only a plain number of seconds under a since-boot key is accepted
+        (up / upTime / uptime / last / result); a cumulative total is never read as uptime.
+        A path the recorder rejects is not asked again on this driver."""
+        rejected = getattr(self, "_uptime_rejected", set())
+        self._uptime_rejected = rejected
+        for path in self.UPTIME_PATHS:
+            if path in rejected:
+                continue
+            try:
+                kv = _parse_kv(self._get(path))
+            except NvrAuthFailed:
+                return None
+            except NvrUnreachable:
+                return None
+            except DriverError as error:
+                status = re.search(r"HTTP (\d{3})", str(error))
+                code = int(status.group(1)) if status else 0
+                if 400 <= code < 500 or code == 501:
+                    rejected.add(path)      # this firmware has no such call
+                continue                    # anything else is transient: ask next time
+            value = parse_uptime_kv(kv)
+            if value is not None:
+                return value
+            rejected.add(path)
+        return None
+
     def get_snapshot(self, channel: str) -> bytes | None:
         """
         Dahua still image. The CGI is 1-based here, unlike the event
@@ -513,6 +566,9 @@ class DahuaDriver(NvrDriver):
         path = (f"/cgi-bin/eventManager.cgi?action=attach"
                 f"&codes=[{SUBSCRIBE_CODES}]&heartbeat=5")
         url = self.base_url + path
+        # A fresh open (start, or after a drop): the recorder restart check goes first.
+        for ev in self._stream_open_events():
+            yield ev
         try:
             r = self.s.get(url, stream=True, timeout=(self.timeout, 90))
         except requests.RequestException as e:
@@ -579,7 +635,8 @@ class DahuaDriver(NvrDriver):
         # block arrived. Repeats collapse on the monotonic receive clock, so a backward
         # PC clock step cannot drop every later event of this type (MNVR-023).
         received_mono, received_at = self._receive_clock()
-        if not self._burst.admit(alarm.burst_key, received_mono):
+        if not self._burst.admit(alarm.burst_key, received_mono,
+                                 pair=alarm.pair_key, phase=alarm.phase):
             return None
         ts, clock = alarm_parsing.resolve_event_time(
             alarm.raw_time, received_at, receive_source="agent_receive")

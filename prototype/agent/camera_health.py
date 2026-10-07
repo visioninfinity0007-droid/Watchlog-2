@@ -5,6 +5,8 @@ Turns real recorder signals into camera health, feeding the Increment-1 state ma
 (health_model.CameraHealthMachine):
 
   * NATIVE fault  — a VideoLoss/disconnect event is authoritative: immediate OFFLINE.
+                    A tamper (lens covered) is too, with reason tamper; the recorder's own
+                    end of a fault (restore, tamper end) clears that fault (5.1.2).
   * BOUNDED PROBE — for quiet cameras, an authenticated snapshot verifies liveness.
 
 Two invariants are enforced here, not left to callers:
@@ -42,6 +44,7 @@ _NVR_STATE = {"ok": Nvr.OK, "unreachable": Nvr.UNREACHABLE,
 # store (increment 5) can record where a transition came from (native/probe/inventory/upper).
 _SOURCE_BY_REASON = {
     "video_loss": "native",
+    "tamper": "native",
     "nvr_unreachable": "upper_layer", "nvr_auth_failed": "upper_layer",
     "agent_unreachable": "upper_layer",
     "channel_missing": "inventory", "channel_disabled": "inventory",
@@ -50,6 +53,40 @@ _SOURCE_BY_REASON = {
 
 def source_for_reason(reason: str) -> str:
     return _SOURCE_BY_REASON.get(reason, "probe")
+
+
+# Health transitions a cycle turns into camera connectivity events (5.1.2), so a camera that
+# drops or comes back is on the event timeline even when the recorder itself says nothing.
+# Only a transition between two KNOWN states counts: UNKNOWN is never a disconnect or a
+# reconnect. A tamper is not a disconnect (the camera is connected, its view is blocked).
+TRANSITION_EVENT_SOURCE = "health_probe"
+_KNOWN_UP = (Health.OPERATIONAL, Health.DEGRADED)
+MAX_PENDING_TRANSITION_EVENTS = 512
+
+
+def transition_event(channel: str, transition,
+                     prev_reason: Optional[Reason] = None) -> Optional[dict]:
+    """The camera_disconnect / camera_reconnect a health Transition implies, or None.
+
+    ``prev_reason`` is the reason the channel held before the transition: an OFFLINE that
+    was a tamper ends without a reconnect (the camera never disconnected)."""
+    if not transition.changed:
+        return None
+    if transition.frm in _KNOWN_UP and transition.to == Health.OFFLINE:
+        if transition.reason == Reason.TAMPER:
+            return None
+        event_type = "camera_disconnect"
+        reason = transition.reason
+    elif transition.frm == Health.OFFLINE and transition.to == Health.OPERATIONAL:
+        if prev_reason == Reason.TAMPER:
+            return None
+        event_type = "camera_reconnect"
+        reason = prev_reason or transition.reason
+    else:
+        return None
+    return {"channel": str(channel), "event_type": event_type,
+            "from": transition.frm.value, "to": transition.to.value,
+            "reason": reason.value, "source": TRANSITION_EVENT_SOURCE}
 
 
 @dataclass(frozen=True)
@@ -122,6 +159,9 @@ class CameraHealthMonitor:
         self._cursor = 0
         self._tick = 0
         self._lock = threading.RLock()
+        # camera_disconnect / camera_reconnect derived from run_cycle transitions, waiting
+        # for the caller to spool them (drain_transition_events). Bounded.
+        self._pending_events: List[dict] = []
 
     # -- public API ----------------------------------------------------------------
 
@@ -151,6 +191,10 @@ class CameraHealthMonitor:
         cf = chans.get("current_faults") or {}
         current_loss = ({str(c) for c in (cf.get("video_loss") or [])}
                         if cf.get("supported") else set())
+        # Same for a lens the recorder reports blinded right now (Dahua VideoBlind index):
+        # re-asserted every cycle, so a black-but-valid still cannot clear the tamper.
+        current_blind = ({str(c) for c in (cf.get("video_blind") or [])}
+                         if cf.get("supported") else set())
 
         # ---- upper layer down: every camera UNKNOWN, no probing (rule 1) ----
         if nvr is not Nvr.OK:
@@ -178,28 +222,67 @@ class CameraHealthMonitor:
                 return self._report_locked()
 
             for c in self.channels:
+                prev_reason = self.machines[c].reason
                 if c in current_loss:
                     # Recorder says this channel is in video loss right now: authoritative OFFLINE,
                     # independent of the round-robin probe (which the placeholder frame fools).
-                    self.machines[c].observe(now, inventory=inv[c], nvr=Nvr.OK,
-                                             native_video_loss=True)
-                    continue
-                pr = results.get(c)
-                probe = None
-                if pr is not None:
-                    probe = Probe(ok=pr.ok, reason=(Reason.OK if pr.ok else Reason.PROBE_TIMEOUT))
-                self.machines[c].observe(now, inventory=inv[c], nvr=Nvr.OK, probe=probe)
+                    t = self.machines[c].observe(now, inventory=inv[c], nvr=Nvr.OK,
+                                                 native_video_loss=True)
+                elif c in current_blind:
+                    t = self.machines[c].observe(now, inventory=inv[c], nvr=Nvr.OK,
+                                                 native_tamper=True)
+                else:
+                    pr = results.get(c)
+                    probe = None
+                    if pr is not None:
+                        probe = Probe(ok=pr.ok,
+                                      reason=(Reason.OK if pr.ok else Reason.PROBE_TIMEOUT))
+                    t = self.machines[c].observe(now, inventory=inv[c], nvr=Nvr.OK, probe=probe)
+                self._note_transition_locked(c, t, prev_reason)
             return self._report_locked()
 
     def record_native_fault(self, channel) -> None:
         """A native VideoLoss/disconnect event: immediate OFFLINE for that channel."""
+        self._native(channel, native_video_loss=True)
+
+    def record_native_tamper(self, channel) -> None:
+        """A native tamper event (lens covered/blinded): OFFLINE, reason tamper."""
+        self._native(channel, native_tamper=True)
+
+    def record_native_clear(self, channel, reason) -> None:
+        """The recorder's own end of a fault (video restore, tamper end): clears an OFFLINE
+        held for ``reason`` (video_loss or tamper) on that channel, nothing else."""
+        try:
+            cleared = Reason(str(reason))
+        except ValueError:
+            return
+        self._native(channel, native_clear=cleared)
+
+    def _native(self, channel, **signal) -> None:
+        # The native event itself is on the timeline already: no derived transition event.
         channel = str(channel)
         with self._lock:
             m = self.machines.get(channel)
             if m is None:
                 return
             now = self._tick_locked()
-            m.observe(now, inventory=Inventory.PRESENT, nvr=Nvr.OK, native_video_loss=True)
+            m.observe(now, inventory=Inventory.PRESENT, nvr=Nvr.OK, **signal)
+
+    def drain_transition_events(self) -> List[dict]:
+        """camera_disconnect / camera_reconnect events derived from health cycles since the
+        last drain (oldest first). The caller spools them."""
+        with self._lock:
+            out, self._pending_events = self._pending_events, []
+            return out
+
+    def _note_transition_locked(self, channel: str, transition,
+                                prev_reason: Optional[Reason] = None) -> None:
+        ev = transition_event(channel, transition, prev_reason)
+        if ev is None:
+            return
+        self._pending_events.append(ev)
+        if len(self._pending_events) > MAX_PENDING_TRANSITION_EVENTS:
+            del self._pending_events[:-MAX_PENDING_TRANSITION_EVENTS]
 
     def report(self) -> dict:
         with self._lock:
@@ -247,4 +330,5 @@ class CameraHealthMonitor:
 
 
 __all__ = ["ProbeResult", "classify_snapshot_probe", "round_robin_batch",
-           "make_probe_fn", "CameraHealthMonitor", "source_for_reason"]
+           "make_probe_fn", "CameraHealthMonitor", "source_for_reason", "transition_event",
+           "TRANSITION_EVENT_SOURCE"]

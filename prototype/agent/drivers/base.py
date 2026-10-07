@@ -186,6 +186,10 @@ class NvrDriver:
         return session
 
     name: str = "base"
+    # Set by the collector: called by a stream driver as it (re)opens its event stream after
+    # a drop (never on a planned re-slice), returning events to yield first (the recorder
+    # restart check). Any exception it raises is swallowed: it never ends monitoring.
+    on_stream_open = None
     # Honest metadata, surfaced by `--probe` and stored on the agent row.
     # Flip to True only once a driver has run against real hardware.
     verified_against_hardware: bool = False
@@ -324,6 +328,24 @@ class NvrDriver:
         Channels are 1-based strings, matching list_channels().
         """
         return {"supported": False, "video_loss": [], "video_blind": []}
+
+    def _stream_open_events(self) -> list:
+        """The events ``on_stream_open`` returns, or none. Never raises."""
+        hook = self.on_stream_open
+        if hook is None:
+            return []
+        try:
+            return list(hook() or [])
+        except Exception:                                  # noqa: BLE001
+            return []
+
+    def uptime_seconds(self) -> "float | None":
+        """Seconds since the recorder last booted, read-only, or None when it cannot say.
+
+        Used only as positive evidence of a recorder restart (the uptime went DOWN between
+        two reads). None is never evidence of anything; a driver without an uptime API
+        keeps this default."""
+        return None
 
     # -- Historical backfill (recovered intelligence). Vendor-neutral, bounded, cursored. A
     #    driver that has not VALIDATED archive retrieval against real hardware MUST leave these

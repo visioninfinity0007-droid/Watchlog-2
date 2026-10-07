@@ -64,7 +64,7 @@ import setup_wizard
 import vision
 import wsdiscovery
 from drivers import DRIVERS, DriverError, autodetect, build
-from drivers.base import RecorderIdentityMismatch
+from drivers.base import Event, RecorderIdentityMismatch
 
 import credential_store
 import recorder_runtime
@@ -88,14 +88,71 @@ from agent_core import (  # noqa: F401  (re-exported)
 )
 
 RECONCILE_BATCH = 500         # max retained transitions/checkpoints per reconcile upload
-NATIVE_FAULT_TYPES = {"video_loss"}   # native events that are an immediate camera OFFLINE
+# Native events that are an immediate camera OFFLINE (video loss; an NVR's "IP camera
+# disconnected" is the same loss of picture).
+NATIVE_FAULT_TYPES = {"video_loss", "camera_disconnect"}
+# Native camera tamper (lens covered / blinded): a camera health fault (reason tamper).
+NATIVE_TAMPER_TYPES = {"tamper"}
+# The native END of a camera fault -> the health reason it clears (only that reason).
+NATIVE_CLEAR_TYPES = {"video_restore": "video_loss", "camera_reconnect": "video_loss",
+                      "tamper_end": "tamper"}
 DRIVER_RETRY_SECONDS = 20
 ONCE_COLLECT_SECONDS = 25
 
 SNAPSHOT_MAX_BYTES = 2_000_000
 # Faults where the camera is, by definition, not producing a usable
 # picture. Asking anyway just blocks the event loop on a timeout.
-NO_SNAPSHOT_EVENTS = {"video_loss", "disk_error", "disk_full"}
+NO_SNAPSHOT_EVENTS = {"video_loss", "disk_error", "disk_full", "camera_disconnect",
+                      "recorder_restart"}
+
+# Fault and safety signals from the recorder (5.1.2). They are kept whatever a still
+# shows: a covered lens has no person in it, and that is exactly the tamper. Tamper still
+# takes a still when it can (evidence of the covered lens); it is never discarded for
+# lacking one.
+SAFETY_EVENT_TYPES = frozenset({
+    "tamper", "tamper_end", "video_loss", "video_restore", "disk_error", "disk_full",
+    "alarm_input", "alarm_input_end", "camera_disconnect", "camera_reconnect",
+    "recorder_restart", "face", "object_left", "object_removed",
+})
+# The local person/vehicle filter judges only these detection types, and only when the
+# recorder did not classify the event itself (native_ai). Everything else a recorder
+# raises (faults, safety signals, codes stored raw) is kept: an unknown signal is never
+# discarded because a still had no person in it.
+LOCAL_AI_FILTERED_TYPES = frozenset({
+    "motion", "person", "vehicle", "line_crossing", "intrusion", "region_entry",
+    "region_exit",
+})
+
+
+def local_ai_filter_applies(ev) -> bool:
+    """True when the local false-alarm filter may discard ``ev`` for an empty still."""
+    etype = str(getattr(ev, "event_type", "") or "")
+    if (getattr(ev, "payload", None) or {}).get("native_ai"):
+        return False
+    if etype in SAFETY_EVENT_TYPES or etype.startswith("disk_"):
+        return False
+    return etype in LOCAL_AI_FILTERED_TYPES
+
+
+def feed_native_health(holder, ev) -> None:
+    """Feed a native camera fault, tamper or fault end to the shared health monitor.
+
+    Best-effort: a health-side error never disturbs ingestion. Recorder-scoped events
+    (channel None) name no camera and are not fed."""
+    if holder is None or ev.channel is None:
+        return
+    mon = holder.get("monitor")
+    if mon is None:
+        return
+    try:
+        if ev.event_type in NATIVE_FAULT_TYPES:
+            mon.record_native_fault(ev.channel)
+        elif ev.event_type in NATIVE_TAMPER_TYPES:
+            mon.record_native_tamper(ev.channel)
+        elif ev.event_type in NATIVE_CLEAR_TYPES:
+            mon.record_native_clear(ev.channel, NATIVE_CLEAR_TYPES[ev.event_type])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --- helpers -----------------------------------------------------------
@@ -639,6 +696,8 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
     detector = vision.build(cfg, log)
     auth_failures = 0
     last_gen = _credential_generation_for_cfg(cfg)
+    if holder is not None and spool is not None:
+        holder["event_spool"] = spool       # health-derived camera transitions go here too
     while not stop.is_set():
         driver = None
         auth_error = False
@@ -694,11 +753,11 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
                                 f"{len(raw) // 1024} KB exceeds cap")
                             raw = None
 
-                # False-alarm filter. Only events that carry a frame can be
-                # judged; faults and video-loss arrive without one and are
-                # always kept, because those are precisely the events that
-                # say a camera has stopped working.
-                if detector is not None and ev.event_type not in NO_SNAPSHOT_EVENTS:
+                # False-alarm filter. Only detection events are judged; faults and
+                # safety signals (video loss, tamper, alarm inputs...) are always kept,
+                # because those are precisely the events that say a camera has stopped
+                # working or been interfered with.
+                if detector is not None and local_ai_filter_applies(ev):
                     keep, found = detector.classify_event(raw)
                     if not keep:
                         log(f"discarded ch{ev.channel} {ev.event_type}: "
@@ -712,17 +771,10 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
 
                 spool.add(ev.to_json(now_utc()))
 
-                # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to
-                # the health monitor straight from the event stream (best-effort; never let a
-                # health-side error disturb ingestion).
-                if (holder is not None and ev.channel is not None
-                        and ev.event_type in NATIVE_FAULT_TYPES):
-                    mon = holder.get("monitor")
-                    if mon is not None:
-                        try:
-                            mon.record_native_fault(ev.channel)
-                        except Exception:               # noqa: BLE001
-                            pass
+                # A native VideoLoss/disconnect is an immediate camera OFFLINE, a tamper a
+                # camera fault, and their native end clears it — fed to the health monitor
+                # straight from the event stream (best-effort).
+                feed_native_health(holder, ev)
 
                 dropped = spool.trim()
                 if dropped:
@@ -757,6 +809,42 @@ def collector(cfg: Config, spool, stop: threading.Event, holder: dict = None) ->
             outcome, last_gen = _reconnect_wait(stop, cfg, auth_failures, last_gen)
             if outcome == "reload":
                 auth_failures = 0       # fresh credential -> reset breaker, retry now
+
+
+def spool_health_transition_events(holder: dict, cfg, mon) -> int:
+    """Spool the camera_disconnect / camera_reconnect events the health monitor derived.
+
+    They go to the recorder's own event spool (set by its collector), stamped with the
+    recorder's cloud id. With no spool yet they stay pending in the monitor (bounded) for
+    the next cycle. Never raises; returns how many were spooled."""
+    spool = (holder or {}).get("event_spool")
+    drain = getattr(mon, "drain_transition_events", None)
+    if spool is None or drain is None:
+        return 0
+    try:
+        pending = drain()
+    except Exception:                                   # noqa: BLE001
+        return 0
+    recorder_id = (holder or {}).get("recorder_cloud_id") or getattr(cfg, "recorder_cloud_id", None)
+    spooled = 0
+    for row in pending:
+        try:
+            ev = Event(channel=str(row["channel"]), event_type=row["event_type"],
+                       device_ts=datetime.now(timezone.utc), device_event_id=None,
+                       payload={"source": row.get("source", "health_probe"),
+                                "synthetic": True,
+                                "health_from": row.get("from"),
+                                "health_to": row.get("to"),
+                                "health_reason": row.get("reason")})
+            if recorder_id:
+                ev = ev.with_recorder_id(recorder_id)
+            spool.add(ev.to_json(now_utc()))
+            spooled += 1
+            log(f"camera ch{ev.channel} {ev.event_type} (health {row.get('from')} -> "
+                f"{row.get('to')}, {row.get('reason')})")
+        except Exception as e:                          # noqa: BLE001
+            log(f"health transition event skipped: {type(e).__name__}")
+    return spooled
 
 
 def _get_health_store(holder: dict, state: dict, cfg: Config):
@@ -1190,6 +1278,9 @@ def health_cycle(cloud: Cloud, state: dict, cfg: Config, holder: dict) -> None:
             else:
                 probe = lambda _c: camera_health.ProbeResult(ok=False, upper="nvr_unreachable")
             cam = mon.run_cycle(lambda: assessment, probe)   # one assessment, bounded probing
+            # 5.1.2: a camera that dropped or came back is on the event timeline even when
+            # the recorder said nothing (camera_disconnect / camera_reconnect, health_probe).
+            spool_health_transition_events(holder, cfg, mon)
             # increment 5: persist transitions + checkpoint LOCALLY first — survives an outage.
             persist_health(holder, state, cfg, cam, assessment)
             try:
