@@ -314,13 +314,15 @@ def build_worker_sets(prepared_recorders, state: dict, cloud,
         )
         # One periodic still producer per recorder: its own driver, spool, credential and
         # back-off, sampling by this recorder's own camera choices.
+        still_profiles = periodic_stills.recorder_camera_profiles(
+            cfg, continuity_owner=bool(getattr(item.context, "continuity_owner", False)))
+        # The collector's in-stream sampler (Hikvision) uses the same camera choices.
+        holder["still_profiles"] = still_profiles
         stills = threading.Thread(
             target=stills_target,
             args=(cfg, spool, stop, channels),
             kwargs={
-                "profiles": periodic_stills.recorder_camera_profiles(
-                    cfg, continuity_owner=bool(
-                        getattr(item.context, "continuity_owner", False))),
+                "profiles": still_profiles,
                 "label": getattr(cfg, "recorder_display_name", None) or recorder_id[:8],
             },
             daemon=True,

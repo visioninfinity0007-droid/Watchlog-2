@@ -85,6 +85,9 @@ def test_a_multi_recorder_release_carries_the_field_acceptance_list():
     if not _multi_recorder():
         return
     body = _section(_version()).group(1)
+    if "1. both recorders discovered/configured;" not in body and "section 1C" in body:
+        # A 5.1.x patch section may point at the 5.1.0 section's list instead of copying it.
+        body = _section("5.1.0").group(1)
     # MULTI_RECORDER_CONTRACT.md section 20, first and last of the fifteen proofs.
     assert "1. both recorders discovered/configured;" in body
     assert "15. report coverage remains truthful." in body

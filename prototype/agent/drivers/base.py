@@ -25,9 +25,13 @@ agent, so a dropped internet link buffers instead of losing data.
 from __future__ import annotations
 
 import threading
+import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Iterator
+
+import requests
+from urllib3.exceptions import InsecureRequestWarning
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,23 @@ def explain(e: Exception) -> str:
 
 class NvrDriver:
     """Base class. Subclasses must set `name` and implement the three methods."""
+
+    @staticmethod
+    def lan_session() -> requests.Session:
+        """HTTP session for a recorder on the site LAN (field Build 69 / 5.0.26 behaviour).
+
+        * trust_env = False: never route a 192.168/10.x/172.16-31 recorder through the PC's
+          Windows/corporate proxy or PAC; field PCs with one turned a local login into a
+          minute-long external timeout (W2 b0da326f, abd098a5).
+        * verify = False: recorders redirect HTTP to HTTPS with a self-signed certificate; a
+          browser works and so must the Agent. The traffic never leaves the LAN.
+        """
+        # verify=False is deliberate and LAN-only; do not write a warning per request to the log.
+        warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+        session = requests.Session()
+        session.trust_env = False
+        session.verify = False
+        return session
 
     name: str = "base"
     # Honest metadata, surfaced by `--probe` and stored on the agent row.

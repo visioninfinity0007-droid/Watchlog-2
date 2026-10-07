@@ -74,11 +74,13 @@ real CCTV site has been exercised.
 - [x] Installer/agent setup asks site type and assigns/suggests camera purposes
   after recorder discovery.
 - [x] Advanced lines, zones and schedules hand off to Analytics Studio.
-- [x] Explicit packaged `--setup` is strict: cancellation/failure returns
-  non-zero; success validates WatchLog enrollment and exits instead of entering
-  the infinite runtime.
-- [x] Existing background task is stopped for an upgrade and can be resumed if
-  the new setup fails.
+- [x] The packaged Agent refuses `--setup` and the automatic console wizard
+  (exit 2, nothing written); WatchLog Setup (`watchlog-setup-ui.exe`, run by NSIS
+  as `--installer-child`) is the only configuration path (updated 2026-10-06).
+- [x] An upgrade over an existing install runs the `wl-upgrade.ps1` stages
+  (preflight, verify-version, commit, rollback) and restores the previous payload
+  if the new version fails; a connected site is sent to
+  `WatchLog-Repair-Upgrade.exe` (updated 2026-10-06).
 - [x] Add/Remove Programs registration is written only after recorder/enrollment
   validation and background-task startup have both succeeded.
 - [x] Background task registration proves Windows reports it as `Running`.

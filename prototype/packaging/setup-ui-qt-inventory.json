@@ -1,0 +1,63 @@
+{
+  "schema": "watchlog.setup_ui_qt_inventory.v1",
+  "source": "Build 69 (5.0.17) watchlog-setup-ui.exe, byte-identical Qt payload in 5.0.26 and the 5.0.28 selective-Qt experiment (fe7f0a5d); PySide6 6.11.2, PyInstaller 6.22.2, hooks-contrib 2026.8. See docs/release/WINDOWS_PACKAGING.md.",
+  "plugins": {
+    "generic": [
+      "qtuiotouchplugin.dll"
+    ],
+    "iconengines": [
+      "qsvgicon.dll"
+    ],
+    "imageformats": [
+      "qgif.dll",
+      "qicns.dll",
+      "qico.dll",
+      "qjpeg.dll",
+      "qpdf.dll",
+      "qsvg.dll",
+      "qtga.dll",
+      "qtiff.dll",
+      "qwbmp.dll",
+      "qwebp.dll"
+    ],
+    "networkinformation": [
+      "qnetworklistmanager.dll"
+    ],
+    "platforminputcontexts": [
+      "qtvirtualkeyboardplugin.dll"
+    ],
+    "platforms": [
+      "qdirect2d.dll",
+      "qminimal.dll",
+      "qoffscreen.dll",
+      "qwindows.dll"
+    ],
+    "styles": [
+      "qmodernwindowsstyle.dll"
+    ],
+    "tls": [
+      "qcertonlybackend.dll",
+      "qopensslbackend.dll",
+      "qschannelbackend.dll"
+    ]
+  },
+  "libraries": [
+    "Qt6Core.dll",
+    "Qt6Gui.dll",
+    "Qt6Network.dll",
+    "Qt6OpenGL.dll",
+    "Qt6Pdf.dll",
+    "Qt6Qml.dll",
+    "Qt6QmlMeta.dll",
+    "Qt6QmlModels.dll",
+    "Qt6QmlWorkerScript.dll",
+    "Qt6Quick.dll",
+    "Qt6Svg.dll",
+    "Qt6VirtualKeyboard.dll",
+    "Qt6Widgets.dll",
+    "QtCore.pyd",
+    "QtGui.pyd",
+    "QtNetwork.pyd",
+    "QtWidgets.pyd"
+  ]
+}

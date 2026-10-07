@@ -419,7 +419,7 @@ The target is **healthy with one explainable exception**, not “everything gree
 There are currently two installer definitions plus the console setup wizard:
 
 - contractual NSIS: `prototype/installer/nsis/watchlog.nsi`
-- Inno: `prototype/installer/watchlog.iss`
+- Inno: `prototype/installer/watchlog.iss` (since removed; as of 2026-10-06 NSIS is the only installer and the console wizard is retired, see `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` section 0.2)
 - interactive setup: `prototype/agent/setup_wizard.py` + analytics wrapper
 
 This creates avoidable drift. Both installer scripts currently identify the publisher as Vision Infinity, use version `0.2.0`, and have a placeholder publisher URL. The setup wizard is technically useful but presents as an engineering console.

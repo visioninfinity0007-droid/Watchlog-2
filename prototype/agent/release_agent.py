@@ -15,9 +15,11 @@ policies layered in here:
 * Site Control always performs its outbound poll in the final package, while
   the SERVER-side per-site gate remains the sole execution authority.
 
-The NSIS installer's explicit ``--setup`` command remains strict and exits after
-recorder + enrollment validation so the background scheduled task owns the
-long-running process.
+The console setup wizard (``--setup``, and the automatic wizard when no recorder is
+configured) is retired in the packaged Agent: it wrote the recorder password in plain text into
+watchlog.ini, replaced the whole INI and ignored the recorder registry. WatchLog Setup
+(watchlog-setup-ui.exe) is the only way to configure a site; the packaged Agent refuses the
+wizard, writes nothing and exits non-zero.
 """
 from __future__ import annotations
 
@@ -32,23 +34,26 @@ import recording_current
 import remote_update
 from drivers.native_recorder import NativeDahuaDriver
 
-_ORIGINAL_SETUP = app.analytics_setup.run
 _ORIGINAL_RUN = app.enhanced_cmd_run
 _ORIGINAL_CONFIG_INIT = app.Config.__init__
 
+CONSOLE_SETUP_EXIT = 2
+CONSOLE_SETUP_RETIRED = (
+    "This WatchLog program does not set up recorders. Open WatchLog Setup from the Start menu "
+    "(WatchLog Setup, or Manage Recorders) to set up or change this site.")
 
-def _strict_setup(*args, **kwargs):
-    values = _ORIGINAL_SETUP(*args, **kwargs)
-    if not values:
-        raise SystemExit(1)
-    return values
+
+def _console_setup_retired(*args, **kwargs):
+    """Refuse the console wizard before it asks or writes anything."""
+    app.core.log("console setup refused: the packaged Agent is configured by WatchLog Setup")
+    print(CONSOLE_SETUP_RETIRED, file=sys.stderr)
+    raise SystemExit(CONSOLE_SETUP_EXIT)
 
 
 def _setup_validation_complete(cfg, state, cloud, once, device=None, channels=None):
-    app.core.log(
-        "setup validation complete: recorder + WatchLog enrollment proven; "
-        "returning control to installer"
-    )
+    # Unreachable while the console setup is retired (the wizard exits first); kept so an
+    # explicit --setup can never fall through into the long-running runtime.
+    app.core.log("console setup refused: not starting the runtime")
 
 
 def _production_config_init(self, *args, **kwargs):
@@ -84,9 +89,11 @@ def main() -> None:
     # harmless poll; the database gate decides whether commands can be claimed.
     app.Config.__init__ = _production_config_init
 
+    # Both the explicit --setup and the automatic wizard (no recorder configured) go through
+    # analytics_setup.run: refuse it in the packaged Agent.
+    app.analytics_setup.run = _console_setup_retired
     explicit_setup = "--setup" in sys.argv
     if explicit_setup:
-        app.analytics_setup.run = _strict_setup
         app.enhanced_cmd_run = _setup_validation_complete
     else:
         runtime = incident_evidence.wrap_cmd_run(_ORIGINAL_RUN)

@@ -46,6 +46,7 @@ from pathlib import Path
 import requests
 
 import nvr_health
+import server_capture
 import watchlog_agent as core
 from drivers import DriverError
 from drivers.base import Event, NvrAuthFailed, NvrUnreachable
@@ -248,6 +249,11 @@ class Schedule:
         if channel in self.next_due:
             self.next_due[channel] = now + self.interval()
 
+    def skip(self, channel: str, now: float) -> None:
+        """Next turn for a camera this round did not ask the recorder about (no spacing)."""
+        if channel in self.next_due:
+            self.next_due[channel] = now + self.interval()
+
     def seconds_until_due(self, now: float) -> float:
         if not self.next_due:
             return TICK_SECONDS
@@ -366,6 +372,98 @@ def _high_water(spool) -> int:
     return min(SPOOL_HIGH_WATER_ROWS, cap // 4) if cap > 0 else SPOOL_HIGH_WATER_ROWS
 
 
+class StreamStillSampler:
+    """Timed stills taken BETWEEN live alert-stream slices, on the live driver's own session.
+
+    Field Build 69/75 and shipped 5.0.26 (Hikvision DS-7608NI-Q1): a separate still session
+    beside the open alertStream made the recorder refuse logins, so each bounded stream slice
+    was followed by ONE rotating still on the same session. This is that behaviour with the
+    canonical contract of this module: the same configured-camera rule (Monitor/Ignore), the
+    same ~300 s per-camera cadence and staggering, the same spool high-water pause and the
+    same event row (build_event, recorder_id stamped). The driver calls it between slices
+    (``between_slices``); it returns at most one event and never raises."""
+
+    def __init__(self, cfg, driver, spool, *, profiles=None, startup=None, label=None,
+                 clock=time.monotonic, wall=None, rng: random.Random | None = None) -> None:
+        self.cfg, self.driver, self.spool = cfg, driver, spool
+        self.profiles = getattr(cfg, "camera_profiles", None) if profiles is None else profiles
+        self.startup = list(startup or [])
+        self.name = f"periodic stills ({label})" if label else "periodic stills"
+        self.clock, self.wall = clock, wall or core.now_utc
+        settings = load_settings(cfg)
+        self.enabled = bool(settings["enabled"])
+        self.schedule = Schedule(settings["cadence_seconds"], floor=settings["floor_seconds"],
+                                 rng=rng or random.Random())
+        self.vendor = vendor_family(driver)
+        self.next_enumerate = 0.0
+        self.started = None
+        self.paused_logged = False
+
+    def _log(self, text: str) -> None:
+        core.log(f"{self.name}: {text}")
+
+    def __call__(self) -> list:
+        try:
+            return self._sample()
+        except Exception as error:                          # noqa: BLE001 — never ends monitoring
+            self._log(f"still skipped ({type(error).__name__}: {nvr_health.redact(str(error))})")
+            return []
+
+    def _sample(self) -> list:
+        if not self.enabled or self.spool is None:
+            return []
+        now = self.clock()
+        if self.started is None:
+            self.started = now
+        if now >= self.next_enumerate:
+            self.next_enumerate = now + REENUMERATE_SECONDS
+            found = configured_channels(_list_channels(self.driver, self._log), self.startup,
+                                        self.profiles)
+            # No start-up delay: the sampler first runs after a whole live slice, so the stream
+            # is already proven (field Build 69 took its first still after the first slice).
+            first = not self.schedule.next_due
+            self.schedule.set_channels(found, now, start=now, restagger=first)
+        channel = self.schedule.due(now)
+        if channel is None:
+            return []
+        if server_capture.owned_by_server(getattr(self.cfg, "recorder_cloud_id", None), channel,
+                                          now):
+            # The server is scheduling this camera's stills; ours would duplicate them.
+            self.schedule.skip(channel, now)
+            return []
+        waiting = self.spool.count()
+        if waiting >= _high_water(self.spool):
+            self.schedule.done(channel, now)
+            if not self.paused_logged:
+                self.paused_logged = True
+                self._log(f"paused while {waiting} events wait to upload; "
+                          "recorder events keep priority")
+            return []
+        if self.paused_logged:
+            self.paused_logged = False
+            self._log("resumed")
+        try:
+            raw = self.driver.get_snapshot(channel)
+        except Exception as error:                          # noqa: BLE001 — camera-level
+            raw = None
+            self._log(f"ch{channel} gave no still "
+                      f"({type(error).__name__}: {nvr_health.redact(str(error))})")
+        captured = self.wall()
+        self.schedule.done(channel, now)
+        if not usable_still(raw):
+            return []
+        event = build_event(self.vendor, channel, bytes(raw), captured)
+        return [event.with_recorder_id(getattr(self.cfg, "recorder_cloud_id", None))]
+
+
+def samples_in_stream(cfg, driver=None) -> bool:
+    """True when this recorder's stills come from its live stream (StreamStillSampler), so the
+    separate worker must not open a second session to it."""
+    if driver is not None:
+        return bool(getattr(driver, "samples_in_stream", False))
+    return str(getattr(cfg, "nvr_driver", "") or "").strip().lower() == "hikvision-isapi"
+
+
 def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                           open_driver=None, clock=time.monotonic, wall=None,
                           rng: random.Random | None = None, profiles=None,
@@ -393,6 +491,9 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
         log("disabled by configuration")
         return
     if not str(getattr(cfg, "nvr_url", "") or "").strip():
+        return
+    if samples_in_stream(cfg):
+        log("stills come from the live event stream on its own session; no second session")
         return
     opener = open_driver or core.open_driver
     wall = wall or core.now_utc
@@ -440,6 +541,13 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                         log(f"recorder not reachable; next try in {int(delay)}s "
                             f"({nvr_health.redact(str(error))})")
                         continue
+                    if samples_in_stream(cfg, driver):
+                        # An auto-detected recorder that samples in its live stream.
+                        log("stills come from the live event stream on its own session; "
+                            "no second session")
+                        _close(driver)
+                        driver = None
+                        return
                     vendor = vendor_family(driver)
                     credential_gen = core._credential_generation(cfg)
                     next_enumerate = 0.0
@@ -470,6 +578,11 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                 channel = schedule.due(now)
                 if channel is None:
                     stop.wait(min(TICK_SECONDS, max(0.05, schedule.seconds_until_due(now))))
+                    continue
+                if server_capture.owned_by_server(getattr(cfg, "recorder_cloud_id", None),
+                                                  channel, now):
+                    # The server is scheduling this camera's stills; ours would duplicate.
+                    schedule.skip(channel, now)
                     continue
 
                 waiting = spool.count()

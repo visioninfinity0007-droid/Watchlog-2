@@ -5,6 +5,27 @@ Format: Decision · Reason · Evidence · Rollback.
 
 ---
 
+### 2026-10-06 · Windows installer: one NSIS production path; console setup and legacy installer files retired
+- **Decision:** WatchLog has one production Windows path: NSIS `WatchLog-Setup.exe` (new site) and
+  `WatchLog-Repair-Upgrade.exe` (existing site), built only by `.github/workflows/windows-release.yml`
+  through `tools/build_windows_release.ps1`. WatchLog Setup (`watchlog-setup-ui.exe`, Manage
+  Recorders) is the only configuration path; the packaged `watchlog-agent.exe --setup` and the
+  automatic console wizard exit 2 and write nothing. `prototype/installer/Install-WatchLog.ps1`,
+  `Install WatchLog.cmd`, `Uninstall-WatchLog.ps1` and `run-agent.cmd` are deleted; the launcher is
+  `run-agent.ps1`. This supersedes two statements in the 2026-09-01 "P9 — Real NSIS installer"
+  entry: that NSIS reuses `run-agent.cmd`, and that "the Inno `.iss` and the ZIP packager remain"
+  (the `.iss` is gone; `tools/make_installer.ps1` only delegates to the NSIS build).
+- **Reason:** the console wizard wrote the recorder password in plain text into `watchlog.ini`,
+  replaced the INI and ignored the recorder registry; a second installer path drifts from the
+  tested one.
+- **Evidence:** release-candidate 5.1.1 commit `0b77080c`; `test_console_setup_retired.py`,
+  `test_portal_alignment_contract.py` (asserts no `watchlog.iss`). Status: CI VERIFIED (local
+  reproduction); no 5.1.1 installer built or installed. Production release BLOCKED on a
+  code-signing certificate.
+- **Rollback:** none needed for sites: NSIS and `wl-upgrade.ps1` still remove a `run-agent.cmd`
+  left on an older site. Restoring the console wizard would restore plain-text credential storage
+  and is not supported.
+
 ### 2026-09-28 · Camera identity — physical cameras are canonical; ONVIF stream profiles are transport detail
 - **Decision:** model one customer-visible camera per physical video source. ONVIF MainStream/SubStream profiles may be retained as hidden historical transport rows but must not appear as separate cameras.
 - **Reason:** Al-Khalid's Dahua recorder exposed 16 ONVIF profiles for 8 physical cameras, which corrupted camera counts and role semantics.

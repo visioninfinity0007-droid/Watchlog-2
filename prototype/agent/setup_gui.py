@@ -21,6 +21,23 @@ import tempfile
 import time
 from pathlib import Path
 
+# Release performance gate (tools/release_perf_gate.py): with WATCHLOG_UI_TIMING_PATH set, the
+# start-up phases are written there as wall-clock times, so the gate can tell one-file unpack,
+# Qt import, window construction and the first visible window apart. Unset: nothing is written.
+_TIMING_PATH = os.environ.get("WATCHLOG_UI_TIMING_PATH")
+_PHASES: dict[str, float] = {"python_start": time.time()}
+
+
+def _mark(phase: str) -> None:
+    if not _TIMING_PATH or phase in _PHASES:
+        return
+    _PHASES[phase] = time.time()
+    try:
+        Path(_TIMING_PATH).write_text(
+            json.dumps({"schema": "watchlog.ui_timing.v1", "phases": _PHASES}), encoding="utf-8")
+    except OSError:
+        pass                    # timing is a release-gate aid, never a reason to fail setup
+
 # A PyInstaller --windowed process has no console streams. Existing recorder
 # libraries use print() for diagnostics, so give them a local file instead of
 # letting a diagnostic print crash the GUI.
@@ -50,11 +67,15 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
+_mark("qt_imported")
+
 import credential_store
 import recorder_registry
 import recorder_runtime
 import setup_backend as backend
 from status_controller import StatusController
+
+_mark("backend_imported")
 
 ICE = "#72D4FF"
 BLUE = "#1748D3"
@@ -1178,8 +1199,11 @@ class SetupWindow(QMainWindow):
         alive while watchlog-agent.exe repeatedly failed underneath it.
         """
         info = getattr(self, "agent_start", None) or {}
-        if info.get("started"):
+        if info.get("started") and info.get("proven", True):
             return "✓ WatchLog background connector started and reached WatchLog"
+        if info.get("started"):
+            return ("! WatchLog is running but has not yet confirmed the recorder — "
+                    "Site Status shows when it connects")
         return ("! WatchLog background connector could not prove it is reporting — "
                 "retry setup or export a support bundle")
 
@@ -1777,15 +1801,18 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
     """Exercise the exact packaged Qt recorder-selection and installer lifecycle."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    _mark("qapplication")
     old_pd = os.environ.get("PROGRAMDATA")
     try:
         with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
             os.environ["PROGRAMDATA"] = td
             window = SetupWindow(Path(td) / "watchlog.ini", installer_child=installer_child)
+            _mark("window_constructed")
             # Show the real window even on the offscreen Qt platform so the lifecycle
             # assertion can prove that installer-child mode actually closes it.
             window.show()
             app.processEvents()
+            _mark("first_visible")
             window.go(2)
             window.show_recorders([{
                 "ip": "10.10.10.2",
@@ -2020,6 +2047,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 app.processEvents()
                 if window.exit_code != 0 or window.isVisible():
                     return 34
+                _mark("installer_child_closed")
 
                 failed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
                 failed.show()
@@ -2056,6 +2084,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 timed.close()
             else:
                 window.close()
+            _mark("selftest_done")
             return 0
     finally:
         if old_pd is None:
@@ -2288,6 +2317,12 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
             result["recorders_total"] = len(report)
             if any(entry["credential"] != "ok" for entry in report):
                 raise RuntimeError("a configured recorder credential cannot be decrypted")
+            result["legacy_mirror"] = _legacy_mirror_state(rows)
+            if result["legacy_mirror"] == "differs":
+                # Reported, not fatal: Repair cannot know which login is right. Re-entering
+                # the recorder login in Manage Recorders rewrites both.
+                result["warning"] = ("the original recorder's login differs from the copy older "
+                                     "WatchLog versions use; re-enter it in Manage Recorders")
 
             base = backend.core.Config(Path(config_path), read_only_credentials=True)
             contexts = {ctx.local_id: ctx for ctx in recorder_runtime.load_contexts(base)}
@@ -2307,6 +2342,27 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
     except BaseException as exc:  # noqa: BLE001 - includes SystemExit from strict config
         result["error"] = f"{type(exc).__name__}: {exc}"[:300]
     return _finish(result_path, result)
+
+
+def _legacy_mirror_state(rows: list[dict]) -> str:
+    """Does the continuity recorder's login match the legacy singleton copy (nvr_credential)?
+
+    Both are written together (mirror_legacy); a failed restore can leave them different, and
+    then a rollback to 5.0.x, or the single-recorder runtime, silently uses the other login
+    (credential audit P4-c). matches | differs | absent | unreadable. Read-only."""
+    continuity = next((row for row in rows if row.get("continuity_owner")), None)
+    if continuity is None:
+        return "absent"
+    try:
+        legacy = credential_store.load_nvr_credential_readonly()
+        if legacy is None:
+            return "absent"
+        current = credential_store.load_recorder_credential(continuity["local_id"])
+    except Exception:  # noqa: BLE001 - reported, the per-recorder check above already passed
+        return "unreadable"
+    same = all(str(legacy.get(key) or "") == str(current.get(key) or "")
+               for key in ("username", "password"))
+    return "matches" if same else "differs"
 
 
 def _recorder_blob_names() -> set[str]:
@@ -2477,7 +2533,8 @@ def main() -> int:
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:
-        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
+        import wl_version  # BUILD_SHA is baked into the frozen Setup UI too (build_info)
+        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION} build_sha={wl_version.BUILD_SHA}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
 

@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.1.0"
+  !define APPVERSION "5.1.1"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -299,6 +299,15 @@ Section "Install"
     ${EndIf}
   ${EndIf}
 
+  ; Start menu for ALL users (a later uninstall by another administrator removes it). Older
+  ; installs put it in the installing admin's own profile: remove that copy first.
+  SetShellVarContext current
+  Delete "${STARTMENU}\WatchLog Setup.lnk"
+  Delete "${STARTMENU}\WatchLog Site Status.lnk"
+  Delete "${STARTMENU}\WatchLog Manage Recorders.lnk"
+  Delete "${STARTMENU}\Uninstall WatchLog.lnk"
+  RMDir "${STARTMENU}"
+  SetShellVarContext all
   CreateDirectory "${STARTMENU}"
   CreateShortcut "${STARTMENU}\WatchLog Setup.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
   CreateShortcut "${STARTMENU}\WatchLog Site Status.lnk" "$INSTDIR\watchlog-setup-ui.exe" '--status --config "$INSTDIR\watchlog.ini"' "$INSTDIR\setup.ico"
@@ -306,6 +315,9 @@ Section "Install"
 
   WriteRegStr HKLM "${ARPKEY}" "DisplayName" "WatchLog"
   WriteRegStr HKLM "${ARPKEY}" "DisplayVersion" "${APPVERSION}"
+  ; The component set (Setup UI, scripts, uninstaller) this installer wrote. An Agent-only
+  ; remote update never changes it; the Agent refuses a release that needs newer components.
+  WriteRegStr HKLM "${ARPKEY}" "ComponentsVersion" "${APPVERSION}"
   WriteRegStr HKLM "${ARPKEY}" "Publisher" "${PUBLISHER}"
   !ifdef PUBLISHER_URL
     WriteRegStr HKLM "${ARPKEY}" "URLInfoAbout" "${PUBLISHER_URL}"
@@ -320,15 +332,29 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
-  ; schtasks /End kills the run-agent.ps1 LAUNCHER; the watchlog-agent.exe grandchild
-  ; survives it. Deleting a locked exe then silently fails and leaves a ghost agent
-  ; running against a site that has been uninstalled. wl-upgrade.ps1 -Stage preflight is
-  ; the already-proven primitive that stops the task AND the process and verifies the
-  ; binary is unlocked, so use it before touching any file.
+  ; IDENTICAL in watchlog.nsi and watchlog-repair.nsi (a test compares them): a site upgraded
+  ; by Repair/Upgrade gets this uninstaller too, so it removes what 5.1 added.
+  ;
+  ; schtasks /End kills the run-agent.ps1 LAUNCHER; the watchlog-agent.exe grandchild survives
+  ; it. wl-upgrade.ps1 -Stage uninstall stops the task, launcher, Setup UI and Agent and proves
+  ; the files unlocked (no backup), removes every WatchLog scheduled task (Agent, upgrade
+  ; recovery, orphaned candidate preflight), restores the power settings recorded at install,
+  ; and removes ProgramData state by the uninstall policy: support logs stay, identity,
+  ; credentials, queues, caches and staging go. The deletes below repeat that policy for the
+  ; files NSIS can name, so an uninstall still cleans up if PowerShell cannot run.
   IfFileExists "$INSTDIR\wl-upgrade.ps1" 0 +2
-    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\wl-upgrade.ps1" -Stage preflight -InstallDir "$INSTDIR"' $9
+    ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\wl-upgrade.ps1" -Stage uninstall -InstallDir "$INSTDIR"' $9
   ExecWait '"$SYSDIR\schtasks.exe" /End /TN "${TASKNAME}"'
   ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME}" /F'
+  ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "${TASKNAME} Upgrade Recovery" /F'
+  ; Shortcuts: all users (5.1.1+) and the installing admin's own profile (older installs).
+  SetShellVarContext current
+  Delete "${STARTMENU}\WatchLog Setup.lnk"
+  Delete "${STARTMENU}\WatchLog Site Status.lnk"
+  Delete "${STARTMENU}\WatchLog Manage Recorders.lnk"
+  Delete "${STARTMENU}\Uninstall WatchLog.lnk"
+  RMDir "${STARTMENU}"
+  SetShellVarContext all
   Delete "${STARTMENU}\WatchLog Setup.lnk"
   Delete "${STARTMENU}\WatchLog Site Status.lnk"
   Delete "${STARTMENU}\WatchLog Manage Recorders.lnk"
@@ -345,9 +371,13 @@ Section "Uninstall"
   Delete "$INSTDIR\setup.ico"
   Delete "$INSTDIR\yolov8n.onnx"  ; legacy: remove any externally-shipped model from older installs
   ; Leftovers that kept $INSTDIR alive after every uninstall, so RMDir below always
-  ; failed and the folder (plus a stale rollback backup) survived forever.
+  ; failed and the folder (plus stale rollback images) survived forever.
   Delete "$INSTDIR\wl-upgrade.ps1"
+  Delete "$INSTDIR\wl-upgrade-recover.ps1"
+  Delete "$INSTDIR\watchlog.defaults.ini"
   Delete "$INSTDIR\watchlog-agent.exe.wlbak"
+  Delete "$INSTDIR\watchlog-agent.exe.remote.bak"
+  Delete "$INSTDIR\watchlog-agent.next.verify"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${ARPKEY}"
@@ -356,20 +386,22 @@ Section "Uninstall"
   ; binds local recorder ids to this site's cloud recorder identities and names the
   ; per-recorder credentials under Secrets\recorders. Remove it BEFORE those credentials:
   ; a registry left without them made every later reinstall fail until someone deleted
-  ; it by hand.
+  ; it by hand. Quarantined copies hold queued secondary events: they go too.
   Delete "${DATAROOT}\recorders.json"
   Delete "${DATAROOT}\recorders.json.tmp"
+  Delete "${DATAROOT}\recorders.json.quarantine-*"
   RMDir /r "${DATAROOT}\Secrets\recorders"
 
-  ; Remove the encrypted credential + agent key (the whole Secrets directory)
-  ; and any legacy plaintext/blob remnants. Non-secret state and logs remain in
-  ; ProgramData for support/reinstall continuity; a reinstall re-runs setup
+  ; Remove the encrypted credential + agent key (the whole Secrets directory, with the
+  ; runtime-health proof and the power baseline already applied above)
+  ; and any legacy plaintext/blob remnants. A reinstall re-runs setup
   ; because is_enrolled requires a decryptable key, which is now gone.
   RMDir /r "${DATAROOT}\Secrets"
 
   ; IDENTITY-BOUND local state must go too. Keeping agent_state.json and the spool meant
   ; a PC uninstalled at customer A and reinstalled at customer B DRAINED A's queued events
-  ; into B's site on first connect. Logs stay for support; identity and queued data do not.
+  ; into B's site on first connect. WatchLog has no "keep this site for a reinstall"
+  ; choice, so logs stay for support and identity, queued data and caches do not.
   Delete "${DATAROOT}\agent_state.json"
   Delete "${DATAROOT}\spool.sqlite"
   Delete "${DATAROOT}\spool.sqlite-wal"
@@ -377,9 +409,36 @@ Section "Uninstall"
   Delete "${DATAROOT}\health.sqlite"
   Delete "${DATAROOT}\health.sqlite-wal"
   Delete "${DATAROOT}\health.sqlite-shm"
+  Delete "${DATAROOT}\analytics_spool.sqlite"
+  Delete "${DATAROOT}\analytics_spool.sqlite-wal"
+  Delete "${DATAROOT}\analytics_spool.sqlite-shm"
+  Delete "${DATAROOT}\analytics_config.json"
+  Delete "${DATAROOT}\analytics_status.json"
+  Delete "${DATAROOT}\analytics_bootstrap_sent.json"
+  Delete "${DATAROOT}\analytics_action_dedup.json"
+  Delete "${DATAROOT}\recorder_identity.json"
+  Delete "${DATAROOT}\camera_profiles.json"
+  Delete "${DATAROOT}\recorder_auth_backoff.json"
   Delete "${DATAROOT}\last_live.json"
   Delete "${DATAROOT}\watchlog.env"
   Delete "${DATAROOT}\nvr_password.dpapi"
+  Delete "${DATAROOT}\background-ready.json"
+  Delete "${DATAROOT}\run-agent.pid"
+  Delete "${DATAROOT}\upgrade-in-progress.json"
+  ; 5.1.1: the site stamp of the queued data, another site's set-aside queue/health files
+  ; (<name>.site-<id>-<time>), rows the server rejected (<spool>.rejected.jsonl) and the
+  ; registry's write temps. All hold site data or identity.
+  Delete "${DATAROOT}\site_runtime.json"
+  Delete "${DATAROOT}\site_runtime.tmp"
+  Delete "${DATAROOT}\agent_state.tmp"
+  Delete "${DATAROOT}\*.site-*"
+  Delete "${DATAROOT}\*.rejected.jsonl"
+  Delete "${DATAROOT}\.recorders.*.tmp"
   ; Secondary recorders keep their own spool, health ledger and last-live marker here.
   RMDir /r "${DATAROOT}\recorders"
+  ; Staging and rollback copies: a remote-update stage, the upgrade backup (a full payload
+  ; copy) and an interrupted Repair candidate.
+  RMDir /r "${DATAROOT}\remote-update"
+  RMDir /r "${DATAROOT}\upgrade-backup"
+  RMDir /r "${DATAROOT}\repair-candidate"
 SectionEnd

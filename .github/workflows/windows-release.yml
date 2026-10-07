@@ -12,6 +12,14 @@ on:
         required: false
         type: boolean
         default: false
+      previous_version:
+        description: Version on the update channel now (update contract; empty = Repair package required)
+        required: false
+        type: string
+      previous_ref:
+        description: Source commit of that version (update contract; empty = Repair package required)
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -26,6 +34,11 @@ concurrency:
 jobs:
   build-real-installer:
     name: Build real AI-enabled WatchLog installer
+    # GitHub-hosted image: windows-latest is a moving label (Build 69 ran on 20260922.246.2, 5.1.0
+    # on 20260925.250.1, and --collect-all PySide6 behaved differently on the two). The image
+    # cannot be pinned to a dated version on GitHub-hosted runners; what CAN be pinned is pinned:
+    # Python 3.12.10, every Python package (hash locks), NSIS 3.13.0. The exact image version is
+    # recorded in the build manifest (ImageOS / ImageVersion). docs/release/WINDOWS_PACKAGING.md.
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -46,14 +59,31 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The update contract compares installed scripts, Setup UI and data formats with the
+          # previous release's source commit.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # The release toolchain. Each EXE is then frozen in its own venv created from this
+          # interpreter and prototype/packaging/requirements-<exe>.lock (hash-locked, --no-deps).
+          python-version: '3.12.10'
 
-      - name: Install NSIS
+      - name: Install NSIS (pinned)
         shell: powershell
-        run: choco install nsis -y --no-progress
+        run: choco install nsis -y --no-progress --version 3.13.0
+
+      - name: Release toolchain present (7-Zip for the NSIS payload proof)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sz = 'C:\Program Files\7-Zip\7z.exe'
+          if (-not (Test-Path $sz)) { throw "7-Zip is required for the NSIS payload proof and is missing from this runner image ($sz)" }
+          & $sz i | Select-Object -First 3 | ForEach-Object { Write-Host $_ }
+          Write-Host "Runner image: $env:ImageOS $env:ImageVersion"
+          $py = (python -c "import platform; print(platform.python_version())").Trim()
+          if ($py -ne '3.12.10') { throw "release builds use Python 3.12.10, this runner has $py" }
 
       - name: Validate public release configuration
         shell: powershell
@@ -67,6 +97,16 @@ jobs:
           }
           if ($env:SUPABASE_URL -notmatch '^https://') {
             throw 'WATCHLOG_SUPABASE_URL must be an https URL.'
+          }
+          # The signed update feed: repository variables override the committed bootstrap
+          # (prototype/update/production.json). Field 5.0.24-5.0.26 Agents trust the committed
+          # key; a different key in the variables would orphan them, so say so loudly.
+          $boot = Get-Content -Raw prototype\update\production.json | ConvertFrom-Json
+          if ($env:WATCHLOG_UPDATE_PUBLIC_KEY -and $env:WATCHLOG_UPDATE_PUBLIC_KEY -ne $boot.public_key_b64) {
+            Write-Host "::warning title=Update key differs from the field bootstrap::WATCHLOG_UPDATE_PUBLIC_KEY differs from prototype/update/production.json; field 5.0.24-5.0.26 Agents verify with the committed key."
+          }
+          if ($env:WATCHLOG_UPDATE_URL -and $env:WATCHLOG_UPDATE_URL -ne $boot.manifest_url) {
+            Write-Host "::warning title=Update URL differs from the field bootstrap::WATCHLOG_UPDATE_URL differs from prototype/update/production.json."
           }
           Write-Host 'Public WatchLog release configuration is present.'
 
@@ -114,13 +154,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "release script failed with exit $LASTEXITCODE" }
 
             # Field release gates: preserve Build 69 discovery reach while preventing
-            # the Build 74 spinner-forever failure class.
-            python prototype/tests/test_recorder_probe.py
+            # the Build 74 spinner-forever failure class. They run in the Agent's isolated build
+            # venv: the runner's global Python has no packages installed (nothing outside the
+            # locks is ever installed).
+            $agentPy = (Resolve-Path .\prototype\build-venvs\agent\Scripts\python.exe).Path
+            & $agentPy prototype/tests/test_recorder_probe.py
             if ($LASTEXITCODE -ne 0) { throw "recorder discovery hardening contract failed" }
-            python prototype/tests/test_recorder_setup.py
+            & $agentPy prototype/tests/test_recorder_setup.py
             if ($LASTEXITCODE -ne 0) { throw "recorder login/connectivity contract failed" }
 
-            python prototype/tests/test_existing_site_repair.py
+            & $agentPy prototype/tests/test_existing_site_repair.py
             if ($LASTEXITCODE -ne 0) { throw "existing-site Repair/Upgrade contract failed" }
 
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/tests/test_upgrade_shutdown.ps1
@@ -140,21 +183,28 @@ jobs:
           $repair = Get-Item '.\dist-installer\WatchLog-Repair-Upgrade.exe'
           $checksumPath = '.\dist-installer\WatchLog-Setup.exe.sha256'
           $repairChecksumPath = '.\dist-installer\WatchLog-Repair-Upgrade.exe.sha256'
+          $buildManifest = '.\dist-installer\WatchLog-Build-Manifest.json'
+          $payloadProof = '.\dist-installer\WatchLog-Payload-Proof.json'
+          $sizeReport = '.\dist-installer\WatchLog-Size-Report.json'
 
-          if ($agent.Length -lt 5MB) {
-            throw "watchlog-agent.exe is too small ($($agent.Length) bytes); refusing a stub/incomplete release."
-          }
-          if ($setupUi.Length -lt 5MB) {
-            throw "watchlog-setup-ui.exe is too small ($($setupUi.Length) bytes); refusing a stub/incomplete release."
-          }
-          if ($setup.Length -lt 10MB) {
-            throw "WatchLog-Setup.exe is too small ($($setup.Length) bytes); refusing a stub/incomplete release."
-          }
-          # Repair/Upgrade carries the Agent and the Setup UI (Manage Recorders), so it is
-          # close to full Setup in size.
-          if ($repair.Length -lt $agent.Length -or $repair.Length -gt ($setup.Length + 1MB)) {
-            throw "WatchLog-Repair-Upgrade.exe size is invalid ($($repair.Length) bytes); it must contain the Agent and the Setup UI and stay within 1 MB of full Setup."
-          }
+          # WHAT the installers contain is proven by hashes, not sizes: the release script ran the
+          # NSIS payload proof (7-Zip extraction; every embedded file hashed against the dist EXEs
+          # and source files; unexpected/missing files and stray executables rejected). Re-run it
+          # here, independently of the build script, against the uploaded bytes.
+          foreach ($f in @($buildManifest, $payloadProof, $sizeReport)) { if (-not (Test-Path $f)) { throw "$f is missing" } }
+          $bm = Get-Content -Raw $buildManifest | ConvertFrom-Json
+          if (-not $bm.invariants_ok) { throw "build manifest invariants failed: $($bm.failures -join '; ')" }
+          if ($bm.source.sha -ne $env:GITHUB_SHA) { throw "build manifest source SHA $($bm.source.sha) != GITHUB_SHA $env:GITHUB_SHA" }
+          if ($bm.source.dirty) { throw 'build manifest records a dirty tree' }
+          python tools/verify_installer_payload.py --setup $setup.FullName --repair $repair.FullName `
+            --agent $agent.FullName --setup-ui $setupUi.FullName --manifest $buildManifest --json $payloadProof
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS payload proof failed' }
+          # Broad sanity bounds only (size is never integrity) + largest deltas vs the baseline.
+          python tools/release_size_report.py --agent $agent.FullName --setup-ui $setupUi.FullName `
+            --setup $setup.FullName --repair $repair.FullName --json $sizeReport
+          if ($LASTEXITCODE -ne 0) { throw 'release size sanity bounds failed' }
+          python tools/release_size_report.py --check-setup-ui $setupUi.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'frozen setup UI content check failed' }
           if (-not (Test-Path $checksumPath)) { throw 'installer checksum file is missing' }
           if (-not (Test-Path $repairChecksumPath)) { throw 'repair checksum file is missing' }
 
@@ -171,6 +221,13 @@ jobs:
             throw "packaged setup UI recorder discovery self-test failed with exit $($uiSelf.ExitCode)"
           }
           Write-Host 'Packaged setup UI recorder discovery behavior PASSED.'
+
+          # Release performance gate: repeated runs of the frozen Setup UI and Agent, p50/p95/max
+          # against prototype/packaging/perf-budgets.json (unpack, first visible window,
+          # installer-child lifecycle, Agent --version and --selftest).
+          python tools/release_perf_gate.py --setup-ui $setupUi.FullName --agent $agent.FullName `
+            --size $setup.FullName --size $repair.FullName --json .\dist-installer\WatchLog-Perf-Report.json
+          if ($LASTEXITCODE -ne 0) { throw 'release performance gate failed (see WatchLog-Perf-Report.json)' }
 
           # Prove the packaged AI runtime/model, not just the Python source tree.
           $agentSelftest = & $agent.FullName --selftest 2>&1 | Out-String
@@ -191,9 +248,14 @@ jobs:
           # at the correct version and REJECTS a wrong one.
           $fileVer = $agent.VersionInfo.ProductVersion
           if ($fileVer -ne $wlVer) { throw "agent file ProductVersion '$fileVer' != wl_version '$wlVer'" }
-          $runVer = (& $agent.FullName --version 2>$null | Select-Object -First 1).ToString().Trim()
+          $verLines = @(& $agent.FullName --version 2>$null | ForEach-Object { "$_".Trim() })
+          $runVer = $verLines[0]
           if ($runVer -ne $wlVer) { throw "agent --version '$runVer' != wl_version '$wlVer'" }
-          Write-Host "agent version truth OK: file=$fileVer runtime=$runVer"
+          # Build identity: the baked BUILD_SHA must be this workflow's source commit.
+          if ($verLines -notcontains "build_sha=$env:GITHUB_SHA") {
+            throw "agent --version does not report build_sha=$env:GITHUB_SHA :`n$($verLines -join "`n")"
+          }
+          Write-Host "agent version truth OK: file=$fileVer runtime=$runVer build_sha=$env:GITHUB_SHA"
           $ud = Join-Path $env:RUNNER_TEMP 'wl-upg-accept'
           New-Item -ItemType Directory -Force $ud | Out-Null
           Copy-Item $agent.FullName (Join-Path $ud 'watchlog-agent.exe') -Force
@@ -265,8 +327,9 @@ jobs:
           Write-Host "  Packaged-EXE DPAPI proof PASSED: frozen setup UI -> credential_store -> DPAPI."
           Write-Host "    username=$($obj.username) credential_version=$($obj.credential_version) plaintext-in-blob=NO owner/DACL=SYSTEM+Admins"
           # Best-effort direct version echo (a windowed exe's console-attach may
-          # not be pipe-captured on the runner; the agent self-test above and the
-          # shared wl_version.py are the authoritative proof the setup UI is 0.3.4).
+          # not be pipe-captured on the runner). The authoritative proofs for the setup UI are
+          # its PE ProductVersion (below) and the BUILD_SHA read from its archive by the
+          # payload proof; both are recorded in the build manifest.
           $setupUiVersion = (& $setupUi.FullName --version 2>&1 | Out-String).Trim()
           Write-Host "Setup UI --version (best-effort console echo): '$setupUiVersion'"
 
@@ -312,16 +375,53 @@ jobs:
             "run_id=$env:GITHUB_RUN_ID",
             "run_number=$env:GITHUB_RUN_NUMBER",
             "workflow_ref=$env:GITHUB_REF",
+            "runner_image=$env:ImageOS $env:ImageVersion",
             "watchlog-agent.exe.sha256=$agentHash",
+            "watchlog-agent.exe.bytes=$($agent.Length)",
+            "watchlog-agent.exe.build_sha=$($bm.artifacts.'watchlog-agent.exe'.baked_build_sha)",
             "watchlog-setup-ui.exe.sha256=$setupUiHash",
+            "watchlog-setup-ui.exe.bytes=$($setupUi.Length)",
+            "watchlog-setup-ui.exe.build_sha=$($bm.artifacts.'watchlog-setup-ui.exe'.baked_build_sha)",
             "WatchLog-Setup.exe.sha256=$actual",
-            "WatchLog-Repair-Upgrade.exe.sha256=$repairActual"
+            "WatchLog-Setup.exe.bytes=$($setup.Length)",
+            "WatchLog-Repair-Upgrade.exe.sha256=$repairActual",
+            "WatchLog-Repair-Upgrade.exe.bytes=$($repair.Length)",
+            "WatchLog-Build-Manifest.json.sha256=$((Get-FileHash $buildManifest -Algorithm SHA256).Hash)",
+            "WatchLog-Payload-Proof.json.sha256=$((Get-FileHash $payloadProof -Algorithm SHA256).Hash)",
+            "WatchLog-Size-Report.json.sha256=$((Get-FileHash $sizeReport -Algorithm SHA256).Hash)"
           )
           $manifestPath = '.\dist-installer\WatchLog-Release.hashes.txt'
           Set-Content -Path $manifestPath -Encoding ASCII -Value $manifestLines
           Write-Host '---- RECORDED RELEASE HASHES (RC identity) ----'
           $manifestLines | ForEach-Object { Write-Host $_ }
           Write-Host '-----------------------------------------------'
+
+      - name: Update contract and update payload (written, never published)
+        shell: powershell
+        env:
+          PREVIOUS_VERSION: ${{ inputs.previous_version }}
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Agent-only vs Repair package (tools/release_update_contract.py). An unknown previous
+          # release is classified REQUIRES_REPAIR_PACKAGE. Publishing the payload to the update
+          # channel is a separate, owner-approved step; this build uploads nothing there.
+          $version = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          python tools/release_update_contract.py --version $version `
+            --previous-version "$env:PREVIOUS_VERSION" --previous-ref "$env:PREVIOUS_REF" `
+            --ref $env:GITHUB_SHA --build-sha $env:GITHUB_SHA `
+            --out .\dist-installer\WatchLog-Update-Contract.json `
+            --agent .\prototype\dist\watchlog-agent.exe `
+            --payload-out .\dist-installer\watchlog-update-payload.json
+          if ($LASTEXITCODE -ne 0) { throw 'update contract failed' }
+          $contract = Get-Content '.\dist-installer\WatchLog-Update-Contract.json' -Raw | ConvertFrom-Json
+          Add-Content -Path '.\dist-installer\WatchLog-Release.hashes.txt' -Encoding ASCII -Value @(
+            "update_class=$($contract.update_class)",
+            "min_installed_components=$($contract.min_installed_components)",
+            "WatchLog-Update-Contract.json.sha256=$((Get-FileHash '.\dist-installer\WatchLog-Update-Contract.json' -Algorithm SHA256).Hash)",
+            "watchlog-update-payload.json.sha256=$((Get-FileHash '.\dist-installer\watchlog-update-payload.json' -Algorithm SHA256).Hash)"
+          )
+          Write-Host "update contract: $($contract.update_class) (min components $($contract.min_installed_components))"
 
       - name: Upload WatchLog Windows release
         uses: actions/upload-artifact@v4
@@ -333,5 +433,11 @@ jobs:
             dist-installer/WatchLog-Repair-Upgrade.exe
             dist-installer/WatchLog-Repair-Upgrade.exe.sha256
             dist-installer/WatchLog-Release.hashes.txt
+            dist-installer/WatchLog-Build-Manifest.json
+            dist-installer/WatchLog-Payload-Proof.json
+            dist-installer/WatchLog-Size-Report.json
+            dist-installer/WatchLog-Update-Contract.json
+            dist-installer/WatchLog-Perf-Report.json
+            dist-installer/watchlog-update-payload.json
           if-no-files-found: error
           retention-days: 30

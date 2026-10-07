@@ -4,7 +4,180 @@ For current live tenant/site/runtime context, also read:
 
 `docs/production/CURRENT_LIVE_CONTEXT_2026-09-28.md`
 
-This document is the release authority for Windows installer work.
+This document is the release authority for Windows installer work: the one production
+install/upgrade/uninstall path, its components, the update contract and the release status.
+It does not repeat procedures that live elsewhere:
+
+| Document | Purpose |
+|---|---|
+| this document | the production path, components, update contract, release status |
+| `docs/runbooks/WINDOWS_RECORDER_FIELD_ACCEPTANCE.md` | field acceptance procedure on a real site PC and recorder |
+| `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md` | operator runbook for Repair/Upgrade of an enrolled site |
+| `docs/acceptance/ARCHIVE_GAP_RECOVERY_STATUS.md` | footage/archive and gap/recovery status; recording and storage truth as separate states |
+| `docs/release/WINDOWS_PACKAGING.md` | how the release is built (locked toolchain, payload proof) |
+| `docs/security/MACHINE_BINDING.md` | DPAPI machine-binding proof |
+
+---
+
+## 0. Release candidate 5.1.1: production path and status (2026-10-06)
+
+Section 0 and section 1D govern 5.1.1. Sections 1A-1C record earlier unpromoted candidates and
+sections 2-12 record the 5.0.x lineage; where they disagree with section 0 or 1D, section 0 and
+1D win.
+
+Status words used in this document set: NOT STARTED, FIXED LOCALLY, CI VERIFIED, INSTALLER
+VERIFIED, FIELD VERIFIED, PRODUCTION VERIFIED, BLOCKED. **CI VERIFIED** means the repository CI
+suite was reproduced locally (`wl-ci-local.py` / `wl-ci-windows.py`). No 5.1.1 commit has run on
+GitHub CI, no 5.1.1 installer has been built by the Windows Release workflow or signed, and 5.1.1
+is installed at no site. Nothing about 5.1.1 is FIELD VERIFIED or PRODUCTION VERIFIED.
+
+### 0.1 Release identity
+
+- Candidate line: local branch `release/5.1.1` (nothing pushed). 5.1.1 is a candidate,
+  **not promoted**: no Windows artifact has been built from it.
+- Database prerequisite: contract v4 (`mr/db-contracts` migrations `0146`-`0155`, plus 0156 and
+  0157), as for 5.1.0 (section 1C); applied in production (section 0.7).
+- Deliberate downgrade to 5.0.x: the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+- Version string: `prototype/agent/wl_version.py` and the NSIS `APPVERSION` fallbacks still read
+  `5.1.0`. The bump to 5.1.1 (`tools/bump_version.py`) belongs to the RC freeze; until then
+  section 1 names the version the code carries (`test_release_version_contract.py`).
+  Status: NOT STARTED.
+- Immutable RC record (source SHA, version, `watchlog-agent.exe`, `watchlog-setup-ui.exe`,
+  `WatchLog-Setup.exe` and `WatchLog-Repair-Upgrade.exe` SHA-256, workflow run, artifact ID):
+  NOT STARTED. It is recorded here when it exists.
+
+### 0.2 The one production path
+
+WatchLog has one production installer technology, **NSIS**, built only by
+`.github/workflows/windows-release.yml` running `tools/build_windows_release.ps1`
+(`tools/make_installer.ps1` only delegates to it). Build details: `WINDOWS_PACKAGING.md`.
+
+| Package | Use |
+|---|---|
+| `WatchLog-Setup.exe` | New site or new PC: first install, recorder discovery and login, cameras, enrollment. On a fully connected site it refuses, before stopping anything, and points to Repair/Upgrade (`watchlog.nsi`). |
+| `WatchLog-Repair-Upgrade.exe` | Existing enrolled site: repair, upgrade and bootstrap, with no discovery. Procedure: `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`. |
+| `uninstall.exe` | Written by both packages (same Uninstall section, compared by a test). |
+
+Installed components (`C:\Program Files\WatchLog`): `watchlog-agent.exe` (background Agent, entry
+point `release_agent.py`), `watchlog-setup-ui.exe` (WatchLog Setup, Site Status, Manage
+Recorders), `run-agent.ps1` (launcher), `register-service.ps1`, `apply-remote-update.ps1`,
+`wl-upgrade.ps1`, `watchlog.ini` (no recorder password), `READ ME FIRST.txt`, `setup.ico`,
+`uninstall.exe`. Machine state lives in `C:\ProgramData\WatchLog` (section 0.4).
+
+- Scheduled task `WatchLog Agent`, SYSTEM, highest privileges: a start-up trigger (30 s delay)
+  plus a 5-minute watchdog trigger with "ignore new instance". The launcher restarts an exited
+  Agent after 15 s.
+- Start menu, all users: WatchLog Setup, WatchLog Site Status, WatchLog Manage Recorders,
+  Uninstall WatchLog.
+- Add/Remove Programs key in the 32-bit view with `DisplayVersion` and `ComponentsVersion`
+  (section 1D).
+
+**WatchLog Setup is the only configuration path.** The packaged `watchlog-agent.exe --setup`,
+and the automatic console wizard the Agent used to start when no recorder was configured, exit
+with code 2 and write nothing (`release_agent.py`, `test_console_setup_retired.py`). The console
+wizard wrote the recorder password in plain text into `watchlog.ini` and ignored the recorder
+registry. The legacy `prototype/installer/Install-WatchLog.ps1`, `Install WatchLog.cmd`,
+`Uninstall-WatchLog.ps1` and `run-agent.cmd` are deleted; NSIS and `wl-upgrade.ps1` still remove
+a `run-agent.cmd` left on an older site. No Inno Setup script exists.
+
+Not production: an unsigned build (test-only, section 0.6), a locally compiled NSIS package, and
+any build from the Watchlog-2 field line.
+
+### 0.3 Status at a glance
+
+| Item | Status | Evidence |
+|---|---|---|
+| One NSIS path; console setup retired; legacy installer files deleted | CI VERIFIED | `0b77080c`; `test_console_setup_retired.py`, `test_portal_alignment_contract.py` |
+| Repair/Upgrade lifecycle: version-aware guard, per-recorder proof, proven rollback, interrupted-upgrade recovery | CI VERIFIED; elevated steps (SYSTEM task, real powercfg, `test_upgrade_shutdown.ps1`) NOT STARTED | section 1D; `e3a534d5` |
+| Remote-update stage trust (a standard user could get code run as SYSTEM through the ProgramData stage) | CI VERIFIED; elevated test NOT STARTED | `f85df0a9`; `test_remote_update_stage_trust.py`. Fielded 5.0.24-5.0.26 stay exposed until upgraded with the Repair package |
+| Update contract (`AGENT_ONLY_COMPATIBLE` / `REQUIRES_REPAIR_PACKAGE`) | CI VERIFIED | section 1D; `915d5ea4`; `test_update_contract.py` |
+| Credentials and site data on the PC | CI VERIFIED | section 0.4 |
+| DPAPI machine binding on two physical PCs | NOT STARTED | `docs/security/MACHINE_BINDING.md` |
+| Server-owned stills | CI VERIFIED | section 0.5; `5f308766`; `test_server_owned_stills.py` |
+| Hikvision field safety | CI VERIFIED | section 0.5; `e6f87e44`, `3fb462e7`, `1eb5b7b6`; `test_hikvision_field_safety.py` |
+| Uninstall keep-list policy and power baseline restore | CI VERIFIED; powercfg on a real scheme NOT STARTED | section 1D; `4db87674`; `test_installer_lifecycle_contract.py` |
+| Packaging: hash-locked builds, NSIS payload proof, baked `BUILD_SHA` | CI VERIFIED (local); Windows Release end to end NOT STARTED | `67906ebc`; `WINDOWS_PACKAGING.md` |
+| GitHub CI on a 5.1.1 commit | NOT STARTED | |
+| Windows Release artifact (Setup + Repair, hashes) | NOT STARTED | |
+| Code signing | BLOCKED | section 0.6 |
+| Installer run on a test PC | NOT STARTED | |
+| Field gates | NOT STARTED | `docs/runbooks/WINDOWS_RECORDER_FIELD_ACCEPTANCE.md` section 4 |
+| Production database for 5.1.x: migrations 0144-0157, ledger reconciled, recorder backfill | PRODUCTION VERIFIED (owner, 2026-10-06; database only) | section 0.7 |
+| Deployed portal, report runner and push bridge match canonical | NOT STARTED | |
+
+### 0.4 Credentials and site data on the PC
+
+- Secrets are DPAPI **LocalMachine** blobs in `C:\ProgramData\WatchLog\Secrets`: `agent_key.dpapi`
+  (cloud key), `nvr_credential.dpapi` (the continuity recorder's legacy copy) and one login per
+  recorder under `Secrets\recorders\<local_id>.dpapi`. A recorder never falls back to another
+  recorder's login. The folder (and `Secrets\recorders`) is owned by Administrators and its DACL
+  is exactly SYSTEM + Administrators, FullControl, inheritance off, verified before any blob is
+  written (`windows_secret.py`; Windows Security Gate, `4d7faa5c`).
+- `watchlog.ini` carries no recorder password. `watchlog.env` (0.3.3 plain text) and
+  `nvr_password.dpapi` (0.2-0.3.2) are legacy files: Setup migrates them into the DPAPI store and
+  removes them.
+- The recorder registry (`recorders.json`) carries a site stamp (`site_id`). At start the Agent
+  sets aside (never deletes, never uses) a registry stamped for another site together with its
+  recorders' queues, state and logins, and stamps an unstamped one as this site's
+  (`recorder_registry.ensure_registry_belongs`). Queued data is stamped by `site_runtime.json`;
+  another site's queue is set aside before anything uploads (`site_runtime.py`).
+- A queued event the server rejects is set aside to `spool.sqlite.rejected.jsonl`, so one
+  rejected row no longer holds the whole queue (`af44f166`).
+- Secrets, the recorder registry and the Agent identity are fsync'd before they replace the old
+  file (`4abb10d3`).
+- The Repair registry preflight compares, without failing, the continuity recorder's login with
+  the legacy copy and returns `legacy_mirror` plus a Manage Recorders instruction when they differ
+  (`setup_gui.py`, `7525c434`). Open gap: `wl-repair-upgrade.ps1` does not yet log or show that
+  result, so the operator cannot see it. The comparison is CI VERIFIED
+  (`test_setup_registry_selftest.py`); showing it in Repair is NOT STARTED.
+
+### 0.5 Server-owned stills and Hikvision field safety
+
+Stills (owner decision, 2026-10-06):
+
+- The server owns scheduled periodic restaurant capture: its scheduler (migration 0125) issues
+  `snapshot_requests` to Agents that advertise `config_snapshot_requests`. The Agent is the
+  transport for those requests.
+- The Agent never also takes its own periodic still of a camera the server is scheduling: a camera
+  the server asked for is server-owned for 900 s after that request (`server_capture.py`).
+- Native monitoring is never suppressed; a still failure never stops monitoring; cameras not
+  enrolled in the server schedule gain no capture; 5.0.17 (which does not advertise the
+  capability) is unchanged. Test: `test_server_owned_stills.py`.
+
+Hikvision (field Build 69 behaviour restored, per recorder):
+
+- the alert stream runs in 30 s slices (`HIKVISION_STREAM_SLICE_SECONDS`, also reported by the
+  frozen Agent's `--version` for the release payload proof);
+- ISAPI calls are serialised by a per-recorder lock with fair handoff, so one recorder never
+  holds another;
+- the camera still is sampled between slices on the same session;
+- a silent stream is a stream error, never a quiet re-open;
+- recorder health is taken from the live collector only while its stream is proven live and a
+  real recorder assessment is at most 900 s old; recording and storage are never inferred from
+  the stream, and a fault that needs a recorder read is reported as not observed
+  (`drivers/hikvision.py`, `native_event_collector.py`, `watchlog_agent.py`).
+
+### 0.6 Code signing
+
+A production build requires a code-signing certificate: the Windows Release `production` input,
+and every `v*` tag push, hard-fail without one (`build_windows_release.ps1 -Production`). No
+certificate exists, so a production release is **BLOCKED** (T3 owner blocker: certificate
+procurement). An unsigned build is test-only: it is not for customer sites and never for the
+update channel.
+
+### 0.7 Fleet and production state (2026-10-06)
+
+- Fleet: Chai Wala 5.0.17 (Hikvision, Build 75), HASCO 5.0.26, Al-Khalid 5.0.26.
+- Production database (owner-verified): migrations 0144-0157 applied and the ledger reconciled;
+  recorder backfill complete (40/40 cameras, 23,772/23,772 events, 7,016/7,016 analytic events
+  with recorder provenance); one continuity owner per site; the 5.0.x Agents kept heartbeating.
+  5.1.1 needs no further Multi-NVR migration.
+- Not verified: that the deployed portal, report runner and push bridge match canonical.
+- Chai Wala after the migration: 4 `visual_sample` / `periodic_snapshot` events. That is a PASS
+  only for legacy periodic ingestion compatibility. Native alarms, clip/archive, recovery and
+  recording truth there are NOT proven.
 
 ---
 
@@ -20,12 +193,16 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.0**
+**5.1.1**
 
-5.1.0 (section 1C, branch `mr/agent-5.1.0`) is the multi-recorder Agent and installer
-**candidate, not promoted**: no Windows artifact has been built from it, none is promoted
-to any update channel and none is installed on any site. It requires database contract v4
-(`mr/db-contracts` migrations `0146`-`0155`) deployed first, and it contains every 5.0.28 fix.
+That is the version string the code carries: the release candidate (section 0 and 1D, branch
+`release/5.1.1`), not promoted.
+
+5.1.0 (section 1C, branch `mr/agent-5.1.0`, merged to `main`) is the multi-recorder Agent and
+installer **candidate, not promoted**: no Windows artifact has been built from it, none is
+promoted to any update channel and none is installed on any site. It requires database contract
+v4 (`mr/db-contracts` migrations `0146`-`0155`), which production now has (section 0.7), and it
+contains every 5.0.28 fix.
 
 5.0.28 (section 1B, branch `fix/agent-5.0.28`) is an Agent-only **candidate, not
 promoted**: no Windows artifact has been built from it and none is installed on any
@@ -269,10 +446,10 @@ Test and CI hygiene: every test file added for 5.0.28 runs in a CI step
   as at Al-Khalid (recorder reachable and authenticated on 2026-10-04, no event since
   2026-09-26).
 - **Chai Wala could get two sets of timed stills.** 5.0.28 advertises `config_snapshot_requests`.
-  Production strips that capability today, so the restaurant scheduler has never created a
-  request. Once the 0156 hotfix lets it through, a 5.0.28 Agent at Chai Wala would receive both
-  the restaurant scheduler's requested stills and its own periodic stills for the same cameras.
-  Which source should feed Chai Wala's reports is an owner decision, still pending.
+  With the 0156 hotfix applied (2026-10-06) the restaurant scheduler can issue requests, so a
+  5.0.28 Agent at Chai Wala would receive both the restaurant scheduler's requested stills and
+  its own periodic stills for the same cameras. The owner decided on 2026-10-06 that the server
+  owns scheduled restaurant stills; 5.1.1 implements that (section 0.5) and 5.0.28 does not.
 - **Multi-recorder sites are refused**, not managed: see the Repair/Upgrade downgrade guard
   above (exit 24 or 25).
 
@@ -308,10 +485,11 @@ site gates below: `visual_sample` rows with `payload.source='periodic_snapshot'`
    seconds; a controlled restart gap opening exactly one recovery interval with camera UUIDs; a
    channel-less or disk alert stored with no camera; one bounded incident clip whose window
    contains the event.
-3. **Chai Wala last**: its 5.0.17 (Build 69) code is UNKNOWN (source 811d378 is in neither
-   object store). Capture its support bundle and `--version` / BUILD_SHA before planning any
-   upgrade; Site Control is enabled there while its executor is unknown. Settle the timed-still
-   source (see Known limits) before upgrading, because its stills feed live restaurant reports.
+3. **Chai Wala last**: it runs 5.0.17 from Build 75 (Watchlog-2 field branch; Agent code equal
+   to Build 69). Capture its support bundle and `--version` / BUILD_SHA before planning any
+   upgrade; Site Control is enabled there while its executor is unknown. The timed-still source
+   is now decided (server-owned, see Known limits); 5.0.28 does not implement it and would
+   duplicate Chai Wala's stills, 5.1.1 does.
 
 Any failed gate keeps 5.0.28 unpromoted and preserves rollback to the installed version.
 
@@ -336,8 +514,9 @@ contract v4 the recorder RPCs it calls (`wl_multi_recorder_agent_contract`,
 `wl_sync_recorders`, the recorder health, recovery, evidence and job RPCs) do not exist. A
 one-recorder site against a database without the recorder contract falls back to the 5.0.x
 recorder-less RPCs (no recorder identity); a site with two or more recorders fails closed and
-does not monitor until the database is upgraded. No migration, Agent deployment or customer
-configuration change is implied by this repository state.
+does not monitor until the database is upgraded. Status 2026-10-06: contract v4 is applied in
+production (owner-verified, section 0.7); no Agent deployment or customer configuration change
+is implied by that.
 
 ### What 5.1.0 adds
 
@@ -380,9 +559,8 @@ configuration change is implied by this repository state.
 - **Multi-recorder first install.** Setup can add further recorders on the camera step before
   Connect; each gets its own registry row, credential and camera choices, and Setup binds all
   of them to WatchLog before the Agent starts. The installer child process carries the
-  multi-recorder wiring, and the Repair/Upgrade gate commits only once the continuity recorder
-  and every recorder that answered before the upgrade are live again, otherwise it restores
-  the previous install (CI-covered; not field-proven).
+  multi-recorder wiring. The Repair/Upgrade gate as shipped in 5.1.0 was unreachable (its
+  5.0.28 guard refused every multi-recorder site); 5.1.1 makes it per recorder (section 1D).
 
 ### What is proven, and what is not
 
@@ -430,13 +608,186 @@ recorder (the continuity recorder). With more than one, disable the extra record
 Recorders first: otherwise database contract v4 refuses the 5.0.x legacy calls with `42501`
 while the 5.0.x heartbeat still looks online. Procedure, health-ledger behaviour and checks:
 `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
-"Deliberate downgrade from 5.1.0 to 5.0.x". The 5.0.28 Repair/Upgrade guard that refuses
-multi-recorder registries is being added on the 5.0.28 branch separately; until it ships, the
-check is manual.
+"Deliberate downgrade from 5.1.0 to 5.0.x". `wl-repair-upgrade.ps1` refuses a multi-recorder
+registry (exit 24/25) only when its candidate is older than 5.1.0; a 5.0.x package that does not
+carry that script version does not check, so the one-recorder check stays manual for it.
+
+---
+
+## 1D. 5.1.1 installer / upgrade lifecycle (`release/5.1.1`, candidate, not promoted)
+
+Status: CI VERIFIED (local reproduction; executing tests with fakes, sandbox ProgramData and real
+Windows PowerShell, listed per row in the lifecycle fault matrix). **Not promoted, no artifact,
+not installed anywhere.** Steps that need an elevated PC (registering SYSTEM tasks, powercfg on
+the real scheme, NSIS compile in the release job) run only in the Windows CI jobs, which have not
+run for 5.1.1 (NOT STARTED). This section replaces any older claim in this file that a rollback
+"verified" the previous Agent by the task state alone. Release status, credentials, stills and
+signing: section 0.
+
+### Repair/Upgrade (`wl-repair-upgrade.ps1`, `nsis/wl-upgrade.ps1`)
+
+- **Multi-recorder guard is version-aware.** The refusal of a site with more than one configured
+  recorder (exit 24) or an unreadable `recorders.json` (exit 25) applies only when the candidate
+  is older than 5.1.0 (a 5.0.x Repair package). A 5.1.x candidate manages multi-recorder sites;
+  an unreadable registry is refused by its own registry validation before anything is paused
+  (exit 30). 5.1.0 shipped the 5.0.28 guard unchanged and refused every two-recorder site.
+- **Per-recorder proof.** Before the pause, Repair reads what the running Agent itself last
+  proved (protected `Secrets\runtime-health.json`: heartbeat within 15 minutes, each recorder's
+  row). A recorder is required to be live after the update when it was live before (that proof,
+  or the candidate's probe after the pause). A recorder already offline before may stay offline:
+  it is reported as "still offline (it was offline before the update; not verified by this
+  update)", counted in `not_live_after`, never reported healthy. This now also applies to a
+  one-recorder site, which 5.1.0 could not repair while its recorder was offline. Without recent
+  proof from the old Agent the continuity recorder stays required. A recorder live before and
+  unreachable by the candidate rolls back before any file is replaced.
+- **Fresh, not future.** `heartbeat_at`, `remote_update_poll_at`, `recorder_seen_at` and each
+  recorder's `last_live_at` must be at or after the phase start and at most 120 s in the future.
+- **Rollback proves the previous Agent.** Order: restore the previous payload with the task
+  suspended (`rollback-restore`), remove a recorder registry staged by this run, then start the
+  task and require a fresh runtime-health heartbeat from the restored version
+  (`rollback-start -ProveHealth`, up to 240 s). Rollback success is reported only with that
+  proof. Helper exit codes: 0 proven; 15 task running, no fresh heartbeat; 14 task could not be
+  started; 16 a payload file could not be restored (the task is re-enabled anyway and the backup
+  kept); 17 no proof possible because the site was not heartbeating before (full installer on a
+  partial site only). The full installer's "restart was verified" message is shown only on 0.
+- **Interrupted upgrade.** Repair's preflight arms a SYSTEM task "WatchLog Agent Upgrade
+  Recovery" (at startup and every 5 minutes) and writes `ProgramData\WatchLog\upgrade-in-progress.json`
+  (owner PID and start time). If the orchestrator is killed or the PC loses power while WatchLog
+  is paused, the task restores the previous payload, removes a staged registry (when the
+  protected candidate Setup UI is still there), re-enables the task and requires the heartbeat;
+  bounded to 3 attempts; it writes `repair-upgrade-result.ini` with stage "interrupted upgrade
+  recovery". It runs a copy of the helper in the install folder (administrators only). Commit
+  and every completed rollback remove it. `run-agent.ps1` cannot do this: a Disabled task never
+  starts it. The full installer does not arm it (connected sites are sent to Repair/Upgrade).
+- **Stale remote update.** While paused, Repair removes a staged remote update and the
+  `.remote.bak` image, and closes an unconfirmed remote-update request as "superseded by
+  Repair/Upgrade" so the new launcher can neither apply an old package nor revert the repair.
+- **Uninstaller.** Repair/Upgrade now writes the current `uninstall.exe` (same Uninstall section
+  as the full installer, compared by a test) and `ComponentsVersion` after success.
+
+### Remote update success (`remote_update.py`, `apply-remote-update.ps1`, `run-agent.ps1`)
+
+- Staging records the old Agent's recorder baseline (`remote-update\baseline.json`) and a
+  commit window (default 900 s, clamped 300-1800 s). The swap records `applied_at`,
+  `commit_deadline`, `previous_version` and the SHA-256 of the rollback image.
+- The new Agent commits only when it runs the applied version (and the released build when the
+  manifest names `build_sha`; runtime-health now carries `build_sha`), a cloud heartbeat and an
+  update poll exist after the swap (not future-dated), and every recorder live before is live
+  again. Commit deletes `.remote.bak` at once, so a later cloud-report failure can never revert a
+  proven update; reports are retried for 7 days, then dropped.
+- Not proven by the deadline: the Agent marks `rollback_requested` and exits; the launcher
+  restores the image only if its hash matches the recorded one. It also rolls back on an exit
+  within 60 s or an exit after the deadline while uncommitted. The restored Agent reports the
+  rollback only after its own fresh heartbeat and update poll (or, after 10 minutes, as "NOT
+  proven running").
+- Limit: an Agent that hangs without exiting and whose worker thread is dead is not rolled
+  back by the launcher (it is blocked on the Agent); the result stays uncommitted and reported.
+- **Site Status "Update WatchLog"** no longer swaps the installed Agent from inside itself
+  (that ran `wl-upgrade.ps1 preflight`, which stops the very process and window running it and
+  left the task Disabled). It reports what is available and directs to the portal (remote
+  update) or to `WatchLog-Repair-Upgrade.exe`.
+
+### Agent-only vs full-component updates
+
+Every in-app path replaces `watchlog-agent.exe` only. The signed manifest's channel entry now
+carries `update_class` (`AGENT_ONLY_COMPATIBLE` | `REQUIRES_REPAIR_PACKAGE`) and
+`min_installed_components`, produced by `tools/release_update_contract.py`. The Agent refuses an
+Agent-only update (`requires_repair_package`) when the release requires the Repair package, when
+the field is absent across a major/minor change, for an unknown class, or when the installed
+component set (ARP `ComponentsVersion`, else `DisplayVersion`, 32-bit registry view) is older
+than `min_installed_components` (default: the release's own `major.minor.0`) or unreadable.
+For a `REQUIRES_REPAIR_PACKAGE` release the tool also emits `min_agent_version` = the release's
+own version: Agents older than 5.1.1 ignore `update_class` but honour `min_agent_version`, so they
+refuse it ("agent_too_old") instead of installing it Agent-only.
+
+Concrete **5.0.26 -> 5.1.x** incompatibilities of an Agent-only update (installer/update audit C):
+
+1. the 5.0.26 `register-service.ps1` deletes `background-ready.json` and fails after 25 s unless
+   the Agent rewrites it; the 5.1 Agent never writes it, so the old Setup UI's reconnect/setup
+   fails (and the old rollback ignores that);
+2. once a recorder registry exists, the 5.1 Agent runs from per-recorder credentials while the
+   5.0.26 Setup UI still writes only the legacy credential: a credential fix is silently ignored;
+3. no Manage Recorders (it comes only with the 5.1 Setup UI from the full or Repair package);
+4. the 5.0.26 uninstaller does not remove `recorders.json`, `Secrets\recorders` or the 5.1
+   shortcuts;
+5. 5.1 adds `recorder_id` to spool payloads and `health.sqlite` columns; 5.0.x reading them
+   after a rollback is unverified;
+6. 5.1 needs database contract v4; the updater has no server-capability gate;
+7. the 5.1.1 security and lifecycle fixes (remote-update stage-trust gate, commit gate,
+   proven rollback, recovery task, uninstall policy, power baseline) live in the scripts and the
+   uninstaller, which an Agent-only update leaves at 5.0.26.
+
+So **5.0.26 -> 5.1.1 is `REQUIRES_REPAIR_PACKAGE`**, and so is **5.1.0 -> 5.1.1**: 5.1.1 changes
+`apply-remote-update.ps1`, `register-service.ps1`, `run-agent.ps1` and `wl-upgrade.ps1`. Every
+fielded site (5.0.17, 5.0.26) therefore reaches 5.1.1 only through
+`WatchLog-Repair-Upgrade.exe` (`docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`). That is
+also the only way the 5.1.1 remote-update stage-trust fix reaches the fielded 5.0.24-5.0.26
+Agents, which stay exposed until then.
+
+**How the contract reaches Agents today (no edge-function change needed).** The deployed manifest
+builder (edge function `watchlog-update-manifest`, read 2026-10-06) reads
+`watchlog-update-payload.json` from the `watchlog-production` release and signs `version`,
+`url`, `sha256`, `size`, `notes`, `generated_at` and `min_agent_version`; it drops any other
+field. `min_agent_version` is therefore the signed contract: for a `REQUIRES_REPAIR_PACKAGE`
+release it is the release's own version. Every fielded Agent (5.0.17, 5.0.26: `updater.py`
+163-165) refuses such a release (`agent_too_old`), and a 5.1.1+ Agent reads the same marker as
+`requires_repair_package` and says the Repair/Upgrade package is needed. An
+`AGENT_ONLY_COMPATIBLE` release keeps the bootstrap floor (`min_remote_update_version`,
+5.0.24). `update_class`, `min_installed_components` and `build_sha` are written into the payload
+as well, for when the builder passes them through (an owner-approved edge deployment; not
+required for safety).
+
+The Windows Release workflow writes `WatchLog-Update-Contract.json` and
+`watchlog-update-payload.json` as build artifacts (inputs `previous_version` and
+`previous_ref`; empty = `REQUIRES_REPAIR_PACKAGE`). It uploads nothing to the update channel.
+Publishing the payload is a separate owner-approved step. Never republish through the field
+line's workflow (`a3266326`): it uploads on every production build with `min_agent_version`
+fixed at 5.0.24, so a 5.1.x payload published that way would be installed Agent-only by 5.0.26
+sites.
+
+The tool classifies `REQUIRES_REPAIR_PACKAGE` automatically when, since the previous release's
+source commit, any of these changed: a script installed beside the Agent; a Setup UI source
+(`SETUP_UI_SOURCES`); the declared recorder registry schema, credential store format or
+per-recorder camera-choices schema (`CONTRACT_CONSTANTS`). It does the same when the previous
+release cannot be compared.
+
+### Machine changes and uninstall
+
+- **Power (option B).** `register-service.ps1` keeps the site PC awake on mains power
+  (standby, hibernate and disk timeouts AC = 0; `powercfg /hibernate off`). Before the first
+  change it records the previous AC values, the active scheme GUID and `HibernateEnabled` in
+  `ProgramData\WatchLog\Secrets\power-baseline.json`; Repair, rollback and re-runs never
+  overwrite it. Uninstall (`wl-upgrade.ps1 -Stage uninstall`) restores exactly those values
+  (`/setacvalueindex`, `/setactive` when that scheme is active, `/hibernate on` if it was on).
+  DC (battery), lid, sleep button, Modern Standby, NIC and USB power settings are not changed.
+  A site first installed before 5.1.1 was changed without a record: its first baseline holds
+  WatchLog's own values, so uninstall changes nothing there (the originals are unknown).
+- **Uninstall policy.** WatchLog has no "keep this site for a reinstall" choice, so uninstall
+  removes every identity, credential, queue, cache and staging file it created and keeps only
+  support logs (`agent.log`, `agent.log.old`, `upgrade.log`, `repair-upgrade.log`,
+  `repair-upgrade-result.ini`, `setup.log`). Removed in addition to the 5.1.0 list: install
+  folder `watchlog.defaults.ini`, `watchlog-agent.exe.remote.bak`, `watchlog-agent.next.verify`,
+  `wl-upgrade-recover.ps1`; ProgramData `upgrade-backup\`, `remote-update\`, `repair-candidate\`,
+  `analytics_*`, `recorder_identity.json`, `camera_profiles.json`, `recorder_auth_backoff.json`,
+  `recorders.json.quarantine-*`, `recorders.quarantine-*`, `upgrade-in-progress.json`; scheduled
+  tasks "WatchLog Agent", "WatchLog Agent Upgrade Recovery" and any orphaned "WatchLog Candidate
+  Preflight *". The uninstall stage no longer makes a 100 MB payload backup. If PowerShell
+  cannot run, the NSIS Uninstall section (identical in `watchlog.nsi` and `watchlog-repair.nsi`)
+  deletes the same files by name as a fallback, including the site stamp, another site's
+  set-aside files and the rejected-row file (`4db87674`).
+- **Start menu** shortcuts are created for all users; uninstall removes both the all-users and
+  the installing admin's per-user copies.
+- **Uninstall registry view (documented, not changed).** NSIS is 32-bit, so the ARP key is under
+  `HKLM\Software\WOW6432Node\...\Uninstall\WatchLog`. Moving it to the 64-bit view would orphan
+  every existing site's entry (Repair/Upgrade reads `InstallLocation` from it); the Agent reads
+  `ComponentsVersion` from the 32-bit view.
 
 ---
 
 ## 2. Field-proven baseline — Build 69
+
+> Sections 2-12 are the record of the 5.0.x lineage. They stay valid as history and as
+> do-not-regress rules; for 5.1.1, section 0 and section 1D govern.
 
 **Build 69 / product version 5.0.17 is the current field-proven discovery/connectivity baseline.**
 
@@ -647,7 +998,7 @@ Phase 3 — atomic replacement and health commit:
   - fresh `remote_update_poll_at` written only after the updater successfully
     reaches the production update-claim RPC;
 - a merely-running process is not success;
-- any failed health gate triggers full rollback and old-Agent restart verification.
+- any failed health gate triggers full rollback and old-Agent restart verification (until 5.1.1 that "verification" was only the task state Running; 5.1.1 requires a fresh heartbeat from the restored version, section 1D).
 
 ### Current Windows validation branch
 
@@ -780,7 +1131,9 @@ remote-update queue cannot be taught that worker purely from the cloud. That is 
 ## 9. Mandatory physical field acceptance for the next promoted installer
 
 The first authoritative 5.0.25 (or later) Windows artifact must pass all of the following
-before replacing Build 69 as the fleet baseline.
+before replacing Build 69 as the fleet baseline. For 5.1.1 these checks are carried, with the
+5.1.1 additions, by the gate register and stages of
+`docs/runbooks/WINDOWS_RECORDER_FIELD_ACCEPTANCE.md`; run them from there.
 
 ### Hikvision
 
@@ -871,6 +1224,10 @@ Only after these tests should the new exact artifact replace Build 69 as the fie
 - **Build 98 / 5.0.21** — running-file-lock/transactional-upgrade validation candidate; real Windows process test and packaged release passed.
 - **Build 100 / 5.0.23** — packaged FFmpeg + archive/gap-recovery validation candidate; historical decoder self-test and Windows Release passed.
 - **Authoritative source 5.0.25** — Build-69 discovery reliability + dual-vendor archive/gap recovery + staged existing-site Repair/Upgrade + signed online-update bootstrap; exact 5.0.25 Windows artifact/field acceptance still pending.
+- **Build 75 / 5.0.17** — Chai Wala's installed build (Watchlog-2 field branch; Agent code equal to Build 69).
+- **5.0.26** — installed at HASCO and Al-Khalid (field line); not an ancestor of canonical `main`.
+- **5.0.27, 5.0.28, 5.1.0** — canonical candidates (sections 1A-1C); never built as a release, never promoted.
+- **5.1.1** — release candidate (section 0, 1D); not promoted, no artifact, production release BLOCKED on code signing.
 
 ---
 

@@ -1,5 +1,7 @@
 # WatchLog — Current State — 2026-09-04
 
+> Dated snapshot. Its Windows installer section (plain-text INI credentials, console build) is superseded: see `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
+
 **Audit baseline:** `main` at `4efa9a645cc0c2bffe10f0f5f360195fb2fbf751`  
 **Purpose:** one factual baseline for the September staging and QSR/control-room expansion.  
 **Rule:** code/CI evidence, deployed-production evidence, field evidence, and roadmap intent are separate states. A green repository check is not proof that production is running the same revision.

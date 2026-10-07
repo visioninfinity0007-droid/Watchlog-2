@@ -191,6 +191,22 @@ class ExistingSiteRegistryPreflight(_Site):
         self.assertEqual({p.name: p.read_bytes()
                           for p in (self.data / "Secrets" / "recorders").iterdir()}, blobs)
 
+    def test_passive_reports_whether_the_legacy_copy_matches_the_continuity_login(self):
+        # Credential audit P4-c: both copies are written together; a failed restore can leave
+        # them different, and a rollback to 5.0.x would then use the other login.
+        primary, _second = self.two_recorder_registry()
+        self.assertEqual(self.preflight("passive"), 0)
+        self.assertEqual(self.body()["legacy_mirror"], "matches")
+        self.assertNotIn("warning", self.body())
+
+        credential_store.save_recorder_credential(primary["local_id"], "admin", "changed-pw")
+        self.assertEqual(self.preflight("passive"), 0)           # reported, not fatal
+        body = self.body()
+        self.assertEqual(body["legacy_mirror"], "differs")
+        self.assertIn("Manage Recorders", body["warning"])
+        self.assertNotIn("changed-pw", json.dumps(body))
+        self.assertNotIn("legacy-recorder-pw", json.dumps(body))
+
     def test_recorder_mode_reports_an_offline_secondary_without_failing(self):
         primary, second = self.two_recorder_registry()
 

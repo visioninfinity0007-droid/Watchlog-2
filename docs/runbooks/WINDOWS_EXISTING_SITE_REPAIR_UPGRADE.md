@@ -1,43 +1,90 @@
 # WatchLog Windows Existing-Site Repair/Upgrade Runbook
 
-Use this runbook only for an already-enrolled WatchLog site.
+Use this runbook only for an already-enrolled WatchLog site. It is the operator procedure; the
+lifecycle design and release status are in `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`
+(section 0 and 1D), and field evidence is recorded under
+`docs/runbooks/WINDOWS_RECORDER_FIELD_ACCEPTANCE.md` (Stage J).
 
-For a new site/new PC, use `WatchLog-Setup.exe`.
+For a new site/new PC, use `WatchLog-Setup.exe`. On a connected site the full installer refuses
+and points here.
+
+Status (2026-10-06): the behaviour below is the 5.1.1 candidate. It is CI VERIFIED (local
+reproduction of the CI suite); INSTALLER VERIFIED and FIELD VERIFIED are NOT STARTED, no 5.1.1
+Repair/Upgrade artifact exists, and a production (signed) release is BLOCKED on the code-signing
+certificate. Repair from 5.0.26 (HASCO, Al-Khalid) is field gate G5, NOT STARTED.
+
+## Which sites need this package
+
+Every fielded site (5.0.17, 5.0.26) reaches 5.1.1 only through `WatchLog-Repair-Upgrade.exe`:
+5.1.1 is `REQUIRES_REPAIR_PACKAGE`, so a remote (Agent-only) update to it is refused by the
+fielded Agents. This package is also what replaces the remote-update scripts on 5.0.24-5.0.26
+sites, which stay exposed to the remote-update stage privilege issue fixed in 5.1.1 until they
+are repaired.
 
 ## Before starting
 
 Confirm:
 - site is already enrolled;
-- current Agent is heartbeating;
+- current Agent is heartbeating (Repair reads the Agent's own last proof of which recorders were
+  live; without a recent heartbeat the original recorder must answer the new version). A 5.0.x
+  Agent writes no per-recorder rows, so on a 5.0.x site Repair judges the single recorder from
+  that Agent's own `recorder_seen_at`;
+- the recorder's live event stream works: the commit needs real event-stream activity
+  (`recorder_seen_at`), so a recorder user without event/notification rights blocks the commit
+  and the update rolls back;
 - current recorder identity is known;
-- encrypted DPAPI Agent key exists;
-- encrypted DPAPI recorder credential exists;
-- exact candidate Repair/Upgrade artifact SHA-256 matches the release ledger;
+- encrypted DPAPI Agent key exists (`ProgramData\WatchLog\Secrets\agent_key.dpapi`);
+- encrypted DPAPI recorder credential exists (`Secrets\nvr_credential.dpapi`, and on a 5.1.x
+  site one login per recorder under `Secrets\recorders`);
+- exact candidate Repair/Upgrade artifact SHA-256 matches the record in the source of truth
+  (section 0.1);
+- the package is signed, or the owner approved an unsigned test build for this site;
 - the candidate release is configured with the production signed update manifest URL/public key.
 
 Do not continue if the exact artifact has not passed the release gates recorded in
 `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
 
+A 5.1.x Repair/Upgrade package repairs multi-recorder sites. Only a 5.0.x package refuses a
+site with more than one configured recorder (exit 24) or an unreadable recorder list (exit 25).
+A 5.1.x package refuses an unreadable recorder registry through its own validation before
+anything is paused (exit 30).
+
 ## Run
 
 1. Launch `WatchLog-Repair-Upgrade.exe` elevated.
-2. Do not manually kill the old Agent.
-3. Phase 1 must validate the staged candidate as SYSTEM while the current Agent remains running.
-4. If Phase 1 fails, stop. The installed WatchLog should be unchanged.
-5. Phase 2 may then pause the current WatchLog and validate the candidate against the saved recorder.
-6. If Phase 2 fails, confirm the old Agent is restored/running before leaving the site.
-7. Only after Phase 2 passes may the payload be replaced.
-8. Wait for final health commit.
+2. Do not manually kill the old Agent, and do not stop the installer. If it is stopped anyway
+   (or the PC loses power) while WatchLog is paused, the "WatchLog Agent Upgrade Recovery" task
+   restores the previous WatchLog within about 5 minutes (or 1 minute after the next boot) and
+   writes the outcome to `repair-upgrade-result.ini` (stage "interrupted upgrade recovery").
+3. Phase 1 validates the staged candidate as SYSTEM while the current Agent keeps running.
+   Its registry check also compares, without failing, the original recorder's login with the
+   copy older WatchLog versions use. In this candidate that result is not yet written to
+   `repair-upgrade.log` or the result file (open code fix), so it cannot be read from the
+   Repair output. If a login change on this site ever failed part-way, re-enter the original
+   recorder's login in Manage Recorders after the upgrade, which rewrites both copies.
+4. If Phase 1 fails, stop. The installed WatchLog is unchanged.
+5. Phase 2 pauses the current WatchLog and validates the candidate against each recorder.
+   A recorder that was live before the update and that the new version cannot reach is a
+   failure (rolled back). A recorder already offline before is noted and does not block.
+6. Only after Phase 2 passes is the payload replaced.
+7. Wait for the final health commit.
 
 ## Success criteria
 
-Do not accept “installer finished” or “process is running” as success.
+Do not accept "installer finished" or "process is running" as success.
 
-Require:
+The installer commits only with:
 - exact new version;
-- fresh cloud heartbeat;
-- fresh recorder observation;
-- fresh remote-update poll;
+- a cloud heartbeat and a remote-update poll written after the new Agent started (older or
+  more than 120 s future-dated markers do not count);
+- every recorder that was live before the update live again, each by its own protected row.
+
+A recorder that was offline before may still be offline: the result says so ("still offline
+(it was offline before the update; not verified by this update)") and the installer shows how
+many. Such a recorder has NOT been verified by the update; check it in Site Status or Manage
+Recorders once it is back.
+
+Then check on site:
 - `remote_update_v1` visible only after that poll;
 - camera/channel inventory unchanged/correct;
 - no forced recorder rediscovery;
@@ -47,22 +94,38 @@ Require:
 ## Failure handling
 
 If the candidate fails before replacement:
-- no rollback should be needed because the old install was not changed.
+- no rollback is needed because the old install was not changed.
 
-If failure happens after old-runtime pause but before replacement:
-- restore/start the old runtime and prove it is running.
+If failure happens after the pause (before or after replacement), Repair rolls back in this
+order and reports success only with proof:
+1. restore the full previous payload with the task still suspended;
+2. remove a recorder registry this run staged (before the old Agent can start and use it);
+3. re-register and start the task, then require a fresh cloud heartbeat from the restored
+   version (up to 4 minutes).
 
-If failure happens after replacement:
-- restore the full old payload;
-- restore/re-register the prior task;
-- prove old Agent restart;
-- do not show/record rollback success unless that proof exists.
+Result messages:
+- "proven running: its Agent sent a fresh cloud heartbeat" - rollback proven;
+- "recovery is NOT proven" - files restored and task running, but no heartbeat in time: check the
+  site's heartbeat in the portal; if still offline after 10 minutes, contact support;
+- "AUTOMATIC RECOVERY FAILED" - a file could not be restored or the task could not start; the
+  task is re-enabled anyway and the recovery task retries every 5 minutes (3 attempts).
 
-If old Agent restart cannot be proven:
+In every failure case:
 - preserve logs;
-- do not uninstall WatchLog;
-- reboot once if required by the support procedure;
+- do not uninstall WatchLog and do not run another installer;
 - investigate before any new install attempt.
+
+A remote update that was staged or applied but not confirmed before the Repair is closed as
+"superseded by Repair/Upgrade"; its old package and rollback image are removed.
+
+## After a successful Repair/Upgrade
+
+- `uninstall.exe` is the 5.1.x uninstaller (it removes the recorder registry, per-recorder
+  credentials, all WatchLog tasks, restores the power settings recorded at install and keeps
+  only support logs).
+- The installed component version (`ComponentsVersion` in the uninstall registry entry) is the
+  package version; remote (Agent-only) updates that need newer components are refused and ask
+  for a Repair/Upgrade package.
 
 ## Deliberate downgrade from 5.1.0 to 5.0.x
 
@@ -108,23 +171,27 @@ What carries over, and what does not:
 After the downgrade, accept it with the same success criteria as an upgrade, and check the
 Agent log for `42501`: a heartbeat alone does not prove events and health are arriving.
 
-The 5.0.28 Repair/Upgrade will carry a guard that refuses a recorder registry with more than
-one configured recorder; that guard is being added on the 5.0.28 branch separately. Until a
-release carrying it is recorded in `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`, the
-one-recorder check above is manual.
+`wl-repair-upgrade.ps1` refuses a recorder registry with more than one configured recorder
+(exit 24) or an unreadable one (exit 25) only when its candidate is older than 5.1.0. A 5.0.x
+package whose script predates that guard does not check, so for it the one-recorder check above
+is manual.
 
 ## Required logs
 
-Primary installer/update log:
-`C:\ProgramData\WatchLog\upgrade.log`
+Primary installer/update logs:
+`C:\ProgramData\WatchLog\repair-upgrade.log` and `repair-upgrade-result.ini` (Repair/Upgrade),
+`C:\ProgramData\WatchLog\upgrade.log` (pause, rollback, recovery task and uninstall steps)
 
 Agent/runtime log:
 `C:\ProgramData\WatchLog\agent.log`
 
 Do not copy secrets/DPAPI files into support tickets or Git.
 
-## Promotion rule
+## After this package: which updates can be remote
 
-One successful existing-site bootstrap must prove the permanent online updater. After that,
-future normal releases should be delivered through the signed outbound update channel rather
-than the full Setup wizard.
+Once a site runs the 5.1.1 components, a later release published as `AGENT_ONLY_COMPATIBLE` can
+reach it through the signed outbound update channel. A release published as
+`REQUIRES_REPAIR_PACKAGE` is refused by the Agent and needs this package again. The
+classification and how it is signed are in the source of truth, section 1D ("Agent-only vs
+full-component updates"). One successful existing-site Repair/Upgrade must first prove the online
+updater on that site (`remote_update_v1` only after a real poll).

@@ -70,9 +70,10 @@ TO REMOVE IT
   Use Windows Settings > Apps > Installed apps > WatchLog > Uninstall,
   or the Uninstall WatchLog shortcut in the WatchLog Start Menu folder.
 
-Uninstall removes the protected recorder credential. Local support logs and
-connection history are retained for support or reinstall continuity unless a
-full local data wipe is requested.
+Uninstall removes WatchLog's recorder logins, this site's connection to
+WatchLog, and any events still waiting to be sent, and restores this PC's
+power settings. Only the support logs are kept. To use this PC for WatchLog
+again, run the installer and set it up as a new site.
 
 
 PRIVACY BOUNDARY

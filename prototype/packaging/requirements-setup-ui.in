@@ -1,0 +1,9 @@
+# Top-level build dependencies of watchlog-setup-ui.exe (build_setup_gui.ps1). Frozen in
+# its own venv: nothing from the Agent environment (onnxruntime, numpy, Pillow,
+# imageio-ffmpeg, cryptography) is installed here, so none of it can be collected.
+# PySide6 6.11.2 and PyInstaller 6.22.2 are the versions every field-proven Setup UI used.
+pyinstaller==6.22.2
+pyinstaller-hooks-contrib==2026.8
+requests==2.34.2
+PySide6==6.11.2
+psutil==7.2.2

@@ -190,10 +190,9 @@ def test_all_cloud_identities_bind_before_per_recorder_probe():
         assert {kw["p_recorder_id"] for kw in camera_calls} == set(mapping.values())
         assert all(kw["p_cameras"][0]["channel"] == "1" for kw in camera_calls)
 
-        capability_calls = [
-            kw for name, kw in cloud.calls if name == "wl_sync_recorder_capabilities"
-        ]
-        assert {kw["p_recorder_id"] for kw in capability_calls} == set(mapping.values())
+        # Capability enrichment is off the startup path (field Build 41/69): preparation
+        # sends none; capability_sync sends each recorder's own once monitoring has started.
+        assert not [name for name, _kw in cloud.calls if name == "wl_sync_recorder_capabilities"]
 
         assert rr.recorder(a)["vendor"] == "Hikvision"
         assert rr.recorder(b)["vendor"] == "Dahua"

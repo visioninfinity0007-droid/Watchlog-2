@@ -212,7 +212,9 @@ class DiscoveryBlindSpotTests(unittest.TestCase):
         # Build 69 is the field-proven discovery baseline. Future releases may
         # improve ordering/timing, but may not silently shrink its eight-/24 reach.
         self.assertEqual(discover.MAX_AUTO_SUBNETS, 8)
-        self.assertEqual(discover.SWEEP_WORKERS, 256)
+        # Within Build 69's field-proven envelope (768) and enough to reach all eight
+        # networks well inside the deadline (test_discovery_field_timing).
+        self.assertTrue(512 <= discover.SWEEP_WORKERS <= 768)
         self.assertLessEqual(discover.DISCOVERY_DEADLINE_SECONDS, 32)
         self.assertTrue({80, 443, 8000, 37777}.issubset(set(discover.SWEEP_FAST_PORTS)))
         self.assertTrue({
