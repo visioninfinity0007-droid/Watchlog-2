@@ -284,6 +284,9 @@ def parse_hikvision_alert(raw: bytes) -> Alarm | None:
             return None
     else:
         etype = HIK_EVENT_TYPE_MAP.get(etype_raw.lower()) or etype_raw.lower()
+    # A type WatchLog has no meaning for is stored raw and flagged, so the server never counts
+    # it as people activity (0165).
+    unmapped = state != "inactive" and etype_raw.lower() not in HIK_EVENT_TYPE_MAP
 
     # A recorder-level alert, or a camera alert without a channel id, has channel
     # None plus a flag. Never camera "1", and never the camera NAME as a channel id
@@ -325,6 +328,8 @@ def parse_hikvision_alert(raw: bytes) -> Alarm | None:
     burst_key, phase, pair_key = _pairing(scope_key, etype)
     if state:
         scope["eventState"] = state
+    if unmapped:
+        scope["unmapped"] = True
     return Alarm(
         vendor="hikvision",
         channel=channel,
@@ -412,6 +417,8 @@ def parse_dahua_block(text: str) -> Alarm | None:
             channel = None            # no usable index: unknown, never camera 1
             scope = {"channel_unknown": True, "native_index": index}
 
+    if action != "stop" and not mapped:
+        scope["unmapped"] = True          # stored raw; never people activity (0165)
     scope_key = channel if channel is not None else f"recorder:{index}"
     burst_key, phase, pair_key = _pairing(scope_key, etype)
     return Alarm(
