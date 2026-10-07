@@ -181,6 +181,36 @@ update channel.
 
 ---
 
+## 0A. Release candidate 5.1.2: production hardening (branch `release/5.1.2`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it yet. It is
+production-ready only when `python tools/acceptance_matrix.py gate --scope 5.1.2` passes: every
+5.1.2-scope capability FIELD VERIFIED (or UNSUPPORTED BY THIS HARDWARE, with evidence) on BOTH a
+physical Dahua recorder (certification site Al-Khalid, DH-XVR1B08-I) and a physical Hikvision
+recorder (HASCO Steel, then Chai Wala; both DS-7608NI-Q1, so that is the certified model).
+Matrix: `docs/acceptance/production_acceptance_matrix.json`.
+
+- **Database prerequisite:** contract v4 (`mr/db-contracts` migrations `0146`-`0155`, plus 0156
+  and 0157, applied in production) and the 5.1.2 migrations: 0159 (camera sync after an ONVIF
+  era) and 0160 (viewer RPCs tenant-scoped), both applied in production on 2026-10-07; 0161
+  (recording/storage truth), 0162 (Agent runtime status), 0163 (remote acceptance test), 0164
+  (native-event evidence, off per site by default), 0165 (fault/restore/raw signals are never
+  presence), repo only until approved. Canonical `main` owns 0158 (restaurant metrics).
+- **Mandatory scope:** Dahua archive/clip channels 1-based (field-proven); tenant isolation;
+  Setup stops a running Agent before the recorder login (HASCO); recorder and per-camera
+  recording truth; storage/HDD truth for both vendors (a nearly full overwriting disk is
+  healthy); tamper never depends on person/vehicle detection; video loss -> restore,
+  disconnect -> reconnect, recorder restart; capability reporting outside analytics; worker
+  runtime state and supervised restarts; remote `run_full_acceptance_test`, diagnostics,
+  restart, reconnect; evidence T-15 s..T+30 s with attribution and server-side clip hash.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C; the
+  two-NVR field procedure is `multi-nvr-audit/rc-5.1.1-ci/FIELD-TEST-2NVR.md`.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+---
+
 ## 1. Authoritative source
 
 Authoritative repository:
@@ -193,10 +223,11 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.1**
+**5.1.2**
 
-That is the version string the code carries: the release candidate (section 0 and 1D, branch
-`release/5.1.1`), not promoted.
+That is the version string the code carries: the production-hardening release candidate
+(section 0A, branch `release/5.1.2`), not promoted. 5.1.1 (section 0 and 1D) is the previous
+candidate; its unsigned build #141 runs at Al-Khalid and HASCO for field evidence only.
 
 5.1.0 (section 1C, branch `mr/agent-5.1.0`, merged to `main`) is the multi-recorder Agent and
 installer **candidate, not promoted**: no Windows artifact has been built from it, none is
