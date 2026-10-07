@@ -1,0 +1,7205 @@
+{
+  "schema": "watchlog.production_acceptance_matrix.v1",
+  "generated": "2026-10-07 initial (audit + Al-Khalid 5.1.1 field window)",
+  "rules": "see tools/acceptance_matrix.py",
+  "capabilities": [
+    {
+      "id": "agent_enrollment",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "watchlog_agent.py enroll -> wl_enroll"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_camera_enrollment.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_harness / e2e_multi_recorder_*; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "enrolled cca2673e 08:16Z (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "agents row on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Cloud auth"
+      ]
+    },
+    {
+      "id": "agent_heartbeat",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "agent_core.heartbeat -> wl_heartbeat"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_install_end_to_end.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_authority_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "heartbeat every minute 08:16-09:31Z (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "agents.last_seen_at on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Heartbeat"
+      ]
+    },
+    {
+      "id": "agent_identity",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "agent key sha256 + DPAPI"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_credential_store.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_preflight_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "version 5.1.1+f5869be reported (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Agent"
+      ]
+    },
+    {
+      "id": "agent_self_health",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "agent_config_sync",
+      "family": "1 core",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_agent_analytics_config poll"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_old_agent_compat.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_config_governance_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "agent_capability_reporting",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_agent_report_capabilities (inside analytics poll)"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_capabilities.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_runtime_capability_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "full runtime capability set advertised (owner-verified) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "agents.capabilities on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "agent_runtime_status",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_update_v1",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "remote_update.py + 0119"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_remote_update_commit_gate.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_diagnostics",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "multi_agent_fencing",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "lease_client.py -> 0052"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_lease_client.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multiagent_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "offline_spooling",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "spool.py + wl_ingest_events"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_spool_offline.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_offline_sync_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Spool"
+      ]
+    },
+    {
+      "id": "automatic_recovery",
+      "family": "1 core",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recovery.py + 0147 recovery RPCs"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recovery.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recovery_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recovery"
+      ]
+    },
+    {
+      "id": "recorder_discovery",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "multi_recorder",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "multi_recorder_orchestrator/fanout, contract v4"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_multi_recorder_fanout.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_*_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_identity",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "serial fingerprint pin"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recorder_identity_address_swap.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_reinstall_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "serial-pinned recorder 66217b3e bound (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recorder identity"
+      ]
+    },
+    {
+      "id": "recorder_auth",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Digest auth + DPAPI per recorder"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_hikvision_auth_downgrade.py, test_dahua_auth_downgrade.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_health_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "dahua-cgi auth ok, recorder_health auth=true (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recorder auth"
+      ]
+    },
+    {
+      "id": "recorder_probe_v2",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recorder_probe.py"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recorder_probe.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_production_hotfix_0156_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "probe ok 8 channels (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recorder auth"
+      ]
+    },
+    {
+      "id": "recorder_registry",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recorder_registry.py + site stamp"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_registry_site_isolation.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_reinstall_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_add",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_remove",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_enable_disable",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_rename",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_credential_update",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_reconnect",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_capability_sync",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "capability_sync.py -> wl_sync_recorder_capabilities"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_capability_sync_deferred.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_capabilities_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "recorder capabilities synced (owner-verified) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_clock_check",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_push_configuration",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_configuration_read",
+      "family": "2 recorder",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_configuration_write",
+      "family": "2 recorder",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_restart",
+      "family": "2 recorder",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_failure_isolation",
+      "family": "2 recorder",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "per-recorder threads/spools/locks"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_multi_recorder_fanout.py, test_hikvision_field_safety.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_faults_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_discovery",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Hik InputProxy / Dahua ChannelTitle"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_nvr_health.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_foundation_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_inventory",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "cameras + camera_inventory"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_inventory_model.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_health_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "8 canonical channels (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "cameras rows on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Camera inventory"
+      ]
+    },
+    {
+      "id": "camera_channel_mapping",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "unique (recorder_id, channel)"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_multi_recorder_event_identity.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_camera_sync_legacy_profiles_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "every event on the right camera 1-8 + recorder_id (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Camera inventory"
+      ]
+    },
+    {
+      "id": "camera_name_sync",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_enable_disable",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_configuration_status",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_snapshot",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Hik picture / Dahua snapshot.cgi"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_hikvision_snapshot_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_periodic_stills_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "84 event stills + 85 periodic stills (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "snapshots rows on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Snapshot"
+      ]
+    },
+    {
+      "id": "camera_live_snapshot",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "camera_snapshot_requests -> wl_upload_config_snapshot"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_server_owned_stills.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_camera_job_routing_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Snapshot"
+      ]
+    },
+    {
+      "id": "camera_stream_probe",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_health",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "camera_health.py state machine"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_camera_health.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_health_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_video_loss",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN",
+          "note": "observed in field but code incomplete: ch 5/7/8 video_loss reason"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_offline_detection",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "snapshot probe hysteresis"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_health_model.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_camera_fault_reason_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "ch 5/7/8 offline video_loss (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "camera_health rows on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_tamper_detection",
+      "family": "3 camera",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_quality_detection",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_obstruction_detection",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_frozen_frame_detection",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_dark_image_detection",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_blur_detection",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_status_metadata",
+      "family": "3 camera",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "native_event_stream",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Hik alertStream 30 s slices / Dahua attach"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_event_stream_liveness.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "attach stream live, 132 native events (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "events rows with recorder/camera on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Event stream",
+        "Native events"
+      ]
+    },
+    {
+      "id": "motion_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "VMD / VideoMotion"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_hikvision_alert_channel.py, test_dahua_event_time.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "3 VideoMotion native (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "events rows on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "video_loss_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "videoloss / VideoLoss"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_videoloss_reconciliation.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_camera_fault_reason_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "video_restore_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "tamper_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_disconnect_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_reconnect_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "storage_fault_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "diskerror / StorageFailure"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_dahua_recorder_scoped_events.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_full_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "diskfull / StorageLowSpace"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_dahua_recorder_scoped_events.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_error_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "diskerror / StorageFailure"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_dahua_recorder_scoped_events.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_restart_event",
+      "family": "4 native events",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "alarm_input_event",
+      "family": "4 native events",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "alarm_output_event",
+      "family": "4 native events",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "human_detection_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "peopledetection / SmartMotionHuman"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_native_verification.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "119 SmartMotionHuman -> person, correct cameras (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "events rows on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "vehicle_detection_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "vehicledetection / SmartMotionVehicle"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_hikvision_targets.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "line_crossing_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "linedetection / CrossLineDetection"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_push_bridge.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "intrusion_event",
+      "family": "4 native events",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "fielddetection / CrossRegionDetection"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_push_bridge_dahua.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recorder_scoped_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "face_detection_event",
+      "family": "4 native events",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "audio_alarm_event",
+      "family": "4 native events",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "local_analytics_runtime",
+      "family": "5 local analytics",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "analytics_agent analytics_worker, YOLOv8n ONNX"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_vision_onnx.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_analytics_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "7 watchlog_local_ai motion with stills (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Local analytics"
+      ]
+    },
+    {
+      "id": "person_detection",
+      "family": "5 local analytics",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "vision.py COCO person"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_vision_filter.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_analytics_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "vehicle_detection",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "object_detection",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "person_tracking",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "vehicle_tracking",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "restricted_zone",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "line_crossing",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "analytics.py line_crossing"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_authoring_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "loitering",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "crowd_detection",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "occupancy_counting",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "analytics.py occupancy"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "people_counting",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "object_left",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "object_removed",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "after_hours_activity",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "schedule_activity"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_scene_change",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "custom_detection_rule",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_rule_engine",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "AnalyticsEngine.process"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_authoring_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_confidence_threshold",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "detect_confidence + confidence_min"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_ops_runtime.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_config_governance_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_schedule",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "schedule_contains"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_authoring_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_roi",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_event_deduplication",
+      "family": "5 local analytics",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "sha256 dedupe + on conflict"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_analytics_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "face_detection",
+      "family": "5 local analytics",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "face_matching",
+      "family": "5 local analytics",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "license_plate_detection",
+      "family": "5 local analytics",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "license_plate_recognition",
+      "family": "5 local analytics",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "operations_evidence_still",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "0058/0059 + incident_evidence.py"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_incident_stills_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "operations_evidence_clip",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "0040/0097 + incident_evidence.py"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_incident_footage_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "event_snapshot",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "native_event_collector live still"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_native_nvr_incident_evidence.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_foundation_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "84 native event stills attached (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Evidence still"
+      ]
+    },
+    {
+      "id": "incident_snapshot",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "operations_incident_evidence"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_incident_stills_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_clip",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "incident_clip_requests"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_incident_footage_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Evidence clip"
+      ]
+    },
+    {
+      "id": "pre_event_clip",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "post_event_clip",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "manual_snapshot",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_request_config_snapshot"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_multi_recorder_camera_job_runtime.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_camera_job_routing_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "manual_clip_request",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_request_incident_clip"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_native_nvr_incident_evidence.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "evidence_metadata",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "occurred/captured/sha256/size"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_incident_stills_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "evidence_integrity",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "evidence_upload",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "chunked bytea RPC upload"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_incident_footage_outcomes.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "evidence_retry",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "evidence_retention",
+      "family": "6 evidence",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "prune jobs 0041/0107/0014"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_native_nvr_incident_evidence.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "evidence_attribution",
+      "family": "6 evidence",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "archive_processing",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "archive_runtime.py + 0051/0055"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_archive_runtime.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_archive_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "archive_search",
+      "family": "7 archive",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Hik ContentMgmt/search, Dahua mediaFileFind"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_hikvision_archive.py, test_dahua_archive_paging.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_archive_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Archive search"
+      ]
+    },
+    {
+      "id": "archive_frame_retrieval",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "archive_clip_retrieval",
+      "family": "7 archive",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Hik download, Dahua loadfile (1-based since 827f5097)"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_dahua_archive_clock_skew.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_incident_evidence_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "FAIL",
+          "note": "0-based channel numbering would export the neighbouring camera (fixed in 827f5097, retest pending) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Evidence clip"
+      ]
+    },
+    {
+      "id": "archive_event_search",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "historical_snapshot",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "historical_analytics",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "historical_incident_detection",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "gap_detection",
+      "family": "7 archive",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recovery.detect_outage + coverage gaps"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recovery.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recovery_coverage_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "gap_recovery",
+      "family": "7 archive",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "RecoveryRunner"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recovery.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recovery_ingest_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recovery"
+      ]
+    },
+    {
+      "id": "recovery_interval_processing",
+      "family": "7 archive",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recovery chunks/checkpoints"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recovery_rpc_contract.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_recovery_agent_payload_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_availability",
+      "family": "7 archive",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recording_current archive proof"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recording_current_multi_recorder.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_reconciliation_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recording"
+      ]
+    },
+    {
+      "id": "recording_timeline",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "archive_integrity_check",
+      "family": "7 archive",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "agent_health",
+      "family": "8 health",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_health",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_report_recorder_health"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_nvr_health.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_health_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "PASS",
+          "evidence": "reachable/auth ok 09:15Z (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "PASS",
+          "evidence": "recorder_health row on production for cca2673e"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_health_state",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "camera_health transitions"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_health_model.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_reconciliation_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "storage_health",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "FAIL",
+          "note": "storage_state 'unknown' (keyword parser) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Storage"
+      ]
+    },
+    {
+      "id": "recording_health",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "event_stream_health",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "archive_health",
+      "family": "8 health",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_health",
+      "family": "8 health",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "cloud_connectivity_health",
+      "family": "8 health",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "spool_health",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Spool"
+      ]
+    },
+    {
+      "id": "credential_health",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configuration_health",
+      "family": "8 health",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "health_state_transitions",
+      "family": "8 health",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_state",
+      "family": "9 recording",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "FAIL",
+          "note": "recorder_health.recording_state never written (unknown); per-camera proof shifted by one channel (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recording"
+      ]
+    },
+    {
+      "id": "recording_continuity",
+      "family": "9 recording",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_gap_detection",
+      "family": "9 recording",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_schedule_read",
+      "family": "9 recording",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_storage_available",
+      "family": "9 recording",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_retention_estimate",
+      "family": "9 recording",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "latest_recording_timestamp",
+      "family": "9 recording",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "per_camera_recording_check",
+      "family": "9 recording",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "FAIL",
+          "note": "camera 1 'unknown' while live; video-loss 5/7/8 'recording' (0-based channel bug, fixed in 827f5097, retest pending) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Recording"
+      ]
+    },
+    {
+      "id": "disk_inventory",
+      "family": "10 storage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_health",
+      "family": "10 storage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "FAIL",
+          "note": "storage_state 'unknown' (keyword parser) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Storage"
+      ]
+    },
+    {
+      "id": "disk_capacity",
+      "family": "10 storage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_free_space",
+      "family": "10 storage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_failure",
+      "family": "10 storage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_full",
+      "family": "10 storage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disk_smart_status",
+      "family": "10 storage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "storage_fault_history",
+      "family": "10 storage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "storage_transitions + operational_faults"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_reconcile_model.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_reconciliation_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "site_control_runtime",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "site_control.py + 0150"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_site_control.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_site_control_role_authz_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Site Control"
+      ]
+    },
+    {
+      "id": "request_snapshot",
+      "family": "11 site control",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "request_clip",
+      "family": "11 site control",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "probe_camera",
+      "family": "11 site control",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "probe_recorder",
+      "family": "11 site control",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "refresh_inventory",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "refresh_capabilities",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "restart_agent_worker",
+      "family": "11 site control",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "reconnect_recorder",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "run_health_check",
+      "family": "11 site control",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "run_recording_check",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "run_archive_check",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "run_acceptance_test",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Site Control"
+      ]
+    },
+    {
+      "id": "collect_diagnostics",
+      "family": "11 site control",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "change_camera_name",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "change_recording_schedule",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "enable_recorder_analytic",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "disable_recorder_analytic",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configure_motion",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configure_smd",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configure_line_crossing",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configure_intrusion",
+      "family": "11 site control",
+      "scope": "gated",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_update_check",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_update_download",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "_download_verified"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_remote_update_stage_trust.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_update_verify",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Ed25519 manifest + sha256"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_updater.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Remote update"
+      ]
+    },
+    {
+      "id": "remote_update_install",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "apply-remote-update.ps1"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_remote_update_commit_gate.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_update_rollback",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "commit gate + launcher restore"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_remote_update_commit_gate.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_restart",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_log_collection",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "remote_acceptance_test",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Site Control"
+      ]
+    },
+    {
+      "id": "remote_config_refresh",
+      "family": "12 remote maintenance",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "outbound_only",
+      "family": "12 remote maintenance",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "no listener; polling RPCs only"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_site_control.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_creation",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "0054/0058/0059"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_operations_intelligence_contract.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_classification",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_severity",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_evidence",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_acknowledgement",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_acknowledge_operations_incident"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_escalation",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_assignment",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_resolution",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "resolve/dismiss + 0093"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_deduplication",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "dedupe_key unique"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "incident_correlation",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "rule_engine",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "monitoring_rules + agent engine"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_authoring_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "schedule_rules",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "monitoring_schedules"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_authoring_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_rules",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "monitoring_rules.camera_id"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_analytics_engine.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_operations_authoring_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "site_rules",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "notification_rules",
+      "family": "13 incidents",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "monitoring_coverage",
+      "family": "14 coverage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_site_coverage_report"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_coverage_model.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_coverage_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "coverage_gap_detection",
+      "family": "14 coverage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "range_agg gaps"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_agent_coverage.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_day_state_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "pc_sleep_detection",
+      "family": "14 coverage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "monitoring_coverage.py wall-clock jump"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_agent_coverage.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "agent_unreachable_interval",
+      "family": "14 coverage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_agent_watchdog_sweep"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_agent_watchdog_contract.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_unreachable_interval",
+      "family": "14 coverage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recorder_coverage_intervals triggers"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_coverage_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_unreachable_interval",
+      "family": "14 coverage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "cloud_outage_tracking",
+      "family": "14 coverage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_coverage",
+      "family": "14 coverage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "event_stream_coverage",
+      "family": "14 coverage",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "archive_recovery_coverage",
+      "family": "14 coverage",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "recovery_intervals + 0155 class"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_recovery.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_coverage_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "config_snapshot_requests",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recorder_config_snapshot",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "camera_config_snapshot",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "recording_config_snapshot",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "analytics_config_snapshot",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configuration_diff",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configuration_drift_detection",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "configuration_change_history",
+      "family": "15 config audit",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "machine_bound_credentials",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "DPAPI LocalMachine + DACL"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_credential_store.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "windows_security_gate.py (Security Gate CI)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "per_recorder_credentials",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Secrets/recorders/<id>.dpapi"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_worker_credential_reload.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "windows_security_gate.py (Security Gate CI)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "signed_updates",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "Ed25519 manifest"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_updater.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      },
+      "acceptance_checks": [
+        "Remote update"
+      ]
+    },
+    {
+      "id": "credential_rotation",
+      "family": "16 security",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "command_authentication",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "wl_auth_agent on every agent RPC"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_tenant_isolation.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_site_control_role_authz_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "command_expiry",
+      "family": "16 security",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "command_audit",
+      "family": "16 security",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "sensitive_data_redaction",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "nvr_health.redact, support bundle allowlist"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_agent_log_hygiene.py"
+        },
+        "integration": {
+          "status": "N_A",
+          "note": "agent-local path; no database contract"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "least_privilege_commands",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "read catalog + deny-list + FIELD_VERIFIED writes"
+        },
+        "unit": {
+          "status": "PASS",
+          "evidence": "test_site_control_catalog_parity.py"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_multi_recorder_write_eligibility_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "high_risk_action_approval",
+      "family": "16 security",
+      "scope": "later",
+      "gates": {
+        "implemented": {
+          "status": "FAIL",
+          "note": "audit 2026-10-07: missing or partial (see PRODUCTION-READINESS-PLAN.md)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "NOT_RUN"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "tenant_isolation",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "0160 viewer RPCs tenant-scoped (prod applied 2026-10-07)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_viewer_rpcs_tenant_scope_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "NOT_RUN"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    },
+    {
+      "id": "setup_camera_sync",
+      "family": "16 security",
+      "scope": "5.1.2",
+      "gates": {
+        "implemented": {
+          "status": "PASS",
+          "evidence": "0159 idempotent camera sync (prod applied 2026-10-07)"
+        },
+        "unit": {
+          "status": "NOT_RUN"
+        },
+        "integration": {
+          "status": "PASS",
+          "evidence": "e2e_camera_sync_legacy_profiles_pg.py; GitHub CI Watchlog-2 PR #30 green (acc35d70)"
+        },
+        "dahua_field": {
+          "status": "FAIL",
+          "note": "Setup 23505 on 5.1.1 (fixed by 0159, applied; Retry pending) (Al-Khalid DH-XVR1B08-I, agent 5.1.1 f5869be cca2673e, 2026-10-07 08:16-09:31Z)"
+        },
+        "hikvision_field": {
+          "status": "NOT_RUN",
+          "note": "no Hikvision site runs 5.1.x yet"
+        },
+        "remote_observability": {
+          "status": "NOT_RUN"
+        },
+        "failure_recovery": {
+          "status": "NOT_RUN"
+        }
+      }
+    }
+  ]
+}
