@@ -195,8 +195,8 @@ jobs:
         run: python prototype/tests/test_site_control_portal_contract.py
       - name: Site Control catalog parity — database accepts only actions the Agent runs (MNVR-069)
         run: python -m pytest prototype/tests/test_site_control_catalog_parity.py -q
-      - name: Remote acceptance test + remote maintenance (5.1.2 D) — per-check PASS/FAIL/UNKNOWN/UNSUPPORTED on Hikvision- and Dahua-like fakes, multi-recorder sections, time budget, bounded result, redacted diagnostics, reconnect/restart, 0163 static contract
-        run: python -m pytest prototype/tests/test_full_acceptance.py prototype/tests/test_site_maintenance.py prototype/tests/test_site_acceptance_migration.py -q
+      - name: Remote acceptance test + remote maintenance (5.1.2 D) — per-check PASS/FAIL/UNKNOWN/UNSUPPORTED on Hikvision- and Dahua-like fakes, multi-recorder sections, time budget, bounded result, redacted diagnostics, reconnect/restart, operator tool, 0163 static contract
+        run: python -m pytest prototype/tests/test_full_acceptance.py prototype/tests/test_site_maintenance.py prototype/tests/test_run_remote_acceptance.py prototype/tests/test_site_acceptance_migration.py -q
       - name: Branded Windows installer product contract
         run: python prototype/tests/test_windows_installer_product.py
       - name: Platform admin contract gate
