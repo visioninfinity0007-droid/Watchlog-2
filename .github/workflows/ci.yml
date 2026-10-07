@@ -610,6 +610,8 @@ jobs:
         run: python prototype/tests/e2e_multi_recorder_write_eligibility_pg.py
       - name: Camera sync after an ONVIF-profile era — Al-Khalid 23505 regression (0158)
         run: python prototype/tests/e2e_camera_sync_legacy_profiles_pg.py
+      - name: Viewer RPCs are tenant-scoped — no cross-tenant snapshot or event read (0159)
+        run: python prototype/tests/e2e_viewer_rpcs_tenant_scope_pg.py
       - name: In-flight evidence after an Agent restart — 0142 lease, startup release, server-side still lease (0150, MNVR-033)
         run: python prototype/tests/e2e_multi_recorder_evidence_lease_pg.py
       - name: Multi-recorder analytics — recorder attribution and final contract (0151+)
