@@ -44,8 +44,12 @@ def test_the_committed_budgets_are_strict():
     spec = json.loads((ROOT / "prototype" / "packaging" / "perf-budgets.json").read_text(encoding="utf-8"))
     b = spec["budgets"]
     assert spec["runs"] >= 6                      # one cold launch + at least five warm ones
-    assert b["setup_ui.lifecycle_s"]["p95"] <= 12.0 and b["setup_ui.first_visible_s"]["p95"] <= 8.0
-    assert b["setup_ui.unpack_s"]["p95"] <= 6.0
+    # 5.1.3: warm Setup UI gates are the median (same limits as the old p95) with the cold
+    # ceilings as their maximum, so one noisy hosted-runner launch no longer fails a release.
+    assert b["setup_ui.lifecycle_s"]["p50"] <= 12.0 and b["setup_ui.first_visible_s"]["p50"] <= 8.0
+    assert b["setup_ui.unpack_s"]["p50"] <= 6.0
+    assert b["setup_ui.lifecycle_s"]["max"] <= 15.0 and b["setup_ui.first_visible_s"]["max"] <= 12.0
+    assert b["setup_ui.unpack_s"]["max"] <= 12.0
     assert b["setup_ui.cold.lifecycle_s"]["max"] <= 15.0      # never looser than the old gate
     assert b["agent.version_s"]["p50"] <= 12.0 and b["agent.version_s"]["max"] <= 30.0
     assert b["agent.cold.version_s"]["max"] <= 30.0

@@ -93,7 +93,16 @@ def test_known_addresses_come_from_ini_and_registry(monkeypatch):
 
 @pytest.fixture
 def windows(monkeypatch, tmp_path):
-    monkeypatch.setattr(backend.os, "name", "nt", raising=False)
+    # Only setup_backend sees Windows: patching os.name itself makes pathlib build WindowsPath
+    # objects, which cannot exist on the Linux CI runner.
+    import os as _os
+
+    class _NtOs:
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(_os, attr)
+    monkeypatch.setattr(backend, "os", _NtOs())
     (tmp_path / "register-service.ps1").write_text("# stub", encoding="utf-8")
     return tmp_path
 
