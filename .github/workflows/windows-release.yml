@@ -441,3 +441,14 @@ jobs:
             dist-installer/watchlog-update-payload.json
           if-no-files-found: error
           retention-days: 30
+
+      # The exact Agent binary the installers carry and watchlog-update-payload.json names
+      # (its sha256 is watchlog-agent.exe.sha256 in WatchLog-Release.hashes.txt). An Agent-only
+      # update is published from this file; it is never published by this workflow.
+      - name: Upload the Agent binary for an Agent-only update
+        uses: actions/upload-artifact@v4
+        with:
+          name: WatchLog-Agent-${{ github.run_number }}
+          path: prototype/dist/watchlog-agent.exe
+          if-no-files-found: error
+          retention-days: 30
