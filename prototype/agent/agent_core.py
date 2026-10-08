@@ -266,9 +266,12 @@ class Config:
         self.health_batch = int(get("health_batch") or HEALTH_BATCH)
         self.health_concurrency = int(get("health_concurrency") or HEALTH_CONCURRENCY)
         self.upload_seconds = int(get("upload_seconds") or UPLOAD_SECONDS)
-        # Site Control command plane (H6), read-only executor. OFF by default: a new
-        # capability is never auto-enabled on a live site — enable per-site in the ini.
-        self.site_control_enabled = str(get("site_control") or "false").strip().lower() == "true"
+        # Site Control command plane (H6), read-only executor. ON by default (5.1.3): the
+        # owner's per-site cloud switch (sites.site_control_enabled, off by default) is the
+        # gate, checked by wl_agent_claim_command on every poll, so nothing runs until the
+        # owner turns it on, and no site visit is needed to make a site remotely testable.
+        # `site_control = false` in the ini still opts a PC out locally.
+        self.site_control_enabled = str(get("site_control") or "true").strip().lower() != "false"
         self.site_control_seconds = int(get("site_control_seconds") or 15)
         # Automatic NVR outage recovery (0.4.4 §1/§2). READ-ONLY archive backfill of missed
         # intervals; ON by default (it never writes to the recorder, always yields to live

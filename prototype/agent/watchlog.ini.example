@@ -102,9 +102,10 @@ nvr_driver = auto
 ; upload_seconds    = 15
 
 ; --- Site Control (remote read-only checks and maintenance) ------------
-; OFF unless set here. Commands also need the site's Site Control switch ON in
-; WatchLog (owner-controlled); both must be on. Enables remote acceptance tests,
-; recording/archive checks, diagnostics, recorder reconnect and Agent restart.
-; Never writes to the recorder. Restart the "WatchLog Agent" task after changing.
-; site_control         = true
+; ON by default since 5.1.3. Nothing runs until the site's Site Control switch is
+; turned ON in WatchLog (owner-controlled, off by default). Enables remote
+; acceptance tests, recording/archive checks, diagnostics, recorder reconnect and
+; Agent restart. Never writes to the recorder. Set false to opt this PC out, then
+; restart the "WatchLog Agent" task.
+; site_control         = false
 ; site_control_seconds = 15
