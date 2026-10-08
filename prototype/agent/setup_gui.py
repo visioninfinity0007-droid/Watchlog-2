@@ -714,9 +714,9 @@ class SetupWindow(QMainWindow):
             "Searching the local network…",
             known=([] if self.manage_recorders
                    else backend.known_recorder_addresses(self.public)),
-            timeout_ms=45000,
+            timeout_ms=40000,
             timeout_message=(
-                "Automatic search reached its 45-second safety limit. "
+                "Automatic search reached its 40-second safety limit. "
                 "Enter the recorder IP and click Use this IP, or retry Search Network."
             ),
         )

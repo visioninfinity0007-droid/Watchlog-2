@@ -181,6 +181,33 @@ update channel.
 
 ---
 
+## 00. Release candidate 5.1.3: installer field fixes (branch `release/5.1.3`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing; its Windows Release run is recorded with the field evidence. 5.1.3 is 5.1.2 (section
+0A) plus the fixes from the 2026-10-08 field installs:
+
+- **Setup never reports a running Agent as failed.** Al-Khalid (Dahua) showed "setup exited with
+  code 2" while the Agent it had started kept reporting: the 50 s finalize watchdog and the
+  100 s start-up bound were shorter than register-service.ps1's own worst case. The bound is
+  180 s, the watchdog outlasts it, and any other outcome is judged by the PC (this install's
+  Agent process under its scheduled task means started).
+- **Discovery:** the recorder(s) the PC is already configured for are checked first; Hikvision
+  SADP (239.255.255.250:37020) and Dahua DHDiscover (:37810) run on every local interface beside
+  ONVIF, inside the Build 69 40 s budget; the sweep follows (HASCO, Hikvision: "no recorder
+  found" on an upgrade).
+- **Site Control on by default on the PC;** the owner's per-site cloud switch is the gate.
+- **Dahua newest recording** taken over every archive row (was the oldest page).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, applied in production (canonical
+  numbering 0159, 0160, 0164-0168).
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+---
+
 ## 0A. Release candidate 5.1.2: production hardening (branch `release/5.1.2`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it yet. It is
@@ -223,10 +250,10 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.2**
+**5.1.3**
 
-That is the version string the code carries: the production-hardening release candidate
-(section 0A, branch `release/5.1.2`), not promoted. 5.1.1 (section 0 and 1D) is the previous
+That is the version string the code carries: the installer field-fix release candidate
+(section 00, branch `release/5.1.3`, on top of 5.1.2 in section 0A), not promoted. 5.1.1 (section 0 and 1D) is the previous
 candidate; its unsigned build #141 runs at Al-Khalid and HASCO for field evidence only.
 
 5.1.0 (section 1C, branch `mr/agent-5.1.0`, merged to `main`) is the multi-recorder Agent and

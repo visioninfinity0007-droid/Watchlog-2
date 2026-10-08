@@ -186,9 +186,9 @@ def _known_recorder_rows(known) -> list[dict]:
         if not host:
             continue
         open_ports = []
-        for port in (80, 443, 8000, 37777, 8080):
+        for port in (80, 8000, 37777, 443):
             try:
-                with socket.create_connection((host, port), timeout=1.5):
+                with socket.create_connection((host, port), timeout=1.0):
                     open_ports.append(port)
                     break
             except OSError:
@@ -203,22 +203,43 @@ def discover_recorders(progress: Callable[[str], None] | None = None,
                        known: list[str] | None = None) -> list[dict]:
     progress = progress or (lambda _message: None)
     results: dict[str, dict] = {}
-    if known:
-        progress("Checking the recorder this PC already uses…")
-        for row in _known_recorder_rows(known):
-            results[row["ip"]] = row
+    # The known-recorder check and the vendor (SADP / DHDiscover) probe run BESIDE the ONVIF
+    # probe, so the search keeps the field-proven Build 69 time budget (40 s UI limit).
+    import threading
+    side: dict[str, list] = {"known": [], "vendor": []}
 
-    progress("Asking Hikvision and Dahua recorders on the network to identify themselves…")
+    def _known():
+        try:
+            side["known"] = _known_recorder_rows(known)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _vendor():
+        try:
+            import vendor_discovery
+            side["vendor"] = vendor_discovery.discover(timeout=2.5)
+        except Exception:  # noqa: BLE001
+            pass
+    side_threads = [threading.Thread(target=fn, daemon=True)
+                    for fn in ((_known,) if known else ()) + (_vendor,)]
+    for t in side_threads:
+        t.start()
+
+    progress("Asking recorders on the network to identify themselves…")
     try:
-        import vendor_discovery
-        for row in vendor_discovery.discover(timeout=3.0):
-            results.setdefault(row["ip"], row)
+        onvif = list(wsdiscovery.discover(log=lambda _m: None))
     except Exception:
-        pass
+        onvif = []
+    for t in side_threads:
+        t.join(6.0)
+    for row in side["known"]:
+        results[row["ip"]] = row
+    for row in side["vendor"]:
+        results.setdefault(row["ip"], row)
 
     progress("Looking for compatible CCTV devices…")
     try:
-        for item in wsdiscovery.discover(log=lambda _m: None):
+        for item in onvif:
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
             vendor_hint = _vendor_hint_from_text(label)
             row = {

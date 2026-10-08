@@ -82,7 +82,9 @@ def test_setup_maps_the_readiness_outcome(backend, code, started, proven):
     seen = {}
 
     def run(cmd, timeout):
-        seen["cmd"] = cmd
+        # 5.1.3: a result other than 0/3 is followed by a look at the PC (is this install's
+        # Agent running?); the first call is still the register-service.ps1 readiness run.
+        seen.setdefault("cmd", cmd)
         return code, "out"
     out = sb.ensure_background_agent(base, 30, _run=run, require_readiness=True)
     assert "-RequireRecorderReadiness" in seen["cmd"]
