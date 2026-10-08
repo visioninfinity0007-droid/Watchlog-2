@@ -6,7 +6,7 @@ Unicode true
 
 !define APPNAME "WatchLog Repair/Upgrade"
 !ifndef APPVERSION
-  !define APPVERSION "5.1.3"
+  !define APPVERSION "5.1.4"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"

@@ -61,7 +61,7 @@ jobs:
       - name: Agent 5.1.2 worker supervision and runtime status (restart with backoff, stall detection, failed after the hourly budget, one-shots completed, recorder-scoped isolation, capabilities independent of analytics, redacted bounded runtime payload, 0162 SQL contract)
         run: python -m pytest prototype/tests/test_worker_supervisor.py prototype/tests/test_agent_runtime_status.py -q
       - name: Installer 5.1.3 field fixes (Site Control on by default, Hikvision SADP + Dahua DHDiscover, known recorder first, a running Agent is never reported as a failed start)
-        run: python -m pytest prototype/tests/test_site_control_default.py prototype/tests/test_setup_discovery_and_start_5_1_3.py -q
+        run: python -m pytest prototype/tests/test_site_control_default.py prototype/tests/test_setup_discovery_and_start_5_1_3.py prototype/tests/test_command_completion_retry.py -q
       - name: Multi-recorder registry trust, same-site reinstall, secondary disable, single-recorder job routing, claimed-command completion
         run: python -m pytest prototype/tests/test_registry_trust.py prototype/tests/test_recorder_registry_reinstall.py prototype/tests/test_disable_secondary_runtime.py prototype/tests/test_single_recorder_job_routing.py prototype/tests/test_claimed_command_completion.py -q
       - name: Multi-recorder failure isolation (bounded spool stamp, per-recorder footage workers, sampler backoff, recorder recording proof, credential reload, channel-level sampler backoff, footage claim behind a backlog, busy registry write, busy registry during binding, address-swap identity refusal, channel-keyed analytics profile)

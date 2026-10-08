@@ -385,6 +385,14 @@ class CloudError(RuntimeError):
         super().__init__(f"{fn}: HTTP {status} {code or ''} {str(message)[:300]}".strip())
 
 
+def _stale_connection(exc: BaseException) -> bool:
+    """True when the connection was closed by the far end before any reply: the request did not
+    reach the server (a reused idle keep-alive socket), so one resend is safe."""
+    text = repr(exc)
+    return any(mark in text for mark in ("Connection aborted", "RemoteDisconnected",
+                                         "ConnectionResetError", "10054", "BrokenPipe"))
+
+
 class Cloud:
     """
     The entire cloud surface: four SECURITY DEFINER functions.
@@ -404,7 +412,18 @@ class Cloud:
         })
 
     def call(self, fn: str, **params):
-        r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=HTTP_TIMEOUT)
+        try:
+            r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=HTTP_TIMEOUT)
+        except requests.ConnectionError as exc:
+            # Field (Al-Khalid, 5.1.3, 2026-10-08): a pooled keep-alive connection the server
+            # had closed while idle (a 3-minute acceptance test) was reused, and the POST died
+            # with "Connection aborted ... 10054" before any byte of a reply. That request never
+            # reached the database, so it is sent once more on a fresh connection. Anything else
+            # (a timeout, a reply) is never retried here: the caller decides.
+            if not _stale_connection(exc):
+                raise
+            self.s.close()
+            r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=HTTP_TIMEOUT)
         if r.status_code >= 400:
             code = None
             msg = r.text

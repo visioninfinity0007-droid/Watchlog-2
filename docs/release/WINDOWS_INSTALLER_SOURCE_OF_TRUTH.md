@@ -181,6 +181,26 @@ update channel.
 
 ---
 
+## 00A. Release candidate 5.1.4: Site Control results survive a stale connection (branch `release/5.1.3`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.4 is 5.1.3 (section 00, Windows Release #149) plus one Agent-only fix from the
+first 5.1.3 field install (Al-Khalid, 2026-10-08): the full acceptance test ran for about three
+minutes and its result was lost when wl_agent_complete_command was sent on a keep-alive
+connection the server had closed while idle ("Connection aborted ... 10054"). The cloud client
+resends once on a fresh connection when the far end closed it before any reply, and a command's
+completion is retried on network errors for about a minute. Setup, installer scripts and data
+formats are unchanged from 5.1.3, so from 5.1.3 it is an Agent-only update.
+
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, applied in production.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+---
+
 ## 00. Release candidate 5.1.3: installer field fixes (branch `release/5.1.3`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
@@ -250,10 +270,10 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.3**
+**5.1.4**
 
-That is the version string the code carries: the installer field-fix release candidate
-(section 00, branch `release/5.1.3`, on top of 5.1.2 in section 0A), not promoted. 5.1.1 (section 0 and 1D) is the previous
+That is the version string the code carries: 5.1.3's installer field fixes (section 00) plus
+the Site Control completion fix (section 00A), branch `release/5.1.3`, not promoted. 5.1.1 (section 0 and 1D) is the previous
 candidate; its unsigned build #141 runs at Al-Khalid and HASCO for field evidence only.
 
 5.1.0 (section 1C, branch `mr/agent-5.1.0`, merged to `main`) is the multi-recorder Agent and

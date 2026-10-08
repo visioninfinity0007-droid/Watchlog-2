@@ -1441,9 +1441,31 @@ def _run_claimed_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict, site
         status, result = "failed", None
         error = ((nvr_health.redact(str(e)) if isinstance(e, DriverError) else "")
                  or type(e).__name__)
-    cloud.call("wl_agent_complete_command",
-               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-               p_command_id=cmd["id"], p_status=status, p_result=result, p_error=error)
+    _complete_command(cloud, state, cmd["id"], status, result, error)
+
+
+# Waits between completion attempts. A completed command's result is the only copy (an
+# acceptance run is minutes of recorder work), so a network failure is retried for about a
+# minute before the result is given up; a reply from the server is never retried.
+COMPLETE_RETRY_WAITS = (5, 15, 40)
+
+
+def _complete_command(cloud: Cloud, state: dict, command_id, status: str, result, error,
+                      *, _sleep=time.sleep) -> None:
+    for attempt, wait in enumerate((0,) + COMPLETE_RETRY_WAITS):
+        if wait:
+            _sleep(wait)
+        try:
+            cloud.call("wl_agent_complete_command",
+                       p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
+                       p_command_id=command_id, p_status=status, p_result=result,
+                       p_error=error)
+            return
+        except requests.RequestException as exc:
+            log(f"site control: completing command {str(command_id)[:8]} failed "
+                f"(attempt {attempt + 1}): {type(exc).__name__}")
+            if attempt == len(COMPLETE_RETRY_WAITS):
+                raise
 
 
 def _run_maintenance_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict) -> None:
@@ -1466,10 +1488,8 @@ def _run_maintenance_command(cfg: Config, state: dict, cloud: Cloud, cmd: dict) 
         status, result = "failed", None
         error = ((nvr_health.redact(str(e)) if isinstance(e, DriverError) else "")
                  or type(e).__name__)
-    cloud.call("wl_agent_complete_command",
-               p_agent_id=state["agent_id"], p_agent_key=state["agent_key"],
-               p_command_id=cmd["id"], p_status=status, p_result=result,
-               p_error=(nvr_health.redact(error) if error else error))
+    _complete_command(cloud, state, cmd["id"], status, result,
+                      nvr_health.redact(error) if error else error)
     if after is not None:
         after()
 
