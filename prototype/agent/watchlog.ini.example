@@ -100,3 +100,11 @@ nvr_driver = auto
 ; spool_file        = C:\ProgramData\WatchLog\spool.sqlite
 ; heartbeat_seconds = 60
 ; upload_seconds    = 15
+
+; --- Site Control (remote read-only checks and maintenance) ------------
+; OFF unless set here. Commands also need the site's Site Control switch ON in
+; WatchLog (owner-controlled); both must be on. Enables remote acceptance tests,
+; recording/archive checks, diagnostics, recorder reconnect and Agent restart.
+; Never writes to the recorder. Restart the "WatchLog Agent" task after changing.
+; site_control         = true
+; site_control_seconds = 15
