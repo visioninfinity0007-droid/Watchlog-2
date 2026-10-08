@@ -51,6 +51,8 @@ ARCHIVE_LOOKBACK_MINUTES = 12
 ARCHIVE_SETTLE_MINUTES = 2
 # Rows read per channel: enough to find the newest segment in a 10-minute window.
 ARCHIVE_ROW_LIMIT = 8
+# Dahua: rows kept from a search that already read every finder page (no extra recorder calls).
+DAHUA_ROWS_FOR_NEWEST = 10_000
 
 
 def _is_dahua(driver) -> bool:
@@ -103,8 +105,12 @@ def _search(driver, channel: str, start: datetime, end: datetime) -> tuple[str, 
     'empty' only when the recorder's archive search itself succeeded and returned no footage."""
     try:
         if _is_dahua(driver):
+            # Every finder page is read anyway and the rows come back oldest-first, so a page
+            # of ARCHIVE_ROW_LIMIT rows held the OLDEST segments: Al-Khalid (DH-XVR1B08-I,
+            # 2026-10-08) showed a newest recording of 01:00-02:00 PKT all afternoon. The newest
+            # end is taken over every row the search returned.
             result = dahua_archive.enumerate_historical_events(
-                driver, channel, start, end, None, ARCHIVE_ROW_LIMIT) or {}
+                driver, channel, start, end, None, DAHUA_ROWS_FOR_NEWEST) or {}
             ends = [_utc((e.get("segment") or {}).get("end")) for e in result.get("events") or [] if e]
             if result.get("events"):
                 latest = max((t for t in ends if t is not None), default=None)

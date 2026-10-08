@@ -291,3 +291,23 @@ def test_installed_cycle_reports_proof_then_disks(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+def test_dahua_newest_recording_is_taken_over_every_row_not_the_oldest_page(monkeypatch):
+    """Al-Khalid 2026-10-08: rows come back oldest-first; the first 8 were 00:00-02:00 PKT files,
+    so latest_recording_at stuck at 02:00 all afternoon. The newest end must win."""
+    seen = {}
+
+    def enumerate_events(driver, channel, start, end, cursor=None, limit=500):
+        seen["limit"] = limit
+        events = [{"segment": {"start": f"2026-10-08T{h:02d}:00:00Z", "end": f"2026-10-08T{h:02d}:59:59Z"}}
+                  for h in range(0, 11)]
+        return {"status": "supported", "next_cursor": None, "events": events[:limit]}
+    monkeypatch.setattr(rc.dahua_archive, "enumerate_historical_events", enumerate_events)
+
+    class D:
+        name = "dahua-cgi"
+    outcome, latest = rc._search(D(), "1", None, None)
+    assert outcome == "found"
+    assert latest == "2026-10-08T10:59:59Z"
+    assert seen["limit"] >= 1000
