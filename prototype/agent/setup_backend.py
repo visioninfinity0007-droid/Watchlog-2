@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import re
+import socket
 import sys
 import time
 from pathlib import Path
@@ -157,9 +158,64 @@ def _write_ini(path: Path, ini: configparser.ConfigParser) -> None:
     tmp.replace(path)
 
 
-def discover_recorders(progress: Callable[[str], None] | None = None) -> list[dict]:
+def known_recorder_addresses(public: dict | None = None) -> list[str]:
+    """Recorder addresses this PC is already configured for: watchlog.ini nvr_url plus every
+    recorders.json entry. Never raises."""
+    found = []
+    if public and str(public.get("nvr_url") or "").strip():
+        found.append(str(public["nvr_url"]).strip())
+    try:
+        import recorder_registry
+        for rec in recorder_registry.recorders():
+            if str(rec.get("url") or "").strip():
+                found.append(str(rec["url"]).strip())
+    except Exception:  # noqa: BLE001 - no or untrusted registry: nothing known
+        pass
+    return list(dict.fromkeys(found))
+
+
+def _known_recorder_rows(known) -> list[dict]:
+    """Recorders this PC was already connected to (watchlog.ini / recorders.json), checked first.
+
+    Field (HASCO, 5.1.2 upgrade): Setup searched the network again and found nothing while the
+    recorder it had been monitoring the day before was configured in watchlog.ini. A reachable
+    known recorder is offered at the top, before any search result."""
+    rows = []
+    for raw in known or []:
+        host = discover.host_of(str(raw or "").strip()) if raw else ""
+        if not host:
+            continue
+        open_ports = []
+        for port in (80, 443, 8000, 37777, 8080):
+            try:
+                with socket.create_connection((host, port), timeout=1.5):
+                    open_ports.append(port)
+                    break
+            except OSError:
+                continue
+        if open_ports:
+            rows.append({"ip": host, "label": "Previously connected recorder", "source": "known",
+                         "vendor_hint": _vendor_hint_from_ports(open_ports)})
+    return rows
+
+
+def discover_recorders(progress: Callable[[str], None] | None = None,
+                       known: list[str] | None = None) -> list[dict]:
     progress = progress or (lambda _message: None)
     results: dict[str, dict] = {}
+    if known:
+        progress("Checking the recorder this PC already uses…")
+        for row in _known_recorder_rows(known):
+            results[row["ip"]] = row
+
+    progress("Asking Hikvision and Dahua recorders on the network to identify themselves…")
+    try:
+        import vendor_discovery
+        for row in vendor_discovery.discover(timeout=3.0):
+            results.setdefault(row["ip"], row)
+    except Exception:
+        pass
+
     progress("Looking for compatible CCTV devices…")
     try:
         for item in wsdiscovery.discover(log=lambda _m: None):
@@ -173,7 +229,12 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             }
             if getattr(item, "port", None) in _WEB_PORTS:
                 row["preferred_web_port"] = int(item.port)
-            results[item.ip] = row
+            if item.ip in results:
+                # A known or vendor-identified recorder keeps its label; ONVIF adds its port.
+                if row.get("preferred_web_port"):
+                    results[item.ip].setdefault("preferred_web_port", row["preferred_web_port"])
+            else:
+                results[item.ip] = row
     except Exception:
         pass
 
@@ -220,12 +281,13 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
                 hint = "RTSP CCTV device / recorder candidate"
 
             row = results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
-            # Prefer the stronger non-ONVIF fingerprint when it identifies the box.
-            if vendor_hint:
+            # Prefer the stronger non-ONVIF fingerprint when it identifies the box (a known
+            # or vendor-discovered recorder keeps its own, already-certain label).
+            if vendor_hint and row.get("source") not in ("known", "SADP", "DHDiscover"):
                 row["label"] = hint
                 row["source"] = "Network fingerprint"
             row["ports"] = ports
-            row["vendor_hint"] = vendor_hint
+            row["vendor_hint"] = vendor_hint or row.get("vendor_hint")
             row["rtsp"] = bool(fp.get("rtsp"))
 
             # Preserve the web endpoint that actually identified/answered as the first
@@ -272,7 +334,12 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 BACKGROUND_START_TIMEOUT_SECONDS = 40  # registration + task start (no readiness wait)
 # Fresh install: registration + start + up to 60 s for the background Agent to prove it
 # reached WatchLog and identified the recorder (register-service -RequireRecorderReadiness).
-BACKGROUND_READY_TIMEOUT_SECONDS = 100
+# Field (Al-Khalid SM-HP, 5.1.2, 2026-10-08): 100 s was shorter than the script's own worst
+# case (PowerShell start + power settings + task stop/re-register + 10 s Running wait + 60 s
+# readiness), so a slow PC had the script killed and Setup reported "did not start" while the
+# Agent was already running. The outer bound must exceed the script's, and a timeout is
+# never taken as "not started" without looking at the PC (see _background_agent_running).
+BACKGROUND_READY_TIMEOUT_SECONDS = 180
 RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
 RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
 
@@ -1522,8 +1589,61 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
     if code == 3 and require_readiness:
         return {"started": True, "proven": False,
                 "detail": "background agent is running but has not yet confirmed the recorder"}
+    # Any other outcome (the script overran and was killed, or exited oddly) is judged by the
+    # PC itself: an Agent process from THIS install plus its scheduled task means it started.
+    running = _background_agent_running(base, runner)
+    if running:
+        _setup_log(f"background registration exited {code}, but the Agent is running "
+                   f"from {base}; treated as started")
+        return {"started": True, "proven": False,
+                "detail": "background agent is running (its confirmation is still in progress)"}
     return {"started": False,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
+
+
+# Prints WL_RUNNING agents=<n> task=<state>: Agent processes started from THIS install's
+# watchlog-agent.exe (never a same-named process elsewhere) and the task's state.
+_RUNNING_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$want = [System.IO.Path]::GetFullPath((Join-Path $env:WL_INSTALL_DIR 'watchlog-agent.exe'))
+$n = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
+  Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) }).Count
+$task = Get-ScheduledTask -TaskName $env:WL_TASK
+Write-Output ("WL_RUNNING agents=" + $n + " task=" + $(if ($task) { [string]$task.State } else { 'none' }))
+"""
+
+
+def background_agent_running(install_dir: Path | None = None, timeout: int = 30, _run=None) -> bool:
+    """Is this install's background Agent running under its scheduled task? Never raises."""
+    if os.name != "nt":
+        return False
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    return _background_agent_running(base, runner, timeout)
+
+
+def _background_agent_running(base: Path, runner, timeout: int = 30) -> bool:
+    """True when this install's Agent process runs under a registered task. Never raises."""
+    saved = {k: os.environ.get(k) for k in ("WL_INSTALL_DIR", "WL_TASK")}
+    os.environ["WL_INSTALL_DIR"], os.environ["WL_TASK"] = str(base), AGENT_TASK_NAME
+    try:
+        code, out = runner([_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                            "Bypass", "-Command", _RUNNING_SCRIPT], timeout)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    match = re.search(r"WL_RUNNING agents=(\d+) task=(\w+)", out or "")
+    return bool(code == 0 and match and int(match.group(1)) > 0 and match.group(2) != "none")
 
 
 def confirm_background_agent(timeout: float = 20.0, since_offset: int | None = None,

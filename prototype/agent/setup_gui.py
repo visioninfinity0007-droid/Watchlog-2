@@ -616,6 +616,23 @@ class SetupWindow(QMainWindow):
             self.status.setText(message)
             self.login_next.setEnabled(True)
         elif self.stack.currentIndex() == 5:
+            # The timed-out step may already have connected the site and started the
+            # Agent. A running Agent is a connected site: never report it as a failure.
+            if backend.background_agent_running():
+                self.site_connected = True
+                self.final_result = {"connected": True, "agent_start": {
+                    "started": True, "proven": False,
+                    "detail": "background agent is running (its confirmation is still in progress)"}}
+                self.agent_start = self.final_result["agent_start"]
+                self.progress_bar.setRange(0, 1)
+                self.progress_bar.setValue(1)
+                self.progress_label.setText(
+                    "WatchLog is connected and running in the background.")
+                if self.installer_child:
+                    self.finish()
+                    return
+                self.connect_error.setText("")
+                return
             if self.installer_child:
                 # Unlike a returned failure, the timed-out finalize_install thread may
                 # still be writing credentials and the registry, and it cannot be
@@ -695,9 +712,11 @@ class SetupWindow(QMainWindow):
         self.run_worker(
             backend.discover_recorders, (), self.show_recorders,
             "Searching the local network…",
-            timeout_ms=40000,
+            known=([] if self.manage_recorders
+                   else backend.known_recorder_addresses(self.public)),
+            timeout_ms=45000,
             timeout_message=(
-                "Automatic search reached its 40-second safety limit. "
+                "Automatic search reached its 45-second safety limit. "
                 "Enter the recorder IP and click Use this IP, or retry Search Network."
             ),
         )
@@ -710,7 +729,8 @@ class SetupWindow(QMainWindow):
                 if backend.find_install_duplicate(self.install_recorders,
                                                   {"address": row["ip"]}) is None]
         if not rows:
-            self.status.setText("No recorder was found automatically. Enter its local IP address below.")
+            self.status.setText("No recorder answered automatically. Enter the recorder's IP address below "
+                                "(on the recorder screen: Menu > Network, or on its sticker), then click Use this IP.")
             return
         for row in rows:
             text = f"{row['ip']}   {row.get('label') or 'Recorder'}"
@@ -1038,7 +1058,11 @@ class SetupWindow(QMainWindow):
             plan = self.install_plan()
             extra = len(plan["kwargs"]["additional_recorders"] or [])
             # Each further recorder adds its credential, its WatchLog link and its cameras.
-            seconds = 50 + 20 * extra
+            # finalize_install also starts the background Agent and waits for its proof
+            # (up to BACKGROUND_READY_TIMEOUT_SECONDS). Field (Al-Khalid, 5.1.2): a 50 s
+            # watchdog fired inside that wait, Setup exited 2, and the Agent it had just
+            # started kept reporting. The watchdog must outlast the backend's own bounds.
+            seconds = 60 + 20 * extra + backend.BACKGROUND_READY_TIMEOUT_SECONDS
             self.run_worker(
                 backend.finalize_install,
                 plan["args"],

@@ -74,6 +74,8 @@ $args = @(
   "--hidden-import", "status_controller",
   "--hidden-import", "discover",
   "--hidden-import", "wsdiscovery",
+  "--hidden-import", "vendor_discovery",
+  "--hidden-import", "recorder_registry",
   "--hidden-import", "drivers",
   "--hidden-import", "drivers.base",
   "--hidden-import", "drivers.dahua",
