@@ -1,0 +1,49 @@
+name: Windows runner probe (nonproduction)
+
+# One-off validation of the Windows runner in Watchlog-2.
+# Do not fetch private Alkalid-security source or upload binaries here:
+# this repository and its Actions artifacts are PUBLIC.
+on:
+  push:
+    branches:
+      - ci/windows-runner-probe-20261015
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-toolchain-probe:
+    name: Verify Windows runner and public baseline
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout public Watchlog-2 only
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate Windows runner and source syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $IsWindows) { throw 'Runner is not Windows' }
+          python --version
+          python -m compileall -q prototype/agent
+          if ($LASTEXITCODE -ne 0) { throw 'Public baseline Python syntax failed' }
+          Write-Host 'Windows runner and public baseline syntax: PASS'
+      - name: Confirm NSIS installer toolchain can install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nsis --version 3.13.0 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          $tool = Get-Command makensis -ErrorAction SilentlyContinue
+          if ($tool) {
+            & $tool.Source /VERSION
+          } else {
+            & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /VERSION
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS version probe failed' }
+          Write-Host 'NSIS toolchain: PASS'
