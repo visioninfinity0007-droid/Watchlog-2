@@ -4,6 +4,8 @@ name: Windows runner probe (nonproduction)
 # Do not fetch private Alkalid-security source or upload binaries here:
 # this repository and its Actions artifacts are PUBLIC.
 on:
+  pull_request:
+    branches: [main]
   push:
     branches:
       - ci/windows-runner-probe-20261015
