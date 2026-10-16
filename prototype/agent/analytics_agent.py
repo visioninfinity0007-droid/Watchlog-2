@@ -35,6 +35,7 @@ import recorder_analytics
 import multi_recorder_orchestrator
 import multi_recorder_fanout
 import runtime_status
+import watchlog_heartbeat
 import worker_supervisor
 import site_maintenance
 from action_runtime import ActionRuntime
@@ -1548,6 +1549,16 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         cloud, state, cfg,
         lambda: [runtime_status.RecorderSource(getattr(cfg, "recorder_cloud_id", None),
                                                holder, cfg, spool)])
+    # Heartbeat transport must be independent from archive, event uploads,
+    # analytics/config and capability reporting, any of which can block on I/O.
+    heartbeat_sender = watchlog_heartbeat.HeartbeatPublisher(
+        cloud_factory=lambda: watchlog_heartbeat.isolated_cloud(core.Cloud, cfg),
+        send=lambda hb_cloud: core.heartbeat(
+            hb_cloud, state, device,
+            recorder_live=_recorder_stream_live(holder, time.monotonic()),
+            event_stream=dict(holder.get("event_stream") or {})),
+        stop=stop, interval=float(cfg.heartbeat_seconds), log=core.log)
+    heartbeat_sender.start()
     core.log(f"running: events every {cfg.upload_seconds}s, analytics enabled, "
              f"heartbeat every {cfg.heartbeat_seconds}s, health every ~{cfg.health_seconds}s, "
              f"outbound only. Ctrl-C to stop.")
@@ -1588,13 +1599,8 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
                                  + str(error).splitlines()[0][:200])
             if clock >= next_heartbeat:
                 next_heartbeat = clock + cfg.heartbeat_seconds
-                try:
-                    recorder_live = _recorder_stream_live(holder, clock)
-                    core.heartbeat(cloud, state, device, recorder_live=recorder_live,
-                                   event_stream=holder.get("event_stream"))
-                except (RuntimeError, requests.RequestException) as error:
-                    core.log("ERROR: heartbeat failed, will retry: "
-                             + str(error).splitlines()[0][:200])
+                # Remote heartbeat is handled by its independent HTTP worker.
+                # Keep recorder observation/coverage truth on this local cadence.
                 # Persist RECORDER observation, not PC/cloud liveness: a cloud outage does
                 # not stop it (events still spool); a dead event stream does.
                 _persist_stream_last_live(cfg, holder, clock)
@@ -1603,6 +1609,7 @@ def enhanced_cmd_run(cfg: Config, state: dict, cloud: core.Cloud, once: bool,
         core.log("stopping...")
     finally:
         stop.set()
+        heartbeat_sender.join(timeout=2)
         resume_evt.set()                                # wake the health thread so it can exit
         collector.join(timeout=5)
         analytic.join(timeout=5)
