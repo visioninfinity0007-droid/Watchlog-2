@@ -404,6 +404,8 @@ class Cloud:
 
     def __init__(self, url: str, key: str) -> None:
         self.rpc = url + "/rest/v1/rpc"
+        # Default existing cloud call behavior; heartbeat owns a dedicated bounded client.
+        self.request_timeout = HTTP_TIMEOUT
         self.s = requests.Session()
         self.s.headers.update({
             "apikey": key,
@@ -413,7 +415,7 @@ class Cloud:
 
     def call(self, fn: str, **params):
         try:
-            r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=HTTP_TIMEOUT)
+            r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=self.request_timeout)
         except requests.ConnectionError as exc:
             # Field (Al-Khalid, 5.1.3, 2026-10-08): a pooled keep-alive connection the server
             # had closed while idle (a 3-minute acceptance test) was reused, and the POST died
@@ -423,7 +425,7 @@ class Cloud:
             if not _stale_connection(exc):
                 raise
             self.s.close()
-            r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=HTTP_TIMEOUT)
+            r = self.s.post(f"{self.rpc}/{fn}", json=params, timeout=self.request_timeout)
         if r.status_code >= 400:
             code = None
             msg = r.text
