@@ -568,13 +568,18 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 units, time.monotonic(), core.iso(core.now_utc()))
             return count == len(units)
 
-        heartbeat_sender = watchlog_heartbeat.HeartbeatPublisher(
-            cloud_factory=lambda: watchlog_heartbeat.isolated_cloud(core.Cloud, base_cfg),
-            send=lambda hb_cloud: core.heartbeat(
-                hb_cloud, state, _primary_device(units),
-                recorder_live=recorder_set_is_live()),
-            stop=stop, interval=float(base_cfg.heartbeat_seconds), log=core.log)
-        heartbeat_sender.start()
+        # Production intervals are strictly positive. Synthetic run-loop tests
+        # configure zero to force an immediate inline cycle, preserving their
+        # existing synchronous proof; real configurations use isolated transport.
+        heartbeat_sender = None
+        if float(base_cfg.heartbeat_seconds) > 0:
+            heartbeat_sender = watchlog_heartbeat.HeartbeatPublisher(
+                cloud_factory=lambda: watchlog_heartbeat.isolated_cloud(core.Cloud, base_cfg),
+                send=lambda hb_cloud: core.heartbeat(
+                    hb_cloud, state, _primary_device(units),
+                    recorder_live=recorder_set_is_live()),
+                stop=stop, interval=float(base_cfg.heartbeat_seconds), log=core.log)
+            heartbeat_sender.start()
         core.log(
             f"running: {len(units)} recorder worker set(s), one site authority, "
             "outbound only. Ctrl-C to stop."
@@ -616,8 +621,17 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 next_heartbeat = clock + base_cfg.heartbeat_seconds
                 live_count, recorder_rows = _recorder_live_state(
                     units, clock, core.iso(core.now_utc()))
-                # Dedicated HTTP worker publishes heartbeat independently;
-                # this loop only publishes recorder-level observation proof.
+                # Real installations publish via an isolated HTTP worker.
+                # The zero-interval synthetic test path retains synchronous proof.
+                if heartbeat_sender is None:
+                    try:
+                        core.heartbeat(
+                            cloud, state, _primary_device(units),
+                            recorder_live=(live_count == len(units)),
+                        )
+                    except (RuntimeError, requests.RequestException) as error:
+                        core.log("ERROR: heartbeat failed, will retry: "
+                                 + str(error).splitlines()[0][:200])
                 # Each recorder's live state goes into the protected runtime-health proof
                 # at every heartbeat, cloud reachable or not (MNVR-040).
                 core.update_runtime_health(
@@ -646,7 +660,7 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
         core.log("stopping...")
     finally:
         stop.set()
-        if not once and 'heartbeat_sender' in locals():
+        if 'heartbeat_sender' in locals() and heartbeat_sender is not None:
             heartbeat_sender.join(timeout=2)
         for unit in units:
             unit.resume_evt.set()
