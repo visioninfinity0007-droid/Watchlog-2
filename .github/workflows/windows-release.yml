@@ -20,7 +20,12 @@ on:
         description: Source commit of that version (update contract; empty = Repair package required)
         required: false
         type: string
+  pull_request:
+    branches:
+      - 'release/5.1.3'
   push:
+    branches:
+      - 'build/heartbeat-isolation-5.1.4-rc-20261016'
     tags:
       - 'v*'
 
@@ -28,7 +33,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: windows-release-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -55,7 +60,7 @@ jobs:
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
       # Tag pushes (v*) are always production: they must hard-fail without valid
       # signing (and a PublisherUrl). Manual dispatch honours the input.
-      PRODUCTION: ${{ github.event_name == 'push' || inputs.production }}
+      PRODUCTION: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.production }}
 
     steps:
       - uses: actions/checkout@v4
@@ -165,6 +170,9 @@ jobs:
 
             & $agentPy prototype/tests/test_existing_site_repair.py
             if ($LASTEXITCODE -ne 0) { throw "existing-site Repair/Upgrade contract failed" }
+
+            & $agentPy prototype/tests/test_watchlog_heartbeat.py
+            if ($LASTEXITCODE -ne 0) { throw "isolated heartbeat transport regression tests failed" }
 
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/tests/test_upgrade_shutdown.ps1
             if ($LASTEXITCODE -ne 0) { throw "running-agent upgrade shutdown/rollback regression failed" }
@@ -407,12 +415,20 @@ jobs:
           # release is classified REQUIRES_REPAIR_PACKAGE. Publishing the payload to the update
           # channel is a separate, owner-approved step; this build uploads nothing there.
           $version = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          python tools/release_update_contract.py --version $version `
-            --previous-version "$env:PREVIOUS_VERSION" --previous-ref "$env:PREVIOUS_REF" `
-            --ref $env:GITHUB_SHA --build-sha $env:GITHUB_SHA `
-            --out .\dist-installer\WatchLog-Update-Contract.json `
-            --agent .\prototype\dist\watchlog-agent.exe `
-            --payload-out .\dist-installer\watchlog-update-payload.json
+          # Omit absent optional previous-version/ref arguments. PowerShell 5.1
+          # drops quoted empty native arguments (breaking argparse on PR builds).
+          $updateArgs = @(
+            'tools/release_update_contract.py',
+            '--version', $version,
+            '--ref', $env:GITHUB_SHA,
+            '--build-sha', $env:GITHUB_SHA,
+            '--out', '.\dist-installer\WatchLog-Update-Contract.json',
+            '--agent', '.\prototype\dist\watchlog-agent.exe',
+            '--payload-out', '.\dist-installer\watchlog-update-payload.json'
+          )
+          if ($env:PREVIOUS_VERSION) { $updateArgs += @('--previous-version', $env:PREVIOUS_VERSION) }
+          if ($env:PREVIOUS_REF) { $updateArgs += @('--previous-ref', $env:PREVIOUS_REF) }
+          & python @updateArgs
           if ($LASTEXITCODE -ne 0) { throw 'update contract failed' }
           $contract = Get-Content '.\dist-installer\WatchLog-Update-Contract.json' -Raw | ConvertFrom-Json
           Add-Content -Path '.\dist-installer\WatchLog-Release.hashes.txt' -Encoding ASCII -Value @(
