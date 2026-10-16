@@ -32,6 +32,7 @@ import requests
 
 import periodic_stills
 import runtime_status
+import watchlog_heartbeat
 import site_maintenance
 import watchlog_agent as core
 import worker_supervisor
@@ -560,6 +561,20 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
             cloud, state, base_cfg,
             lambda: [runtime_status.RecorderSource(unit.cfg.recorder_cloud_id, unit.holder,
                                                    unit.cfg, unit.spool) for unit in units])
+        # Exactly one site-level heartbeat transport; recorder truth stays separate.
+        # This is never blocked by any recorder-specific upload or network call.
+        def recorder_set_is_live():
+            count, _rows = _recorder_live_state(
+                units, time.monotonic(), core.iso(core.now_utc()))
+            return count == len(units)
+
+        heartbeat_sender = watchlog_heartbeat.HeartbeatPublisher(
+            cloud_factory=lambda: watchlog_heartbeat.isolated_cloud(core.Cloud, base_cfg),
+            send=lambda hb_cloud: core.heartbeat(
+                hb_cloud, state, _primary_device(units),
+                recorder_live=recorder_set_is_live()),
+            stop=stop, interval=float(base_cfg.heartbeat_seconds), log=core.log)
+        heartbeat_sender.start()
         core.log(
             f"running: {len(units)} recorder worker set(s), one site authority, "
             "outbound only. Ctrl-C to stop."
@@ -601,18 +616,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
                 next_heartbeat = clock + base_cfg.heartbeat_seconds
                 live_count, recorder_rows = _recorder_live_state(
                     units, clock, core.iso(core.now_utc()))
-                try:
-                    # recorder_seen_at in the legacy local runtime-health document
-                    # advances only when the complete configured recorder set is live.
-                    core.heartbeat(
-                        cloud, state, _primary_device(units),
-                        recorder_live=(live_count == len(units)),
-                    )
-                except (RuntimeError, requests.RequestException) as error:
-                    core.log(
-                        "ERROR: heartbeat failed, will retry: "
-                        + str(error).splitlines()[0][:200]
-                    )
+                # Dedicated HTTP worker publishes heartbeat independently;
+                # this loop only publishes recorder-level observation proof.
                 # Each recorder's live state goes into the protected runtime-health proof
                 # at every heartbeat, cloud reachable or not (MNVR-040).
                 core.update_runtime_health(
@@ -641,6 +646,8 @@ def run(base_cfg, state: dict, cloud, *, once: bool, prepared_recorders,
         core.log("stopping...")
     finally:
         stop.set()
+        if not once and 'heartbeat_sender' in locals():
+            heartbeat_sender.join(timeout=2)
         for unit in units:
             unit.resume_evt.set()
         for unit in units:
