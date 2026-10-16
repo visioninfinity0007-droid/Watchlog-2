@@ -415,12 +415,20 @@ jobs:
           # release is classified REQUIRES_REPAIR_PACKAGE. Publishing the payload to the update
           # channel is a separate, owner-approved step; this build uploads nothing there.
           $version = (Select-String -Path '.\prototype\agent\wl_version.py' -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          python tools/release_update_contract.py --version $version `
-            --previous-version "$env:PREVIOUS_VERSION" --previous-ref "$env:PREVIOUS_REF" `
-            --ref $env:GITHUB_SHA --build-sha $env:GITHUB_SHA `
-            --out .\dist-installer\WatchLog-Update-Contract.json `
-            --agent .\prototype\dist\watchlog-agent.exe `
-            --payload-out .\dist-installer\watchlog-update-payload.json
+          # Omit absent optional previous-version/ref arguments. PowerShell 5.1
+          # drops quoted empty native arguments (breaking argparse on PR builds).
+          $updateArgs = @(
+            'tools/release_update_contract.py',
+            '--version', $version,
+            '--ref', $env:GITHUB_SHA,
+            '--build-sha', $env:GITHUB_SHA,
+            '--out', '.\dist-installer\WatchLog-Update-Contract.json',
+            '--agent', '.\prototype\dist\watchlog-agent.exe',
+            '--payload-out', '.\dist-installer\watchlog-update-payload.json'
+          )
+          if ($env:PREVIOUS_VERSION) { $updateArgs += @('--previous-version', $env:PREVIOUS_VERSION) }
+          if ($env:PREVIOUS_REF) { $updateArgs += @('--previous-ref', $env:PREVIOUS_REF) }
+          & python @updateArgs
           if ($LASTEXITCODE -ne 0) { throw 'update contract failed' }
           $contract = Get-Content '.\dist-installer\WatchLog-Update-Contract.json' -Raw | ConvertFrom-Json
           Add-Content -Path '.\dist-installer\WatchLog-Release.hashes.txt' -Encoding ASCII -Value @(
