@@ -171,7 +171,7 @@ jobs:
             & $agentPy prototype/tests/test_existing_site_repair.py
             if ($LASTEXITCODE -ne 0) { throw "existing-site Repair/Upgrade contract failed" }
 
-            & $agentPy -m pytest prototype/tests/test_watchlog_heartbeat.py -q
+            & $agentPy prototype/tests/test_watchlog_heartbeat.py
             if ($LASTEXITCODE -ne 0) { throw "isolated heartbeat transport regression tests failed" }
 
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/tests/test_upgrade_shutdown.ps1
