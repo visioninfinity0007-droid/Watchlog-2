@@ -38,9 +38,9 @@ def check(path, expected_zip_digest=None):
         if not blob.startswith(b"MZ") or len(blob) < 10_000_000:
             raise ValueError(f"{exe}: invalid PE signature or suspicious size")
         declared = files[exe + ".sha256"].decode("ascii").strip().split()[0].lower()
-        recorded = re.search(rf"(?m)^{re.escape(exe)}\\.sha256=([0-9a-fA-F]{{64}})$", manifest)
+        recorded = next((v.split('=', 1)[1] for v in manifest.splitlines() if v.startswith(exe + '.sha256=')), None)
         actual_exe = digest(blob)
-        if declared != actual_exe or not recorded or recorded.group(1).lower() != actual_exe:
+        if declared != actual_exe or not recorded or recorded.lower() != actual_exe:
             raise ValueError(f"{exe}: SHA-256 mismatch")
     for name in ("WatchLog-Build-Manifest.json", "WatchLog-Payload-Proof.json", "WatchLog-Size-Report.json", "WatchLog-Update-Contract.json", "WatchLog-Perf-Report.json", "watchlog-update-payload.json"):
         json.loads(files[name])
