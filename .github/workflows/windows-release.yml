@@ -26,6 +26,7 @@ on:
   push:
     branches:
       - 'build/heartbeat-isolation-5.1.4-rc-20261016'
+      - 'repair/windows-zip-integrity-20261020'
     tags:
       - 'v*'
 
@@ -468,3 +469,30 @@ jobs:
           path: prototype/dist/watchlog-agent.exe
           if-no-files-found: error
           retention-days: 30
+
+  verify-downloaded-release:
+    name: Verify published Actions ZIP (downloaded bytes)
+    needs: build-real-installer
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch original Actions ZIP and verify GitHub digest, CRC, payload and SHA-256
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactName = "WatchLog-Windows-${{ github.run_number }}"
+          $meta = gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" | ConvertFrom-Json
+          $artifact = @($meta.artifacts | Where-Object { $_.name -eq $artifactName })[0]
+          if (-not $artifact) { throw "Missing artifact $artifactName" }
+          if (-not $artifact.digest -or $artifact.digest -notmatch '^sha256:[a-fA-F0-9]{64}$') { throw 'Missing trusted GitHub artifact digest' }
+          $url = "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$($artifact.id)/zip"
+          $out = Join-Path $env:RUNNER_TEMP 'watchlog-github-download.zip'
+          & curl.exe --fail --location --silent --show-error --retry 3 --header "Authorization: Bearer $env:GH_TOKEN" --header 'Accept: application/vnd.github+json' --output $out $url
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub artifact download failed' }
+          python tools/verify_uploaded_windows_zip.py $out --expected-zip-digest $artifact.digest
+          if ($LASTEXITCODE -ne 0) { throw 'Downloaded release ZIP verification failed' }
