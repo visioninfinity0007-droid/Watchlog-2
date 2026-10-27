@@ -56,6 +56,8 @@ jobs:
       # 0.4.11 did silently.
       WATCHLOG_PUSH_BRIDGE_URL: ${{ vars.WATCHLOG_PUSH_BRIDGE_URL }}
       WATCHLOG_UPDATE_URL: ${{ vars.WATCHLOG_UPDATE_URL }}
+      # Backends this build moves existing sites off (Repair/Upgrade server move, 5.1.5+).
+      WATCHLOG_RETIRED_SUPABASE_URLS: ${{ vars.WATCHLOG_RETIRED_SUPABASE_URLS }}
       WATCHLOG_UPDATE_PUBLIC_KEY: ${{ vars.WATCHLOG_UPDATE_PUBLIC_KEY }}
       SIGN_PFX_B64: ${{ secrets.WATCHLOG_SIGN_PFX_B64 }}
       SIGN_PASSWORD: ${{ secrets.WATCHLOG_SIGN_PASSWORD }}
@@ -131,6 +133,9 @@ jobs:
           if ($env:PUBLISHER_URL) { $releaseArgs['PublisherUrl'] = $env:PUBLISHER_URL }
           if ($env:WATCHLOG_PUSH_BRIDGE_URL) {
             $releaseArgs['PushBridgeUrl'] = $env:WATCHLOG_PUSH_BRIDGE_URL
+          }
+          if ($env:WATCHLOG_RETIRED_SUPABASE_URLS) {
+            $releaseArgs['RetiredSupabaseUrls'] = $env:WATCHLOG_RETIRED_SUPABASE_URLS
           }
           if ($env:WATCHLOG_UPDATE_URL -or $env:WATCHLOG_UPDATE_PUBLIC_KEY) {
             if (-not $env:WATCHLOG_UPDATE_URL -or -not $env:WATCHLOG_UPDATE_PUBLIC_KEY) {

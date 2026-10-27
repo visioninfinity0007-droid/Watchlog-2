@@ -27,6 +27,8 @@ param(
   [string]$PushBridgeUrl = "",
   [string]$UpdateUrl = "",
   [string]$UpdatePublicKey = "",
+  # Comma-separated backends this build moves existing sites OFF (Repair/Upgrade server move).
+  [string]$RetiredSupabaseUrls = "",
   [switch]$Lean,
   [switch]$Production,
   [string]$SignPfx = "",
@@ -217,6 +219,19 @@ try {
   if ($Code -and $Code -notmatch '^WL-') { throw "enrollment code is not a WL- code: '$Code' (argument-binding leak?)" }
   if ($PublisherUrl -and $PublisherUrl -notmatch '^https://') { throw "PublisherUrl is not an https URL: '$PublisherUrl' (argument-binding leak?)" }
 
+  # Backends this build retires: a Repair/Upgrade moves a site still pointing at one of them to
+  # $supaUrl (wl-repair-upgrade.ps1 "server move"). Public URLs only; never the build's own server.
+  $retired = $RetiredSupabaseUrls
+  if (-not $retired) { $retired = $env:WATCHLOG_RETIRED_SUPABASE_URLS }
+  if (-not $retired) { $retired = $cfg["WATCHLOG_RETIRED_SUPABASE_URLS"] }
+  if ($null -eq $retired) { $retired = "" }
+  $retiredList = @(([string]$retired).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  foreach ($r in $retiredList) {
+    if ($r -notmatch '^https://') { throw "RetiredSupabaseUrls entry is not an https URL: '$r'" }
+    if ($r.TrimEnd('/') -ieq $supaUrl.TrimEnd('/')) { throw "RetiredSupabaseUrls must not contain this build's own server: '$r'" }
+  }
+  $retired = $retiredList -join ','
+
   $defaultsPath = Join-Path $stage "watchlog.defaults.ini"
   @"
 ; WatchLog public installation defaults.
@@ -230,6 +245,7 @@ update_url = $updUrl
 update_public_key = $updKey
 update_require_signature = true
 update_channel = production
+retired_supabase_urls = $retired
 "@ | Set-Content -Path $defaultsPath -Encoding UTF8
 
   # Parse the STAGED file back and assert EXACT equality with the intended
@@ -264,6 +280,12 @@ update_channel = production
   } else {
     Write-Host "NOTE: no PushBridgeUrl supplied - PC-free reporting will be unavailable in this build." -ForegroundColor Yellow
   }
+  $stagedRetired = ""
+  if ($stagedMap.ContainsKey('retired_supabase_urls')) { $stagedRetired = ([string]$stagedMap['retired_supabase_urls']).Trim() }
+  if ($stagedRetired -ne $retired) {
+    throw "staged retired_supabase_urls '$stagedRetired' != intended '$retired'"
+  }
+  if ($retired) { Write-Host "Server move baked in: sites on [$retired] move to $supaUrl" -ForegroundColor Green }
   if ($stagedMap['update_url'] -ne $updUrl) {
     throw "staged update_url '$($stagedMap['update_url'])' != intended '$updUrl'"
   }

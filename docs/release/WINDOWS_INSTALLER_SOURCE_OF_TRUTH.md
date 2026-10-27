@@ -181,6 +181,33 @@ update channel.
 
 ---
 
+## 000. Release candidate 5.1.5: move sites to the WatchLog server (branch `release/5.1.5-local-server`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.5 is 5.1.4 (section 00A) plus a server move. On 2026-10-26 the WatchLog database
+moved from the Supabase cloud project to the self-hosted WatchLog server; the cloud is now only a
+nightly copy and must not receive site uploads. A plain Repair/Upgrade keeps a site's existing
+`watchlog.ini`, so it could never change the server a site talks to.
+
+- **Server move:** the build bakes `retired_supabase_urls` into `watchlog.defaults.ini`
+  (`build_windows_release.ps1 -RetiredSupabaseUrls`, or `WATCHLOG_RETIRED_SUPABASE_URLS`). A
+  Repair/Upgrade (`wl-repair-upgrade.ps1`, stage "server move", before the candidate is
+  validated) moves a site whose `supabase_url` is in that list to the build's server: only
+  `supabase_url` and `supabase_publishable_key` change; site identity, recorders and credentials
+  are untouched; the original is kept as `watchlog.ini.before-server-move-<timestamp>`.
+  `setup_backend.merge_public_defaults` applies the same rule on the installer `--migrate-only`
+  path. A package that lists its own server as retired fails (exit 26) before anything changes.
+- **Update channel:** unchanged; `update_url` still names the cloud manifest until the manifest
+  function is hosted on the server.
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+---
+
 ## 00A. Release candidate 5.1.4: Site Control results survive a stale connection (branch `release/5.1.3`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
@@ -270,10 +297,10 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.4**
+**5.1.5**
 
-That is the version string the code carries: 5.1.3's installer field fixes (section 00) plus
-the Site Control completion fix (section 00A), branch `release/5.1.3`, not promoted. 5.1.1 (section 0 and 1D) is the previous
+That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
+(section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
 candidate; its unsigned build #141 runs at Al-Khalid and HASCO for field evidence only.
 
 5.1.0 (section 1C, branch `mr/agent-5.1.0`, merged to `main`) is the multi-recorder Agent and

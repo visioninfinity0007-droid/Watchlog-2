@@ -757,6 +757,46 @@ function Wait-NewRuntimeHealth([datetime]$StartedAtUtc) {
   return $null
 }
 
+function Read-IniMap([string]$Path) {
+  $map = @{}
+  foreach ($line in (Get-Content -LiteralPath $Path)) {
+    if ($line -match '^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$') { $map[$Matches[1].ToLowerInvariant()] = $Matches[2].Trim() }
+  }
+  return $map
+}
+
+function Normalize-ServerUrl([string]$Url) { return ([string]$Url).Trim().TrimEnd('/').ToLowerInvariant() }
+
+# Server move: a site still pointing at a backend this build retires (retired_supabase_urls in the
+# staged defaults) is moved to the build's server BEFORE the candidate is validated, so validation
+# and the health proof run against the server the site will use. Only supabase_url and
+# supabase_publishable_key change; site identity, recorders and credentials are untouched. The
+# original file is kept beside it as watchlog.ini.before-server-move-<timestamp>.
+function Move-RetiredServer {
+  $defaults = Read-IniMap (Join-Path $CandidateDir "watchlog.defaults.ini")
+  $current = Read-IniMap $ConfigPath
+  $retired = @(([string]$defaults['retired_supabase_urls']).Split(',') | ForEach-Object { Normalize-ServerUrl $_ } | Where-Object { $_ })
+  $newUrl = [string]$defaults['supabase_url']
+  $newKey = [string]$defaults['supabase_publishable_key']
+  if ($retired.Count -eq 0 -or -not $newUrl -or -not $newKey) { Write-Repair "server move: not part of this build"; return }
+  if ($retired -contains (Normalize-ServerUrl $newUrl)) { Fail 26 "repair package is misconfigured: its own server is listed as retired" }
+  if (-not ($retired -contains (Normalize-ServerUrl $current['supabase_url']))) {
+    Write-Repair "server move: not needed (site uses $($current['supabase_url']))"
+    return
+  }
+  $backup = "$ConfigPath.before-server-move-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+  Copy-Item -LiteralPath $ConfigPath -Destination $backup -Force
+  $seenUrl = $false; $seenKey = $false
+  $out = foreach ($line in (Get-Content -LiteralPath $ConfigPath)) {
+    if ($line -match '^\s*supabase_url\s*=') { $seenUrl = $true; "supabase_url = $newUrl" }
+    elseif ($line -match '^\s*supabase_publishable_key\s*=') { $seenKey = $true; "supabase_publishable_key = $newKey" }
+    else { $line }
+  }
+  if (-not ($seenUrl -and $seenKey)) { Fail 26 "server move: watchlog.ini has no server lines; nothing was changed" }
+  Set-Content -LiteralPath $ConfigPath -Value $out -Encoding ASCII
+  Write-Repair "server move: $($current['supabase_url']) -> $newUrl (original kept as $backup)"
+}
+
 try {
   Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
   Write-Repair "WatchLog Repair/Upgrade target=$ExpectedVersion candidate=$CandidateDir install=$InstallDir"
@@ -808,6 +848,9 @@ try {
   if ($uiVer -ne $ExpectedVersion) {
     Fail 22 "candidate Setup UI version does not match this Repair/Upgrade release"
   }
+
+  $script:CurrentStage = "server move"
+  Move-RetiredServer
 
   $script:CurrentStage = "passive compatibility validation"
   Write-Repair "phase 1/2: passive candidate validation while current WatchLog remains untouched"

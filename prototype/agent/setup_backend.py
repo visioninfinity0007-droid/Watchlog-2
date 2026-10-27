@@ -135,10 +135,21 @@ def merge_public_defaults(config_path: Path, defaults_path: Path | None = None) 
             return added
         if not current.has_section("watchlog"):
             current.add_section("watchlog")
+        # Server move: the one deliberate overwrite. A site still on a backend this build
+        # retires is moved to the build's server (same rule as wl-repair-upgrade.ps1).
+        retired = {u.strip().rstrip("/").lower()
+                   for u in str(defaults["watchlog"].get("retired_supabase_urls", "") or "").split(",") if u.strip()}
+        new_url = str(defaults["watchlog"].get("supabase_url", "") or "").strip()
+        new_key = str(defaults["watchlog"].get("supabase_publishable_key", "") or "").strip()
+        cur_url = str(current["watchlog"].get("supabase_url", "") or "").strip().rstrip("/").lower()
+        if retired and new_url and new_key and new_url.rstrip("/").lower() not in retired and cur_url in retired:
+            current["watchlog"]["supabase_url"] = new_url
+            current["watchlog"]["supabase_publishable_key"] = new_key
+            added += ["supabase_url", "supabase_publishable_key"]
         for key, value in defaults.items("watchlog"):
             # Never resurrect a consumed one-time code, and never touch recorder settings.
             if key in ("enrollment_code", "nvr_url", "nvr_username", "nvr_driver",
-                       "nvr_password_protected"):
+                       "nvr_password_protected", "retired_supabase_urls"):
                 continue
             if str(value or "").strip() and not str(current["watchlog"].get(key, "") or "").strip():
                 current["watchlog"][key] = value
