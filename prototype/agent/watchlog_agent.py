@@ -77,6 +77,7 @@ from wl_version import VERSION as AGENT_VERSION  # single source of truth
 # onnxruntime, numpy, Pillow and FFmpeg into watchlog-setup-ui.exe). Re-exported here so
 # watchlog_agent.<name> / core.<name> keep working everywhere.
 from agent_core import (  # noqa: F401  (re-exported)
+    server_host, retired_hosts, embedded_ip, _getaddrinfo_embedded_ip,
     HEALTH_BATCH, HEALTH_CONCURRENCY, HEALTH_SECONDS, HEARTBEAT_SECONDS, HTTP_TIMEOUT,
     RECORDER_PROBE_MAX_ATTEMPTS, SNAPSHOT_MIN_INTERVAL, UPLOAD_BATCH, UPLOAD_MAX_BYTES,
     UPLOAD_SECONDS, _RUNTIME_HEALTH_LOCK, Cloud, CloudError, Config, _connect_recorder,

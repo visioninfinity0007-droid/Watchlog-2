@@ -202,6 +202,14 @@ reached the WatchLog server. 5.1.6 is 5.1.5 plus:
   whose DNS refuses these names still connects (TLS SNI and certificate check are unchanged).
 - **Diagnostics:** an enrollment transport failure logs the server host and exception to the
   setup log.
+- **Build:** no Windows artifact has been built at the time this section was first written; the unsigned
+  candidate was then built by Windows Release run 40700132332 (#169).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
 
 ## 000. Release candidate 5.1.5: move sites to the WatchLog server (branch `release/5.1.5-local-server`)
 
