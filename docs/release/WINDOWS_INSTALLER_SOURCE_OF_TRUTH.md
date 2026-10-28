@@ -181,6 +181,28 @@ update channel.
 
 ---
 
+## 000A. Release candidate 5.1.6: server move that cannot be bypassed (branch `release/5.1.5-local-server`)
+
+**Status: candidate, not promoted.** 5.1.5 was published unsigned on 2026-10-28 and failed on
+the first site: Repair/Upgrade stopped at passive validation with the retired cloud's
+`HTTP 503 PGRST002`, and a fresh Setup over a leftover `watchlog.ini` (no `agent_state.json`,
+so the NSIS fresh-install path) failed site-code enrollment with ENROLL_NETWORK. Neither run
+reached the WatchLog server. 5.1.6 is 5.1.5 plus:
+
+- **Server move in the runtime:** `agent_core.Config` swaps a retired `supabase_url` (any URL
+  form, compared by host) for the build's server and key in memory, and ignores a
+  `WATCHLOG_SUPABASE_URL` environment override that names a retired server. The Agent, the
+  Repair/Upgrade candidate preflight and Setup therefore agree even when no file was rewritten.
+- **Fresh-install path:** `setup_backend.read_public_defaults` runs `merge_public_defaults`
+  first, so a leftover `watchlog.ini` is moved before Setup enrolls; it also ignores a retired
+  environment override.
+- **Repair/Upgrade:** `Normalize-ServerUrl` compares hosts; the server-move stage removes a
+  Machine/User `WATCHLOG_SUPABASE_URL` override that names a retired server.
+- **sslip.io/nip.io names:** resolved locally from the address embedded in the name, so a site
+  whose DNS refuses these names still connects (TLS SNI and certificate check are unchanged).
+- **Diagnostics:** an enrollment transport failure logs the server host and exception to the
+  setup log.
+
 ## 000. Release candidate 5.1.5: move sites to the WatchLog server (branch `release/5.1.5-local-server`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
@@ -297,7 +319,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.5**
+**5.1.6**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous

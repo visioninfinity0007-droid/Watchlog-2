@@ -25,10 +25,13 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import re
+import socket
 import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -38,6 +41,58 @@ from drivers.base import RecorderIdentityMismatch
 
 import credential_store
 from wl_version import VERSION as AGENT_VERSION  # single source of truth
+
+# --- server address helpers (5.1.6) ---------------------------------------
+
+def server_host(url: str | None) -> str:
+    """Lower-case host of a server URL, whatever form it was written in (with or
+    without scheme, trailing slash, path or port). '' when there is none."""
+    u = str(url or "").strip().strip('"').strip("'").lower()
+    if not u:
+        return ""
+    if "://" not in u:
+        u = "https://" + u
+    try:
+        return urlsplit(u).hostname or ""
+    except ValueError:
+        return ""
+
+
+def retired_hosts(value: str | None) -> set[str]:
+    """Hosts listed in retired_supabase_urls (comma separated, any URL form)."""
+    return {h for h in (server_host(p) for p in str(value or "").split(",")) if h}
+
+
+# An sslip.io / nip.io name carries its own address (supa.x.1.2.3.4.sslip.io -> 1.2.3.4).
+# Resolve it locally so a site whose DNS filter or resolver refuses these names can still
+# reach the WatchLog server. TLS (SNI + certificate check) still uses the real name.
+_EMBEDDED_IP_HOST = re.compile(
+    r"(?:^|[.-])(\d{1,3})[.-](\d{1,3})[.-](\d{1,3})[.-](\d{1,3})\.(?:sslip\.io|nip\.io)\.?$")
+_system_getaddrinfo = socket.getaddrinfo
+
+
+def embedded_ip(host) -> str | None:
+    if not isinstance(host, str):
+        return None
+    m = _EMBEDDED_IP_HOST.search(host.lower())
+    if not m or not all(0 <= int(part) <= 255 for part in m.groups()):
+        return None
+    return ".".join(str(int(part)) for part in m.groups())
+
+
+def _getaddrinfo_embedded_ip(host, *args, **kwargs):
+    ip = embedded_ip(host)
+    if ip:
+        try:
+            return _system_getaddrinfo(ip, *args, **kwargs)
+        except OSError:
+            pass
+    return _system_getaddrinfo(host, *args, **kwargs)
+
+
+if getattr(socket.getaddrinfo, "__name__", "") != "_getaddrinfo_embedded_ip":
+    socket.getaddrinfo = _getaddrinfo_embedded_ip
+
 
 HEARTBEAT_SECONDS = 60
 HEALTH_SECONDS = 300          # recorder assessment + camera health cycle, every 5 min (jittered)
@@ -163,16 +218,20 @@ class Config:
             "update_channel",
         }
         defaults_path = base_dir() / "watchlog.defaults.ini"
+        retired_value = ""
         if defaults_path.exists():
             try:
                 defaults = configparser.ConfigParser()
                 defaults.read(defaults_path, encoding="utf-8-sig")
                 if defaults.has_section("watchlog"):
+                    retired_value = defaults["watchlog"].get("retired_supabase_urls", "") or ""
                     for key, value in defaults.items("watchlog"):
                         if key in safe_public and str(value or "").strip():
                             section[key] = value
             except configparser.Error:
                 pass
+        build_url = section.get("supabase_url", "")
+        build_key = section.get("supabase_publishable_key", "")
 
         if ini_path.exists():
             # utf-8-sig, not utf-8: Notepad and PowerShell's Set-Content
@@ -203,9 +262,24 @@ class Config:
         else:
             log(f"config file: none at {ini_path}, using environment only")
 
+        # Server move (5.1.6): a site still pointing at a backend this build retires uses
+        # the build's server instead -- from watchlog.ini, from an old environment
+        # override, in any URL form. Applied here, in memory, so the Agent, the
+        # Repair/Upgrade preflight and Setup all agree even if no file was rewritten.
+        ignore_env: set[str] = set()
+        retired = retired_hosts(retired_value)
+        if retired and build_url and build_key and server_host(build_url) not in retired:
+            if server_host(os.environ.get("WATCHLOG_SUPABASE_URL")) in retired:
+                ignore_env |= {"supabase_url", "supabase_publishable_key"}
+                log("config: ignoring WATCHLOG_SUPABASE_URL (retired server)")
+            if server_host(section.get("supabase_url")) in retired:
+                log(f"config: {section.get('supabase_url')} is retired; using {build_url}")
+                section["supabase_url"] = build_url
+                section["supabase_publishable_key"] = build_key
+
         def get(key: str, default: str | None = None) -> str | None:
-            return (os.environ.get("WATCHLOG_" + key.upper())
-                    or section.get(key) or default)
+            env = None if key in ignore_env else os.environ.get("WATCHLOG_" + key.upper())
+            return env or section.get(key) or default
 
         self.supabase_url = (get("supabase_url") or "").rstrip("/")
         self.publishable_key = get("supabase_publishable_key") or ""

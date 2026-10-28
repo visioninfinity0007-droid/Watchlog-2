@@ -74,13 +74,54 @@ def test_merge_without_retired_list_never_overwrites(tmp_path):
     assert _ini(cfg)["supabase_url"] == OLD
 
 
+def test_merge_matches_any_url_form(tmp_path):
+    cfg = tmp_path / "watchlog.ini"
+    cfg.write_text(SITE_INI.replace(OLD, "OLD-PROJECT.supabase.co/rest/v1/"), encoding="utf-8")
+    (tmp_path / "watchlog.defaults.ini").write_text(DEFAULTS, encoding="utf-8")
+    setup_backend.merge_public_defaults(cfg)
+    assert _ini(cfg)["supabase_url"] == NEW
+
+
+def test_read_public_defaults_moves_leftover_ini_and_ignores_retired_env(tmp_path, monkeypatch):
+    # Fresh-install path: an old watchlog.ini survived but agent_state did not.
+    cfg = tmp_path / "watchlog.ini"; cfg.write_text(SITE_INI, encoding="utf-8")
+    (tmp_path / "watchlog.defaults.ini").write_text(DEFAULTS, encoding="utf-8")
+    monkeypatch.setenv("WATCHLOG_SUPABASE_URL", OLD)
+    monkeypatch.setenv("WATCHLOG_SUPABASE_PUBLISHABLE_KEY", "old-public-key-0000000000")
+    public = setup_backend.read_public_defaults(cfg)
+    assert public["supabase_url"] == NEW
+    assert public["supabase_publishable_key"] == "new-public-key-1111111111"
+
+
+def test_agent_config_uses_build_server_for_retired_site(tmp_path, monkeypatch):
+    import agent_core
+    cfg = tmp_path / "watchlog.ini"; cfg.write_text(SITE_INI.replace(OLD, OLD + "/"), encoding="utf-8")
+    (tmp_path / "watchlog.defaults.ini").write_text(DEFAULTS, encoding="utf-8")
+    monkeypatch.setattr(agent_core, "base_dir", lambda: tmp_path)
+    monkeypatch.setenv("WATCHLOG_SUPABASE_URL", OLD)
+    c = agent_core.Config(cfg)
+    assert c.supabase_url == NEW and c.publishable_key == "new-public-key-1111111111"
+    monkeypatch.setenv("WATCHLOG_SUPABASE_URL", "https://some-other-server.test")
+    assert agent_core.Config(cfg).supabase_url == "https://some-other-server.test"
+
+
+def test_sslip_names_resolve_without_dns():
+    import agent_core
+    assert agent_core.embedded_ip("supa.watchlog.161.97.175.15.sslip.io") == "161.97.175.15"
+    assert agent_core.embedded_ip("x.10-0-0-1.nip.io") == "10.0.0.1"
+    assert agent_core.embedded_ip("x.999.1.1.1.sslip.io") is None
+    assert agent_core.embedded_ip("oyvgubyxmjlijiczjona.supabase.co") is None
+    info = agent_core.socket.getaddrinfo("supa.watchlog.161.97.175.15.sslip.io", 443, 0, agent_core.socket.SOCK_STREAM)
+    assert info[0][4][0] == "161.97.175.15"
+
+
 POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 
 
 def _run_move(tmp_path: Path, defaults_text: str) -> subprocess.CompletedProcess:
     script = (ROOT / "prototype" / "installer" / "wl-repair-upgrade.ps1").read_text(encoding="utf-8")
     start = script.index("function Read-IniMap")
-    end = script.index("try {", script.index("function Move-RetiredServer"))
+    end = script.index("\ntry {", script.index("function Move-RetiredServer"))
     functions = script[start:end]
     cand = tmp_path / "cand"; cand.mkdir()
     (cand / "watchlog.defaults.ini").write_text(defaults_text, encoding="utf-8")
@@ -105,6 +146,14 @@ def test_repair_upgrade_moves_retired_site(tmp_path):
     assert got["nvr_url"] == "http://192.168.1.10" and got["site_name"] == "Main site"
     backups = list(tmp_path.glob("watchlog.ini.before-server-move-*"))
     assert len(backups) == 1 and OLD in backups[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not POWERSHELL, reason="PowerShell not available")
+def test_repair_upgrade_moves_any_url_form(tmp_path):
+    (tmp_path / "watchlog.ini").write_text(SITE_INI.replace(OLD, "old-project.SUPABASE.co/"), encoding="utf-8")
+    run = _run_move(tmp_path, DEFAULTS)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert _ini(tmp_path / "watchlog.ini")["supabase_url"] == NEW
 
 
 @pytest.mark.skipif(not POWERSHELL, reason="PowerShell not available")

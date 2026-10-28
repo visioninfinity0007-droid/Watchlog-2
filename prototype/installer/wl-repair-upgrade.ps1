@@ -765,7 +765,14 @@ function Read-IniMap([string]$Path) {
   return $map
 }
 
-function Normalize-ServerUrl([string]$Url) { return ([string]$Url).Trim().TrimEnd('/').ToLowerInvariant() }
+# Host only (5.1.6): any form of a server URL -- with or without scheme, slash, path or port --
+# compares equal, so a site written as "x.supabase.co" or "https://x.supabase.co/rest/v1" still moves.
+function Normalize-ServerUrl([string]$Url) {
+  $u = ([string]$Url).Trim().Trim('"').Trim("'").ToLowerInvariant()
+  if (-not $u) { return "" }
+  if ($u -notmatch '://') { $u = "https://$u" }
+  try { return ([Uri]$u).Host } catch { return "" }
+}
 
 # Server move: a site still pointing at a backend this build retires (retired_supabase_urls in the
 # staged defaults) is moved to the build's server BEFORE the candidate is validated, so validation
@@ -780,6 +787,20 @@ function Move-RetiredServer {
   $newKey = [string]$defaults['supabase_publishable_key']
   if ($retired.Count -eq 0 -or -not $newUrl -or -not $newKey) { Write-Repair "server move: not part of this build"; return }
   if ($retired -contains (Normalize-ServerUrl $newUrl)) { Fail 26 "repair package is misconfigured: its own server is listed as retired" }
+  # An old machine-wide override to a retired server would beat watchlog.ini: remove it.
+  foreach ($scope in 'Machine','User') {
+    $envUrl = [Environment]::GetEnvironmentVariable('WATCHLOG_SUPABASE_URL', $scope)
+    if ($envUrl -and ($retired -contains (Normalize-ServerUrl $envUrl))) {
+      try {
+        [Environment]::SetEnvironmentVariable('WATCHLOG_SUPABASE_URL', $null, $scope)
+        [Environment]::SetEnvironmentVariable('WATCHLOG_SUPABASE_PUBLISHABLE_KEY', $null, $scope)
+        Write-Repair "server move: removed $scope override WATCHLOG_SUPABASE_URL=$envUrl"
+      } catch { Write-Repair "server move: could not remove $scope override ($($_.Exception.Message)); the Agent ignores it" }
+    }
+  }
+  if ($env:WATCHLOG_SUPABASE_URL -and ($retired -contains (Normalize-ServerUrl $env:WATCHLOG_SUPABASE_URL))) {
+    Remove-Item Env:WATCHLOG_SUPABASE_URL, Env:WATCHLOG_SUPABASE_PUBLISHABLE_KEY -ErrorAction SilentlyContinue
+  }
   if (-not ($retired -contains (Normalize-ServerUrl $current['supabase_url']))) {
     Write-Repair "server move: not needed (site uses $($current['supabase_url']))"
     return

@@ -73,16 +73,31 @@ def programdata_dir() -> Path:
     return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
 
 
+def _retired_env_server(config_path: Path) -> bool:
+    """True when WATCHLOG_SUPABASE_URL points at a server this build retires."""
+    try:
+        d = configparser.ConfigParser()
+        d.read(Path(config_path).parent / "watchlog.defaults.ini", encoding="utf-8-sig")
+        retired = core.retired_hosts(d["watchlog"].get("retired_supabase_urls", "")) if d.has_section("watchlog") else set()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(retired) and core.server_host(os.environ.get("WATCHLOG_SUPABASE_URL")) in retired
+
+
 def read_public_defaults(config_path: Path) -> dict:
+    # 5.1.6: a watchlog.ini left behind by an older install (fresh-install path, no
+    # agent_state) is moved off a retired server before Setup uses it.
+    merge_public_defaults(config_path)
     ini = configparser.ConfigParser()
     section = {}
     if config_path.exists():
         ini.read(config_path, encoding="utf-8-sig")
         if ini.has_section("watchlog"):
             section = dict(ini.items("watchlog"))
+    use_env = not _retired_env_server(config_path)
     return {
-        "supabase_url": os.environ.get("WATCHLOG_SUPABASE_URL") or section.get("supabase_url", ""),
-        "supabase_publishable_key": os.environ.get("WATCHLOG_SUPABASE_PUBLISHABLE_KEY") or section.get("supabase_publishable_key", ""),
+        "supabase_url": (use_env and os.environ.get("WATCHLOG_SUPABASE_URL")) or section.get("supabase_url", ""),
+        "supabase_publishable_key": (use_env and os.environ.get("WATCHLOG_SUPABASE_PUBLISHABLE_KEY")) or section.get("supabase_publishable_key", ""),
         "enrollment_code": section.get("enrollment_code", ""),
         "nvr_url": section.get("nvr_url", ""),
         # Username lives (atomically with the password) in the encrypted store;
@@ -137,12 +152,12 @@ def merge_public_defaults(config_path: Path, defaults_path: Path | None = None) 
             current.add_section("watchlog")
         # Server move: the one deliberate overwrite. A site still on a backend this build
         # retires is moved to the build's server (same rule as wl-repair-upgrade.ps1).
-        retired = {u.strip().rstrip("/").lower()
-                   for u in str(defaults["watchlog"].get("retired_supabase_urls", "") or "").split(",") if u.strip()}
+        # Compared by host, so any URL form of the retired server matches (5.1.6).
+        retired = core.retired_hosts(defaults["watchlog"].get("retired_supabase_urls", ""))
         new_url = str(defaults["watchlog"].get("supabase_url", "") or "").strip()
         new_key = str(defaults["watchlog"].get("supabase_publishable_key", "") or "").strip()
-        cur_url = str(current["watchlog"].get("supabase_url", "") or "").strip().rstrip("/").lower()
-        if retired and new_url and new_key and new_url.rstrip("/").lower() not in retired and cur_url in retired:
+        cur_host = core.server_host(current["watchlog"].get("supabase_url", ""))
+        if retired and new_url and new_key and core.server_host(new_url) not in retired and cur_host in retired:
             current["watchlog"]["supabase_url"] = new_url
             current["watchlog"]["supabase_publishable_key"] = new_key
             added += ["supabase_url", "supabase_publishable_key"]
@@ -1347,6 +1362,8 @@ def _enroll(cloud, enrollment_code: str, device) -> dict | None:
         raise AgentSyncError("ENROLL_NETWORK",
             "WatchLog could not verify this site code. Check the internet connection and try again.") from exc
     except Exception as exc:                       # noqa: BLE001 — transport/timeout
+        _setup_log(f"enroll transport failure to {core.server_host(getattr(cloud, 'rpc', ''))}: "
+                   f"{type(exc).__name__}: {str(exc)[:300]}")
         raise AgentSyncError("ENROLL_NETWORK",
             "WatchLog could not reach the cloud to verify this site code. Check the internet connection and try again.") from exc
     return {"agent_id": r["agent_id"], "agent_key": r["agent_key"], "tenant_id": r["tenant_id"],
