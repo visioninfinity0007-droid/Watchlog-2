@@ -2203,6 +2203,25 @@ def _write_json_file(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
+SITE_CONNECTED_MARKER = "setup-connected.json"
+
+
+def _mark_site_connected(site_id: str) -> None:
+    """Record, outside the Setup process, that this run connected the site and started
+    the background Agent. NSIS deletes the file before it opens Setup and reads it when
+    Setup exits non-zero: a connected site is a successful install even when the Setup
+    window itself dies afterwards (HASCO 5.1.6: "WatchLog Setup has stopped working"
+    during "Starting WatchLog in the background", with the new Agent already reporting,
+    so NSIS aborted and skipped the uninstaller). Never raises."""
+    try:
+        _write_json_file(programdata_dir() / SITE_CONNECTED_MARKER,
+                         {"site_id": site_id, "agent_started": True,
+                          "connected_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                          "setup_version": SETUP_AGENT_VERSION})
+    except Exception as exc:  # noqa: BLE001 - the marker only softens a later crash
+        _setup_log(f"connected marker not written ({type(exc).__name__})")
+
+
 def _save_recorder_camera_profiles(local_id: str, display_name: str,
                                    profiles: list[dict]) -> None:
     """Persist one recorder's camera choices, keyed by recorder (non-secret).
@@ -2616,6 +2635,8 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
                                           require_readiness=True)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
+    if connected:
+        _mark_site_connected(state["site_id"])
 
     # Recorder-side push remains an explicit support/diagnostic command only.
     # It is intentionally absent from the installer critical path until it has
