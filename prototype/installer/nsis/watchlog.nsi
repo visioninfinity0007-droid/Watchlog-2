@@ -10,7 +10,7 @@ Unicode true
 ; Single version source: build passes /DAPPVERSION from wl_version.py. The
 ; fallback must be kept in step (a contract test asserts it).
 !ifndef APPVERSION
-  !define APPVERSION "5.1.6"
+  !define APPVERSION "5.1.7"
 !endif
 !define PUBLISHER "Vision Infinity"
 !define TASKNAME "WatchLog Agent"
@@ -217,8 +217,16 @@ Section "Install"
     ; it rather than dead-ending on the check below.
     ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
       DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
-      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
+      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini" --connected-marker "$PLUGINSDIR\setup-connected.json"' $0
       DetailPrint "WatchLog setup exited with code $0"
+      ; A connected site is a successful install even if the Setup window died afterwards:
+      ; Setup writes this marker (in this run's own $PLUGINSDIR) once the site is linked
+      ; and the Agent is started.
+      ${If} $0 != 0
+      ${AndIf} ${FileExists} "$PLUGINSDIR\setup-connected.json"
+        DetailPrint "WatchLog Setup closed unexpectedly after the site connected; continuing."
+        StrCpy $0 0
+      ${EndIf}
       ${If} $0 != 0
         ${If} $8 == "1"
           DetailPrint "Recorder credential repair did not finish; restoring the previous WatchLog installation..."
@@ -236,8 +244,16 @@ Section "Install"
     ${EndIf}
   ${Else}
     DetailPrint "Opening WatchLog Setup..."
-    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
+    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini" --connected-marker "$PLUGINSDIR\setup-connected.json"' $0
     DetailPrint "WatchLog setup exited with code $0"
+    ; A connected site is a successful install even if the Setup window died afterwards:
+    ; Setup writes this marker (in this run's own $PLUGINSDIR) once the site is linked
+    ; and the Agent is started.
+    ${If} $0 != 0
+    ${AndIf} ${FileExists} "$PLUGINSDIR\setup-connected.json"
+      DetailPrint "WatchLog Setup closed unexpectedly after the site connected; continuing."
+      StrCpy $0 0
+    ${EndIf}
     ${If} $0 != 0
       MessageBox MB_ICONSTOP|MB_OK "WatchLog setup did not finish. If the setup window showed that WatchLog is running in the background, this site IS connected and reporting - leave it alone and contact support. Otherwise run the installer again when the recorder, site code and network are ready."
       Abort "WatchLog setup did not complete"

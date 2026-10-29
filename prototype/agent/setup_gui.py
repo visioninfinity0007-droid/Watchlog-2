@@ -58,6 +58,15 @@ if os.name == "nt":
         except Exception:  # noqa: BLE001 - logging may never prevent setup from running
             _LOG_HANDLE = None
 
+# A native crash ("WatchLog Setup has stopped working", HASCO 5.1.6) leaves no Python
+# traceback. faulthandler writes every thread's stack to setup.log when it happens.
+if _LOG_HANDLE is not None:
+    try:
+        import faulthandler
+        faulthandler.enable(file=_LOG_HANDLE, all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
@@ -1377,9 +1386,11 @@ class SetupWindow(QMainWindow):
         event.accept()
 
 
-def _test_with_agent_paused(address: str, username: str, password: str):
+def _test_with_agent_paused(address: str, username: str, password: str, **kwargs):
+    # run_worker passes hint= and progress= like any worker. Refusing them (5.1.0-5.1.6)
+    # failed the first test before the Agent was stopped, so it kept the recorder busy.
     backend.pause_background_agent()
-    return backend.test_recorder(address, username, password)
+    return backend.test_recorder(address, username, password, **kwargs)
 
 
 def _emit_line(line: str) -> None:
@@ -2577,9 +2588,12 @@ def main() -> int:
     parser.add_argument("--registry-rollback", metavar="LOCAL_ID", default="",
                         help="Repair/Upgrade: undo the registry staged by this repair")
     parser.add_argument("--result-json", default="")
+    parser.add_argument("--connected-marker", default="", help=argparse.SUPPRESS)
     parser.add_argument(ELEVATED_RELAUNCH_ARG, dest="elevated_relaunch", action="store_true",
                         help=argparse.SUPPRESS)
     args, _unknown = parser.parse_known_args()
+    if args.connected_marker:
+        os.environ[backend.CONNECTED_MARKER_ENV] = args.connected_marker
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:

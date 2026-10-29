@@ -100,10 +100,18 @@ def calls(gui, monkeypatch):
     return log
 
 
+def _run_inline(fn, args, ok, busy_message, timeout_ms=None, timeout_message=None, **kwargs):
+    # Same call shape as Worker.run: the run_worker kwargs plus progress. A fake that
+    # dropped them hid that _test_with_agent_paused refused hint= (5.1.0-5.1.6 field:
+    # the first Test Connection failed, the Agent was never stopped, every later test
+    # hit the 30-second limit while the old Agent held the recorder).
+    return fn(*args, progress=lambda _message: None, **kwargs)
+
+
 def _window(gui, tmp_path, **kw):
     gui.QApplication.instance() or gui.QApplication([])
     window = gui.SetupWindow(tmp_path / "watchlog.ini", **kw)
-    window.run_worker = lambda fn, args, ok, *a, **k: fn(*args)   # run inline
+    window.run_worker = _run_inline
     window.recorder_address = "10.0.0.5"
     window.user_edit.setText("admin")
     window.password_edit.setText("pw")
@@ -115,6 +123,18 @@ def test_setup_pauses_once_before_the_first_login_test(gui, calls, tmp_path):
     window.test_connection()
     window.test_connection()
     assert calls == ["pause", "test", "test"]
+
+
+def test_the_paused_login_test_keeps_the_discovery_hint(gui, monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(gui.backend, "pause_background_agent", lambda *a, **k: None)
+    monkeypatch.setattr(gui.backend, "test_recorder",
+                        lambda *a, **k: seen.update(k) or {"url": "http://10.0.0.5"})
+    window = _window(gui, tmp_path)
+    window.recorder_hint = {"ports": [80, 37777], "vendor_hint": "dahua"}
+    window.test_connection()
+    assert seen["hint"] == {"ports": [80, 37777], "vendor_hint": "dahua"}
+    assert callable(seen["progress"])
 
 
 def test_manage_recorders_never_pauses_monitoring(gui, calls, tmp_path):

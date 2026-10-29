@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 import re
 import time
 from typing import Iterable
+from urllib.parse import urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -36,6 +37,7 @@ from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
 from drivers.dahua import DahuaDriver, moves_to_basic
+import rtsp_playback
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 DOWNLOAD_TIMEOUT = (5, 30)           # (connect, read) seconds for the streamed loadfile request
@@ -57,6 +59,16 @@ TRANSIENT_HTTP = (408, 429)
 
 class RecorderBusy(DriverError):
     """The recorder answered with a transient HTTP error (5xx, 408, 429): retry later."""
+
+
+class FootageNotExported(DriverError):
+    """loadfile.cgi answered without footage (an empty body or an error page).
+
+    Field proof (Al-Khalid DH-XVR1B08-I, 5.1.6, 2026-10-29): mediaFileFind found the window's
+    recording on all 8 channels, and loadfile startLoad answered every request with an empty body,
+    for windows from the same hour back to 21 days old. The RTSP playback service serves the same
+    window instead (see :func:`_playback_clip`).
+    """
 
 
 _ITEM_RE = re.compile(r"items\[(\d+)\]\.([^=]+)=(.*)")
@@ -390,19 +402,66 @@ def _read_bounded(response, max_bytes: int = MAX_CLIP_BYTES, *, deadline=None) -
         chunks.append(chunk)
     data = b"".join(chunks)
     if not data:
-        raise DriverError("recorder returned an empty footage download")
+        raise FootageNotExported("recorder returned an empty footage download")
 
     # Common CGI error bodies are tiny text/html. DHAV itself is binary and may
     # contain ASCII fragments later, so inspect only the beginning.
     head = data[:256].lstrip().lower()
     if head.startswith((b"<html", b"<!doctype", b"error", b"bad request", b"result=error")):
-        raise DriverError("recorder returned an error instead of footage")
+        raise FootageNotExported("recorder returned an error instead of footage")
     return data
+
+
+_RTSP_PORT_RE = re.compile(r"RTSP\.Port\s*=\s*(\d+)", re.IGNORECASE)
+
+
+def _rtsp_port(driver: DahuaDriver) -> int:
+    """The recorder's RTSP port from its own configuration, else the standard 554. Read once per
+    driver: the port changes only when someone reconfigures the recorder."""
+    cached = getattr(driver, "_wl_rtsp_port", None)
+    if cached:
+        return cached
+    port = rtsp_playback.DEFAULT_PORT
+    try:
+        match = _RTSP_PORT_RE.search(_text(
+            driver, "/cgi-bin/configManager.cgi", params={"action": "getConfig", "name": "RTSP"}))
+        if match and 0 < int(match.group(1)) < 65536:
+            port = int(match.group(1))
+    except DriverError:
+        pass        # an unreadable config keeps the standard port
+    driver._wl_rtsp_port = port
+    return port
+
+
+def _playback_time(value: datetime) -> str:
+    return value.strftime("%Y_%m_%d_%H_%M_%S")
+
+
+def _playback_clip(driver: DahuaDriver, native_channel: int, local_start: datetime,
+                   local_end: datetime, deadline: float) -> bytes:
+    """The window from the recorder's RTSP playback service, as MP4. Times are recorder wall time,
+    the same window mediaFileFind just proved. The main stream first; the sub stream once if the
+    main stream's window is over the byte cap."""
+    host = urlparse(driver.base_url).hostname or ""
+    seconds = (local_end - local_start).total_seconds()
+    port = _rtsp_port(driver)
+    for subtype in (0, 1):
+        path = (f"/cam/playback?channel={native_channel}&subtype={subtype}"
+                f"&starttime={_playback_time(local_start)}&endtime={_playback_time(local_end)}")
+        try:
+            return rtsp_playback.fetch(
+                rtsp_playback.url(host, port, path, driver.username, driver.password),
+                seconds, deadline=deadline, max_bytes=MAX_CLIP_BYTES)
+        except rtsp_playback.PlaybackTooLarge:
+            if subtype:
+                raise
+    raise DriverError("recorder did not export this footage window")    # not reached
 
 
 def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, *,
              clock: str = AGENT_CLOCK) -> bytes | None:
-    """Retrieve a bounded recorder-native DAV clip for one requested window.
+    """Retrieve a bounded clip for one requested window: the recorder-native DAV export, or, when
+    loadfile answers without footage, the same window from RTSP playback as MP4.
 
     ``clock`` names the clock that stamped ``start``/``end``: "agent" (the default) for times the
     Agent stamped, i.e. UTC cloud windows and Dahua CGI events, which carry the PC receive time,
@@ -422,6 +481,19 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     if not _find_local(driver, native_channel, local_start, local_end, max_rows=1)[0]:
         return None
 
+    if getattr(driver, "_wl_loadfile_empty", False):
+        # This recorder already answered loadfile without footage: go straight to playback.
+        return _playback_clip(driver, native_channel, local_start, local_end, deadline)
+    try:
+        return _loadfile_clip(driver, native_channel, local_start, local_end, deadline)
+    except FootageNotExported:
+        driver._wl_loadfile_empty = True
+        return _playback_clip(driver, native_channel, local_start, local_end, deadline)
+
+
+def _loadfile_clip(driver: DahuaDriver, native_channel: int, local_start: datetime,
+                   local_end: datetime, deadline: float) -> bytes:
+    """The window's DAV export from loadfile.cgi startLoad, bounded by ``deadline``."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise DriverError("recorder did not export this footage window in time")

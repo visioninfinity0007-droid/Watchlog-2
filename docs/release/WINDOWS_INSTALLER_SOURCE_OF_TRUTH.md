@@ -181,6 +181,38 @@ update channel.
 
 ---
 
+## 000B. Release candidate 5.1.7: smooth first install (branch `release/5.1.7-setup-fixes`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.7 is 5.1.6 (section 000A) plus the fixes from the first 5.1.6 installs
+(Al-Khalid and HASCO, 2026-10-29). Both sites ran the full Setup over an existing install; both
+stalled at "Sign in to your recorder" with the 30-second safety limit until a retry went
+through, and HASCO's Setup window then died ("WatchLog Setup has stopped working") during
+"Starting WatchLog in the background", after the new Agent had already enrolled and was
+reporting.
+
+- **Recorder login with the old Agent stopped:** `_test_with_agent_paused` refused the `hint=`
+  and `progress=` arguments every Setup worker receives, so since 5.1.0 the first Test
+  Connection failed with a TypeError before the running Agent was stopped, and every later test
+  ran while that Agent still held the recorder (the 2026-10-07 HASCO defect the pause was meant
+  to fix). It now passes them through; the GUI test runs workers with the real call shape.
+- **A connected site is a successful install:** NSIS starts Setup with
+  `--connected-marker "$PLUGINSDIR\setup-connected.json"` (its own per-run temporary folder,
+  so no marker survives from an earlier run and nothing under ProgramData is deleted during
+  install). Finalize writes that file once the site is linked and the background Agent is
+  started; when Setup exits non-zero but the file exists, NSIS continues the installation, so
+  a late Setup crash no longer skips the uninstaller and Add/Remove Programs entries.
+- **Crash diagnostics:** Setup enables `faulthandler` on `setup.log`, so a native crash leaves
+  every thread's stack in the log.
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+---
+
 ## 000A. Release candidate 5.1.6: server move that cannot be bypassed (branch `release/5.1.5-local-server`)
 
 **Status: candidate, not promoted.** 5.1.5 was published unsigned on 2026-10-28 and failed on
@@ -327,7 +359,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.6**
+**5.1.7**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous

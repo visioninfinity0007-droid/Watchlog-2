@@ -28,6 +28,7 @@ from urllib3.exceptions import HTTPError as Urllib3Error
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable, explain
 from drivers.hikvision import HikvisionDriver, recorder_http_lock
+import rtsp_playback
 
 MAX_CLIP_BYTES = 32 * 1024 * 1024
 SEARCH_LIMIT = 40
@@ -455,6 +456,93 @@ def _download_uri(driver: HikvisionDriver, playback_uri: str, *, deadline=None) 
     raise ClipNotReturned(detail="; ".join(e.detail for e in refused),
                           affirmative=bool(refused) and all(e.affirmative for e in refused))
 
+
+_LOCAL_TIME_OFFSET = re.compile(r"(?:([+-])(\d{2}):?(\d{2})|(Z))\s*$", re.IGNORECASE)
+OFFSET_TTL_SECONDS = 3600
+
+
+def _device_offset(driver: HikvisionDriver) -> timedelta | None:
+    """The recorder's UTC offset, from the offset its own <localTime> names; None if it names none.
+    Read at most hourly per driver."""
+    cached = getattr(driver, "_wl_utc_offset", None)
+    if cached and time.monotonic() - cached[1] < OFFSET_TTL_SECONDS:
+        return cached[0]
+    offset = None
+    try:
+        response = driver._get("/ISAPI/System/time", timeout=(5, 10))
+        root = _strip(ET.fromstring(response.content))
+        match = _LOCAL_TIME_OFFSET.search((root.findtext(".//localTime") or "").strip())
+        if match and match.group(4):
+            offset = timedelta(0)
+        elif match:
+            minutes = int(match.group(2)) * 60 + int(match.group(3))
+            offset = timedelta(minutes=-minutes if match.group(1) == "-" else minutes)
+    except (DriverError, ET.ParseError, requests.RequestException):
+        offset = None
+    driver._wl_utc_offset = (offset, time.monotonic())
+    return offset
+
+
+def _rtsp_port(driver: HikvisionDriver) -> int:
+    """The recorder's RTSP port from /ISAPI/Security/adminAccesses, else the standard 554."""
+    cached = getattr(driver, "_wl_rtsp_port", None)
+    if cached:
+        return cached
+    port = rtsp_playback.DEFAULT_PORT
+    try:
+        root = _strip(ET.fromstring(driver._get("/ISAPI/Security/adminAccesses",
+                                                 timeout=(5, 10)).content))
+        for item in root.iter("AdminAccessProtocol"):
+            if (item.findtext("protocol") or "").strip().upper() == "RTSP":
+                value = int((item.findtext("portNo") or "0").strip() or 0)
+                if 0 < value < 65536:
+                    port = value
+                break
+    except (DriverError, ET.ParseError, ValueError, requests.RequestException):
+        pass        # an unreadable answer keeps the standard port
+    driver._wl_rtsp_port = port
+    return port
+
+
+def _playback_clip(driver: HikvisionDriver, channel: str, start: datetime, end: datetime,
+                   deadline: float) -> bytes:
+    """The window from the recorder's RTSP playback service (/Streaming/tracks/N01), as MP4.
+
+    Hikvision playback takes recorder WALL time written with a 'Z' suffix, so the window moves by
+    the offset the recorder's own clock names. Without that offset the playback is not tried: a
+    window placed in the wrong hour would be footage of the wrong moment. The main stream first,
+    then the sub stream once if the main stream's window is over the byte cap.
+    """
+    offset = _device_offset(driver)
+    if offset is None:
+        raise ClipNotReturned(detail="playback: recorder clock names no UTC offset")
+    host = urlparse(driver.base_url).hostname or ""
+    port = _rtsp_port(driver)
+    local_start = _utc(start).replace(tzinfo=None) + offset
+    local_end = _utc(end).replace(tzinfo=None) + offset
+    span = "starttime={}Z&endtime={}Z".format(local_start.strftime("%Y%m%dT%H%M%S"),
+                                              local_end.strftime("%Y%m%dT%H%M%S"))
+    seconds = (_utc(end) - _utc(start)).total_seconds()
+    for kind in ("stream", "sub_stream"):
+        path = f"/Streaming/tracks/{_track(channel, kind)}?{span}"
+        try:
+            return rtsp_playback.fetch(
+                rtsp_playback.url(host, port, path, driver.username, driver.password),
+                seconds, deadline=deadline, max_bytes=MAX_CLIP_BYTES)
+        except rtsp_playback.PlaybackTooLarge as error:
+            if kind == "sub_stream":
+                raise ClipTooLarge(detail="playback over the byte cap") from error
+        except rtsp_playback.PlaybackTimedOut as error:
+            raise ClipTimedOut(detail="playback budget spent") from error
+        except rtsp_playback.PlaybackAuthFailed as error:
+            raise ClipNotReturned(detail="playback login refused") from error
+        except rtsp_playback.PlaybackUnreachable as error:
+            raise ClipNotReturned(detail="playback service did not answer") from error
+        except rtsp_playback.PlaybackFailed as error:
+            raise ClipNotReturned(detail=f"playback: {error}") from error
+    raise ClipNotReturned(detail="playback gave no footage")    # not reached
+
+
 def _by_time_uri(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> str:
     host = urlparse(driver.base_url).hostname or "127.0.0.1"
     return (
@@ -585,7 +673,9 @@ def _clip_outcome(failures: list, *, no_recording: bool) -> ClipError:
 def get_clip(driver: HikvisionDriver, channel: str, start: datetime, end: datetime) -> bytes:
     """Download a bounded incident window.
 
-    Search first and use the recorder-returned playbackURI, bounded to the requested window.
+    Search first. When the search shows a recording, read the window from RTSP playback (exact
+    window, MP4). Otherwise, or when playback gives nothing, use the recorder-returned playbackURI,
+    bounded to the requested window, with ContentMgmt/download.
     That URI often carries firmware-specific name/size metadata required by ContentMgmt.
     Rows whose readable span lies outside the window are ignored; a row whose span cannot be
     judged is still tried. Only if no row yields footage do we try a generic by-time URI. A clip
@@ -644,6 +734,23 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
     except DriverError:
         failures.append(ClipNotReturned(detail="search failed"))
 
+    # RTSP playback first: it carries exactly the window, where ContentMgmt/download on some
+    # firmware sends the whole recording file (HASCO DS-7608NI-Q1, 5.1.6, 2026-10-29: every
+    # 20 s window came back over 32 MiB on both streams). Not tried when the search proved the
+    # window has no recording.
+    playback_note = None
+    if not absent:
+        try:
+            return _check_clip(_playback_clip(driver, channel, start, end, deadline), start, end)
+        except ClipTimedOut:
+            raise       # no budget left for the exports either
+        except ClipNotReturned as error:
+            # No footage from playback says nothing about the exports: their own answers decide
+            # the verdict, so an affirmative export rejection can still read 'unsupported'.
+            playback_note = error
+        except ClipError as error:
+            failures.append(error)
+
     # Compatibility fallback for firmware that supports download-by-time but
     # returns no usable search row. It shares the SAME total deadline.
     sources.append(_by_time_uri(driver, channel, start, end))
@@ -656,18 +763,20 @@ def _clip_within_deadline(driver: HikvisionDriver, channel: str, start: datetime
         except (ClipAuthRejected, ClipTimedOut):
             raise       # the same login on every source, or no budget left: stop here
         except ClipTooLarge as error:
-            if smaller_tried:
-                raise
             failures.append(error)
-            smaller = _sub_stream_uri(uri)
+            smaller = None if smaller_tried else _sub_stream_uri(uri)
             if smaller:
                 # One retry of the same window on the lower-bitrate sub stream.
                 smaller_tried = True
                 sources.insert(0, smaller)
+            # Otherwise the next source (the by-time URI) still gets its turn.
         except ClipError as error:
             failures.append(error)
 
-    raise _clip_outcome(failures, no_recording=absent)
+    outcome = _clip_outcome(failures, no_recording=absent)
+    if playback_note is not None and playback_note.detail:
+        outcome.detail = "; ".join(part for part in (playback_note.detail, outcome.detail) if part)
+    raise outcome
 
 
 def get_recorded_segment(driver: HikvisionDriver, channel, start, end) -> dict:
