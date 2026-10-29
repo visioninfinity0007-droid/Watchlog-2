@@ -4,9 +4,11 @@
 Field (HASCO, 5.1.6, 2026-10-29): "WatchLog Setup has stopped working" appeared during
 "Starting WatchLog in the background" after the site had enrolled and the new Agent was
 already reporting. NSIS saw a non-zero exit, aborted, and skipped the uninstaller. Proves:
-- finalize's marker is written outside the Setup process and never raises;
-- NSIS deletes the marker before each Setup launch and accepts a non-zero exit only when
-  the marker exists;
+- finalize writes the marker only where the installer asked (--connected-marker) and
+  never raises;
+- NSIS points every Setup launch at its own per-run $PLUGINSDIR (so no marker survives
+  from an earlier run, and nothing under ProgramData is deleted during install) and
+  accepts a non-zero exit only when the marker exists;
 - a native crash in Setup is written to setup.log by faulthandler.
 """
 from __future__ import annotations
@@ -27,19 +29,32 @@ SETUP_EXEC = '"$INSTDIR\\watchlog-setup-ui.exe" --installer-child'
 
 
 def test_marker_records_the_connected_site(monkeypatch, tmp_path):
-    monkeypatch.setattr(sb, "programdata_dir", lambda: tmp_path)
+    marker = tmp_path / "plugins" / "setup-connected.json"
+    monkeypatch.setenv(sb.CONNECTED_MARKER_ENV, str(marker))
     sb._mark_site_connected("site-1")
-    data = json.loads((tmp_path / sb.SITE_CONNECTED_MARKER).read_text(encoding="utf-8"))
+    data = json.loads(marker.read_text(encoding="utf-8"))
     assert data["site_id"] == "site-1" and data["agent_started"] is True
     assert data["setup_version"] == sb.SETUP_AGENT_VERSION
+
+
+def test_no_marker_unless_the_installer_asked(monkeypatch, tmp_path):
+    monkeypatch.delenv(sb.CONNECTED_MARKER_ENV, raising=False)
+    monkeypatch.setattr(sb, "programdata_dir", lambda: tmp_path)
+    sb._mark_site_connected("site-1")
+    assert not list(tmp_path.iterdir())
 
 
 def test_marker_never_raises(monkeypatch, tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("x")
-    monkeypatch.setattr(sb, "programdata_dir", lambda: blocker / "sub")   # not a directory
+    monkeypatch.setenv(sb.CONNECTED_MARKER_ENV, str(blocker / "sub" / "m.json"))  # not a dir
     monkeypatch.setattr(sb, "_setup_log", lambda _m: None)
     sb._mark_site_connected("site-1")
+
+
+def test_setup_hands_the_marker_path_to_finalize():
+    assert 'parser.add_argument("--connected-marker"' in SETUP_GUI
+    assert "os.environ[backend.CONNECTED_MARKER_ENV] = args.connected_marker" in SETUP_GUI
 
 
 def test_finalize_marks_only_a_started_agent():
@@ -49,23 +64,22 @@ def test_finalize_marks_only_a_started_agent():
     assert re.search(r"if connected:\s+_mark_site_connected\(state\[\"site_id\"\]\)", block)
 
 
-def test_nsis_clears_the_marker_before_every_setup_launch():
-    launches = [m.start() for m in re.finditer(re.escape(SETUP_EXEC), NSI)]
+def test_every_setup_launch_gets_a_per_run_marker_path():
+    launches = re.findall(re.escape(SETUP_EXEC) + r"[^\n]*", NSI)
     assert len(launches) == 2
-    for start in launches:
-        before = NSI[:start].rsplit("\n", 3)[-3:]
-        assert any('Delete "${DATAROOT}\\setup-connected.json"' in line for line in before)
+    for line in launches:
+        assert '--connected-marker "$PLUGINSDIR\\setup-connected.json"' in line
+    assert 'Delete "${DATAROOT}' not in NSI.split('Section "Uninstall"')[0]
 
 
 def test_nsis_accepts_a_failed_exit_only_with_the_marker():
     for start in [m.start() for m in re.finditer(re.escape(SETUP_EXEC), NSI)]:
-        after = NSI[start:start + 700]
-        assert re.search(
-            r'\$\{If\} \$0 != 0\s+\$\{AndIf\} \$\{FileExists\} "\$\{DATAROOT\}\\setup-connected\.json"'
+        after = NSI[start:]
+        assert re.match(r'[^\n]*\n[^\n]*\n(?:\s*;[^\n]*\n)*\s*'
+            r'\$\{If\} \$0 != 0\s+\$\{AndIf\} \$\{FileExists\} "\$PLUGINSDIR\\setup-connected\.json"'
             r'\s+DetailPrint [^\n]+\s+StrCpy \$0 0\s+\$\{EndIf\}', after)
         # The original failure handling still follows for a run that never connected.
-        assert after.index("StrCpy $0 0") < after.index('Abort "WatchLog setup did not complete"') \
-            if 'Abort "WatchLog setup did not complete"' in after else True
+        assert after.index("StrCpy $0 0") < after.index('Abort "WatchLog setup did not complete"')
 
 
 def test_setup_writes_native_crashes_to_its_log():

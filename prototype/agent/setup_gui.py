@@ -2588,9 +2588,12 @@ def main() -> int:
     parser.add_argument("--registry-rollback", metavar="LOCAL_ID", default="",
                         help="Repair/Upgrade: undo the registry staged by this repair")
     parser.add_argument("--result-json", default="")
+    parser.add_argument("--connected-marker", default="", help=argparse.SUPPRESS)
     parser.add_argument(ELEVATED_RELAUNCH_ARG, dest="elevated_relaunch", action="store_true",
                         help=argparse.SUPPRESS)
     args, _unknown = parser.parse_known_args()
+    if args.connected_marker:
+        os.environ[backend.CONNECTED_MARKER_ENV] = args.connected_marker
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:

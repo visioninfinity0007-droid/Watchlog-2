@@ -217,13 +217,13 @@ Section "Install"
     ; it rather than dead-ending on the check below.
     ${IfNot} ${FileExists} "${DATAROOT}\Secrets\nvr_credential.dpapi"
       DetailPrint "No recorder credential found; opening WatchLog Setup to repair..."
-      ; A connected site is a successful install even if the Setup window dies afterwards:
-      ; Setup writes this marker once the site is linked and the Agent is started.
-      Delete "${DATAROOT}\setup-connected.json"
-      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
+      ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini" --connected-marker "$PLUGINSDIR\setup-connected.json"' $0
       DetailPrint "WatchLog setup exited with code $0"
+      ; A connected site is a successful install even if the Setup window died afterwards:
+      ; Setup writes this marker (in this run's own $PLUGINSDIR) once the site is linked
+      ; and the Agent is started.
       ${If} $0 != 0
-      ${AndIf} ${FileExists} "${DATAROOT}\setup-connected.json"
+      ${AndIf} ${FileExists} "$PLUGINSDIR\setup-connected.json"
         DetailPrint "WatchLog Setup closed unexpectedly after the site connected; continuing."
         StrCpy $0 0
       ${EndIf}
@@ -244,13 +244,13 @@ Section "Install"
     ${EndIf}
   ${Else}
     DetailPrint "Opening WatchLog Setup..."
-    ; A connected site is a successful install even if the Setup window dies afterwards:
-    ; Setup writes this marker once the site is linked and the Agent is started.
-    Delete "${DATAROOT}\setup-connected.json"
-    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini"' $0
+    ExecWait '"$INSTDIR\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\watchlog.ini" --connected-marker "$PLUGINSDIR\setup-connected.json"' $0
     DetailPrint "WatchLog setup exited with code $0"
+    ; A connected site is a successful install even if the Setup window died afterwards:
+    ; Setup writes this marker (in this run's own $PLUGINSDIR) once the site is linked
+    ; and the Agent is started.
     ${If} $0 != 0
-    ${AndIf} ${FileExists} "${DATAROOT}\setup-connected.json"
+    ${AndIf} ${FileExists} "$PLUGINSDIR\setup-connected.json"
       DetailPrint "WatchLog Setup closed unexpectedly after the site connected; continuing."
       StrCpy $0 0
     ${EndIf}

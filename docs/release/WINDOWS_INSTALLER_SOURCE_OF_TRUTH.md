@@ -196,11 +196,12 @@ reporting.
   Connection failed with a TypeError before the running Agent was stopped, and every later test
   ran while that Agent still held the recorder (the 2026-10-07 HASCO defect the pause was meant
   to fix). It now passes them through; the GUI test runs workers with the real call shape.
-- **A connected site is a successful install:** finalize writes
-  `C:\ProgramData\WatchLog\setup-connected.json` once the site is linked and the background
-  Agent is started. NSIS deletes it before each Setup launch and continues the installation
-  when Setup exits non-zero but the marker exists, so a late Setup crash no longer skips the
-  uninstaller and Add/Remove Programs entries.
+- **A connected site is a successful install:** NSIS starts Setup with
+  `--connected-marker "$PLUGINSDIR\setup-connected.json"` (its own per-run temporary folder,
+  so no marker survives from an earlier run and nothing under ProgramData is deleted during
+  install). Finalize writes that file once the site is linked and the background Agent is
+  started; when Setup exits non-zero but the file exists, NSIS continues the installation, so
+  a late Setup crash no longer skips the uninstaller and Add/Remove Programs entries.
 - **Crash diagnostics:** Setup enables `faulthandler` on `setup.log`, so a native crash leaves
   every thread's stack in the log.
 - **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
