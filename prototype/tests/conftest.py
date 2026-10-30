@@ -23,9 +23,15 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def _no_hikvision_playback(request, monkeypatch):
-    """Hikvision clips try the recorder's RTSP playback (FFmpeg) before the ISAPI export. Tests
-    built on fake ISAPI sessions model a recorder without that service, so the step answers
-    'no footage' unless a test opts in with @pytest.mark.recorder_playback."""
+    """Recorder RTSP playback (FFmpeg) never runs for real in tests. Hikvision clips try it
+    before the ISAPI export, and tests built on fake ISAPI sessions model a recorder without that
+    service, so the step answers 'no footage' unless a test opts in with
+    @pytest.mark.recorder_playback."""
+    playback = sys.modules.get("rtsp_playback")
+    if playback is not None:
+        # No test runs the real FFmpeg against a recorder: a test that models playback
+        # provides its own fake (test_recorder_playback's ffmpeg fixture).
+        monkeypatch.setattr(playback, "_ffmpeg", lambda: None)
     module = sys.modules.get("hikvision_archive")
     if module is None or request.node.get_closest_marker("recorder_playback"):
         return

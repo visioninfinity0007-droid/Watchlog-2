@@ -238,3 +238,38 @@ def test_runtime_capabilities_require_successful_poll_proof():
     assert "site_control_last_poll_monotonic" in core
     assert "remote_update_last_poll_monotonic" in src
     assert "remote_update_last_poll_monotonic" in updater_src
+
+
+MOTION_ON = {"/ISAPI/System/Video/inputs/channels/1/motionDetection":
+             "<MotionDetection><enabled>true</enabled></MotionDetection>"}
+
+
+def _trigger(*methods: str) -> str:
+    notes = "".join(
+        f"<EventTriggerNotification><id>{m}</id><notificationMethod>{m}</notificationMethod>"
+        "</EventTriggerNotification>" for m in methods)
+    return ("<EventTrigger xmlns='http://www.hikvision.com/ver20/XMLSchema'><id>VMD-1</id>"
+            f"<eventType>VMD</eventType><EventTriggerNotificationList>{notes}"
+            "</EventTriggerNotificationList></EventTrigger>")
+
+
+def _motion(docs):
+    caps = FakeHikvision(docs).capabilities()
+    return {a["key"]: a for a in caps["channels"][0]["analytics"]}["motion"]
+
+
+def test_motion_reports_whether_the_recorder_notifies_the_surveillance_center():
+    """Field (HASCO DS-7608NI-Q1, 5.1.7, 2026-10-30): motion on everywhere, no motion events.
+    The alert stream only carries an event whose linkage includes 'center'."""
+    linked = _motion({**MOTION_ON, "/ISAPI/Event/triggers/VMD-1": _trigger("center", "beep")})
+    assert linked["active"] is True and linked["notifies_center"] is True
+    unlinked = _motion({**MOTION_ON, "/ISAPI/Event/triggers/VMD-1": _trigger("beep", "record")})
+    assert unlinked["notifies_center"] is False
+
+
+def test_motion_linkage_is_unknown_when_unreadable_or_motion_is_off():
+    assert _motion(MOTION_ON)["notifies_center"] is None
+    off = {"/ISAPI/System/Video/inputs/channels/1/motionDetection":
+           "<MotionDetection><enabled>false</enabled></MotionDetection>",
+           "/ISAPI/Event/triggers/VMD-1": _trigger("center")}
+    assert _motion(off)["notifies_center"] is None

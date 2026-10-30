@@ -631,6 +631,16 @@ class HikvisionDriver(NvrDriver):
             blob = ET.tostring(root, encoding="unicode").lower()
             return all(n.lower() in blob for n in needles)
 
+        def _notifies_center(trigger) -> bool | None:
+            """Whether the event's linkage includes "Notify Surveillance Center", the switch
+            that puts it on the alert stream WatchLog reads. Field (HASCO DS-7608NI-Q1, 5.1.7,
+            2026-10-30): motion detection on for every channel, yet no motion event arrived."""
+            if trigger is None:
+                return None
+            methods = {(el.text or "").strip().lower() for el in trigger.iter()
+                       if el.tag.rsplit("}", 1)[-1].lower() == "notificationmethod"}
+            return "center" in methods
+
         out = []
         for c in self.list_channels():
             ch = c.channel
@@ -665,10 +675,15 @@ class HikvisionDriver(NvrDriver):
                     and motion is True
                 )
 
+            motion_center = (_notifies_center(_read(f"/ISAPI/Event/triggers/VMD-{ch}"))
+                             if motion is True else None)
+
             analytics = [
                 {"key": "motion", "label": "Motion detection",
                  "supported": motion_root is not None,
-                 "active": motion is True, "geometry": False},
+                 "active": motion is True, "geometry": False,
+                 # True/False only when motion is on and its linkage was readable.
+                 "notifies_center": motion_center},
                 {"key": "human_vehicle", "label": "Human / vehicle classification",
                  "supported": hv_supported,
                  "active": hv_active, "geometry": False},

@@ -181,6 +181,44 @@ update channel.
 
 ---
 
+## 000C. Release candidate 5.1.8: recorded footage from older days (branch `release/5.1.8`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.8 is 5.1.7 (section 000B, including the RTSP playback
+footage path of PR #36) plus the fixes from the 2026-10-30 capability field test on the two
+5.1.7 sites. Two different builds carried 5.1.7 (run 40878290684 without the playback path, run
+40911168149 with it), so this is a new version rather than a 5.1.7 rebuild.
+
+Field evidence, 5.1.7 (Al-Khalid DH-XVR1B08-I, HASCO DS-7608NI-Q1, 2026-10-30):
+- recorded clips from the last hour: ready on all channels at both sites (RTSP playback, MP4),
+  the on-screen timestamp within 1-2 s of the requested second;
+- HASCO clips from 24-29 Oct ready; 21 Oct "no recorded footage" (past the recorder's retention);
+- Al-Khalid clips from 21-29 Oct failed on every retry: the loadfile export stalled
+  mid-transfer ("recorder stopped sending"), or the archive search failed with an error that
+  named the recorder address, so the cloud only saw the redacted "could not export". Neither
+  reached playback, which 5.1.7 tried only after an empty export.
+
+Changes:
+- **Dahua footage:** any search or export failure except a refused login now gets the RTSP
+  playback attempt; a search that answered "no recording" still returns no footage. When
+  playback fails too, the error names both reasons without the recorder's address (`_cause`),
+  so the cloud-visible text is no longer redacted to "could not export".
+- **Hikvision motion linkage:** the analytics census reports, per channel with motion on,
+  whether the motion trigger notifies the surveillance center (`notifies_center`). HASCO has
+  motion on for all 8 channels but sends no motion events; the alert stream only carries events
+  linked to the center. Read-only: enabling the linkage is an on-site recorder setting.
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): Al-Khalid day-old clips over playback; HASCO's
+`notifies_center` value.
+
+---
+
 ## 000B. Release candidate 5.1.7: smooth first install (branch `release/5.1.7-setup-fixes`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
@@ -359,7 +397,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.7**
+**5.1.8**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
