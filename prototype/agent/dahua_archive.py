@@ -477,18 +477,73 @@ def get_clip(driver: DahuaDriver, channel: str, start: datetime, end: datetime, 
     # One clock reading serves both the search and the download, so both use the same window.
     local_start, local_end = _localize_window(driver, start, end, clock=clock)
     # Search first. This both proves the archive has media in the requested
-    # channel/window and prevents a download call for an empty period.
-    if not _find_local(driver, native_channel, local_start, local_end, max_rows=1)[0]:
+    # channel/window and prevents a download call for an empty period. A search the recorder
+    # refuses or breaks off proves nothing either way, so playback still gets its turn.
+    try:
+        found = _find_local(driver, native_channel, local_start, local_end, max_rows=1)[0]
+    except NvrAuthFailed:
+        raise
+    except DriverError as error:
+        return _playback_or_fail(driver, native_channel, local_start, local_end, deadline,
+                                 cause=f"archive search: {_cause(error)}")
+    if not found:
         return None
 
     if getattr(driver, "_wl_loadfile_empty", False):
         # This recorder already answered loadfile without footage: go straight to playback.
-        return _playback_clip(driver, native_channel, local_start, local_end, deadline)
+        return _playback_or_fail(driver, native_channel, local_start, local_end, deadline,
+                                 cause="export skipped: it answered without footage before")
     try:
         return _loadfile_clip(driver, native_channel, local_start, local_end, deadline)
-    except FootageNotExported:
+    except NvrAuthFailed:
+        raise
+    except FootageNotExported as error:
         driver._wl_loadfile_empty = True
+        cause = f"export: {_cause(error)}"
+    except DriverError as error:
+        # Field (Al-Khalid DH-XVR1B08-I, 5.1.7, 2026-10-30): for windows a day or more old the
+        # export stalls mid-transfer ("stopped sending") or is refused, while playback of a
+        # recent window on the same recorder works. Any export failure but a refused login
+        # gets the playback attempt.
+        cause = f"export: {_cause(error)}"
+    return _playback_or_fail(driver, native_channel, local_start, local_end, deadline,
+                             cause=cause)
+
+
+_URL_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
+_HOST_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b")
+# What incident_evidence still treats as naming the recorder after the above.
+_STILL_NAMES_RECORDER = re.compile(r"\bhost=|connectionpool|\[[0-9a-f]*:[0-9a-f:]*\]", re.IGNORECASE)
+_HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def _cause(error: Exception) -> str:
+    """A short, address-free reason for a failed recorder call. The cloud-visible failure text
+    must never carry the recorder's LAN address, and redacting the whole message (what
+    incident_evidence does to text with an address in it) hid the real reason in the field."""
+    text = (str(error).splitlines() or [""])[0]
+    # A URL is the request's own address ("http://host/cgi-bin/x.cgi: HTTP 400 ..."): drop it.
+    text = _HOST_RE.sub("recorder", _URL_RE.sub("", text)).strip(" :")
+    if _STILL_NAMES_RECORDER.search(text):
+        status = _HTTP_STATUS_RE.search(text)
+        if status:
+            text = f"HTTP {status.group(1)}"
+        elif isinstance(error, NvrUnreachable):
+            text = "recorder did not answer"
+        else:
+            text = type(error).__name__
+    return text[:120] or type(error).__name__
+
+
+def _playback_or_fail(driver: DahuaDriver, native_channel: int, local_start: datetime,
+                      local_end: datetime, deadline: float, *, cause: str) -> bytes:
+    """Playback of the window; if that fails too, one address-free error naming both reasons."""
+    try:
         return _playback_clip(driver, native_channel, local_start, local_end, deadline)
+    except NvrAuthFailed:
+        raise
+    except rtsp_playback.PlaybackFailed as error:
+        raise type(error)(f"{error} ({cause})") from error
 
 
 def _loadfile_clip(driver: DahuaDriver, native_channel: int, local_start: datetime,

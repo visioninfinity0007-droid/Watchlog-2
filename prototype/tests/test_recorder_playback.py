@@ -198,6 +198,80 @@ def test_dahua_oversize_main_stream_retries_the_sub_stream(dahua, ffmpeg):
     assert "subtype=1" in ffmpeg.input_url()
 
 
+def _route(recorder, cgi_name, action, response_factory):
+    """Answer one CGI action with ``response_factory()``; everything else as the fake recorder."""
+    plain_get = recorder.get
+
+    def get(url, params=None, **kw):
+        if url.endswith(cgi_name) and dict(params or {}).get("action") == action:
+            recorder.calls.append((cgi_name, dict(params or {}), None, False))
+            return response_factory()
+        return plain_get(url, params=params, **kw)
+
+    recorder.get = get
+
+
+def test_dahua_stalled_export_falls_back_to_playback(dahua, ffmpeg):
+    """Field 2026-10-30 (5.1.7): day-old windows stalled mid-export ("stopped sending")."""
+    import urllib3
+    recorder, driver = dahua
+
+    def stalls():
+        yield b"DHAVxxxx"
+        raise urllib3.exceptions.ProtocolError("Connection broken: IncompleteRead")
+
+    recorder.clip_chunks = stalls
+    assert da.get_clip(driver, "1", START, END) == MP4
+    assert "/cam/playback?channel=1" in ffmpeg.input_url()
+    assert not getattr(driver, "_wl_loadfile_empty", False), \
+        "a stalled export is not proof that export never works on this recorder"
+
+
+def test_dahua_refused_search_still_tries_playback(dahua, ffmpeg):
+    """Field 2026-10-30: older windows failed within a second, with an address in the error."""
+    from dahua_fake_recorder import FakeResponse
+    recorder, driver = dahua
+    _route(recorder, "mediaFileFind.cgi", "findFile", lambda: FakeResponse(status=400, text="Error"))
+    assert da.get_clip(driver, "1", START, END) == MP4
+    assert recorder.calls_to("loadfile.cgi") == []
+
+
+def test_dahua_failure_on_both_paths_names_both_reasons_without_an_address(dahua, ffmpeg):
+    import incident_evidence
+    from dahua_fake_recorder import FakeResponse
+    recorder, driver = dahua
+    _route(recorder, "mediaFileFind.cgi", "findFile", lambda: FakeResponse(status=400, text="Error"))
+    ffmpeg.payload, ffmpeg.returncode = b"", 1
+    ffmpeg.stderr = b"rtsp://u:p@192.168.1.108:554/cam/playback 404 Not Found"
+    with pytest.raises(rtsp_playback.PlaybackFailed) as error:
+        da.get_clip(driver, "1", START, END)
+    text = str(error.value)
+    assert "archive search: HTTP 400" in text and "no playback footage" in text
+    assert "recorder.invalid" not in text and "192.168" not in text
+    # The cloud-visible reason keeps this text instead of redacting it.
+    assert incident_evidence._safe_reason(error.value, ("recorder.invalid",)) == text
+
+
+def test_dahua_refused_login_never_moves_on_to_playback(dahua, ffmpeg):
+    from dahua_fake_recorder import FakeResponse
+    recorder, driver = dahua
+    _route(recorder, "loadfile.cgi", "startLoad", lambda: FakeResponse(status=401, text="denied"))
+    with pytest.raises(NvrAuthFailed):
+        da.get_clip(driver, "1", START, END)
+    assert ffmpeg.commands == []
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("http://192.168.1.108/cgi-bin/mediaFileFind.cgi: HTTP 400 Error", "HTTP 400 Error"),
+    ("HTTPConnectionPool(host='192.168.1.108', port=80): Read timed out.", "recorder did not answer"),
+    ("recorder stopped sending this footage window", "recorder stopped sending this footage window"),
+])
+def test_cause_never_names_the_recorder(message, expected):
+    from drivers.base import NvrUnreachable
+    error = (NvrUnreachable if "Pool" in message else da.DriverError)(message)
+    assert da._cause(error) == expected
+
+
 # ---------- Hikvision: playback first, ISAPI export as the fallback ----------
 
 SEARCH = """<?xml version="1.0" encoding="UTF-8"?>
