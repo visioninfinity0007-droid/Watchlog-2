@@ -183,8 +183,11 @@ update channel.
 
 ## 000E. Release candidate 5.1.10: Setup finishes on an IP-only Hikvision NVR (branch `release/5.1.9-recorder-connect`)
 
-**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
-writing. 5.1.10 is 5.1.9 (section 000D) plus a bounded camera-list read in the Setup login test.
+**Status: built and published, not promoted.** Run 41616142017 (artifact WatchLog-Windows-175,
+unsigned; Setup SHA256 338AFFD1...0747, Repair-Upgrade 8878672E...615B) was published as the
+website's latest download on 2026-11-03; 5.1.9 is kept as `latest.before-5.1.10`. The same day
+HASCO (15:00 PKT) and Al-Khalid (15:12 PKT) were installed with 5.1.9 and report from 8/8 and
+7/8 configured cameras. 5.1.10 is 5.1.9 (section 000D) plus a bounded camera-list read in the Setup login test.
 
 Field evidence (2026-11-03, 5.1.9 at HASCO, DS-7608NI-Q1): the recorder was found and signed in,
 then Setup stayed on "Reading camera channels…" and never reached Connect (no `wl_enroll` call on
