@@ -315,6 +315,16 @@ class NvrDriver:
     def set_time_config(self, **kwargs) -> None:
         raise DriverError("time config write not supported on this driver")
 
+    # Recorder event setup (5.1.11): the per-channel switches that make detections reach
+    # WatchLog. A driver lists the fields it can set; none means event setup is unsupported.
+    MOTION_EVENT_FIELDS: tuple = ()
+
+    def get_motion_events(self, channel) -> dict:
+        return {}
+
+    def set_motion_events(self, channel, **kwargs) -> None:
+        raise DriverError("recorder event setup not supported on this driver")
+
     def current_faults(self) -> dict:
         """Current, PRESENT-TENSE recorder fault state, read-only, from an active vendor API.
 

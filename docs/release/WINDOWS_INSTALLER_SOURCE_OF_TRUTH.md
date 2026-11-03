@@ -181,6 +181,49 @@ update channel.
 
 ---
 
+## 000F. Release candidate 5.1.11: recorder events set up by WatchLog (branch `release/5.1.11-recorder-events`)
+
+**Status: candidate, not promoted.** First written when no Windows artifact has been built;
+since then run 41695616463 (artifact WatchLog-Windows-176, unsigned; Setup SHA256
+1BC55A1A...D13C, Repair-Upgrade 3521764D...EFE6) was published as the website's latest download
+on 2026-11-04; 5.1.10 is kept as `latest.before-5.1.11`. 5.1.11 is 5.1.10 (section 000E) plus
+recorder event setup from the background Agent.
+
+Field evidence (HASCO DS-7608NI-Q1, 5.1.8 census and 5.1.9 install, 2026-10-30 to 2026-11-03):
+motion detection is on for all 8 channels, yet no motion event ever reached WatchLog; the census
+reads `notifies_center: false` on every channel. Hikvision only puts an event on the alert stream
+when its linkage includes "Notify Surveillance Center", and nothing set it.
+
+Changes:
+- **Recorder event setup** (`recorder_event_setup.py`): once, in the background capability worker
+  right after the census (never in Setup — Build 41 showed a recorder write on the installer path
+  stranding Step 06), for every channel the recorder has switched on:
+  - Hikvision: motion detection on, and "Notify Surveillance Center" added to its linkage
+    (`/ISAPI/Event/triggers/VMD-{ch}`), each by editing the recorder's own XML in place;
+  - Dahua: motion detection on, and smart motion with people on where present and off (vehicles
+    left as they are). Dahua already delivers enabled detections with no linkage.
+  Each change is a `site_control.execute_write` (read, change only what differs, read back, roll
+  back on a mismatch). A recorder fully set up is remembered by its channel list
+  (`recorder_event_setup.json` next to the Agent state) and not touched again until its channels
+  change; a failure is retried at the next start. The census is re-sent after a change, so the
+  portal shows the linkage. `recorder_event_setup = false` in watchlog.ini (or
+  `WATCHLOG_RECORDER_EVENT_SETUP=0`) turns it off.
+- **Local only:** `configure_motion_events` is not in `WRITE_ACTIONS`, so the cloud Site Control
+  catalog cannot request it yet (catalog parity unchanged).
+- Tests: `test_recorder_event_setup.py` (11).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): the Hikvision linkage write on HASCO's DS-7608NI-Q1 and
+motion events arriving afterwards; the Dahua writes on Al-Khalid's DH-XVR1B08-I (smart-motion
+write field-proven there for Site Control).
+
+---
+
 ## 000E. Release candidate 5.1.10: Setup finishes on an IP-only Hikvision NVR (branch `release/5.1.9-recorder-connect`)
 
 **Status: candidate, not promoted.** First written when no Windows artifact has been built;
@@ -473,7 +516,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.10**
+**5.1.11**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous

@@ -703,6 +703,74 @@ class HikvisionDriver(NvrDriver):
             out.append({"channel": ch, "name": c.name, "analytics": analytics})
         return {"channels": out}
 
+    # -- recorder event setup (5.1.11; IMPLEMENTED_UNVERIFIED until HASCO DS-7608NI-Q1) --------
+    # Field (HASCO, 2026-10-30): motion detection on for all 8 channels, no motion event ever
+    # arrived — the alert stream only carries events whose linkage includes "Notify Surveillance
+    # Center". Each write edits the recorder's own XML in place (one element), so every other
+    # setting on the channel and its trigger is sent back exactly as read.
+
+    MOTION_EVENT_FIELDS = ("motion", "notify_center")
+
+    _CENTER_NOTIFICATION = ("<EventTriggerNotification><id>center</id>"
+                            "<notificationMethod>center</notificationMethod>"
+                            "<notificationRecurrence>beginning</notificationRecurrence>"
+                            "</EventTriggerNotification>")
+    _CENTER_RE = re.compile(
+        r"<EventTriggerNotification>(?:(?!</EventTriggerNotification>).)*?"
+        r"<notificationMethod>\s*center\s*</notificationMethod>.*?</EventTriggerNotification>",
+        re.S | re.I)
+
+    def get_motion_events(self, channel) -> dict:
+        """{"motion": on/off, "notify_center": linked/not}; None for a value the recorder would
+        not give."""
+        ch = str(channel)
+        try:
+            raw = self._get(f"/ISAPI/System/Video/inputs/channels/{ch}/motionDetection").text
+            m = re.search(r"<enabled>\s*(true|false)\s*</enabled>", raw, re.I)
+            motion = None if m is None else m.group(1).lower() == "true"
+        except DriverError:
+            motion = None
+        try:
+            raw = self._get(f"/ISAPI/Event/triggers/VMD-{ch}").text
+            center = bool(self._CENTER_RE.search(raw))
+        except DriverError:
+            center = None
+        return {"motion": motion, "notify_center": center}
+
+    def set_motion_events(self, channel, motion=None, notify_center=None) -> None:
+        ch = str(channel)
+        if motion is not None:
+            path = f"/ISAPI/System/Video/inputs/channels/{ch}/motionDetection"
+            raw = self._get(path).text
+            new, n = re.subn(r"<enabled>\s*(true|false)\s*</enabled>",
+                             f"<enabled>{'true' if motion else 'false'}</enabled>", raw, count=1,
+                             flags=re.I)
+            if not n:
+                raise DriverError("motion detection setting not found on this channel")
+            if new != raw:                       # already as wanted: no write
+                self._put(path, new)
+        if notify_center is not None:
+            path = f"/ISAPI/Event/triggers/VMD-{ch}"
+            raw = self._get(path).text
+            has = bool(self._CENTER_RE.search(raw))
+            if notify_center and not has:
+                if re.search(r"<EventTriggerNotificationList\s*/>", raw):
+                    new = re.sub(r"<EventTriggerNotificationList\s*/>",
+                                 "<EventTriggerNotificationList>" + self._CENTER_NOTIFICATION
+                                 + "</EventTriggerNotificationList>", raw, count=1)
+                elif "</EventTriggerNotificationList>" in raw:
+                    new = raw.replace("</EventTriggerNotificationList>",
+                                      self._CENTER_NOTIFICATION + "</EventTriggerNotificationList>", 1)
+                elif "</EventTrigger>" in raw:
+                    new = raw.replace("</EventTrigger>", "<EventTriggerNotificationList>"
+                                      + self._CENTER_NOTIFICATION
+                                      + "</EventTriggerNotificationList></EventTrigger>", 1)
+                else:
+                    raise DriverError("motion event linkage not found on this channel")
+                self._put(path, new)
+            elif not notify_center and has:
+                self._put(path, self._CENTER_RE.sub("", raw))
+
     def get_clock(self) -> dict:
         """Read recorder clock/timezone/NTP state through Hikvision ISAPI."""
         try:
