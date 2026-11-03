@@ -183,7 +183,8 @@ update channel.
 
 ## 000D. Release candidate 5.1.9: Setup reaches a recorder without a browser login first (branch `release/5.1.9-recorder-connect`)
 
-**Status: candidate.** 5.1.9 is 5.1.8 (section 000C) plus the recorder connection fixes from the
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.9 is 5.1.8 (section 000C) plus the recorder connection fixes from the
 2026-11-03 install attempts at Al-Khalid (DH-XVR1B08-I) and HASCO (DS-7608NI-Q1).
 
 Field evidence (2026-11-03, sat with the client):
@@ -211,6 +212,12 @@ Changes:
 - **Stopping the old Agent:** `Get-Process` first; WMI only when a process hides its path.
 - Tests: `test_setup_reach_cold_recorder.py` (cold-ARP LAN simulation: the 5.1.8 sweep misses
   the recorder, 5.1.9 finds it; reach, retry and limit contracts).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
 
 Field-only (IMPLEMENTED_UNVERIFIED): a first install at Al-Khalid and HASCO without a browser login.
 
@@ -432,7 +439,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.8**
+**5.1.9**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
