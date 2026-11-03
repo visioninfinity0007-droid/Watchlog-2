@@ -85,6 +85,41 @@ Use this order unless the evidence clearly requires a different one:
 - Missing earlier/later periods are unknown, not zero.
 - If a precise metric cannot be defended, use a range or qualitative/relative presentation.
 
+## Restaurant business-intelligence contract
+
+For every restaurant/cafe tenant, convert defensible dining-floor observations into a management layer, not only peak occupancy.
+
+When calibrated table/session evidence supports it, include:
+- **estimated dining covers** for the represented period, derived from de-duplicated table sessions;
+- **estimated table sessions** and the number of qualifying sessions;
+- **average party size** and **party-size mix** using neutral buckets: 1 person, 2 people, 3–4 people, 5+ people;
+- **largest visible party** and joined-table parties where defensible;
+- **new table sessions by time period** so management can see when fresh demand arrived;
+- **table turnover/utilization** where table identity and session continuity are reliable;
+- **served-session rate** where food becomes clearly visible during a defensible occupied session;
+- **minimum observed dwell** with sample size;
+- **time to first visible table-service interaction** and **time to first clearly visible served items**, each with sample size;
+- **service slowdown versus demand** only when enough qualifying sessions exist for a defensible comparison.
+
+Evidence gates:
+- Never estimate a full-service-day cover total across material unverified trading time. Use **estimated covers in the represented period** instead.
+- Never add overlapping dining-camera counts or sessions. Reconcile them to the same physical party/table first.
+- For movable/joined tables, preserve the physical table identities and one shared combined-party/session interpretation.
+- Every session-derived average, median, percentage or distribution must show the qualifying sample size.
+- If the evidence does not support a metric, show **Unknown/Unavailable** with the reason instead of silently omitting it or inventing a value.
+- A visible table-service action does not establish a person's identity, employment status, attendance or productivity.
+- Do not infer gender, age, ethnicity or other customer demographics from appearance. Segment demand by party size, time, table/zone and service behaviour instead.
+
+Preferred owner-facing business questions:
+- Roughly how many dining covers were represented today?
+- How many table sessions were observed, and what was the usual party size?
+- When did new parties arrive most heavily?
+- Which periods and tables had the strongest turnover or utilization?
+- How quickly did tables receive a first visible service interaction?
+- How quickly did clearly visible served items appear?
+- Did service responsiveness weaken as demand increased?
+- Did closing activity begin while meaningful demand remained?
+
 ## Chai Wala reference rules
 
 - Service day: 16:00 to 04:00 next day, Asia/Karachi.
@@ -113,7 +148,10 @@ Do not call a daily restaurant report finished until:
 - the top three actions are obvious;
 - caveats and camera-quality detail are secondary;
 - internal WatchLog workings are absent from the client-facing output;
-- manual review status is persisted when manual review was used.
+- manual review status is persisted when manual review was used;
+- supported restaurant session/cover/party/service metrics are included, or each unsupported metric is explicitly marked Unknown/Unavailable with its evidence reason;
+- every session-derived average/median/rate shows its qualifying sample size;
+- no appearance-derived gender, age or demographic breakdown is present.
 
 
 ## B2B SaaS report model
@@ -140,7 +178,10 @@ Business and Security views are drill-downs, not duplicated versions of Overview
 
 **Business** should explain:
 - customer/demand pattern;
-- table utilization where defensible;
+- estimated covers and table sessions for the represented period where defensible;
+- party-size mix, new-session timing and largest/combined parties where defensible;
+- table utilization and turnover where defensible;
+- service responsiveness with qualifying sample sizes;
 - service/handoff flow;
 - kitchen/counter behavior;
 - opening/closing discipline;

@@ -25,6 +25,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 SRC = (ROOT / "agent" / "watchlog_agent.py").read_text(encoding="utf-8")
+# Config, the cloud client and the open path moved to agent_core.py (shared with Setup).
+CORE_SRC = (ROOT / "agent" / "agent_core.py").read_text(encoding="utf-8")
 ANALYTICS = (ROOT / "agent" / "analytics_agent.py").read_text(encoding="utf-8")
 SHIPPED = ANALYTICS.split("def enhanced_cmd_run(", 1)[1].split("\ndef ", 1)[0]
 NATIVE = (ROOT / "agent" / "native_event_collector.py").read_text(encoding="utf-8")
@@ -345,7 +347,7 @@ class RecoveryWiring(unittest.TestCase):
         self.assertIn("deadline = time.monotonic() + CLIP_TOTAL_SECONDS", HIK_ARCHIVE)
 
     def test_default_on_but_disable_flag_exists(self):
-        self.assertIn('get("recovery_enabled") or "true"', SRC)   # ON by default, disable-able
+        self.assertIn('get("recovery_enabled") or "true"', CORE_SRC)   # ON by default, disable-able
 
 
 if __name__ == "__main__":

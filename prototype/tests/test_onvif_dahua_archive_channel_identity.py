@@ -247,7 +247,7 @@ class NativeDahuaSearchIndex(unittest.TestCase):
         finally:
             driver.close()
         searches = [p for p in sent if p.get("action") == "findFile"]
-        self.assertEqual([p["condition.Channel"] for p in searches], [3])   # Channel4, 0-based
+        self.assertEqual([p["condition.Channel"] for p in searches], [4])   # Channel4, 1-based (field-proven)
 
 
 class MappedArchiveProof(unittest.TestCase):

@@ -129,7 +129,13 @@ def validate_registry(payload: dict) -> dict:
     if normalized and not configured_primaries:
         raise ValueError("a non-empty recorder registry needs one configured primary")
 
-    return {"schema": REGISTRY_SCHEMA, "recorders": normalized}
+    out = {"schema": REGISTRY_SCHEMA, "recorders": normalized}
+    site = payload.get("site_id")
+    if site is not None:
+        if not isinstance(site, str) or not site.strip():
+            raise ValueError("recorder registry site_id must be a non-empty string")
+        out["site_id"] = site.strip()
+    return out
 
 
 # --- registry file trust ----------------------------------------------------
@@ -333,7 +339,21 @@ def load_registry() -> dict:
     return validate_registry(raw)
 
 
+def _stamped_site(path: Path) -> str | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    site = raw.get("site_id") if isinstance(raw, dict) else None
+    return site.strip() if isinstance(site, str) and site.strip() else None
+
+
 def save_registry(payload: dict) -> dict:
+    # The site stamp (ensure_registry_belongs) survives every rewrite that does not set one.
+    if "site_id" not in payload:
+        site = _stamped_site(registry_path())
+        if site:
+            payload = {**payload, "site_id": site}
     normalized = validate_registry(payload)
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +364,8 @@ def save_registry(payload: dict) -> dict:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(normalized, separators=(",", ":")))
+            handle.flush()
+            os.fsync(handle.fileno())       # a power cut never publishes an empty registry
         # Prove the exact staged bytes parse and satisfy the schema before publish.
         validate_registry(json.loads(tmp.read_text(encoding="utf-8")))
         os.replace(tmp, path)
@@ -646,6 +668,35 @@ def reusable_continuity_id(url, identity_fingerprint=None) -> str | None:
     return continuity["local_id"]
 
 
+def ensure_registry_belongs(site_id: str, log=lambda _m: None) -> list[Path]:
+    """Agent start: a registry stamped for another site is quarantined with its recorders'
+    queues, state and logins (never deleted); an unstamped one is stamped as this site's.
+
+    site_runtime.json covers the continuity recorder's queue; this covers the registry and the
+    other recorders' data under recorders/<local_id>, which would otherwise be monitored and
+    drained under this site's identity (audit P8-a, G9-b). Returns the moved paths."""
+    path = registry_path()
+    site = str(site_id or "").strip()
+    if not site or not path.exists():
+        return []
+    stamped = _stamped_site(path)
+    if stamped is None:
+        try:
+            current = load_registry()
+            if current["recorders"]:
+                save_registry({**current, "site_id": site})
+        except (OSError, ValueError, RegistryUntrusted) as exc:
+            log(f"recorder registry not stamped ({type(exc).__name__}); load reports it")
+        return []
+    if stamped == site:
+        return []
+    moved = quarantine_registry()
+    log(f"set aside the recorder configuration of another site (site {stamped[:8]}): "
+        f"{len(moved)} item(s) kept, never used here; run WatchLog Setup to add this "
+        "site's recorders")
+    return moved
+
+
 def quarantine_registry() -> list[Path]:
     """Move the registry and the per-recorder state it owns aside; never delete.
 
@@ -655,7 +706,10 @@ def quarantine_registry() -> list[Path]:
     different site. Returns the quarantined paths."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     moved = []
-    for src in (registry_path(), data_dir() / "recorders"):
+    # The quarantined recorders' own logins go with them (still inside the protected Secrets
+    # folder), so another installation's or site's credentials never stay live here.
+    for src in (registry_path(), data_dir() / "recorders",
+                credential_store.recorder_secrets_dir()):
         if src.exists():
             dst, n = src.with_name(f"{src.name}.quarantine-{stamp}"), 0
             while dst.exists():                 # never overwrite an earlier quarantine
@@ -706,8 +760,10 @@ def update_recorder_connection(local_id: str, *, url: str, driver: str,
 
     try:
         return _replace_record(wanted, update)
-    except Exception:
-        credential_store.restore_secret_files(snapshot)
+    except Exception as exc:
+        if credential_store.restore_secret_files(snapshot):
+            raise SecretError("the recorder change failed and its previous login could not be "
+                              "put back; repair this recorder's login") from exc
         raise
 
 

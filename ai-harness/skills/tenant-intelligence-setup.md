@@ -18,6 +18,10 @@ Do not ask the user to repeat facts available from Git or the database.
 4. Validate camera reality using canonical physical cameras only. If labels/mapping are uncertain, inspect current images and record mapping confidence rather than guessing.
 5. Create ai-harness/tenants/<tenant-site>/context.yaml inheriting the site-type policy.
 6. Create reporting/README.md, reporting/methods/visual-snapshot-analysis.md and reporting/daily-reports/README.md.
+   - For restaurant/cafe sites, also define the dining table/session model: calibrated physical table/zone identities, movable/joined-table rules, any camera overlap, and the deterministic de-duplication rule used before site-wide sessions/covers are aggregated.
+   - Restaurant reporting must target estimated covers for the represented period, estimated table sessions, neutral party-size mix, new-session timing, turnover/utilization, served-session rate, dwell and service responsiveness where evidence supports them.
+   - If calibrated table/session evidence or overlap reconciliation is unavailable, mark those metrics field-gated/Unknown rather than deriving them from raw per-camera people counts.
+   - Do not configure appearance-derived gender, age, ethnicity, relationship-status or other demographic reporting.
 7. Define Today, Yesterday, Last 7 days and Last 30 days. Yesterday always means the latest completed configured working/service day.
 8. Align site_business_context with the same semantic contract and report-layout profile.
 9. Align customer AI. It should read like a natural management brief, separate observed/estimated/unsupported facts, and surface repeated evidence-backed recommendations. For restaurant daily reports, follow `ai-harness/skills/restaurant-daily-business-report.md` for client-facing hierarchy and UX.
@@ -32,7 +36,8 @@ For analytics-heavy sites, inspect representative images for:
 - obstruction/occlusion;
 - camera angle/blind spots;
 - count/tracking confidence;
-- business objects/areas relevant to the site type.
+- business objects/areas relevant to the site type;
+- for restaurants, physical table/zone identities, movable/joined-table behaviour, dining-camera overlap, and whether visible table-service actions can be followed without inferring staff identity.
 
 Never publish an accuracy percentage from model confidence alone. Accuracy requires human-ground-truth comparison.
 
@@ -45,6 +50,7 @@ Never publish an accuracy percentage from model confidence alone. Accuracy requi
 - report-window semantics;
 - aligned runtime context;
 - customer-facing report profile;
+- for restaurant sites, a governed table/session business-intelligence contract covering represented-period covers, sessions, party-size mix, session timing/turnover and service responsiveness with evidence gates and sample sizes;
 - report experience rules for hierarchy, charts, progressive disclosure and client/internal separation;
 - recommendations in reports;
 - canonical Git reconciliation record.
@@ -69,6 +75,8 @@ Do not call setup complete until:
 - client-facing recommendations provide quick response choices, optional comments and a direct Discuss with WatchLog path;
 - recommendation responses feed the internal WatchLog follow-up queue rather than disappearing into chat;
 - completed reviewed reports do not expose processing/waiting UI or internal implementation details;
+- restaurant reports include supported covers/session/party/service metrics, or explicitly state why each unavailable metric is Unknown;
+- restaurant session-derived averages/medians/rates show qualifying sample sizes and never infer customer demographics from appearance;
 - the report hierarchy is scannable and avoids duplicated card dumps;
 - authorization and coverage-truth checks pass;
 - mirror/canonical reconciliation is documented.

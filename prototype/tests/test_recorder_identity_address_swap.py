@@ -29,6 +29,7 @@ sys.path.insert(0, str(TESTS))
 
 import multi_recorder_orchestrator as mro  # noqa: E402
 import recorder_registry as rr  # noqa: E402
+import agent_core  # noqa: E402  (the recorder open path lives here)
 import watchlog_agent as core  # noqa: E402
 from drivers.base import DriverError, RecorderIdentityMismatch  # noqa: E402
 from test_multi_recorder_cloud_binding import Driver, Env, FakeCloud, info, seed_two  # noqa: E402
@@ -52,7 +53,7 @@ def _swapped(monkeypatch):
         label, serial = answers[base_url]
         return Driver(label), info("Hikvision", label, serial)
 
-    monkeypatch.setattr(core, "_connect_recorder", connect)
+    monkeypatch.setattr(agent_core, "_connect_recorder", connect)
 
 
 def _prepare(base, mapping):
@@ -105,7 +106,7 @@ def test_the_right_recorder_and_an_unknown_serial_are_still_accepted(monkeypatch
             label, serial = answers[base_url]
             return Driver(label), info("Hikvision", label, serial)
 
-        monkeypatch.setattr(core, "_connect_recorder", connect)
+        monkeypatch.setattr(agent_core, "_connect_recorder", connect)
         mapping = {a: "11111111-1111-1111-1111-111111111111",
                    b: "22222222-2222-2222-2222-222222222222"}
         cloud, by_local = _prepare(base, mapping)
@@ -116,7 +117,7 @@ def test_the_right_recorder_and_an_unknown_serial_are_still_accepted(monkeypatch
 
 
 def test_workers_opening_the_recorder_are_refused_too(monkeypatch):
-    monkeypatch.setattr(core, "_connect_recorder", lambda cfg, url: (
+    monkeypatch.setattr(agent_core, "_connect_recorder", lambda cfg, url: (
         Driver("B"), info("Hikvision", "B", "B-SERIAL")))
     cfg = SimpleNamespace(nvr_url=A_URL, nvr_driver="hikvision", nvr_username="u",
                           nvr_password="p", recorder_identity_fingerprint="serial:A-SERIAL",

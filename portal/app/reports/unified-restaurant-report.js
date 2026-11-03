@@ -12,6 +12,9 @@ function dateLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-P
 function weekdayLabel(v){if(!v)return"—";try{return new Intl.DateTimeFormat("en-PK",{timeZone:"UTC",weekday:"short"}).format(new Date(v+"T00:00:00Z"))}catch{return String(v)}}
 function clampLevel(v,max){const n=num(v),m=num(max);if(n==null||!m)return 0;return Math.max(0,Math.min(4,Math.round((n/m)*4)))}
 function periodName(view){return view==="daily"?"Today":view==="yesterday"?"Yesterday":view==="week"?"Last 7 days":"Last 30 days"}
+function metricValue(v,suffix=""){return num(v)==null?null:String(v)+suffix}
+function businessReady(data){return Boolean(data&&data.enabled!==false&&data.reconciliation&&data.reconciliation.ready===true)}
+function sampleNote(n,label="qualifying sessions"){return num(n)==null?"":String(n)+" "+label}
 
 // Restaurant reports share one decision-first shell for Today / Yesterday / 7 days / 30 days:
 // status + period, one conclusion, the figures and the governed chart, then security, actions and detail.
@@ -83,7 +86,7 @@ function DetailRows({items=[]}){
 
 // Governed business detail for the Business view: floors, tables, hours, weekdays and observed service time.
 // Every figure is read from wl_restaurant_day / wl_restaurant_period; missing rows stay absent, never zero.
-function BusinessDetail({view,day,period,model}){
+function BusinessDetail({view,day,period,businessDay,businessPeriod,model}){
   const isPeriod=model.kind==="period";
   const data=isPeriod?(period||{}):(day||{});
   const floors=isPeriod?(data.floor_profile||[]):(data.floors||[]).filter(function(f){return Number(f.samples||0)>0});
@@ -93,9 +96,46 @@ function BusinessDetail({view,day,period,model}){
   const weekdays=view==="monthly"?(data.weekday_profile||[]):[];
   const dist=isPeriod?(data.service_time_distribution||{}):{};
   const distRows=[["Under 15 min",dist.under_15_minutes],["15–30 min",dist["15_to_30_minutes"]],["30–45 min",dist["30_to_45_minutes"]],["45+ min",dist["45_plus_minutes"]]].filter(function(r){return num(r[1])!=null});
+  const business=isPeriod?(businessPeriod||{}):(businessDay||{});
+  const ready=businessReady(business);
+  const bm=business.metrics||business.summary||{};
+  const party=bm.party_size_mix||{};
+  const partyRows=[
+    {label:"1 person",value:num(party.one_person)},
+    {label:"2 people",value:num(party.two_people)},
+    {label:"3–4 people",value:num(party.three_to_four)},
+    {label:"5+ people",value:num(party.five_plus)}
+  ].filter(function(x){return x.value!=null});
+  const starts=(bm.session_starts_by_period||business.session_starts_by_period||[]).filter(function(x){return num(x.sessions)!=null});
+  const turnover=(bm.table_turnover||business.table_turnover||[]).filter(function(x){return num(x.sessions)!=null});
   if(isPeriod&&!model.trendReady)return null;
   return <>
     {isPeriod&&<Section title={model.days===7?"7-day operations review":"30-day management review"} note={model.observed+" of "+model.days+" service days represented; business figures come from those days only"}/>}
+    {!isPeriod&&businessDay&&<Section title="Dining covers & party mix" note={ready?(business.cover_scope==="full_service_day"?"Estimated across the supported full service day":"Estimated for the represented service period"):"Site-wide session totals stay unavailable until the dining-table views are safely reconciled"}>
+      {ready?<><Metrics items={[
+        {value:metricValue(bm.estimated_covers),label:business.cover_scope==="full_service_day"?"Estimated dining covers":"Estimated covers in represented period",note:sampleNote(bm.cover_sample_sessions)},
+        {value:metricValue(bm.estimated_table_sessions),label:"Estimated table sessions",note:sampleNote(bm.session_sample_size)},
+        {value:metricValue(bm.average_party_size),label:"Average party size",note:sampleNote(bm.party_size_sample_sessions)},
+        {value:metricValue(bm.largest_visible_party),label:"Largest visible party",note:"joined-table parties reconciled where configured"}
+      ]}/>
+      {partyRows.length>0&&<div style={{marginTop:16}}><Bars height={100} question="What party sizes made up the represented dining demand?" series={partyRows.map(function(x){return {label:x.label,value:x.value}})}/></div>}
+      </>:<Empty title="A reliable site-wide cover estimate is not available yet.">{business.reconciliation?.reason||"The dining views need a confirmed physical-table mapping before WatchLog can combine table sessions without double-counting."}</Empty>}
+    </Section>}
+    {!isPeriod&&ready&&starts.length>0&&<Section title="New table sessions" note="When defensible new dining sessions began; this is not entrance footfall">
+      <Bars height={105} series={starts.map(function(x){return {label:x.period||x.local_hour||"Period",value:Number(x.sessions)}})}/>
+    </Section>}
+    {!isPeriod&&ready&&<Section title="Service responsiveness" note="Observed table-session timings; every figure shows the qualifying sample size">
+      <Metrics items={[
+        {value:metricValue(bm.median_time_to_first_service_minutes," min"),label:"Median time to first visible service",note:sampleNote(bm.first_service_sample_sessions)},
+        {value:metricValue(bm.median_time_to_first_served_items_minutes," min"),label:"Median time to visible served items",note:sampleNote(bm.served_items_time_sample_sessions)},
+        {value:metricValue(bm.median_minimum_observed_dwell_minutes," min"),label:"Median minimum dwell",note:sampleNote(bm.dwell_sample_sessions)},
+        {value:num(bm.served_session_rate_pct)==null?null:bm.served_session_rate_pct+"%",label:"Served-session rate",note:sampleNote(bm.served_rate_sample_sessions)}
+      ]}/>
+      {bm.service_slowdown_vs_demand&&<p className="ow-muted" style={{fontSize:12,marginTop:8}}>{bm.service_slowdown_vs_demand}</p>}
+    </Section>}
+    {!isPeriod&&ready&&turnover.length>0&&<Section title="Table turnover" note="Defensible table sessions by calibrated physical table/zone">
+      <HBars items={turnover.slice(0,12).map(function(x,i){return {key:x.physical_table_key||x.table_key||String(i),label:x.label||x.physical_table_key||x.table_key||"Table",note:x.utilization_pct==null?"":x.utilization_pct+"% occupied in valid observations",value:Number(x.sessions)}})}/>
+    </Section>}
     {floors.length>0&&<Section title="Floor comparison" note="Peak visible diners by dining floor; keep floors separate before reading site totals">
       <HBars items={floors.map(function(f,i){return {key:(f.camera_id||f.floor||i)+"",label:f.floor||"Dining floor",note:"Peak occupied tables "+val(f.peak_occupied_tables)+" · avg visible "+val(isPeriod?f.avg_visible_diners:f.avg_visible_customers),value:isPeriod?f.peak_visible_diners:f.peak_visible_customers}})}/>
     </Section>}
@@ -141,7 +181,7 @@ function ConfidenceDetails({coverage,visibility=[],sufficiency}){
   </div>;
 }
 
-function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
+function normalizeDaily({view,day,businessDay,securityDay,snapshot,requestedReportDate}){
   const p=snapshot&&snapshot.payload||{};
   if(view==="yesterday"&&p.manual_business_report===true){
     return {
@@ -165,7 +205,7 @@ function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
     };
   }
 
-  const data=day||{},q=data.data_quality||{},sessions=data.sessions||{};
+  const data=day||{},q=data.data_quality||{},sessions=data.sessions||{},business=businessDay||{},businessMetrics=business.metrics||{},sessionReady=businessReady(business);
   const hourly=(data.hourly||[]).filter(function(x){return Number(x.samples||0)>0});
   const peakVisible=hourly.reduce(function(m,x){return Math.max(m,Number(x.peak_visible_customers||0))},0);
   const peakTables=hourly.reduce(function(m,x){return Math.max(m,Number(x.peak_occupied_tables||0))},0);
@@ -175,16 +215,15 @@ function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
   const timeline=hourly.map(function(x){return {time:x.local_hour||"",level:clampLevel(x.peak_visible_customers,maxPeak),label:x.peak_visible_customers==null?"Activity":"Peak visible diners "+x.peak_visible_customers,detail:x.peak_occupied_tables==null?"":"Peak occupied tables "+x.peak_occupied_tables}});
   const bars=(data.hourly||[]).map(function(x){const seen=Number(x.samples||0)>0;return {label:String(x.local_hour||"").replace(/:00$/,""),value:seen?Number(x.peak_visible_customers||0):0,gap:!seen,title:(x.local_hour||"")+": "+(seen?"peak visible diners "+val(x.peak_visible_customers):"not observed")}});
   const metrics=hasBusiness?[
-    {value:val(peakVisible),label:"Peak visible diners",note:"Concurrent visible diners, not unique footfall"},
-    {value:val(peakTables),label:"Peak occupied tables",note:"Highest simultaneous table use"},
-    {value:val(sessions.estimated_covers),label:"Estimated covers",note:"Estimate based on visible table activity"},
-    {value:sessions.median_observed_time_to_food_minutes==null?"—":sessions.median_observed_time_to_food_minutes+" min",label:"Median observed time to food",note:"Visible seating to first food seen"},
-    {value:val(sessions.served_sessions),label:"Served table sessions",note:"Sessions where food became visibly present"}
+    sessionReady?{value:val(businessMetrics.estimated_covers),label:business.cover_scope==="full_service_day"?"Estimated dining covers":"Estimated covers in represented period",note:sampleNote(businessMetrics.cover_sample_sessions)}:{value:null,label:"Estimated covers",note:"Unavailable until dining sessions are physically reconciled"},
+    sessionReady?{value:val(businessMetrics.estimated_table_sessions),label:"Estimated table sessions",note:sampleNote(businessMetrics.session_sample_size)}:{value:null,label:"Table sessions",note:"Unavailable until dining sessions are physically reconciled"},
+    sessionReady?{value:val(businessMetrics.average_party_size),label:"Average party size",note:sampleNote(businessMetrics.party_size_sample_sessions)}:{value:val(peakTables),label:"Peak occupied tables",note:"Highest simultaneous table use"},
+    {value:val(peakVisible),label:"Peak visible diners",note:"Concurrent visible diners, not unique footfall"}
   ]:[];
   const highlights=[];
   if(busiest&&busiest.local_hour)highlights.push("The strongest visible demand was around "+busiest.local_hour+".");
-  if(num(sessions.estimated_covers)!=null)highlights.push("The available coverage supports an estimated "+sessions.estimated_covers+" covers for the represented period.");
-  if(num(sessions.median_observed_time_to_food_minutes)!=null)highlights.push("Median observed time to food was about "+sessions.median_observed_time_to_food_minutes+" minutes in supported table sessions.");
+  if(sessionReady&&num(businessMetrics.estimated_covers)!=null)highlights.push("The available evidence supports an estimated "+businessMetrics.estimated_covers+" dining covers "+(business.cover_scope==="full_service_day"?"for the supported service day.":"in the represented service period.") );
+  if(sessionReady&&num(businessMetrics.median_time_to_first_service_minutes)!=null)highlights.push("Median time to the first visible table-service interaction was about "+businessMetrics.median_time_to_first_service_minutes+" minutes across "+businessMetrics.first_service_sample_sessions+" qualifying sessions.");
   const operations=[];
   if(hasBusiness)operations.push({title:"Dining",status:busiest&&busiest.local_hour||"Observed",body:busiest&&busiest.local_hour?"Dining demand was strongest around "+busiest.local_hour+".":"Dining activity was visible during the covered period."});
   const peakKitchen=Math.max.apply(null,[0].concat(hourly.map(function(x){return Number(x.avg_kitchen_load||0)})));
@@ -206,58 +245,69 @@ function normalizeDaily({view,day,securityDay,snapshot,requestedReportDate}){
     summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,bars:bars,
     security:(p.incidents&&p.incidents.length?p.incidents:(securityDay&&securityDay.incidents||[])),operations:operations,actions:p.action_items||p.priority_actions||[],
     coverage:{status:coverageRatio==null?"Coverage not yet rated":pct(coverageRatio)+" service-window coverage",summary:"Figures reflect only the periods with enough visibility to support them.",note:"Missing periods are unknown, not zero activity."},
-    visibility:visibility,reportId:snapshot&&snapshot.report_id||null,
+    visibility:visibility,reportId:snapshot&&snapshot.report_id||null,business:business,
     sufficiency:{level:hasBusiness?"good":"limited",message:hasBusiness?"The report shows only figures that can be supported for the represented service period.":"There is not enough comparable business coverage yet for a complete daily management view."}
   };
 }
 
-function normalizePeriod({view,period,windowData}){
-  const days=view==="week"?7:30,data=period||windowData&&windowData.structured_restaurant_metrics||{},s=data.summary||{},daily=data.daily||[],weeks=data.weekly_trend||[],saved=windowData&&windowData.saved_reports||[];
+function normalizePeriod({view,period,businessPeriod,windowData}){
+  const days=view==="week"?7:30,data=period||windowData&&windowData.structured_restaurant_metrics||{},business=businessPeriod||{},businessSummary=business.summary||{},businessDaily=business.daily||[],s=data.summary||{},daily=data.daily||[],weeks=data.weekly_trend||[],saved=windowData&&windowData.saved_reports||[];
   const observed=Number(s.observed_service_days||0),previousObserved=Number(data.previous_period&&data.previous_period.observed_service_days||0),minimum=days===7?4:10;
-  const trendReady=observed>=minimum,comparisonReady=trendReady&&previousObserved>=minimum,weekdayReady=days===30&&observed>=14;
+  const businessObserved=Number(businessSummary.reconciled_service_days||0);
+  const businessTrendReady=business.enabled===true&&businessObserved>=minimum;
+  // Site-wide cover/session trends come only from the reconciled physical-table contract.
+  // The older restaurant-period estimated_covers can double-count overlapping dining views,
+  // so it remains available only for legacy drill-down data and is never charted as a site total here.
+  const trendReady=businessTrendReady,comparisonReady=false,weekdayReady=false;
   const busiestDay=s.busiest_day||null,busiestHour=s.busiest_hour||null;
-  const series=days===30?weeks:daily.filter(function(x){return Number(x.camera_observations||0)>0});
-  const maxTrend=Math.max.apply(null,[1].concat(series.map(function(x){return Number(x.estimated_covers||0)})));
-  const timeline=trendReady?series.map(function(x){const d=x.service_date||x.week_start;return {time:shortDate(d),level:clampLevel(x.estimated_covers,maxTrend),label:x.estimated_covers==null?"Demand":"Estimated covers "+x.estimated_covers,detail:days===30?(x.observed_days+" represented service day"+(Number(x.observed_days)===1?"":"s")+" in this week"):(x.peak_visible_diners==null?"":"Peak visible diners "+x.peak_visible_diners)}}):[];
-  const bars=(days===30?weeks.map(function(x){return {label:shortDate(x.week_start),value:Number(x.estimated_covers||0),title:"Week of "+shortDate(x.week_start)+": "+val(x.estimated_covers)+" estimated covers over "+val(x.observed_days)+" represented days"}}):daily.map(function(x){const seen=Number(x.camera_observations||0)>0||Number(x.table_observations||0)>0;return {label:weekdayLabel(x.service_date),value:seen?Number(x.estimated_covers||0):0,gap:!seen,title:shortDate(x.service_date)+": "+(seen?val(x.estimated_covers)+" estimated covers":"not observed")}}));
-  const coverDelta=comparisonReady&&num(data.comparison&&data.comparison.estimated_covers_pct)!=null?((Number(data.comparison.estimated_covers_pct)>0?"+":"")+Number(data.comparison.estimated_covers_pct)+"%"):null;
-  const metrics=trendReady?[
-    {value:val(s.avg_estimated_covers_per_observed_day),label:"Avg estimated covers",note:"Per represented service day",delta:coverDelta},
-    {value:busiestDay&&busiestDay.service_date?shortDate(busiestDay.service_date):"—",label:"Busiest represented day",note:busiestDay&&busiestDay.estimated_covers!=null?"Estimated covers "+busiestDay.estimated_covers:""},
+  const safeDays=businessDaily.filter(function(x){return x&&x.reconciliation_ready===true&&num(x.estimated_covers)!=null});
+  const maxTrend=Math.max.apply(null,[1].concat(safeDays.map(function(x){return Number(x.estimated_covers||0)})));
+  const timeline=trendReady?safeDays.map(function(x){return {time:shortDate(x.service_date),level:clampLevel(x.estimated_covers,maxTrend),label:"Estimated covers "+x.estimated_covers,detail:val(x.table_sessions)+" qualifying table sessions"}}):[];
+  const bars=business.enabled===true?businessDaily.map(function(x){const seen=x&&x.reconciliation_ready===true&&num(x.estimated_covers)!=null;return {label:weekdayLabel(x.service_date),value:seen?Number(x.estimated_covers):0,gap:!seen,title:shortDate(x.service_date)+": "+(seen?val(x.estimated_covers)+" estimated covers":"session totals unavailable")}}):[];
+  const coverDelta=null;
+  const metrics=businessTrendReady?[
+    {value:val(businessSummary.avg_estimated_covers_per_reconciled_day),label:"Avg estimated covers",note:"Per reconciled represented service day"},
+    {value:val(businessSummary.avg_table_sessions_per_reconciled_day),label:"Avg table sessions",note:businessObserved+" reconciled service days"},
+    {value:metricValue(businessSummary.average_party_size),label:"Average party size",note:sampleNote(businessSummary.party_size_sample_sessions)},
+    {value:metricValue(businessSummary.median_time_to_first_service_minutes," min"),label:"Median time to first visible service",note:sampleNote(businessSummary.first_service_sample_sessions)}
+  ]:trendReady?[
     {value:busiestHour&&busiestHour.local_hour||"—",label:"Busiest time",note:"Strongest recurring visible demand"},
-    {value:s.median_observed_time_to_food_minutes==null?"—":s.median_observed_time_to_food_minutes+" min",label:"Median observed time to food",note:"Across supported table sessions"}
+    {value:val(observed),label:"Represented service days",note:"Session totals withheld until physical-table reconciliation is available"}
   ]:[];
   const security=[];
   saved.forEach(function(r){(r.incidents||[]).forEach(function(x){security.push(Object.assign({},x,{service_date:r.service_date}))})});
   const operations=[];
-  if(trendReady&&busiestHour&&busiestHour.local_hour)operations.push({title:"Demand timing",status:busiestHour.local_hour,body:"The strongest recurring visible demand was around "+busiestHour.local_hour+"."});
-  if(trendReady&&busiestDay&&busiestDay.service_date)operations.push({title:"Strongest service day",status:shortDate(busiestDay.service_date),body:"The strongest represented day in this period was "+dateLabel(busiestDay.service_date)+"."});
-  if(trendReady&&num(s.median_observed_time_to_food_minutes)!=null)operations.push({title:"Service timing",status:s.median_observed_time_to_food_minutes+" min",body:"This is the median visible seating-to-first-food interval across supported table sessions."});
-  if(comparisonReady&&num(data.comparison&&data.comparison.estimated_covers_pct)!=null){const d=Number(data.comparison.estimated_covers_pct);operations.push({title:"Compared with the prior period",status:(d>0?"+":"")+d+"%",body:"Estimated covers changed across two periods with enough represented days to support a comparison."})}
+  if(trendReady&&safeDays.length){
+    const top=safeDays.slice().sort(function(a,b){return Number(b.estimated_covers||0)-Number(a.estimated_covers||0)})[0];
+    if(top)operations.push({title:"Strongest reconciled service day",status:shortDate(top.service_date),body:"This was the highest estimated-cover day among the physically reconciled service days in this period."});
+  }
+  if(businessTrendReady&&num(businessSummary.median_time_to_first_service_minutes)!=null)operations.push({title:"Service responsiveness",status:businessSummary.median_time_to_first_service_minutes+" min",body:"Median seating-to-first-visible-service timing across "+businessSummary.first_service_sample_sessions+" qualifying sessions."});
   const actions=[],seen=new Set();
   saved.forEach(function(r){(r.action_items||[]).forEach(function(a){const key=a.id||a.title||a.body;if(key&&!seen.has(key)){seen.add(key);actions.push(Object.assign({},a,{report_id:r.report_id}))}})});
   const summary=trendReady
-    ?(days===7?"The last 7 days":"The last 30 days")+" contain enough represented service days for a management trend. "+(busiestHour&&busiestHour.local_hour?"Visible demand was strongest most often around "+busiestHour.local_hour+". ":"")+(comparisonReady?"Prior-period comparison is shown only where both periods have enough represented days.":"The prior period does not yet have enough comparable days for a reliable change statement.")
-    :"Only "+observed+" of "+days+" service days currently have enough business coverage for comparable figures. The completed daily reports remain available, but WatchLog is not presenting a "+days+"-day trend as if the full period were represented.";
+    ?(days===7?"The last 7 days":"The last 30 days")+" contain "+businessObserved+" physically reconciled service days, enough to show a covers/session trend without adding overlapping dining views."
+    :business.enabled===true
+      ?"Only "+businessObserved+" of "+days+" service days currently have reconciled table-session figures. Completed daily reports remain available; missing or unreconciled days are unknown, not zero demand."
+      :"Restaurant session reconciliation is not available yet for this reporting period, so WatchLog is withholding site-wide cover/session trends rather than using potentially duplicated camera totals.";
   const highlights=trendReady?[
-    busiestHour&&busiestHour.local_hour?"Recurring demand was strongest around "+busiestHour.local_hour+".":null,
-    busiestDay&&busiestDay.service_date?dateLabel(busiestDay.service_date)+" was the strongest represented service day.":null,
-    comparisonReady?"The previous period has enough represented days for like-for-like comparison.":"The previous period is not yet complete enough for a reliable like-for-like comparison."
+    businessSummary.avg_estimated_covers_per_reconciled_day!=null?"Average estimated covers were "+businessSummary.avg_estimated_covers_per_reconciled_day+" per reconciled service day.":null,
+    businessSummary.average_party_size!=null?"Average visible party size was "+businessSummary.average_party_size+" across "+businessSummary.party_size_sample_sessions+" qualifying sessions.":null,
+    businessSummary.median_time_to_first_service_minutes!=null?"Median time to first visible table-service interaction was "+businessSummary.median_time_to_first_service_minutes+" minutes across "+businessSummary.first_service_sample_sessions+" qualifying sessions.":null
   ].filter(Boolean):[
-    observed+" of "+days+" service days currently support comparable business figures.",
+    (business.enabled===true?businessObserved:0)+" of "+days+" service days currently support reconciled cover/session figures.",
     saved.length+" completed daily report"+(saved.length===1?" is":"s are")+" available in this period.",
-    "Missing days are treated as unknown, not as zero demand."
+    "Missing or unreconciled days are treated as unknown, not as zero demand."
   ];
-  const coverage={status:observed+" of "+days+" represented days",summary:trendReady?"Enough represented days exist for a period-level demand view.":"The period is still too sparse for a full trend.",note:"Missing or incomplete days remain unknown and are excluded from comparisons."};
-  const sufficiency={level:trendReady?"good":"limited",message:trendReady?"This "+days+"-day view uses "+observed+" represented service days. "+(comparisonReady?"The prior period also meets the comparison threshold.":"Prior-period change is withheld where the comparison is not sufficiently represented."):"A "+days+"-day trend requires at least "+minimum+" represented service days. "+observed+" are currently available, so detailed period trends are withheld."};
-  return {kind:"period",date:null,period:data.period||windowData&&windowData.period||{},eyebrow:days===7?"Last 7 days":"Last 30 days",headline:days===7?"The week in one view":"The month in one view",summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,bars:bars,security:security,operations:operations,actions:actions,coverage:coverage,visibility:[],reportId:null,sufficiency:sufficiency,trendReady:trendReady,comparisonReady:comparisonReady,weekdayReady:weekdayReady,observed:observed,days:days,minimum:minimum};
+  const coverage={status:(business.enabled===true?businessObserved:0)+" of "+days+" reconciled days",summary:trendReady?"Enough reconciled service days exist for a period-level covers/session view.":"The period is still too sparse or unreconciled for a site-wide covers/session trend.",note:"Missing or unreconciled days remain unknown and are excluded from business totals."};
+  const sufficiency={level:trendReady?"good":"limited",message:trendReady?"This "+days+"-day view uses "+businessObserved+" physically reconciled service days.":"A "+days+"-day covers/session trend requires at least "+minimum+" reconciled service days. "+(business.enabled===true?businessObserved:0)+" are currently available, so site-wide session totals are withheld."};
+  return {kind:"period",date:null,period:business.period||data.period||windowData&&windowData.period||{},eyebrow:days===7?"Last 7 days":"Last 30 days",headline:days===7?"The week in one view":"The month in one view",summary:summary,highlights:highlights,metrics:metrics,timeline:timeline,bars:bars,security:security,operations:operations,actions:actions,coverage:coverage,visibility:[],reportId:null,sufficiency:sufficiency,trendReady:trendReady,comparisonReady:comparisonReady,weekdayReady:weekdayReady,observed:business.enabled===true?businessObserved:0,days:days,minimum:minimum,business:business};
 }
 
 function firstSentences(text,n){const t=String(text||"").replace(/\s+/g," ").trim();const parts=t.match(/[^.!?]+[.!?]+(\s|$)/g);return parts?parts.slice(0,n).join("").trim():t}
 
-export default function UnifiedRestaurantReport({view,day,securityDay,period,windowData,snapshot,siteId,requestedReportDate,renderActions,askPrompt}){
+export default function UnifiedRestaurantReport({view,day,businessDay,securityDay,period,businessPeriod,windowData,snapshot,siteId,requestedReportDate,renderActions,askPrompt}){
   const[mode,setMode]=useState("overview");
-  const model=useMemo(function(){return view==="week"||view==="monthly"?normalizePeriod({view:view,period:period,windowData:windowData}):normalizeDaily({view:view,day:day,securityDay:securityDay,snapshot:snapshot,requestedReportDate:requestedReportDate})},[view,day,securityDay,period,windowData,snapshot,requestedReportDate]);
+  const model=useMemo(function(){return view==="week"||view==="monthly"?normalizePeriod({view:view,period:period,businessPeriod:businessPeriod,windowData:windowData}):normalizeDaily({view:view,day:day,businessDay:businessDay,securityDay:securityDay,snapshot:snapshot,requestedReportDate:requestedReportDate})},[view,day,businessDay,securityDay,period,businessPeriod,windowData,snapshot,requestedReportDate]);
   const periodText=model.date?dateLabel(model.date):model.period&&model.period.start_service_date&&model.period.end_service_date?shortDate(model.period.start_service_date)+" – "+shortDate(model.period.end_service_date):periodName(view);
   const actionBlock=model.actions&&model.actions.length?(renderActions?renderActions(model.actions,model.reportId):<ActionList items={model.actions}/>):null;
   const chartTitle=view==="daily"?"When were diners most visible today?":view==="yesterday"?"When was demand strongest through the service day?":view==="week"?"Which service days were busiest?":"How did weekly demand move across the month?";
@@ -311,7 +361,7 @@ export default function UnifiedRestaurantReport({view,day,securityDay,period,win
         {model.metrics&&model.metrics.length>0&&<Metrics items={model.metrics.map(function(m,i){return {value:m.value==="—"?null:m.value,label:m.label,note:m.note,primary:i===0,unknown:"Not available"}})}/>}
         <div style={{marginTop:20}}>{showBuild?<PeriodBuildState model={model} windowData={windowData} siteId={siteId}/>:<Section first title={view==="week"?"Service-day trend":view==="monthly"?"Weekly demand pattern":"Demand pattern"}><DemandBars model={model} title={chartTitle}/></Section>}</div>
         <Section title="Business signals"><DetailRows items={model.operations||[]}/></Section>
-        <BusinessDetail view={view} day={day} period={period||(windowData&&windowData.structured_restaurant_metrics)} model={model}/>
+        <BusinessDetail view={view} day={day} period={period||(windowData&&windowData.structured_restaurant_metrics)} businessDay={businessDay} businessPeriod={businessPeriod} model={model}/>
         {actionBlock}
         {model.kind==="period"&&<SavedReports windowData={windowData} siteId={siteId} limit={view==="week"?7:6}/>}
         <ConfidenceDetails coverage={model.coverage} visibility={model.visibility} sufficiency={model.sufficiency}/>

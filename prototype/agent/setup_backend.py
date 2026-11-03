@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Callable
 
 import dahua_archive
 import discover
-import watchlog_agent as core
+import agent_core as core  # Setup needs only the shared core, never the Agent runtime
 import wsdiscovery
 from drivers import DriverError, build
 import credential_store
@@ -71,16 +72,31 @@ def programdata_dir() -> Path:
     return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "WatchLog"
 
 
+def _retired_env_server(config_path: Path) -> bool:
+    """True when WATCHLOG_SUPABASE_URL points at a server this build retires."""
+    try:
+        d = configparser.ConfigParser()
+        d.read(Path(config_path).parent / "watchlog.defaults.ini", encoding="utf-8-sig")
+        retired = core.retired_hosts(d["watchlog"].get("retired_supabase_urls", "")) if d.has_section("watchlog") else set()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(retired) and core.server_host(os.environ.get("WATCHLOG_SUPABASE_URL")) in retired
+
+
 def read_public_defaults(config_path: Path) -> dict:
+    # 5.1.6: a watchlog.ini left behind by an older install (fresh-install path, no
+    # agent_state) is moved off a retired server before Setup uses it.
+    merge_public_defaults(config_path)
     ini = configparser.ConfigParser()
     section = {}
     if config_path.exists():
         ini.read(config_path, encoding="utf-8-sig")
         if ini.has_section("watchlog"):
             section = dict(ini.items("watchlog"))
+    use_env = not _retired_env_server(config_path)
     return {
-        "supabase_url": os.environ.get("WATCHLOG_SUPABASE_URL") or section.get("supabase_url", ""),
-        "supabase_publishable_key": os.environ.get("WATCHLOG_SUPABASE_PUBLISHABLE_KEY") or section.get("supabase_publishable_key", ""),
+        "supabase_url": (use_env and os.environ.get("WATCHLOG_SUPABASE_URL")) or section.get("supabase_url", ""),
+        "supabase_publishable_key": (use_env and os.environ.get("WATCHLOG_SUPABASE_PUBLISHABLE_KEY")) or section.get("supabase_publishable_key", ""),
         "enrollment_code": section.get("enrollment_code", ""),
         "nvr_url": section.get("nvr_url", ""),
         # Username lives (atomically with the password) in the encrypted store;
@@ -133,10 +149,21 @@ def merge_public_defaults(config_path: Path, defaults_path: Path | None = None) 
             return added
         if not current.has_section("watchlog"):
             current.add_section("watchlog")
+        # Server move: the one deliberate overwrite. A site still on a backend this build
+        # retires is moved to the build's server (same rule as wl-repair-upgrade.ps1).
+        # Compared by host, so any URL form of the retired server matches (5.1.6).
+        retired = core.retired_hosts(defaults["watchlog"].get("retired_supabase_urls", ""))
+        new_url = str(defaults["watchlog"].get("supabase_url", "") or "").strip()
+        new_key = str(defaults["watchlog"].get("supabase_publishable_key", "") or "").strip()
+        cur_host = core.server_host(current["watchlog"].get("supabase_url", ""))
+        if retired and new_url and new_key and core.server_host(new_url) not in retired and cur_host in retired:
+            current["watchlog"]["supabase_url"] = new_url
+            current["watchlog"]["supabase_publishable_key"] = new_key
+            added += ["supabase_url", "supabase_publishable_key"]
         for key, value in defaults.items("watchlog"):
             # Never resurrect a consumed one-time code, and never touch recorder settings.
             if key in ("enrollment_code", "nvr_url", "nvr_username", "nvr_driver",
-                       "nvr_password_protected"):
+                       "nvr_password_protected", "retired_supabase_urls"):
                 continue
             if str(value or "").strip() and not str(current["watchlog"].get(key, "") or "").strip():
                 current["watchlog"][key] = value
@@ -156,12 +183,83 @@ def _write_ini(path: Path, ini: configparser.ConfigParser) -> None:
     tmp.replace(path)
 
 
-def discover_recorders(progress: Callable[[str], None] | None = None) -> list[dict]:
+def known_recorder_addresses(public: dict | None = None) -> list[str]:
+    """Recorder addresses this PC is already configured for: watchlog.ini nvr_url plus every
+    recorders.json entry. Never raises."""
+    found = []
+    if public and str(public.get("nvr_url") or "").strip():
+        found.append(str(public["nvr_url"]).strip())
+    try:
+        import recorder_registry
+        for rec in recorder_registry.recorders():
+            if str(rec.get("url") or "").strip():
+                found.append(str(rec["url"]).strip())
+    except Exception:  # noqa: BLE001 - no or untrusted registry: nothing known
+        pass
+    return list(dict.fromkeys(found))
+
+
+def _known_recorder_rows(known) -> list[dict]:
+    """Recorders this PC was already connected to (watchlog.ini / recorders.json), checked first.
+
+    Field (HASCO, 5.1.2 upgrade): Setup searched the network again and found nothing while the
+    recorder it had been monitoring the day before was configured in watchlog.ini. A reachable
+    known recorder is offered at the top, before any search result."""
+    rows = []
+    for raw in known or []:
+        host = discover.host_of(str(raw or "").strip()) if raw else ""
+        if not host:
+            continue
+        # Learn the address first and connect patiently (5.1.9): a 1 s connect gave up on a
+        # recorder this PC had not talked to recently (see discover.warm_host).
+        open_ports = discover.warm_host(host, (80, 8000, 37777, 443), rounds=1)["ports"]
+        if open_ports:
+            rows.append({"ip": host, "label": "Previously connected recorder", "source": "known",
+                         "vendor_hint": _vendor_hint_from_ports(open_ports)})
+    return rows
+
+
+def discover_recorders(progress: Callable[[str], None] | None = None,
+                       known: list[str] | None = None) -> list[dict]:
     progress = progress or (lambda _message: None)
     results: dict[str, dict] = {}
+    # The known-recorder check and the vendor (SADP / DHDiscover) probe run BESIDE the ONVIF
+    # probe, so the search keeps the field-proven Build 69 time budget (40 s UI limit).
+    import threading
+    side: dict[str, list] = {"known": [], "vendor": []}
+
+    def _known():
+        try:
+            side["known"] = _known_recorder_rows(known)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _vendor():
+        try:
+            import vendor_discovery
+            side["vendor"] = vendor_discovery.discover(timeout=2.5)
+        except Exception:  # noqa: BLE001
+            pass
+    side_threads = [threading.Thread(target=fn, daemon=True)
+                    for fn in ((_known,) if known else ()) + (_vendor,)]
+    for t in side_threads:
+        t.start()
+
+    progress("Asking recorders on the network to identify themselves…")
+    try:
+        onvif = list(wsdiscovery.discover(log=lambda _m: None))
+    except Exception:
+        onvif = []
+    for t in side_threads:
+        t.join(8.0)
+    for row in side["known"]:
+        results[row["ip"]] = row
+    for row in side["vendor"]:
+        results.setdefault(row["ip"], row)
+
     progress("Looking for compatible CCTV devices…")
     try:
-        for item in wsdiscovery.discover(log=lambda _m: None):
+        for item in onvif:
             label = " ".join(x for x in (getattr(item, "name", ""), getattr(item, "hardware", "")) if x)
             vendor_hint = _vendor_hint_from_text(label)
             row = {
@@ -172,7 +270,12 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
             }
             if getattr(item, "port", None) in _WEB_PORTS:
                 row["preferred_web_port"] = int(item.port)
-            results[item.ip] = row
+            if item.ip in results:
+                # A known or vendor-identified recorder keeps its label; ONVIF adds its port.
+                if row.get("preferred_web_port"):
+                    results[item.ip].setdefault("preferred_web_port", row["preferred_web_port"])
+            else:
+                results[item.ip] = row
     except Exception:
         pass
 
@@ -219,12 +322,13 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
                 hint = "RTSP CCTV device / recorder candidate"
 
             row = results.setdefault(ip, {"ip": ip, "label": hint, "source": "Network scan"})
-            # Prefer the stronger non-ONVIF fingerprint when it identifies the box.
-            if vendor_hint:
+            # Prefer the stronger non-ONVIF fingerprint when it identifies the box (a known
+            # or vendor-discovered recorder keeps its own, already-certain label).
+            if vendor_hint and row.get("source") not in ("known", "SADP", "DHDiscover"):
                 row["label"] = hint
                 row["source"] = "Network fingerprint"
             row["ports"] = ports
-            row["vendor_hint"] = vendor_hint
+            row["vendor_hint"] = vendor_hint or row.get("vendor_hint")
             row["rtsp"] = bool(fp.get("rtsp"))
 
             # Preserve the web endpoint that actually identified/answered as the first
@@ -268,9 +372,27 @@ def discover_recorders(progress: Callable[[str], None] | None = None) -> list[di
 # minutes. Capabilities discovery is deliberately deferred to the background
 # agent so Step 04 only proves identity + credentials + channels.
 
-BACKGROUND_START_TIMEOUT_SECONDS = 40  # task + first real background cloud heartbeat
-RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
-RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
+BACKGROUND_START_TIMEOUT_SECONDS = 40  # registration + task start (no readiness wait)
+# Fresh install: registration + start + up to 60 s for the background Agent to prove it
+# reached WatchLog and identified the recorder (register-service -RequireRecorderReadiness).
+# Field (Al-Khalid SM-HP, 5.1.2, 2026-10-08): 100 s was shorter than the script's own worst
+# case (PowerShell start + power settings + task stop/re-register + 10 s Running wait + 60 s
+# readiness), so a slow PC had the script killed and Setup reported "did not start" while the
+# Agent was already running. The outer bound must exceed the script's, and a timeout is
+# never taken as "not started" without looking at the PC (see _background_agent_running).
+BACKGROUND_READY_TIMEOUT_SECONDS = 180
+# Field (Al-Khalid + HASCO, 5.1.7/5.1.8, 2026-11-03): 5 s probes, an 18 s target and a 30 s
+# watchdog that also covered stopping the old Agent cut off logins that a browser completed.
+# The test now first reaches the recorder (discover.warm_host, at most ~9 s), retries a timed-out
+# login once (a cold embedded web server answers the second request), and the GUI watchdog
+# (90 s) covers the Agent pause (<= 30 s) plus this target plus one probe in flight.
+RECORDER_PROBE_TIMEOUT = 8           # seconds per driver probe
+RECORDER_DEADLINE = 40              # backend target, including the reach step
+# Field (HASCO DS-7608NI-Q1, 5.1.9, 2026-11-03): an IP-only NVR reports no analog inputs, so the
+# fast path above is skipped and Setup sat on "Reading camera channels…". The list read now has
+# a wall-clock limit; a Hikvision model name then gives the count (DS-7608 = 8) and the
+# background Agent reads the names later.
+CHANNEL_READ_BUDGET = 12            # seconds; the watchdog bound includes it
 
 _WEB_PORTS = (80, 8080, 81, 82, 88, 8081, 8888, 443, 8443)
 _HIKVISION_SDK_PORTS = (8000,)
@@ -398,20 +520,11 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None,
 def _probe_web_ports(host: str, timeout: float | None = None, deadline: float = 6.0) -> list[int]:
     """Targeted rescue for the flaky 0.4s subnet sweep, which frequently finds a Dahua's SDK port
     (37777) but misses its slower embedded HTTP port (80). Re-probe the standard web ports on THIS
-    host with the generous per-host timeout, stopping at the first that answers — one reachable web
-    port is enough to proceed. Returns [] when none respond (a genuine, fail-closed web_unreachable)."""
-    import socket
-    budget = discover.CONNECT_TIMEOUT if timeout is None else timeout
-    start = time.monotonic()
-    for port in _WEB_PORTS:
-        if time.monotonic() - start > deadline:
-            break
-        try:
-            with socket.create_connection((host, port), timeout=budget):
-                return [port]
-        except OSError:
-            continue
-    return []
+    host in parallel with a patient timeout; one reachable web port is enough to proceed. Returns
+    [] when none respond (a genuine, fail-closed web_unreachable). `deadline` bounds the wait."""
+    budget = discover.WARM_CONNECT_TIMEOUT if timeout is None else timeout
+    return discover.warm_host(host, _WEB_PORTS, rounds=1,
+                              connect_timeout=min(budget, deadline))["ports"]
 
 
 def _classify_exception(exc: Exception) -> str:
@@ -464,10 +577,45 @@ def _observed(recorder: dict, key: str) -> str | None:
     return value if value and value != placeholder else None
 
 
+_HIKVISION_MODEL_CHANNELS = re.compile(r"^(?:DS|IDS)-(?:96(\d{3})|[6-9]\d(\d{2}))(?=[A-Z])", re.I)
+
+
+def channels_from_model(model: str | None) -> int | None:
+    """The channel count a Hikvision recorder model name states (DS-7608NI-Q1 -> 8,
+    DS-96128NI -> 128), or None when the name does not follow that scheme."""
+    match = _HIKVISION_MODEL_CHANNELS.match(str(model or "").strip())
+    if not match:
+        return None
+    count = int(match.group(1) or match.group(2))
+    return count if 0 < count <= 256 else None
+
+
+def _bounded_channel_list(driver, budget: float):
+    """driver.list_channels() within `budget` seconds of wall clock: the rows, or None when
+    the recorder had not answered. Per-request timeouts alone do not bound it (several reads,
+    and a slow body keeps a read alive). A late answer is discarded."""
+    import threading
+    box: dict = {}
+
+    def read():
+        try:
+            box["rows"] = driver.list_channels()
+        except Exception as exc:  # noqa: BLE001 - re-raised in the caller's thread
+            box["error"] = exc
+    worker = threading.Thread(target=read, daemon=True, name="setup-channel-read")
+    worker.start()
+    worker.join(budget)
+    if worker.is_alive():
+        return None
+    if "error" in box:
+        raise box["error"]
+    return box["rows"]
+
+
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
                   hint: dict | None = None, _scan=None, _build=None, _probe=None,
-                  _hik_probe=None) -> dict:
+                  _hik_probe=None, _warm=None) -> dict:
     """Prove recorder identity + credentials + channel list — fast and bounded.
 
     `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
@@ -479,6 +627,7 @@ def test_recorder(address: str, username: str, password: str,
     build_fn = _build or build
     probe_fn = _probe or _probe_web_ports
     hik_probe_fn = _hik_probe or discover.probe_hikvision_isapi
+    warm_fn = _warm or discover.warm_host
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
 
@@ -492,6 +641,18 @@ def test_recorder(address: str, username: str, password: str,
     integration_state = hint.get("integration_state")
     preferred_web_port = hint.get("preferred_web_port")
     open_ports = list(hint.get("ports") or [])
+
+    # Reach the recorder before anything that has a short timeout (discover.warm_host): this is
+    # the step a browser login did for 5.1.7/5.1.8. Ports it proves join the discovery hint.
+    progress("Reaching the recorder on the network…")
+    try:
+        warm = warm_fn(host) or {}
+    except Exception:  # noqa: BLE001 - the checks below still run and classify the failure
+        warm = {}
+    _setup_log(f"reach host={host} mac={'yes' if warm.get('mac') else 'no'} "
+               f"ports={warm.get('ports')} elapsed={warm.get('elapsed')}s")
+    if open_ports and warm.get("ports"):
+        open_ports = sorted(set(open_ports) | set(warm["ports"]))
 
     if is_url:
         drivers = _ordered_drivers(vendor_hint or _vendor_hint_from_ports(open_ports))
@@ -512,6 +673,8 @@ def test_recorder(address: str, username: str, password: str,
             except Exception as exc:
                 _setup_log(f"scan failed host={host}: {_redact(str(exc), password)}")
                 open_ports = []
+            # The scan's 1.5 s connects can still miss what the patient reach step proved.
+            open_ports = sorted(set(open_ports) | set(warm.get("ports") or []))
         # Targeted web-port rescue: a recorder was found but no web port registered. The fast 0.4s
         # subnet sweep (or a stale discovery hint) commonly misses a Dahua's slower embedded HTTP
         # port (80) while catching its SDK port (37777). Re-probe the standard web ports on THIS host
@@ -554,7 +717,12 @@ def test_recorder(address: str, username: str, password: str,
     last_class = "connect"
     hikvision_auth_rejected = False
     hikvision_api_unavailable = (vendor_hint == "hikvision" and integration_state == "unavailable")
-    for driver_name, url in attempts:
+    attempts = list(attempts)
+    retried: set = set()
+    index = 0
+    while index < len(attempts):
+        driver_name, url = attempts[index]
+        index += 1
         # If ISAPI itself issued an authentication rejection, this host is now a
         # strong Hikvision candidate. Do not let a generic Dahua attempt overwrite
         # that diagnosis with another 401 before we try the standards fallback.
@@ -588,7 +756,16 @@ def test_recorder(address: str, username: str, password: str,
                     f"reported_channels={len(channels)}")
             else:
                 progress("Reading camera channels…")
-                channels = driver.list_channels()
+                channels = _bounded_channel_list(driver, CHANNEL_READ_BUDGET)
+                stated = (channels_from_model(info.model)
+                          if driver_name == "hikvision-isapi" and not channels else None)
+                if stated:
+                    _setup_log(f"channel list {'empty' if channels is not None else 'timed out'}; "
+                               f"model={info.model} states {stated} channels")
+                    channels = [SimpleNamespace(channel=str(i), name=f"Camera {i}")
+                                for i in range(1, stated + 1)]
+                elif channels is None:
+                    raise DriverError(f"camera list timed out after {CHANNEL_READ_BUDGET}s")
 
             _setup_log(f"OK driver={driver_name} identity=1 channels={len(channels)} "
                        f"elapsed={time.monotonic() - attempt_started:.1f}s")
@@ -625,6 +802,13 @@ def test_recorder(address: str, username: str, password: str,
                 raise ValueError(_CUSTOMER_ERROR["wrong_credentials"]) from None
             if driver_name == "hikvision-isapi" and cls == "unsupported" and vendor_hint == "hikvision":
                 hikvision_api_unavailable = True
+            if cls == "timeout" and (driver_name, url) not in retried:
+                # A recorder's embedded web server can take longer than a probe to answer its
+                # first request after a quiet period, then answer the next one at once (what
+                # a browser's patient first load hides). Retry this login once, right away.
+                retried.add((driver_name, url))
+                attempts.insert(index, (driver_name, url))
+                progress("The recorder is slow to answer. Trying again…")
             last_class = cls
         finally:
             if driver:
@@ -679,8 +863,17 @@ def _retained_event_count(local_id: str) -> int | None:
 
 
 def list_managed_recorders(config_path: Path) -> list[dict]:
-    """List the local recorder registry without exposing credentials."""
-    recorder_registry.migrate_legacy_singleton(config_path)
+    """List the local recorder registry without exposing credentials.
+
+    A recorder whose saved login cannot be read is LISTED as needing attention, never
+    hidden: the operator must be able to select it to fix it. The fail-closed migration
+    check below raises for an unreadable primary login, which used to empty the list."""
+    try:
+        recorder_registry.migrate_legacy_singleton(config_path)
+    except SecretError:
+        if not recorder_registry.recorders():
+            raise
+        _setup_log("a recorder login is unreadable; listing it as needing attention")
     out = []
     for row in recorder_registry.recorders():
         state = "available"
@@ -998,18 +1191,26 @@ def repair_managed_recorder_credential(
         local_id, username.strip(), password,
         mirror_legacy=bool(row.get("continuity_owner")),
     )
-    updated = recorder_registry.update_observed_identity(
-        local_id,
-        vendor=_observed(proven, "vendor"),
-        model=_observed(proven, "model"),
-        firmware=proven.get("firmware"),
-        driver=proven.get("driver") or row.get("driver") or "auto",
-        identity_fingerprint=(
-            f"serial:{proven.get('serial')}" if proven.get("serial")
-            else row.get("identity_fingerprint")
-        ),
-        verified_by_setup=True,
-    )
+    try:
+        updated = recorder_registry.update_observed_identity(
+            local_id,
+            vendor=_observed(proven, "vendor"),
+            model=_observed(proven, "model"),
+            firmware=proven.get("firmware"),
+            driver=proven.get("driver") or row.get("driver") or "auto",
+            identity_fingerprint=(
+                f"serial:{proven.get('serial')}" if proven.get("serial")
+                else row.get("identity_fingerprint")
+            ),
+            verified_by_setup=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — say exactly what is now true
+        # The login is already saved and was proven against this recorder, so it is kept
+        # (the old one may be what the recorder now refuses). Only the details failed.
+        _setup_log(f"recorder details not recorded after login change ({type(exc).__name__})")
+        raise ValueError(
+            "The recorder login was verified and saved, but WatchLog could not record the "
+            "recorder's details. Test this recorder again.") from exc
     out = _public_recorder_row(updated, credential_state="available")
     out["channels"] = list(proven.get("channels") or [])
     out["verified_against_hardware"] = bool(proven.get("verified_against_hardware"))
@@ -1227,6 +1428,8 @@ def _enroll(cloud, enrollment_code: str, device) -> dict | None:
         raise AgentSyncError("ENROLL_NETWORK",
             "WatchLog could not verify this site code. Check the internet connection and try again.") from exc
     except Exception as exc:                       # noqa: BLE001 — transport/timeout
+        _setup_log(f"enroll transport failure to {core.server_host(getattr(cloud, 'rpc', ''))}: "
+                   f"{type(exc).__name__}: {str(exc)[:300]}")
         raise AgentSyncError("ENROLL_NETWORK",
             "WatchLog could not reach the cloud to verify this site code. Check the internet connection and try again.") from exc
     return {"agent_id": r["agent_id"], "agent_key": r["agent_key"], "tenant_id": r["tenant_id"],
@@ -1352,8 +1555,105 @@ def sync_cameras(cloud, identity: dict, channels: list, progress: Callable[[str]
     return mapping
 
 
+AGENT_TASK_NAME = "WatchLog Agent"
+
+# Stop the scheduled task, then any watchlog-agent.exe running from THIS install (never a
+# same-named process elsewhere), exactly like register-service.ps1. Prints how many Agent
+# processes were running so Setup knows whether to start it again if it ends unfinished.
+_PAUSE_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$want = [System.IO.Path]::GetFullPath((Join-Path $env:WL_INSTALL_DIR 'watchlog-agent.exe'))
+# Get-Process first: Get-CimInstance can take 10+ s on a slow PC (5.1.8 field). WMI only when
+# an Agent process hides its path.
+$procs = @(Get-Process -Name 'watchlog-agent')
+$running = @($procs | Where-Object { $_.Path -and ([System.IO.Path]::GetFullPath([string]$_.Path) -ieq $want) })
+if ($procs | Where-Object { -not $_.Path }) {
+  $running = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
+    Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) } |
+    ForEach-Object { Get-Process -Id $_.ProcessId })
+}
+$task = Get-ScheduledTask -TaskName $env:WL_TASK
+if ($task) { Stop-ScheduledTask -TaskName $env:WL_TASK; Start-Sleep -Milliseconds 500 }
+$running | ForEach-Object { Stop-Process -Id $_.Id -Force }
+Write-Output ("WL_PAUSED running=" + $running.Count + " task=" + [bool]$task)
+"""
+
+
+def _powershell() -> str:
+    return str(Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
+               / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
+def pause_background_agent(install_dir: Path | None = None, timeout: int = 30, _run=None) -> dict:
+    """Stop a running background Agent before Setup tests the recorder login or enrolls.
+
+    Field defect (HASCO, Hikvision DS-7608NI-Q1, 2026-10-07): the upgrade stage had restarted
+    the Agent, so it held the recorder's live event session while Setup tested the login (30 s
+    timeouts, "went through after many tests") and enrolled a new identity, which then could
+    not prove itself and was rolled back. One process may talk to the recorder at a time.
+    Setup restarts the Agent itself: finalize through ensure_background_agent, an unfinished
+    Setup through resume_background_agent. Never raises.
+    {"paused": bool, "was_running": bool, "detail": str}"""
+    if os.name != "nt":
+        return {"paused": False, "was_running": False, "detail": "Windows-only"}
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    # The child inherits these two (paths are never spliced into the script text).
+    saved = {k: os.environ.get(k) for k in ("WL_INSTALL_DIR", "WL_TASK")}
+    os.environ["WL_INSTALL_DIR"], os.environ["WL_TASK"] = str(base), AGENT_TASK_NAME
+    try:
+        code, out = runner([_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                            "Bypass", "-Command", _PAUSE_SCRIPT], timeout)
+    except Exception as exc:  # noqa: BLE001 - never block Setup on this
+        return {"paused": False, "was_running": False,
+                "detail": f"could not stop the running Agent ({type(exc).__name__})"}
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    match = re.search(r"WL_PAUSED running=(\d+) task=(True|False)", out or "")
+    if code != 0 or not match:
+        return {"paused": False, "was_running": False,
+                "detail": f"stopping the running Agent exited {code}"}
+    running = int(match.group(1)) > 0
+    _setup_log(f"background agent paused for setup (was_running={running}, "
+               f"task={match.group(2)})")
+    return {"paused": True, "was_running": running or match.group(2) == "True",
+            "detail": "the running Agent was stopped for setup" if running
+            else "no Agent was running"}
+
+
+def resume_background_agent(timeout: int = 30, _run=None) -> dict:
+    """Start the existing scheduled Agent again after a Setup that did not finish, so the
+    site keeps the monitoring it had before. Never raises. {"resumed": bool, "detail": str}"""
+    if os.name != "nt":
+        return {"resumed": False, "detail": "Windows-only"}
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    schtasks = str(Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32" / "schtasks.exe")
+    try:
+        code, _out = runner([schtasks, "/Run", "/TN", AGENT_TASK_NAME], timeout)
+    except Exception as exc:  # noqa: BLE001
+        return {"resumed": False, "detail": f"could not restart the Agent ({type(exc).__name__})"}
+    _setup_log(f"background agent resumed after an unfinished setup (exit {code})")
+    return {"resumed": code == 0,
+            "detail": "the previous Agent is running again" if code == 0
+            else f"restarting the previous Agent exited {code}"}
+
+
 def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
-                            _run=None) -> dict:
+                            _run=None, *, require_readiness: bool = False) -> dict:
     """Register and START the background agent as soon as the site is genuinely connected.
 
     WHY THIS EXISTS (0.4.7). The NSIS installer runs the setup wizard under ExecWait and
@@ -1395,14 +1695,77 @@ def ensure_background_agent(install_dir: Path | None = None, timeout: int = 120,
     cmd = [str(powershell),
            "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
            "-File", str(script), "-InstallDir", str(base)]
+    if require_readiness:
+        # Field Build 41/69: a running task is not proof the background Agent reached
+        # WatchLog and the recorder; register-service.ps1 waits for that proof (exit 3 =
+        # running but not proven). The Agent keeps running either way.
+        cmd.append("-RequireRecorderReadiness")
     try:
         code, out = runner(cmd, timeout)
     except Exception as exc:  # noqa: BLE001 — never block a connected site
         return {"started": False, "detail": f"could not start background agent ({type(exc).__name__})"}
     if code == 0:
-        return {"started": True, "detail": "background agent registered and started"}
+        return {"started": True, "proven": bool(require_readiness),
+                "detail": ("background agent reached WatchLog and identified the recorder"
+                           if require_readiness else "background agent registered and started")}
+    if code == 3 and require_readiness:
+        return {"started": True, "proven": False,
+                "detail": "background agent is running but has not yet confirmed the recorder"}
+    # Any other outcome (the script overran and was killed, or exited oddly) is judged by the
+    # PC itself: an Agent process from THIS install plus its scheduled task means it started.
+    running = _background_agent_running(base, runner)
+    if running:
+        _setup_log(f"background registration exited {code}, but the Agent is running "
+                   f"from {base}; treated as started")
+        return {"started": True, "proven": False,
+                "detail": "background agent is running (its confirmation is still in progress)"}
     return {"started": False,
             "detail": f"background registration exited {code}: {(out or '').strip()[:160]}"}
+
+
+# Prints WL_RUNNING agents=<n> task=<state>: Agent processes started from THIS install's
+# watchlog-agent.exe (never a same-named process elsewhere) and the task's state.
+_RUNNING_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$want = [System.IO.Path]::GetFullPath((Join-Path $env:WL_INSTALL_DIR 'watchlog-agent.exe'))
+$n = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
+  Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) }).Count
+$task = Get-ScheduledTask -TaskName $env:WL_TASK
+Write-Output ("WL_RUNNING agents=" + $n + " task=" + $(if ($task) { [string]$task.State } else { 'none' }))
+"""
+
+
+def background_agent_running(install_dir: Path | None = None, timeout: int = 30, _run=None) -> bool:
+    """Is this install's background Agent running under its scheduled task? Never raises."""
+    if os.name != "nt":
+        return False
+    base = Path(install_dir) if install_dir else Path(sys.executable).resolve().parent
+    runner = _run
+    if runner is None:
+        import proc_util
+
+        def runner(cmd, timeout):
+            return proc_util.run_bounded(cmd, timeout)
+    return _background_agent_running(base, runner, timeout)
+
+
+def _background_agent_running(base: Path, runner, timeout: int = 30) -> bool:
+    """True when this install's Agent process runs under a registered task. Never raises."""
+    saved = {k: os.environ.get(k) for k in ("WL_INSTALL_DIR", "WL_TASK")}
+    os.environ["WL_INSTALL_DIR"], os.environ["WL_TASK"] = str(base), AGENT_TASK_NAME
+    try:
+        code, out = runner([_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                            "Bypass", "-Command", _RUNNING_SCRIPT], timeout)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    match = re.search(r"WL_RUNNING agents=(\d+) task=(\w+)", out or "")
+    return bool(code == 0 and match and int(match.group(1)) > 0 and match.group(2) != "none")
 
 
 def confirm_background_agent(timeout: float = 20.0, since_offset: int | None = None,
@@ -1913,6 +2276,31 @@ def _write_json_file(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
+# Set by Setup from --connected-marker (NSIS passes a path in its own per-run $PLUGINSDIR,
+# so a marker can never be left over from an earlier run and NSIS never deletes under
+# ProgramData during install).
+CONNECTED_MARKER_ENV = "WATCHLOG_SETUP_CONNECTED_MARKER"
+
+
+def _mark_site_connected(site_id: str) -> None:
+    """Record, outside the Setup process, that this run connected the site and started
+    the background Agent. NSIS reads it when Setup exits non-zero: a connected site is a
+    successful install even when the Setup window itself dies afterwards (HASCO 5.1.6:
+    "WatchLog Setup has stopped working" during "Starting WatchLog in the background",
+    with the new Agent already reporting, so NSIS aborted and skipped the uninstaller).
+    No-op unless the installer asked for the marker. Never raises."""
+    target = os.environ.get(CONNECTED_MARKER_ENV)
+    if not target:
+        return
+    try:
+        _write_json_file(Path(target),
+                         {"site_id": site_id, "agent_started": True,
+                          "connected_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                          "setup_version": SETUP_AGENT_VERSION})
+    except Exception as exc:  # noqa: BLE001 - the marker only softens a later crash
+        _setup_log(f"connected marker not written ({type(exc).__name__})")
+
+
 def _save_recorder_camera_profiles(local_id: str, display_name: str,
                                    profiles: list[dict]) -> None:
     """Persist one recorder's camera choices, keyed by recorder (non-secret).
@@ -2016,8 +2404,9 @@ def _stage_recorder_registry(config_path: Path, recorder: dict, username: str,
     * A registry of this same enrolled site: re-point its continuity recorder
       (the legacy singleton) at the newly proven address and login, keeping its
       local and cloud identity, so the registry and watchlog.ini agree.
-    * A registry left by an earlier installation (uninstall removes the identity
-      but keeps recorders.json), by another site, or unreadable: quarantine it
+    * A registry left by an earlier installation (an uninstaller before 5.1 removed the
+      identity but kept recorders.json; 5.1+ removes both), by another site, or
+      unreadable: quarantine it
       (moved aside, never deleted) and stage fresh, instead of blocking every
       reinstall. After an uninstall the site is unknown, so the fresh row keeps
       the old continuity recorder's local id: on the same site the new Agent then
@@ -2125,9 +2514,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # any failure or refusal puts those files back as they were, so the two
     # stores never point at different recorders.
     state_path = programdata_dir() / "agent_state.json"
+    # The Agent identity (agent_state.json + its key) is snapshotted too: enrollment
+    # rewrites it inside this block, and a failed site switch must not leave the new
+    # site's identity beside the old site's configuration (audit P8-c).
     legacy_store = credential_store.snapshot_secret_files([
         config_path, credential_store.nvr_credential_path(),
         state_path.parent / "recorder_identity.json",
+        state_path, credential_store.agent_key_path(),
     ])
     try:
         progress("Encrypting recorder credentials on this PC…")
@@ -2145,6 +2538,13 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
         # The identity this PC had before this run decides whether an existing
         # recorder registry still belongs here (see _stage_recorder_registry).
         prior_identity = _load_existing_identity(state_path)
+        # Label any older Agent's unstamped queue with the site that wrote it BEFORE this
+        # enrollment, so the new Agent sets it aside if this run moves the PC to another site.
+        try:
+            import site_runtime
+            site_runtime.stamp_prior_site(state_path.parent, prior_identity)
+        except Exception as exc:  # noqa: BLE001 - never block setup; the Agent adopts unstamped data
+            _setup_log(f"site runtime stamp skipped ({type(exc).__name__})")
         # Honour the supplied site code first; only reuse a local identity that still
         # authenticates. Never skip enrollment just because a stale agent_state.json exists.
         state = establish_identity(cloud, state_path, enrollment_code, device, progress)
@@ -2196,8 +2596,14 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
             if added_now:
                 added.append(row["local_id"])
             extra_rows.append(row)
-    except BaseException:
-        credential_store.restore_secret_files(legacy_store)
+    except BaseException as exc:
+        not_restored = credential_store.restore_secret_files(legacy_store)
+        if not_restored:
+            _setup_log("setup rollback incomplete: "
+                       + ", ".join(p.name for p in not_restored))
+            raise ValueError(
+                "Setup stopped and WatchLog could not put this PC's previous settings "
+                "back. Run Repair before using WatchLog on this PC.") from exc
         raise
 
     # A first recorder that WatchLog already knows (Setup run again on a site whose
@@ -2304,9 +2710,12 @@ def finalize_install(config_path: Path, public: dict, enrollment_code: str,
     # integration is therefore NEVER run by first-run setup.
     # =================================================================
     progress("Starting WatchLog in the background…")
-    agent_start = ensure_background_agent(timeout=BACKGROUND_START_TIMEOUT_SECONDS)
+    agent_start = ensure_background_agent(timeout=BACKGROUND_READY_TIMEOUT_SECONDS,
+                                          require_readiness=True)
     core.log(f"background agent start: {agent_start.get('detail')}")
     connected = bool(agent_start.get("started"))
+    if connected:
+        _mark_site_connected(state["site_id"])
 
     # Recorder-side push remains an explicit support/diagnostic command only.
     # It is intentionally absent from the installer critical path until it has

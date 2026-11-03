@@ -58,85 +58,32 @@ def fake_dahua(responses):
 
 @unittest.skipIf(dd is None, "dahua driver not importable here")
 class DahuaConfigurePushTests(unittest.TestCase):
-    def test_success_is_only_claimed_after_reading_the_config_back(self):
-        drv = fake_dahua({
-            "action=setConfig": "OK",
-            "getConfig&name=AlarmServer":
-                "table.AlarmServer.Enable=true\r\n"
-                "table.AlarmServer.Address=watchlog-push.example.io\r\n"
-                "table.AlarmServer.Port=443\r\n",
-        })
-        out = drv.configure_push(PUSH_URL)
-        self.assertTrue(out["applied"])
-        self.assertTrue(out["verified"])
-        self.assertIn("watchlog-push.example.io", out["detail"])
-        self.assertTrue(any("action=setConfig" in c for c in drv.calls))
-        self.assertTrue(any("getConfig&name=AlarmServer" in c for c in drv.calls),
-                        "must read the config back rather than trust the write")
+    """Generic Dahua AlarmServer is a proprietary alarm-centre protocol, not a WatchLog
+    webhook: configure_push only reads it and never writes (field W2 925885a4)."""
 
-    def test_a_recorder_that_silently_ignores_the_write_is_reported_unverified(self):
-        """The XVR accepts the setConfig with 200 but keeps its old config."""
+    def test_it_never_writes_the_recorder_and_reports_push_unsupported(self):
         drv = fake_dahua({
-            "action=setConfig": "OK",
             "getConfig&name=AlarmServer":
-                "table.AlarmServer.Enable=false\r\ntable.AlarmServer.Address=\r\n",
+                "table.AlarmServer.Enable=true\r\ntable.AlarmServer.Address=10.0.0.9\r\n"
+                "table.AlarmServer.Protocol=DAHUA\r\n",
         })
-        out = drv.configure_push(PUSH_URL)
-        self.assertTrue(out["applied"])
-        self.assertFalse(out["verified"], "silently-ignored config must NOT read as success")
-        self.assertIn("agent", out["detail"].lower())
-
-    def test_a_recorder_pointed_somewhere_else_is_not_verified(self):
-        drv = fake_dahua({
-            "action=setConfig": "OK",
-            "getConfig&name=AlarmServer":
-                "table.AlarmServer.Enable=true\r\n"
-                "table.AlarmServer.Address=someone-elses-server.net\r\n",
-        })
-        self.assertFalse(drv.configure_push(PUSH_URL)["verified"])
-
-    def test_unsupported_recorder_reports_instead_of_raising(self):
-        """An old XVR with no alarm-server config is a normal answer, not a crash."""
-        drv = fake_dahua({"action=setConfig": DriverError("HTTP 400 Bad Request")})
         out = drv.configure_push(PUSH_URL)
         self.assertFalse(out["applied"])
         self.assertFalse(out["verified"])
-        self.assertIn("rejected", out["detail"].lower())
+        self.assertIn("left unchanged", out["detail"])
+        self.assertFalse(any("setConfig" in c for c in drv.calls), drv.calls)
 
-    def test_read_back_failure_does_not_claim_verification(self):
-        drv = fake_dahua({
-            "action=setConfig": "OK",
-            "getConfig&name=AlarmServer": DriverError("HTTP 500"),
-        })
+    def test_an_unreadable_alarm_server_is_still_left_untouched(self):
+        drv = fake_dahua({"getConfig&name=AlarmServer": DriverError("HTTP 500")})
         out = drv.configure_push(PUSH_URL)
-        self.assertTrue(out["applied"])
-        self.assertFalse(out["verified"])
+        self.assertFalse(out["applied"])
+        self.assertFalse(any("setConfig" in c for c in drv.calls), drv.calls)
 
     def test_bad_credentials_still_surface_as_an_auth_fault(self):
         """Auth failure must not be flattened into 'this model is unsupported'."""
-        drv = fake_dahua({"action=setConfig": NvrAuthFailed("rejected the password")})
+        drv = fake_dahua({"getConfig&name=AlarmServer": NvrAuthFailed("rejected the password")})
         with self.assertRaises(NvrAuthFailed):
             drv.configure_push(PUSH_URL)
-
-    def test_a_url_with_no_host_is_refused_before_touching_the_recorder(self):
-        drv = fake_dahua({})
-        out = drv.configure_push("/push/abc123")
-        self.assertFalse(out["applied"])
-        self.assertEqual([], drv.calls, "must not write a nonsense config to the recorder")
-
-    def test_the_site_token_path_is_sent_to_the_recorder(self):
-        drv = fake_dahua({
-            "action=setConfig": "OK",
-            "getConfig&name=AlarmServer":
-                "table.AlarmServer.Enable=true\r\n"
-                "table.AlarmServer.Address=watchlog-push.example.io\r\n",
-        })
-        drv.configure_push(PUSH_URL)
-        written = " ".join(c for c in drv.calls if "setConfig" in c)
-        self.assertIn("abc123token", written,
-                      "without the token in the path the recorder cannot be identified")
-        self.assertIn("AlarmServer.Enable=true", written)
-
 
 
 class ConfigurePushCommandTests(unittest.TestCase):

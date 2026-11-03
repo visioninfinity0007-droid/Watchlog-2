@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+import capability_sync
 import recorder_registry
 import recorder_runtime
 
@@ -336,10 +337,9 @@ def probe_and_sync_recorder(cloud, state: dict,
             {"channel": str(ch.channel), "name": getattr(ch, "name", None)}
             for ch in driver.list_channels()
         ]
-        try:
-            capabilities = driver.capabilities()
-        except Exception:
-            capabilities = None
+        # Capability enrichment is NOT read here: it is deferred off the startup path
+        # (capability_sync, field Build 41/69) and sent once monitoring has started.
+        capabilities = None
 
         _save_observed_identity(
             ctx.local_id,
@@ -369,14 +369,8 @@ def probe_and_sync_recorder(cloud, state: dict,
         if callable(pin):
             pin()
 
-        if capabilities and capabilities.get("channels"):
-            cloud.call(
-                "wl_sync_recorder_capabilities",
-                p_agent_id=state["agent_id"],
-                p_agent_key=state["agent_key"],
-                p_recorder_id=ctx.cloud_recorder_id,
-                p_capabilities=capabilities,
-            )
+        capability_sync.defer(ctx.config, state, cloud, open_driver_fn,
+                              recorder_id=ctx.cloud_recorder_id)
 
         ctx.vendor = _device_fact(device, "vendor") or ctx.vendor
         ctx.model = _device_fact(device, "model") or ctx.model

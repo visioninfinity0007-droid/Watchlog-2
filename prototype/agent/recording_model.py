@@ -38,30 +38,45 @@ def _nvr_reason(nvr_state: str) -> str:
             "auth_failed": "nvr_auth_failed"}.get(nvr_state, "agent_unreachable")
 
 
+# Reason codes a driver may attach to its storage verdict (drivers/recorder_truth.py).
+STORAGE_REASONS = frozenset({"ok", "storage_fault", "disk_error", "disk_full", "no_disks_reported",
+                             "capacity_unknown", "disk_state_unknown"})
+# Reason codes for a recording verdict beyond the original vocabulary.
+RECORDING_REASONS = frozenset({"recording_disabled", "no_recent_recording", "video_loss",
+                               "archive_search_failed", "no_recent_archive"})
+
+
 def classify_storage(*, nvr_state: str, supported: bool, raw_state,
-                     native_fatal: bool = False, native_lowspace: bool = False):
+                     native_fatal: bool = False, native_lowspace: bool = False,
+                     raw_reason: str | None = None):
     """(storage_state, reason). raw_state is the driver's read: 'ok'|'degraded'|'fault'|None.
 
     native_fatal  = a StorageFailure/StorageNotExist event (no usable storage) -> FAULT.
     native_lowspace = a StorageLowSpace event (usable, but low) -> DEGRADED, never FAULT.
+    raw_reason    = the driver's reason for its verdict (e.g. disk_error, no_disks_reported);
+                    it names the cause but never changes the state.
     """
+    reason = raw_reason if raw_reason in STORAGE_REASONS else None
     if nvr_state != "ok":
         return STORAGE_UNKNOWN, _nvr_reason(nvr_state)
     if native_fatal:
         return STORAGE_FAULT, "disk_error"                    # no usable recording storage
     if raw_state == "fault":
-        return STORAGE_FAULT, "storage_fault"
+        return STORAGE_FAULT, reason if reason in ("disk_error", "storage_fault") else "storage_fault"
     if raw_state == "degraded" or native_lowspace:
-        return STORAGE_DEGRADED, "disk_full"                  # low space / partial — still usable
+        # low space / partial — still usable
+        return STORAGE_DEGRADED, reason if reason in ("disk_error", "disk_full") else "disk_full"
     if not supported or raw_state is None:
-        return STORAGE_UNKNOWN, "unknown"                     # unreadable/unsupported -> UNKNOWN, never 'ok'
+        # unreadable/unsupported -> UNKNOWN, never 'ok'
+        return STORAGE_UNKNOWN, reason if reason in ("no_disks_reported", "capacity_unknown",
+                                                     "disk_state_unknown") else "unknown"
     if raw_state == "ok":
         return STORAGE_OK, "ok"
     return STORAGE_UNKNOWN, "unknown"
 
 
 def classify_recording(*, nvr_state: str, storage_state: str, inventory_state: str,
-                       supported: bool, raw_channel_state):
+                       supported: bool, raw_channel_state, raw_reason: str | None = None):
     """(recording_state, reason). raw_channel_state: 'recording'|'not_recording'|None (unreadable /
     config-only). Camera VIDEO health is deliberately NOT an input — recording is a distinct layer.
 
@@ -81,12 +96,12 @@ def classify_recording(*, nvr_state: str, storage_state: str, inventory_state: s
     if not supported or raw_channel_state is None:
         return REC_UNKNOWN, "unknown"                         # config-only/unreadable -> never assume recording
     if raw_channel_state == "not_recording":
-        return REC_NOT, "not_recording"
+        return REC_NOT, raw_reason if raw_reason in RECORDING_REASONS else "not_recording"
     if raw_channel_state == "recording":
         return REC_RECORDING, "ok"
     return REC_UNKNOWN, "unknown"
 
 
-__all__ = ["classify_storage", "classify_recording",
+__all__ = ["classify_storage", "classify_recording", "STORAGE_REASONS", "RECORDING_REASONS",
            "STORAGE_OK", "STORAGE_DEGRADED", "STORAGE_FAULT", "STORAGE_UNKNOWN",
            "REC_RECORDING", "REC_NOT", "REC_STORAGE_FAULT", "REC_UNKNOWN"]

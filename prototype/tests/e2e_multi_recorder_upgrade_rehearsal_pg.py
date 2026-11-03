@@ -67,6 +67,14 @@ APPLY = ROOT / "supabase" / "apply_migrations.py"
 PRELUDE = ROOT / "supabase" / "ci_prelude.sql"
 BASELINE_LAST = 145          # production baseline: 0001..0145
 HOTFIX_FIRST = (156,)        # standalone hotfixes applied to production before the chain
+# A hotfix function a later migration deliberately extends, with the exact text change it
+# makes: anything else in that body still counts as a redefinition. 0162 (5.1.2 Agent
+# runtime status) appends one element to the 0156 wl_known_capabilities() list.
+LATER_EXTENSIONS = {
+    "wl_known_capabilities()": ("    'config_snapshot_requests'\n",
+                                "    'config_snapshot_requests',\n"
+                                "    'agent_runtime_status_v1'\n"),
+}
 MNVR_015 = "[gated: MNVR-015] "
 
 ENV = {}
@@ -330,12 +338,12 @@ def span(names: list[str]) -> str:
 
 
 def function_bodies(dbname: str, migration: Path) -> dict:
-    """md5(prosrc) of every public function the given migration file defines."""
+    """prosrc of every public function the given migration file defines."""
     names = sorted(set(re.findall(r"(?i)create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?(\w+)",
                                   migration.read_text(encoding="utf-8"))))
     with psycopg.connect(**dsn(dbname)) as c:
         return {r[0]: r[1] for r in c.execute(
-            """select p.oid::regprocedure::text, md5(p.prosrc)
+            """select p.oid::regprocedure::text, p.prosrc
                  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
                 where n.nspname='public' and p.proname = any(%s)""", (names,)).fetchall()}
 
@@ -413,9 +421,13 @@ def run(production_order: bool = False) -> int:
         if production_order:
             for name, bodies in hotfix_bodies.items():
                 later = function_bodies(rehearsal_db, MIGRATIONS / name)
-                step(bool(bodies) and later == bodies,
-                     f"functions defined by {name[:4]} are not redefined by the later chain",
-                     str(sorted(k for k in bodies if later.get(k) != bodies[k])))
+                # A listed extension must be exactly that change on the hotfix body.
+                expected = {k: (v.replace(*LATER_EXTENSIONS[k]) if k in LATER_EXTENSIONS
+                                and later.get(k) != v else v) for k, v in bodies.items()}
+                step(bool(bodies) and later == expected,
+                     f"functions defined by {name[:4]} are not redefined by the later chain "
+                     "(beyond the listed extensions)",
+                     str(sorted(k for k in bodies if later.get(k) != expected[k])))
 
         with psycopg.connect(**dsn(rehearsal_db)) as conn:
             s = Session(conn)

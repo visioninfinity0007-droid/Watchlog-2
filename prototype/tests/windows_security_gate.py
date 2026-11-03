@@ -35,6 +35,7 @@ Every subcommand prints PASS/FAIL lines and exits non-zero on any failure.
 import argparse
 import ctypes
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -126,6 +127,22 @@ def cmd_inprocess() -> None:
         except Exception as exc:                       # noqa: BLE001
             check(f"write+read recorder credential ({exc})", False)
 
+        # 1b. a per-recorder login (multi-recorder): same protection, its own folder, checked
+        #     by an independent ACL read rather than by the code that set it
+        try:
+            rec_id = "11111111-1111-4111-8111-111111111111"
+            cs.save_recorder_credential(rec_id, "op2", "p@ss:two")
+            cred = cs.load_recorder_credential(rec_id)
+            check("write+read per-recorder credential",
+                  cred["username"] == "op2" and cred["password"] == "p@ss:two")
+            for target in (cs.recorder_secrets_dir(), cs.recorder_credential_path(rec_id)):
+                principals, protected = _acl(target)
+                check(f"{target.name}: only SYSTEM+Administrators, inheritance off "
+                      f"({sorted(principals)}, protected={protected})",
+                      principals == {"S-1-5-18", "S-1-5-32-544"} and protected)
+        except Exception as exc:                       # noqa: BLE001
+            check(f"per-recorder credential protection ({exc})", False)
+
         # 2. owner + DACL SELF-REPAIR of a deliberately-insecure directory
         repair = Path(d) / "RepairMe"
         repair.mkdir(parents=True, exist_ok=True)
@@ -158,6 +175,23 @@ def cmd_inprocess() -> None:
             check("watchlog.env migrates to DPAPI and plaintext is removed",
                   cred and cred["password"] == "legacy-pw"
                   and cs.nvr_credential_path().exists() and not env.exists())
+
+
+def _acl(path: Path) -> tuple[set[str], bool]:
+    """(SIDs with an Allow ACE, inheritance protected) read by PowerShell Get-Acl."""
+    script = ("$a = Get-Acl -LiteralPath $env:WL_ACL_PATH; "
+              "$a.Access | Where-Object { $_.AccessControlType -eq 'Allow' } | ForEach-Object { "
+              "$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }; "
+              "'PROTECTED=' + $a.AreAccessRulesProtected")
+    # A PowerShell 7 step's PSModulePath breaks Windows PowerShell 5.1's Get-Acl module load.
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, env={**env, "WL_ACL_PATH": str(path)})
+    out = proc.stdout.split()
+    if proc.returncode != 0 or not any(line.startswith("PROTECTED=") for line in out):
+        raise RuntimeError(f"Get-Acl failed for {path}: {proc.stderr.strip()[:300]}")
+    return ({line for line in out if line.startswith("S-1-")},
+            "PROTECTED=True" in out)
 
 
 def cmd_write_secret(path: str) -> None:

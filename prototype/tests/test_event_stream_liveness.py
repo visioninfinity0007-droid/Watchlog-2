@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_collector_harness import Info, run_collector, stop_after_first_wait  # noqa: E402
 import analytics_agent  # noqa: E402
 import watchlog_agent as core  # noqa: E402
+import agent_core  # noqa: E402
 from drivers.dahua import DahuaDriver  # noqa: E402
 from drivers.hikvision import HikvisionDriver  # noqa: E402
 
@@ -300,7 +301,7 @@ class Cloud:
 
 def test_heartbeat_writes_redacted_event_stream_state(monkeypatch, tmp_path):
     path = tmp_path / "runtime-health.json"
-    monkeypatch.setattr(core, "runtime_health_path", lambda: path)
+    monkeypatch.setattr(agent_core, "runtime_health_path", lambda: path)  # heartbeat lives in agent_core (shared with Setup); patch its own collaborator
     stream = {"connected": False, "connected_at": None, "last_frame_at": "2026-10-04T16:00:00+00:00",
               "last_error": "alertStream: http://admin:pw@192.168.1.64/ISAPI/Event/x: HTTP 503"}
     core.heartbeat(Cloud(), {"agent_id": "a", "agent_key": "k"}, None,

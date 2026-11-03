@@ -188,13 +188,15 @@ def check():
 
     # Background agent and branded GUI remain separate release surfaces.
     assert '$entry = "agent\\release_agent.py"' in AGENT_BUILD
-    assert '_ORIGINAL_SETUP = app.analytics_setup.run' in RELEASE_ENTRY
-    assert 'raise SystemExit(1)' in RELEASE_ENTRY
+    # The packaged Agent refuses the console wizard (plain-text credential path); WatchLog Setup
+    # configures the site (test_console_setup_retired.py).
+    assert 'app.analytics_setup.run = _console_setup_retired' in RELEASE_ENTRY
     assert 'app.enhanced_cmd_run = _setup_validation_complete' in RELEASE_ENTRY
     assert '"--setup" in sys.argv' in RELEASE_ENTRY
     assert 'File "watchlog-setup-ui.exe"' in NSIS
     # --installer-child: NSIS ExecWaits this window, so a finished setup must close itself.
-    gui_exec='ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\\watchlog.ini"\''
+    # 5.1.7 appends --connected-marker after --config, so match the command up to there.
+    gui_exec='ExecWait \'"$INSTDIR\\watchlog-setup-ui.exe" --installer-child --config "$INSTDIR\\watchlog.ini"'
     assert gui_exec in NSIS
     assert "WatchLog setup exited with code $0" in NSIS
     assert 'watchlog-agent.exe" --setup' not in NSIS

@@ -43,11 +43,12 @@ class Info:
 
 
 def run_collector(monkeypatch, open_driver, *, holder=None, until=None, timeout=10.0,
-                  reconnect_wait=None, cfg=None):
+                  reconnect_wait=None, cfg=None, detector=None):
     """Run the packaged collector on a thread until ``until(holder, spool)`` is true (or
-    the timeout passes), then stop it. Returns (spool, holder, finished_in_time)."""
+    the timeout passes), then stop it. Returns (spool, holder, finished_in_time).
+    ``detector`` stands in for the local person/vehicle model (None: no model)."""
     monkeypatch.setattr(core, "open_driver", open_driver)
-    monkeypatch.setattr(core.vision, "build", lambda _cfg, _log: None)
+    monkeypatch.setattr(core.vision, "build", lambda _cfg, _log: detector)
     monkeypatch.setattr(core.credential_store, "credential_generation", lambda: "gen-1")
     if reconnect_wait is not None:
         monkeypatch.setattr(core, "_reconnect_wait", reconnect_wait)

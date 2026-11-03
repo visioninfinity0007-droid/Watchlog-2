@@ -1,0 +1,8 @@
+{
+  "schema": "watchlog.update_bootstrap.v1",
+  "channel": "production",
+  "manifest_url": "https://oyvgubyxmjlijiczjona.supabase.co/functions/v1/watchlog-update-manifest",
+  "public_key_b64": "0OM6vRLc4lCxY7uj2OpnEMNUikyK8uv5arw/04bFOM0=",
+  "release_tag": "watchlog-production",
+  "min_remote_update_version": "5.0.24"
+}

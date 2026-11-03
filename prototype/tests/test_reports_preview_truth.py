@@ -39,7 +39,7 @@ assert "Most recent completed report" in PAGE,     "Yesterday must point custome
 # Chai Wala's four time windows are one reporting product, not four unrelated renderers.
 UNIFIED = Path("portal/app/reports/unified-restaurant-report.js").read_text(encoding="utf-8")
 assert 'import UnifiedRestaurantReport from "./unified-restaurant-report";' in PAGE,     "restaurant Reports must use the unified report shell"
-restaurant_branch = PAGE.split("if(r.isChaiWalaRestaurant){", 1)[1].split("}else if(r.isOffice){", 1)[0]
+restaurant_branch = PAGE.split("if(r.isRestaurant){", 1)[1].split("}else if(r.isOffice){", 1)[0]
 assert "<UnifiedRestaurantReport" in restaurant_branch,     "all restaurant time windows must enter the unified shell"
 assert "ManagementReading" not in restaurant_branch,     "restaurant Reports must not append a second AI-written report below the structured report"
 
@@ -47,8 +47,11 @@ for label in ("Overview", "Business", "Security"):
     assert label in UNIFIED, f"unified restaurant report missing {label} local view"
 
 assert 'minimum=days===7?4:10' in UNIFIED,     "7/30-day reports must gate trends on enough represented service days"
-assert "comparisonReady=trendReady&&previousObserved>=minimum" in UNIFIED,     "period comparisons must require enough represented days in both periods"
-assert "Missing or incomplete days remain unknown" in UNIFIED,     "missing service days must never be treated as zero demand"
+# a52a01ff withholds period comparisons outright until covers reconcile; either rule keeps an
+# unreliable comparison off the page.
+assert ("comparisonReady=trendReady&&previousObserved>=minimum" in UNIFIED
+        or "comparisonReady=false" in UNIFIED),     "period comparisons must require enough represented days in both periods"
+assert "missing days are unknown, not zero demand" in UNIFIED,     "missing service days must never be treated as zero demand"
 assert "No security exception recorded in the available coverage" in UNIFIED,     "security clear-state copy must stay scoped to available coverage"
 assert "report_id:r.report_id" in UNIFIED,     "rolling-period recommendations must preserve their source report for client feedback"
 

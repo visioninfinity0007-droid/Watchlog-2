@@ -1,5 +1,7 @@
 # WatchLog — Signed-Scope Gap Matrix
 
+> Dated snapshot (2026-08-31). Its installer and `--setup` rows are superseded: see `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
+
 **Date:** 2026-08-31 · Audited HEAD `ce651dd` · against the **signed** 4-milestone scope (authoritative
 over older draft proposals). Companion: `CURRENT_STATE_2026-08-31.md` / `.json`.
 

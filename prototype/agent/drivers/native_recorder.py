@@ -26,6 +26,9 @@ from .hikvision import HikvisionDriver
 _DAHUA_NATIVE_AI = {
     "SmartMotionHuman","SmartMotionVehicle","CrossLineDetection",
     "CrossRegionDetection","LeftDetection","TakenAwayDetection",
+    # 5.1.2: the recorder's own face detection is a native classification too; it was
+    # missing here, so a face event was gated on a local person/vehicle detection.
+    "FaceDetection",
 }
 _HIK_NATIVE_AI = {
     "peopledetection","vehicledetection","linedetection","fielddetection",

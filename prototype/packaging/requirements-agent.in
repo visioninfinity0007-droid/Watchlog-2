@@ -1,0 +1,15 @@
+# Top-level build dependencies of watchlog-agent.exe (build_exe.ps1, -WithAI and lean).
+# Versions are those the passing 5.1.0 release build bundled (Windows Release run 134):
+# the frozen EXE's dist-info and PyInstaller's own build log. Pillow carried no dist-info
+# in the bundle, so it is resolved as of that build (see tools/lock_build_deps.py).
+# Change a pin here, then run `python tools/lock_build_deps.py` and commit both files.
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+requests==2.34.2
+psutil==7.2.2
+onnxruntime==1.30.0
+numpy==2.5.3
+pillow
+tzdata==2026.5
+cryptography==50.0.2
+imageio-ffmpeg==0.6.0

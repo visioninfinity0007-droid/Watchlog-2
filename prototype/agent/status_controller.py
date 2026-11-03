@@ -133,9 +133,14 @@ class StatusController:
         plan = self._tagged(out, "UPDATE_JSON") or {}
         action = plan.get("action")
         if action == "update":
-            headline = f"WatchLog {plan.get('target')} is available."
+            headline = (f"WatchLog {plan.get('target')} is available. Request it from the WatchLog "
+                        "portal: it is installed in the background and rolled back automatically "
+                        "if it does not prove itself.")
         elif action == "up-to-date":
             headline = "WatchLog is up to date."
+        elif plan.get("reason") == "requires_repair_package":
+            headline = (f"WatchLog {plan.get('target') or 'update'} is available, but it must be "
+                        "installed with WatchLog-Repair-Upgrade.exe on this PC.")
         else:
             headline = "Update status could not be confirmed."
         return {"exit": rc, "action": action, "headline": headline, "plan": plan}
@@ -145,6 +150,8 @@ class StatusController:
         result = self._tagged(out, "UPDATE_APPLY_JSON") or {}
         if result.get("ok"):
             message = f"WatchLog updated to {result.get('detail', 'the new version')}."
+        elif result.get("handoff") or result.get("reason") == "requires_repair_package":
+            message = str(result.get("detail") or "Update could not be completed.")
         elif result.get("rolled_back"):
             message = "Update failed. WatchLog restored the previous version and monitoring has resumed."
         else:

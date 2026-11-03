@@ -212,7 +212,10 @@ def write_secret(path: Path, payload: bytes) -> None:
     tmp = path.parent / (path.name + ".tmp")
     try:
         blob = protect_bytes(payload)                  # 1. encrypt in memory
-        tmp.write_bytes(blob)                           # 2. temp (inherits SYSTEM+Admins)
+        with open(tmp, "wb") as handle:                # 2. temp (inherits SYSTEM+Admins)
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())                  #    on disk before it replaces the old
         _secure_and_verify(tmp, container=False)        # 3+4. lock + verify temp
         if unprotect_bytes(tmp.read_bytes()) != payload:    # 5. round-trip compare
             raise SecretError("round-trip verification failed")
@@ -249,4 +252,14 @@ def write_json_secret(path: Path, obj: dict) -> None:
 
 
 def read_json_secret(path: Path) -> dict:
-    return json.loads(read_secret(path).decode("utf-8"))
+    """Decrypted JSON secret. A blob that decrypts but is not a JSON object is corrupt and
+    raises SecretError like any other unreadable secret (fail closed, never ValueError)."""
+    try:
+        value = json.loads(read_secret(path).decode("utf-8"))
+    except SecretError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SecretError(f"secret at {path} is corrupt: {type(exc).__name__}") from exc
+    if not isinstance(value, dict):
+        raise SecretError(f"secret at {path} is corrupt: not an object")
+    return value

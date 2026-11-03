@@ -1,0 +1,58 @@
+{
+  "agent": {
+    "label": "5.1.0 Windows Release run 134 (e9bbc94b), BUILD69-FORENSIC-REPORT inventory",
+    "bytes": 92905793,
+    "sha256": "493EF80FAC60A8A4A0206EA918034E5907BDBA9B4E849A016D350299AA223182",
+    "components": {
+      "FFmpeg (imageio-ffmpeg)": 31123799,
+      "onnxruntime": 14202537,
+      "ONNX model": 11057431,
+      "numpy": 9090255,
+      "PYZ (pure-Python modules)": 8387176,
+      "cryptography/OpenSSL": 5804494,
+      "Pillow": 5682492,
+      "Python runtime": 4229674,
+      "VC runtime": 1296037,
+      "other": 1148332,
+      "tzdata": 264594,
+      "certifi": 131721,
+      "psutil": 32747
+    }
+  },
+  "setup-ui": {
+    "label": "5.1.0 Windows Release run 134 (e9bbc94b), BUILD69-FORENSIC-REPORT inventory",
+    "bytes": 325540293,
+    "sha256": "2D5C95F1BD49B6FB854AC07B981243AB7044FAFCA4BF151DD70B8C2C0A0BCCCD",
+    "components": {
+      "Qt WebEngine": 126996445,
+      "Qt other libs": 36579928,
+      "FFmpeg (imageio-ffmpeg)": 31108452,
+      "Qt QML/Quick": 29272415,
+      "onnxruntime": 13302538,
+      "Qt core libs (Core/Gui/Widgets/Network/Svg)": 13090626,
+      "Qt Multimedia": 10212990,
+      "numpy": 9090255,
+      "Qt Designer/tools": 9086529,
+      "cryptography/OpenSSL": 8409122,
+      "Qt plugins": 7888496,
+      "PYZ (pure-Python modules)": 7151357,
+      "Pillow": 5682492,
+      "Qt translations": 4220190,
+      "Python runtime": 4201676,
+      "Qt 3D": 3120557,
+      "Qt PDF": 2709410,
+      "other": 1358235,
+      "VC runtime": 1279800,
+      "certifi": 131721,
+      "psutil": 32747
+    }
+  },
+  "setup": {
+    "label": "5.1.0 run 134",
+    "bytes": 416917181
+  },
+  "repair": {
+    "label": "5.1.0 run 134",
+    "bytes": 416904654
+  }
+}

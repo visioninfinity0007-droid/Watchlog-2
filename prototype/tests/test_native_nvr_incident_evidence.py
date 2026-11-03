@@ -53,7 +53,7 @@ def test_packaged_collector_prefers_native_ai():
     assert "classify_event(raw)" in src
 
 
-def test_dahua_clip_is_search_before_download_zero_based_and_bounded():
+def test_dahua_clip_is_search_before_download_one_based_and_bounded():
     src = (AGENT / "dahua_archive.py").read_text(encoding="utf-8")
     compact = src.replace(" ", "")
     assert "/cgi-bin/mediaFileFind.cgi" in src
@@ -61,7 +61,8 @@ def test_dahua_clip_is_search_before_download_zero_based_and_bounded():
     assert '"action":"findNextFile"' in compact
     assert "/cgi-bin/loadfile.cgi" in src
     assert '"action":"startLoad"' in compact
-    assert "int(str(channel))-1" in compact
+    # mediaFileFind/loadfile channels are 1-based (field-proven on the DH-XVR1B08-I, 5.1.1).
+    assert "native_channel=int(str(channel))" in compact and "int(str(channel))-1" not in compact
     assert "MAX_CLIP_BYTES=32*1024*1024" in compact
     assert "getCurrentTime" in src
     assert "find_recordings(driver, channel, start, end, max_items=1)" in src

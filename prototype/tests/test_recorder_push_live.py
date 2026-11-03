@@ -111,68 +111,24 @@ def _hik_handler(*, retains=True):
 
 
 class DahuaAgainstARealServerTests(unittest.TestCase):
+    """Generic Dahua push is read-only (field W2 925885a4): against a real HTTP server the
+    driver only reads AlarmServer and never sends setConfig."""
+
     def _run(self, handler):
         rec = _Recorder(handler)
         self.addCleanup(rec.close)
         drv = build("dahua-cgi", rec.url, "admin", "pw", 5)
         return drv.configure_push(BRIDGE), rec.calls
 
-    def test_it_verifies_against_a_recorder_that_accepts_the_config(self):
-        out, _calls = self._run(_dahua_handler())
-        self.assertTrue(out["applied"])
-        self.assertTrue(out["verified"], out)
-
-    def test_each_key_is_sent_as_its_own_request(self):
-        """Dahua rejects an ENTIRE setConfig when any single key is unknown to that
-        firmware, so batching five keys meant one unsupported key discarded all five."""
-        _out, calls = self._run(_dahua_handler())
-        sets = [c for c in calls if "setConfig" in c]
-        self.assertEqual(5, len(sets), f"expected one request per key, got: {sets}")
-        for c in sets:
-            self.assertEqual(1, c.count("AlarmServer."), f"more than one key in {c}")
-
-    def test_the_protocol_follows_the_bridge_scheme(self):
-        """Hardcoding HTTP while computing port 443 told the recorder to open PLAINTEXT
-        to a TLS port -- every alarm would die at the handshake."""
-        _out, calls = self._run(_dahua_handler())
-        self.assertTrue(any("AlarmServer.Protocol=HTTPS" in c for c in calls),
-                        f"HTTPS bridge must configure HTTPS: {calls}")
-
-    def test_the_token_path_reaches_the_recorder(self):
-        _out, calls = self._run(_dahua_handler())
-        joined = unquote(" ".join(calls))
-        self.assertIn("/push/tok123", joined,
-                      "without the token the recorder cannot be identified")
-
-    def test_a_recorder_that_silently_ignores_the_write_is_not_verified(self):
-        out, _calls = self._run(_dahua_handler(retains=False))
-        self.assertTrue(out["applied"])
-        self.assertFalse(out["verified"], "an ignored config must not read as success")
-
-    def test_a_protocol_mismatch_is_not_verified(self):
-        """Recorder kept HTTP for an https bridge: alarms would never be delivered."""
-        out, _calls = self._run(_dahua_handler(protocol="HTTP"))
-        self.assertFalse(out["verified"], out)
-
-    def test_firmware_that_rejects_an_optional_key_still_succeeds(self):
-        """UrlPath is the key most likely missing on entry-level firmware. Rejecting it
-        must not lose the whole configuration."""
-        out, calls = self._run(_dahua_handler(reject="UrlPath"))
-        self.assertTrue(out["applied"])
-        self.assertTrue(out["verified"], out)
-        self.assertIn("firmware ignored", out["detail"])
-
-    def test_firmware_that_rejects_a_required_key_fails_honestly(self):
-        out, _calls = self._run(_dahua_handler(reject="AlarmServer.Enable"))
+    def test_it_reads_only_and_reports_push_unsupported(self):
+        out, calls = self._run(_dahua_handler())
         self.assertFalse(out["applied"])
         self.assertFalse(out["verified"])
+        self.assertFalse([c for c in calls if "setConfig" in c], calls)
 
     def test_an_unreachable_recorder_reports_instead_of_raising(self):
         drv = build("dahua-cgi", "http://127.0.0.1:9", "admin", "pw", 2)
-        try:
-            out = drv.configure_push(BRIDGE)
-        except Exception as exc:  # noqa: BLE001
-            self.fail(f"must not raise at the driver layer: {type(exc).__name__}")
+        out = drv.configure_push(BRIDGE)
         self.assertFalse(out["verified"])
 
 

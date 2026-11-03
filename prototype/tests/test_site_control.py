@@ -119,6 +119,11 @@ def test_every_catalog_read_runs_or_is_reported_unsupported():
         r = site_control.execute_read(FakeDriver(), action, {"channel": "1"})
         if action in LEGACY_CATALOG_ONLY:
             assert r == {"action": action, "ok": False, "error": "unsupported_read_action"}, r
+        elif action in site_control.MAINTENANCE_ACTIONS:
+            # 5.1.2 remote maintenance runs on the Agent runtime (site_maintenance), never on
+            # one bare driver; the claimed-command path routes it there first
+            # (test_site_acceptance_routing.py).
+            assert r == {"action": action, "ok": False, "error": "requires_agent_runtime"}, r
         else:
             assert r["ok"] is True, (name, action, r)
     assert set(site_control.READ_ACTIONS) <= catalog, (

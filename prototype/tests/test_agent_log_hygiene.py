@@ -6,7 +6,10 @@ patterns that regressed, so a re-introduction fails fast in the offline job."""
 from pathlib import Path
 
 AGENT = Path(__file__).resolve().parents[1] / "agent"
-SRC = (AGENT / "watchlog_agent.py").read_text(encoding="utf-8")
+# agent_core.py holds the config, state, cloud and heartbeat code moved out of watchlog_agent.py
+# (shared with Setup); the never-log list covers both.
+SRC = "\n".join((AGENT / name).read_text(encoding="utf-8")
+                for name in ("watchlog_agent.py", "agent_core.py"))
 
 # Exact leak patterns that must never come back (each was previously present).
 FORBIDDEN = [

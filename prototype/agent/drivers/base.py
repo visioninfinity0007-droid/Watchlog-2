@@ -25,9 +25,13 @@ agent, so a dropped internet link buffers instead of losing data.
 from __future__ import annotations
 
 import threading
+import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Iterator
+
+import requests
+from urllib3.exceptions import InsecureRequestWarning
 
 
 @dataclass(frozen=True)
@@ -164,7 +168,28 @@ def explain(e: Exception) -> str:
 class NvrDriver:
     """Base class. Subclasses must set `name` and implement the three methods."""
 
+    @staticmethod
+    def lan_session() -> requests.Session:
+        """HTTP session for a recorder on the site LAN (field Build 69 / 5.0.26 behaviour).
+
+        * trust_env = False: never route a 192.168/10.x/172.16-31 recorder through the PC's
+          Windows/corporate proxy or PAC; field PCs with one turned a local login into a
+          minute-long external timeout (W2 b0da326f, abd098a5).
+        * verify = False: recorders redirect HTTP to HTTPS with a self-signed certificate; a
+          browser works and so must the Agent. The traffic never leaves the LAN.
+        """
+        # verify=False is deliberate and LAN-only; do not write a warning per request to the log.
+        warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+        session = requests.Session()
+        session.trust_env = False
+        session.verify = False
+        return session
+
     name: str = "base"
+    # Set by the collector: called by a stream driver as it (re)opens its event stream after
+    # a drop (never on a planned re-slice), returning events to yield first (the recorder
+    # restart check). Any exception it raises is swallowed: it never ends monitoring.
+    on_stream_open = None
     # Honest metadata, surfaced by `--probe` and stored on the agent row.
     # Flip to True only once a driver has run against real hardware.
     verified_against_hardware: bool = False
@@ -303,6 +328,24 @@ class NvrDriver:
         Channels are 1-based strings, matching list_channels().
         """
         return {"supported": False, "video_loss": [], "video_blind": []}
+
+    def _stream_open_events(self) -> list:
+        """The events ``on_stream_open`` returns, or none. Never raises."""
+        hook = self.on_stream_open
+        if hook is None:
+            return []
+        try:
+            return list(hook() or [])
+        except Exception:                                  # noqa: BLE001
+            return []
+
+    def uptime_seconds(self) -> "float | None":
+        """Seconds since the recorder last booted, read-only, or None when it cannot say.
+
+        Used only as positive evidence of a recorder restart (the uptime went DOWN between
+        two reads). None is never evidence of anything; a driver without an uptime API
+        keeps this default."""
+        return None
 
     # -- Historical backfill (recovered intelligence). Vendor-neutral, bounded, cursored. A
     #    driver that has not VALIDATED archive retrieval against real hardware MUST leave these

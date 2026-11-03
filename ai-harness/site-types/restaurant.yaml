@@ -29,9 +29,17 @@ camera_roles:
       - table_utilization_pct
       - estimated_table_sessions
       - estimated_covers
+      - average_party_size
+      - party_size_mix
+      - largest_visible_party
+      - session_starts_by_period
+      - table_turnover
       - served_table_sessions
+      - served_session_rate
+      - observed_time_to_first_service_minutes
       - observed_time_to_food_minutes
       - minimum_observed_dwell_minutes
+      - visible_table_service_actions
       - staff_presence
     forbidden_outputs:
       - unique_footfall_without_entry_line
@@ -157,10 +165,57 @@ metrics:
       or occupancy resumes after a configured observation gap
   estimated_covers:
     evidence_class: estimated
-    definition: peak visible party size counted once per estimated table session
+    definition: >
+      peak visible party size counted once per defensible de-duplicated physical table/party session
+      within the represented service period
+    caveat: >
+      do not present as a full-service-day total when material trading periods are unverified;
+      overlapping dining views and joined tables must be reconciled before aggregation
     never_call:
       - unique_customer_count
       - POS_covers
+      - exact_daily_footfall
+  average_party_size:
+    evidence_class: estimated
+    definition: estimated covers divided by defensible estimated table sessions after overlap/joined-table reconciliation
+    caveat: always state the qualifying session count
+  party_size_mix:
+    evidence_class: estimated
+    definition: >
+      share of defensible dining parties grouped into neutral visible party-size buckets:
+      1 person, 2 people, 3-4 people, and 5+ people
+    caveat: never infer relationship, gender, age or demographics from party composition
+  largest_visible_party:
+    evidence_class: estimated
+    definition: largest defensible visible party size across de-duplicated table sessions, including joined-table parties
+  session_starts_by_period:
+    evidence_class: estimated
+    definition: count of defensible new table-session starts by business time period
+    never_call:
+      - customer_arrivals
+      - entrance_footfall
+  table_turnover:
+    evidence_class: estimated
+    definition: defensible table-session starts per calibrated physical table or zone during represented time
+    caveat: requires reliable table identity and session continuity; movable/joined tables must be reconciled
+  visible_table_service_actions:
+    evidence_class: observed
+    definition: >
+      people visibly performing defensible table-service actions such as approaching, serving,
+      clearing or interacting with an occupied table
+    never_call:
+      - staff_headcount
+      - waiter_attendance
+      - employee_identity
+      - staff_productivity
+  observed_time_to_first_service_minutes:
+    evidence_class: observed_derived
+    definition: first visibly occupied/seated evidence to first defensible visible table-service interaction
+    caveat: a service interaction does not prove order placement
+    never_call:
+      - order_wait_time
+      - POS_order_time
+      - waiter_response_SLA
   served_table_sessions:
     evidence_class: observed_derived
     definition: estimated table sessions where food becomes visibly present at least once
@@ -168,6 +223,14 @@ metrics:
       - completed_orders
       - correct_orders
       - paid_orders
+  served_session_rate:
+    evidence_class: observed_derived
+    definition: defensible served table sessions divided by defensible occupied table sessions
+    caveat: always state the qualifying session count and represented evidence window
+    never_call:
+      - order_completion_rate
+      - kitchen_success_rate
+      - paid_order_rate
   observed_time_to_food_minutes:
     evidence_class: observed_derived
     definition: first visibly occupied/seated evidence to first frame where food is visibly present
@@ -179,7 +242,7 @@ metrics:
     definition: first occupied observation to last observed occupied frame
     caveat: lower bound only
   timing_resolution_rule:
-    applies_to: [estimated_table_sessions, observed_time_to_food_minutes, minimum_observed_dwell_minutes]
+    applies_to: [estimated_table_sessions, observed_time_to_first_service_minutes, observed_time_to_food_minutes, minimum_observed_dwell_minutes]
     rule: >
       Timing metrics can be no more precise than the ACTUAL capture interval of the camera, which is a
       runtime fact and may differ from the configured target. State the interval. Above 120 s, present
@@ -250,6 +313,11 @@ truth_boundaries:
   - missing observation time is missing coverage, not zero activity
   - a single image is an observation, not a trend
   - site-wide dining totals require a complete composite across configured dining-floor cameras
+  - overlapping dining views must be reconciled to physical parties/tables before site-wide sessions or covers are aggregated
+  - full-day estimated covers require adequate representation of the trading service day; otherwise label covers as represented-period estimates
+  - every session-derived average, median, rate or distribution states its qualifying sample size
+  - visible table-service actions do not establish staff identity, attendance, headcount or productivity
+  - never infer gender, age, ethnicity or other customer demographics from appearance
   - recommendations about staffing, service or layout require repeated observations and adequate coverage
 
 
@@ -258,6 +326,8 @@ client_reporting:
   principle: business_value_first
   lead_with:
     - demand_and_table_use
+    - estimated_covers_and_party_mix
+    - service_responsiveness
     - service_flow
     - kitchen_handoff_counter_operations
     - security_and_access
@@ -290,8 +360,16 @@ metric_status:
   occupied_tables: {evidence: calibrated table anchors (calibrated sites only), status: implemented}
   table_utilization_pct: {evidence: calibrated table anchors over valid observations, status: implemented}
   estimated_table_sessions: {evidence: calibrated table occupancy changes, status: implemented}
-  estimated_covers: {evidence: peak visible party size per estimated table session, status: implemented}
+  estimated_covers: {evidence: de-duplicated peak visible party size per estimated table session, status: implemented}
+  average_party_size: {evidence: estimated covers divided by qualifying table sessions, status: derivable}
+  party_size_mix: {evidence: qualifying table sessions grouped by neutral visible party-size buckets, status: derivable}
+  largest_visible_party: {evidence: maximum qualifying party size including joined-table parties, status: derivable}
+  session_starts_by_period: {evidence: qualifying estimated table-session starts grouped by business period, status: derivable}
+  table_turnover: {evidence: qualifying session starts per calibrated physical table/zone, status: derivable}
+  visible_table_service_actions: {evidence: defensible table-service actions in dining views, status: implemented}
+  observed_time_to_first_service_minutes: {evidence: seated-to-first visible table-service interaction; bounded by actual observation interval, status: derivable}
   served_table_sessions: {evidence: food visibly present in an estimated table session, status: implemented}
+  served_session_rate: {evidence: served qualifying sessions divided by qualifying occupied sessions, status: derivable}
   observed_time_to_food_minutes: {evidence: seated-to-food visible evidence; bounded by the actual observation interval, status: implemented}
   minimum_observed_dwell_minutes: {evidence: first-to-last occupied observation, status: implemented}
   kitchen_load: {evidence: restaurant camera review of kitchen cameras, status: implemented}
@@ -314,8 +392,11 @@ owner_questions:
   - Were all cameras watching the whole service day?
   - What time did we open and close, going by activity?
   - How busy was the dining floor, and when was the peak?
-  - How well were the tables used?
-  - How long did tables wait for food?
+  - Roughly how many dining covers were represented, and across how many table sessions?
+  - What was the typical party size, and how much demand came from 1, 2, 3-4 and 5+ person groups?
+  - When did new table sessions start most heavily?
+  - How well were the tables used and how quickly did they turn over?
+  - How long did tables wait for a first visible service interaction and for served items?
   - How busy were the kitchen and the service handoff?
   - Was the cash counter ever left unattended?
   - Was there any activity after closing?
@@ -332,6 +413,9 @@ home_modules:
 
 insight_modules:
   - {id: peak_hour, label: Busiest hour}
+  - {id: covers_and_party_mix, label: Covers and party mix}
+  - {id: session_starts, label: New table sessions}
+  - {id: first_service, label: Time to first service}
   - {id: time_to_food, label: Time to food}
   - {id: unattended_counter, label: Counter attention}
   - {id: after_hours, label: After-hours activity}
@@ -340,7 +424,9 @@ insight_modules:
 report_sections:
   - what needs attention
   - monitoring coverage and evidence gaps
-  - demand and table use
+  - demand, estimated covers and party mix
+  - table sessions, utilization and turnover
+  - service responsiveness
   - service flow
   - kitchen, handoff and counter operations
   - security and access
@@ -349,6 +435,9 @@ report_sections:
 
 comparison_metrics:
   estimated_covers_vs_same_weekday: {compares: estimated covers, basis: same weekday last week, status: derivable}
+  average_party_size_vs_recent_days: {compares: average party size, basis: comparable represented service days, status: derivable}
+  party_size_mix_vs_recent_days: {compares: neutral party-size distribution, basis: comparable represented service days, status: derivable}
+  table_session_starts_vs_recent_days: {compares: new table-session starts by period, basis: comparable represented service days, status: derivable}
   table_utilization_vs_recent_days: {compares: table utilization, basis: 7 completed service days, status: derivable}
   time_to_food_vs_recent_days: {compares: observed time to food, basis: 7-day median, status: derivable}
   after_hours_activity_vs_recent_days: {compares: after-hours activity, basis: 7/30 service days, status: derivable}
@@ -363,7 +452,10 @@ recommended_questions:
 
 prohibited_interpretations:
   - visible diners or estimated covers as footfall or unique customers
+  - appearance-derived gender, age, ethnicity, relationship status or other customer demographics
   - estimated covers as POS covers, orders or sales
+  - time to first visible service interaction as proven order-taking time, staff SLA or waiter performance
+  - visible table-service actions as staff identity, attendance, headcount or productivity
   - time to food as kitchen ticket time or POS order-to-serve
   - kitchen or handoff load as orders per hour or staff productivity
   - counter activity as transactions, sales or revenue
@@ -379,6 +471,9 @@ unknown_behaviour:
 
 coverage_requirements:
   quiet_or_inactive_claims: verified LIVE or RECOVERED coverage for the whole window on the named camera
-  site_wide_dining_totals: a complete composite across configured dining-floor cameras
-  timing_metrics: actual observation interval stated; coarse ranges above 120 s
+  site_wide_dining_totals: a complete composite across configured dining-floor cameras with overlapping physical parties/tables reconciled
+  full_day_estimated_covers: no material unverified trading period; otherwise label the result as estimated covers in the represented period
+  session_metrics: reliable calibrated physical-table identity plus defensible session continuity
+  timing_metrics: actual observation interval stated; coarse ranges above 120 s and qualifying session count always shown
+  party_mix: defensible de-duplicated sessions only; use neutral party-size buckets and no demographic inference
   comparisons: both periods need comparable verified coverage; otherwise flag the comparison as partial

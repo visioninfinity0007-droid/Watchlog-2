@@ -21,6 +21,7 @@ sys.path.insert(0, str(AGENT))
 
 import credential_store as cs  # noqa: E402
 import recorder_registry as rr  # noqa: E402
+import agent_core  # noqa: E402
 import watchlog_agent as core  # noqa: E402
 import windows_secret as ws  # noqa: E402
 from drivers import DriverError  # noqa: E402
@@ -70,6 +71,8 @@ def _corrupt_legacy(monkeypatch):
     def broken(_ini=None):
         raise cs.SecretError("legacy blob is corrupt")
     monkeypatch.setattr(core, "os", _NtOs())
+    # Config.load_recorder_credential lives in agent_core since the Setup/Agent import split.
+    monkeypatch.setattr(agent_core, "os", _NtOs())
     monkeypatch.setattr(cs, "load_nvr_credential", broken)
 
 

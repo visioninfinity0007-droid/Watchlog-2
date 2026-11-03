@@ -2,18 +2,14 @@
 
 > **IMPORTANT — WINDOWS INSTALLER SOURCE OF TRUTH**
 >
-> The Windows installer lineage is **not built from this repository**. The
-> authoritative latest successful Windows candidate is **WatchLog 5.0.6 / Build 49**,
-> produced by `visioninfinity0007-droid/Watchlog-2` from branch
-> `build/site-connector-v5-watchlog2`, source commit
-> `e9761cb32025c2c3dc596cfe13d7c2225c8a4aa0`, successful Windows Release
-> **#49** (run `36018778077`). Artifact: `WatchLog-Windows-49`
-> (id `10815424189`, digest
-> `sha256:fd8ef666c55333c68c4828bef1a84f023d80c0edb72cd9686c4d341215d6340d`).
-> Installer fixes must be made there and built forward from this successful source
-> or a verified descendant. Build 37 remains the frozen historical lineage anchor.
-> Do not treat newer-looking installer files in this repo as the shipped baseline.
-> See `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
+> This repository (`Alkalid-security/Watchlog`, `main`) is the product source of truth
+> for the Windows Agent and installer. The one production path is the NSIS
+> `WatchLog-Setup.exe` (new site) and `WatchLog-Repair-Upgrade.exe` (existing site),
+> built by `.github/workflows/windows-release.yml` through
+> `tools/build_windows_release.ps1`. The `visioninfinity0007-droid/Watchlog-2`
+> builds are release-line validation evidence only. Release status, the field-proven
+> baseline and the update contract are in
+> `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
 
 
 Turns an existing DVR/NVR into a monitored, reportable system — without
@@ -174,13 +170,15 @@ pipeline can run with no cloud account at all.
 powershell -ExecutionPolicy Bypass -File agent/build_exe.ps1
 ```
 
-Produces `dist/watchlog-agent.exe`, a single ~15 MB file with no Python
-dependency. Ship it alongside a `watchlog.ini` carrying that machine's
-own enrollment code and recorder credentials.
+Produces `dist/watchlog-agent.exe`, the background Agent with no Python
+dependency. It is not shipped on its own: the release script packages it with
+WatchLog Setup into the NSIS installers (`tools/build_windows_release.ps1`), and
+WatchLog Setup configures the site. The packaged Agent refuses the old console
+`--setup` wizard.
 
-The executable is **not code signed**. Windows SmartScreen will warn on a
-downloaded copy, and some antivirus will quarantine it. Budget for a code
-signing certificate before any wide rollout.
+An unsigned build is for testing only: Windows SmartScreen warns on it and some
+antivirus quarantines it. A production release requires a code-signing
+certificate (`build_windows_release.ps1 -Production`).
 
 ---
 
@@ -200,7 +198,9 @@ Consequences worth knowing:
   client input, so a compromised agent cannot write into another tenant.
 - Enrollment runs in one transaction, so a failure part-way cannot
   consume an enrollment code.
-- Recorder credentials stay in `watchlog.ini` on the site PC. They are
+- Recorder credentials stay on the site PC, encrypted with Windows DPAPI
+  (LocalMachine) under `C:\ProgramData\WatchLog\Secrets`, which only SYSTEM and
+  Administrators can open; `watchlog.ini` holds no recorder password. They are
   never transmitted; only event metadata goes upward.
 
 `0005_viewer_api.sql` grants read access to the anonymous role for the

@@ -18,16 +18,40 @@ Trust model:
 
 Release channels (§14): internal -> pilot -> beta -> production. A site updates only on its own
 channel; the manifest carries an independent release per channel.
+
+Agent-only vs full-component releases (5.1.1). Every in-app path (remote update, Site Status)
+replaces watchlog-agent.exe ONLY; the Setup UI, the launcher/updater scripts, the uninstaller and
+the registry format stay as the last full installer or Repair/Upgrade package left them. A release
+entry therefore says whether it may be delivered that way:
+
+  update_class             AGENT_ONLY_COMPATIBLE | REQUIRES_REPAIR_PACKAGE
+  min_installed_components oldest installed component set (full installer / Repair package
+                           version, the ARP "ComponentsVersion", else "DisplayVersion") the new
+                           Agent can run beside.
+
+Absent update_class: a patch release (same major.minor as the running Agent) is treated as
+AGENT_ONLY_COMPATIBLE; any major/minor change as REQUIRES_REPAIR_PACKAGE. An unknown value is
+REQUIRES_REPAIR_PACKAGE. Absent min_installed_components defaults to the target's own
+"major.minor.0", so an Agent-only update never runs beside components of an older minor line.
+plan_update refuses (action 'blocked', reason 'requires_repair_package') instead of updating.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 CHANNELS = ("internal", "pilot", "beta", "production")
 MANIFEST_SCHEMA = "watchlog.release_manifest.v1"
+AGENT_ONLY_COMPATIBLE = "AGENT_ONLY_COMPATIBLE"
+REQUIRES_REPAIR_PACKAGE = "REQUIRES_REPAIR_PACKAGE"
+UPDATE_CLASSES = (AGENT_ONLY_COMPATIBLE, REQUIRES_REPAIR_PACKAGE)
+# plan_update(installed_components=...) default: the caller did not check the installed
+# components (a pure decision test). None means "checked, but unknown": that blocks.
+NOT_CHECKED = object()
+ARP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\WatchLog"
 
 
 # --- version comparison -----------------------------------------------------
@@ -135,10 +159,84 @@ def verify_payload(path, expected_sha256: str, expected_size=None) -> tuple[bool
     return True, "sha256 + size verified"
 
 
+# --- installed component set -------------------------------------------------
+
+def installed_components_version(_read=None) -> str | None:
+    """Version of the component set the last full installer or Repair/Upgrade package wrote
+    (Setup UI, launcher/updater scripts, uninstaller), or None when it cannot be read.
+
+    Both installers write HKLM\\...\\Uninstall\\WatchLog only after a proven install. 5.1.1+
+    writes ComponentsVersion; older installers wrote only DisplayVersion, which no in-app update
+    ever changes, so it is the component version there too. NSIS is 32-bit: the key lives in the
+    32-bit registry view (WOW6432Node)."""
+    if _read is None:
+        if sys.platform != "win32":
+            return None
+
+        def _read(name):
+            import winreg
+            access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_32KEY", 0)
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, ARP_KEY, 0, access) as key:
+                return winreg.QueryValueEx(key, name)[0]
+    for name in ("ComponentsVersion", "DisplayVersion"):
+        try:
+            value = str(_read(name) or "").strip()
+        except Exception:  # noqa: BLE001 - missing value/key or no registry: try the next
+            value = ""
+        if value:
+            return value
+    return None
+
+
+def _names_itself_minimum(rel: dict) -> bool:
+    """A release whose min_agent_version is its own version is the signed marker for
+    REQUIRES_REPAIR_PACKAGE. The deployed manifest builder signs min_agent_version (and not yet
+    update_class), and every fielded Agent (5.0.17+) refuses such a release as agent_too_old."""
+    version, min_agent = rel.get("version"), rel.get("min_agent_version")
+    return bool(version and min_agent) and parse_version(min_agent) == parse_version(version)
+
+
+def release_update_class(rel: dict, current_version: str) -> str:
+    """The release's declared update class, or the conservative default when absent."""
+    declared = str(rel.get("update_class") or "").strip().upper()
+    if declared in UPDATE_CLASSES:
+        return declared
+    if declared:
+        return REQUIRES_REPAIR_PACKAGE            # unknown value: never guess "agent only"
+    if _names_itself_minimum(rel):
+        return REQUIRES_REPAIR_PACKAGE
+    same_line = parse_version(rel.get("version") or "")[:2] == parse_version(current_version)[:2]
+    return AGENT_ONLY_COMPATIBLE if same_line else REQUIRES_REPAIR_PACKAGE
+
+
+def agent_only_refusal(rel: dict, current_version: str, installed_components=NOT_CHECKED):
+    """None when this release may be installed by replacing the Agent alone, else the reason."""
+    update_class = release_update_class(rel, current_version)
+    if update_class == REQUIRES_REPAIR_PACKAGE:
+        return {"reason": "requires_repair_package", "update_class": update_class,
+                "detail": "this release must be installed with the WatchLog Repair/Upgrade package"}
+    if installed_components is NOT_CHECKED:
+        return None
+    target = parse_version(rel.get("version") or "")
+    minimum = str(rel.get("min_installed_components") or f"{target[0]}.{target[1]}.0")
+    if not installed_components:
+        return {"reason": "requires_repair_package", "update_class": update_class,
+                "required_components": minimum, "installed_components": None,
+                "detail": "the installed WatchLog components could not be identified; "
+                          "install this release with the Repair/Upgrade package"}
+    if parse_version(installed_components) < parse_version(minimum):
+        return {"reason": "requires_repair_package", "update_class": update_class,
+                "required_components": minimum, "installed_components": installed_components,
+                "detail": f"installed WatchLog components {installed_components} are older than "
+                          f"{minimum}; install this release with the Repair/Upgrade package"}
+    return None
+
+
 # --- the decision -----------------------------------------------------------
 
 def plan_update(manifest: dict, current_version: str, channel: str, *,
-                signature_state=None, require_signature: bool = True) -> dict:
+                signature_state=None, require_signature: bool = True,
+                installed_components=NOT_CHECKED) -> dict:
     """Decide what to do for ``channel`` given the running ``current_version``.
 
     ``signature_state`` is the result of verify_manifest_signature (True/False/None). Returns a
@@ -162,6 +260,10 @@ def plan_update(manifest: dict, current_version: str, channel: str, *,
 
     min_agent = rel.get("min_agent_version")
     if min_agent and parse_version(current_version) < parse_version(min_agent):
+        if _names_itself_minimum(rel):
+            # Not "too old": this release must be installed with the Repair/Upgrade package.
+            return {"action": "blocked", "target": target, "current": current_version,
+                    "channel": channel, "required": min_agent, **agent_only_refusal(rel, current_version)}
         return {"action": "blocked", "reason": "agent_too_old", "required": min_agent,
                 "current": current_version, "channel": channel}
 
@@ -169,8 +271,17 @@ def plan_update(manifest: dict, current_version: str, channel: str, *,
         return {"action": "up-to-date", "current": current_version, "target": target,
                 "channel": channel}
 
+    # Every in-app path replaces the Agent only: refuse a release that needs the rest of the
+    # component set (scripts, Setup UI, uninstaller, registry format) to change with it.
+    refusal = agent_only_refusal(rel, current_version, installed_components)
+    if refusal:
+        return {"action": "blocked", "target": target, "current": current_version,
+                "channel": channel, **refusal}
+
     return {"action": "update", "target": target, "url": rel["url"], "sha256": rel["sha256"],
-            "size": rel.get("size"), "notes": rel.get("notes"), "channel": channel}
+            "size": rel.get("size"), "notes": rel.get("notes"), "channel": channel,
+            "update_class": release_update_class(rel, current_version),
+            "build_sha": rel.get("build_sha") or None}
 
 
 def apply_update(target_version: str, package_url: str, sha256: str, *, install_dir: str,
@@ -232,14 +343,16 @@ def apply_update(target_version: str, package_url: str, sha256: str, *, install_
         return _rollback("register", f"register error: {type(exc).__name__}")
 
     if run_stage("commit", target_version) != 0:
-        return _rollback("commit", "post-start verification failed (version / single-instance / liveness)")
+        return _rollback("commit", "post-start verification failed (version / task running)")
 
     log(f"update: committed {target_version}")
     return {"ok": True, "stage": "commit", "rolled_back": False, "detail": f"updated to {target_version}"}
 
 
 __all__ = [
-    "CHANNELS", "MANIFEST_SCHEMA", "parse_version", "is_newer", "parse_manifest",
+    "CHANNELS", "MANIFEST_SCHEMA", "AGENT_ONLY_COMPATIBLE", "REQUIRES_REPAIR_PACKAGE",
+    "installed_components_version", "release_update_class", "agent_only_refusal",
+    "parse_version", "is_newer", "parse_manifest",
     "select_release", "canonical_manifest_bytes", "verify_ed25519",
     "verify_manifest_signature", "sha256_file", "verify_payload", "plan_update", "apply_update",
 ]

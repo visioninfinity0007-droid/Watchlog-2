@@ -84,6 +84,10 @@ jobs:
           $blob    = "$secrets\nvr_credential.dpapi"
           $control = "$work\control.dpapi"
           & $py $gate write-secret $blob            # DACL-locked secret (SYSTEM+Admins)
+          # A per-recorder login (multi-recorder) in its own Secrets\recorders folder.
+          $recSecrets = "$secrets\recorders"
+          $recBlob    = "$recSecrets\11111111-1111-4111-8111-111111111111.dpapi"
+          & $py $gate write-secret $recBlob
           & $py $gate encrypt-canary $control       # world-readable LocalMachine blob (control)
 
           $pw = 'Wl!Sec' + (Get-Random -Maximum 99999) + 'gX9'
@@ -137,6 +141,8 @@ jobs:
             Invoke-AsIdentity 'wlstd' $pw 'user_denied'  "user-cannot-read `"$blob`" `"$secrets`""
             Invoke-AsIdentity 'wlstd' $pw 'user_control' "user-control-decrypt `"$control`""
             Invoke-AsIdentity 'SYSTEM' ''  'system_ok'   "system-can-decrypt `"$blob`""
+            Invoke-AsIdentity 'wlstd' $pw 'user_denied_rec' "user-cannot-read `"$recBlob`" `"$recSecrets`""
+            Invoke-AsIdentity 'SYSTEM' ''  'system_ok_rec'  "system-can-decrypt `"$recBlob`""
           } finally {
             cmd /c "net user wlstd /delete" 2>&1 | Out-Host
           }

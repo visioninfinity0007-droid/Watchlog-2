@@ -18,6 +18,11 @@ import requests
 import watchlog_agent as core
 import native_verification
 import nvr_health
+import periodic_stills
+import recorder_restart
+import server_capture
+import worker_supervisor
+import site_maintenance
 from drivers import DriverError
 
 # A Hikvision/Dahua/ONVIF event stream that drops (EOF, read timeout, reset, failed pull) is
@@ -95,6 +100,20 @@ def spool_row(ev, agent_ts) -> dict:
     return row
 
 
+SNAPSHOT_SOURCE_LIVE = "live_after_event"
+
+
+def mark_snapshot_capture(ev, shot_at) -> None:
+    """Record when and how the event's still was taken, in the event payload.
+
+    Migration 0164 stores payload.snapshot_captured_at as the still's captured_at (with
+    capture_source 'live_after_event') instead of the event time; a server without 0164 keeps
+    it as plain payload. Additive: wl_ingest_events copies the payload unchanged."""
+    if isinstance(ev.payload, dict):
+        ev.payload["snapshot_captured_at"] = core.iso(shot_at)
+        ev.payload["snapshot_source"] = SNAPSHOT_SOURCE_LIVE
+
+
 def _note_stream_error(stream: dict, reports_stream, error: BaseException) -> None:
     """Record a collector-level failure in the per-recorder event-stream state.
 
@@ -124,11 +143,22 @@ def collector(cfg, spool, stop, holder=None) -> None:
               "last_error": None}
     if holder is not None:
         holder["event_stream"] = stream
+        if spool is not None:
+            holder["event_spool"] = spool   # health-derived camera transitions go here too
+    # The recorder's uptime across driver re-opens: a drop + an uptime that went down is a
+    # recorder restart (positive evidence only).
+    uptime_watch = recorder_restart.UptimeWatch()
+    # Site Control reads this recorder's runtime evidence and can ask it to reconnect.
+    site_maintenance.register_runtime(cfg, holder)
     while not stop.is_set():
+        worker_supervisor.tick()
         driver = None
         reports_stream = None
         events = None
         auth_error = False
+        # reconnect_recorder ends only THIS session (SessionStop); opening a new one satisfies it.
+        site_maintenance.take_reconnect(holder)
+        session = site_maintenance.SessionStop(stop, holder)
         try:
             driver, info = core.open_driver(cfg)
             if hasattr(driver, "log"):
@@ -160,18 +190,55 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     "this hardware family. Treat untested capabilities as pilot."
                 )
 
+            if periodic_stills.samples_in_stream(cfg, driver):
+                # Field Build 69: stills are taken between live stream slices on THIS driver's
+                # session, never on a second session beside the stream.
+                driver.between_slices = periodic_stills.StreamStillSampler(
+                    cfg, driver, spool,
+                    profiles=(holder or {}).get("still_profiles"),
+                    label=getattr(cfg, "recorder_display_name", None))
+                # Server capture requests for this recorder use this same session.
+                server_capture.register_live_driver(driver)
+
             last_shot: dict[str, float] = {}
-            events = (_LiveEvents(driver, stop, cfg, stream, last_gen) if reports_stream
-                      else driver.stream_events(stop))
+            def _restart_check(drv=driver):
+                ev = recorder_restart.check(drv, uptime_watch)
+                if ev is not None:
+                    core.log(f"recorder restart detected: uptime "
+                             f"{ev.payload.get('previous_uptime_seconds')}s -> "
+                             f"{ev.payload.get('uptime_seconds')}s")
+                    return [ev]
+                return []
+
+            # The driver calls this as it (re)opens its event stream after a drop (not on a
+            # planned Hikvision slice), on the stream's own session and recorder lock, so the
+            # uptime read never opens a gap another session could take.
+            if hasattr(driver, "on_stream_open"):
+                driver.on_stream_open = _restart_check
+            events = (_LiveEvents(driver, session, cfg, stream, last_gen) if reports_stream
+                      else driver.stream_events(session))
             for ev in events:
                 if stop.is_set():
                     break
                 recorder_id = getattr(cfg, "recorder_cloud_id", None)
                 if recorder_id:
                     ev = ev.with_recorder_id(recorder_id)
-                if holder is not None:
+                # A restart found by an uptime read is not stream activity: liveness of a
+                # stream-reporting recorder stays the stream's own.
+                if holder is not None and ev.event_type != recorder_restart.EVENT_TYPE:
                     holder["recorder_live_at"] = time.monotonic()
                     holder["recorder_live_wall"] = core.now_utc()
+
+                if ev.event_type == periodic_stills.EVENT_TYPE and ev.snapshot_b64:
+                    # A timed still from the live stream: the row is already final. No second
+                    # still, no detector pass (it is not an alarm), straight to the spool.
+                    if holder is not None and ev.channel is not None:
+                        holder.setdefault("snapshot_ok", {})[str(ev.channel)] = time.monotonic()
+                    spool.add(spool_row(ev, core.now_utc()))
+                    dropped = spool.trim()
+                    if dropped:
+                        core.log(f"WARNING: spool over capacity, dropped {dropped} oldest events")
+                    continue
 
                 raw = None
                 # A recorder-scoped or channel-less event (channel None) has no camera
@@ -181,6 +248,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
                     clock = time.monotonic()
                     if clock - last_shot.get(ev.channel, 0.0) >= cfg.snapshot_min_interval:
                         last_shot[ev.channel] = clock
+                        # The real moment this still is taken (the request start; the
+                        # recorder grabs the frame when asked). device_ts stays the event time.
+                        shot_at = core.now_utc()
                         try:
                             raw = driver.get_snapshot(ev.channel)
                         except Exception as error:  # noqa: BLE001
@@ -191,6 +261,9 @@ def collector(cfg, spool, stop, holder=None) -> None:
                             )
                         if raw and len(raw) <= core.SNAPSHOT_MAX_BYTES:
                             ev = ev.with_snapshot(base64.b64encode(raw).decode("ascii"))
+                            mark_snapshot_capture(ev, shot_at)
+                            if holder is not None:
+                                holder.setdefault("snapshot_ok", {})[str(ev.channel)] =                                     time.monotonic()
                             core.log(f"snapshot ch{ev.channel} {len(raw) // 1024} KB")
                         elif raw:
                             core.log(
@@ -225,10 +298,14 @@ def collector(cfg, spool, stop, holder=None) -> None:
                                 f"WARNING: ch{ev.channel} native {ev.event_type} conflicts with "
                                 f"local model ({', '.join(sorted(set(local)))}); kept but flagged unverified"
                             )
-                elif detector is not None and ev.event_type not in core.NO_SNAPSHOT_EVENTS:
+                elif detector is not None and core.local_ai_filter_applies(ev):
                     # Generic motion still gets the existing local false-alarm
                     # filter. This retains the useful reduction in noisy DVR
                     # motion without overriding vendor-native smart analytics.
+                    # Fault and safety signals (tamper, video loss/restore, alarm
+                    # inputs, disconnects, restarts, native face/object events) and
+                    # codes stored raw are never judged here (5.1.2): a covered lens
+                    # has no person in it, and that is the tamper.
                     keep, found = detector.classify_event(raw)
                     if not keep:
                         core.log(
@@ -249,17 +326,11 @@ def collector(cfg, spool, stop, holder=None) -> None:
 
                 spool.add(spool_row(ev, core.now_utc()))
 
-                # A native VideoLoss/disconnect is an immediate camera OFFLINE — feed it to the
-                # shared health monitor straight from the event stream (best-effort; a health-side
-                # error must never disturb ingestion).
-                if (holder is not None and ev.channel is not None
-                        and ev.event_type in core.NATIVE_FAULT_TYPES):
-                    mon = holder.get("monitor")
-                    if mon is not None:
-                        try:
-                            mon.record_native_fault(ev.channel)
-                        except Exception:  # noqa: BLE001
-                            pass
+                # A native VideoLoss/disconnect is an immediate camera OFFLINE, a tamper a
+                # camera fault (reason tamper), and their native end clears that fault: fed
+                # to the shared health monitor straight from the event stream (best-effort;
+                # a health-side error must never disturb ingestion).
+                core.feed_native_health(holder, ev)
 
                 dropped = spool.trim()
                 if dropped:
@@ -285,6 +356,7 @@ def collector(cfg, spool, stop, holder=None) -> None:
             core.log(f"ERROR: driver crashed: {type(error).__name__}: {error}")
         finally:
             if driver:
+                server_capture.unregister_live_driver(driver)
                 if holder is not None and holder.get("live_driver") is driver:
                     holder.pop("live_driver", None)
                     # Keep the dropped driver's last real stream activity visible, so
@@ -301,6 +373,10 @@ def collector(cfg, spool, stop, holder=None) -> None:
         if isinstance(events, _LiveEvents) and events.reload and not stop.is_set():
             auth_failures = 0
             continue                           # new credential: re-open the recorder now
+        if session.is_set() and not stop.is_set():
+            auth_failures = 0
+            core.log("recorder session dropped on request (Site Control); reopening now")
+            continue
         if not stop.is_set():
             # Escalating backoff on CONFIRMED auth failure (lockout guard); short retry
             # otherwise. A credential change in Setup wakes the wait and retries immediately.

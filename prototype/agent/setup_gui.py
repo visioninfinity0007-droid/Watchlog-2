@@ -21,6 +21,23 @@ import tempfile
 import time
 from pathlib import Path
 
+# Release performance gate (tools/release_perf_gate.py): with WATCHLOG_UI_TIMING_PATH set, the
+# start-up phases are written there as wall-clock times, so the gate can tell one-file unpack,
+# Qt import, window construction and the first visible window apart. Unset: nothing is written.
+_TIMING_PATH = os.environ.get("WATCHLOG_UI_TIMING_PATH")
+_PHASES: dict[str, float] = {"python_start": time.time()}
+
+
+def _mark(phase: str) -> None:
+    if not _TIMING_PATH or phase in _PHASES:
+        return
+    _PHASES[phase] = time.time()
+    try:
+        Path(_TIMING_PATH).write_text(
+            json.dumps({"schema": "watchlog.ui_timing.v1", "phases": _PHASES}), encoding="utf-8")
+    except OSError:
+        pass                    # timing is a release-gate aid, never a reason to fail setup
+
 # A PyInstaller --windowed process has no console streams. Existing recorder
 # libraries use print() for diagnostics, so give them a local file instead of
 # letting a diagnostic print crash the GUI.
@@ -41,6 +58,15 @@ if os.name == "nt":
         except Exception:  # noqa: BLE001 - logging may never prevent setup from running
             _LOG_HANDLE = None
 
+# A native crash ("WatchLog Setup has stopped working", HASCO 5.1.6) leaves no Python
+# traceback. faulthandler writes every thread's stack to setup.log when it happens.
+if _LOG_HANDLE is not None:
+    try:
+        import faulthandler
+        faulthandler.enable(file=_LOG_HANDLE, all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
@@ -50,11 +76,15 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
+_mark("qt_imported")
+
 import credential_store
 import recorder_registry
 import recorder_runtime
 import setup_backend as backend
 from status_controller import StatusController
+
+_mark("backend_imported")
 
 ICE = "#72D4FF"
 BLUE = "#1748D3"
@@ -156,6 +186,8 @@ class SetupWindow(QMainWindow):
         self.install_recorders: list[dict] = []
         self.final_result = None
         self._busy = False
+        # A running background Agent is paused for this Setup run (resumed if it ends unfinished).
+        self._agent_paused = False
         # Worker generation lets the UI abandon a timed-out recorder login safely.
         # A late result from the abandoned thread is ignored instead of jumping pages
         # minutes later after the technician has retried.
@@ -593,6 +625,23 @@ class SetupWindow(QMainWindow):
             self.status.setText(message)
             self.login_next.setEnabled(True)
         elif self.stack.currentIndex() == 5:
+            # The timed-out step may already have connected the site and started the
+            # Agent. A running Agent is a connected site: never report it as a failure.
+            if backend.background_agent_running():
+                self.site_connected = True
+                self.final_result = {"connected": True, "agent_start": {
+                    "started": True, "proven": False,
+                    "detail": "background agent is running (its confirmation is still in progress)"}}
+                self.agent_start = self.final_result["agent_start"]
+                self.progress_bar.setRange(0, 1)
+                self.progress_bar.setValue(1)
+                self.progress_label.setText(
+                    "WatchLog is connected and running in the background.")
+                if self.installer_child:
+                    self.finish()
+                    return
+                self.connect_error.setText("")
+                return
             if self.installer_child:
                 # Unlike a returned failure, the timed-out finalize_install thread may
                 # still be writing credentials and the registry, and it cannot be
@@ -672,6 +721,8 @@ class SetupWindow(QMainWindow):
         self.run_worker(
             backend.discover_recorders, (), self.show_recorders,
             "Searching the local network…",
+            known=([] if self.manage_recorders
+                   else backend.known_recorder_addresses(self.public)),
             timeout_ms=40000,
             timeout_message=(
                 "Automatic search reached its 40-second safety limit. "
@@ -687,7 +738,8 @@ class SetupWindow(QMainWindow):
                 if backend.find_install_duplicate(self.install_recorders,
                                                   {"address": row["ip"]}) is None]
         if not rows:
-            self.status.setText("No recorder was found automatically. Enter its local IP address below.")
+            self.status.setText("No recorder answered automatically. Enter the recorder's IP address below "
+                                "(on the recorder screen: Menu > Network, or on its sticker), then click Use this IP.")
             return
         for row in rows:
             text = f"{row['ip']}   {row.get('label') or 'Recorder'}"
@@ -786,14 +838,23 @@ class SetupWindow(QMainWindow):
         self.login_error.setText("")
         self.recorder_user, self.recorder_password = user, password
         self._set_login_loading(True)
-        # The backend normally finishes well before this. Keep 30 seconds as a last-resort
-        # UI watchdog; Builds 70/71 cut this to 24/22 seconds and turned the Build-69
-        # intermittent Dahua path into a repeatable false timeout.
+        # The backend normally finishes well before this; the watchdog is a last resort.
+        # Builds 70/71 cut it to 24/22 seconds and turned the Build-69 intermittent Dahua
+        # path into a repeatable false timeout. 5.1.7/5.1.8 (Al-Khalid + HASCO, 2026-11-03)
+        # spent most of a 30 s limit stopping the old Agent, so the login never finished:
+        # 90 s covers the pause (<= 30 s) plus backend.RECORDER_DEADLINE plus one probe.
+        # One process may talk to the recorder at a time (HASCO, Hikvision DS-7608NI-Q1):
+        # stop a running Agent before the first login test of this Setup run. Manage
+        # Recorders tests a login while the site keeps monitoring, so it never pauses.
+        test_fn = backend.test_recorder
+        if not self.manage_recorders and not self._agent_paused:
+            self._agent_paused = True
+            test_fn = _test_with_agent_paused
         self.run_worker(
-            backend.test_recorder, (address, user, password), self.connection_ok,
+            test_fn, (address, user, password), self.connection_ok,
             "Testing the recorder connection…", hint=self.recorder_hint,
-            timeout_ms=30000,
-            timeout_message=("The recorder login check reached the 30-second safety limit. "
+            timeout_ms=90000,
+            timeout_message=("The recorder login check reached its safety time limit. "
                              "Your credentials are still here; click Test Connection to retry. "
                              "If the recorder opens in your browser, export the support bundle.")
         )
@@ -1008,7 +1069,11 @@ class SetupWindow(QMainWindow):
             plan = self.install_plan()
             extra = len(plan["kwargs"]["additional_recorders"] or [])
             # Each further recorder adds its credential, its WatchLog link and its cameras.
-            seconds = 50 + 20 * extra
+            # finalize_install also starts the background Agent and waits for its proof
+            # (up to BACKGROUND_READY_TIMEOUT_SECONDS). Field (Al-Khalid, 5.1.2): a 50 s
+            # watchdog fired inside that wait, Setup exited 2, and the Agent it had just
+            # started kept reporting. The watchdog must outlast the backend's own bounds.
+            seconds = 60 + 20 * extra + backend.BACKGROUND_READY_TIMEOUT_SECONDS
             self.run_worker(
                 backend.finalize_install,
                 plan["args"],
@@ -1178,8 +1243,11 @@ class SetupWindow(QMainWindow):
         alive while watchlog-agent.exe repeatedly failed underneath it.
         """
         info = getattr(self, "agent_start", None) or {}
-        if info.get("started"):
+        if info.get("started") and info.get("proven", True):
             return "✓ WatchLog background connector started and reached WatchLog"
+        if info.get("started"):
+            return ("! WatchLog is running but has not yet confirmed the recorder — "
+                    "Site Status shows when it connects")
         return ("! WatchLog background connector could not prove it is reporting — "
                 "retry setup or export a support bundle")
 
@@ -1296,7 +1364,19 @@ class SetupWindow(QMainWindow):
         self.exit_code = 0 if getattr(self, "site_connected", False) else 1
         self.close()
 
+    def _resume_agent_if_unfinished(self) -> None:
+        # Setup paused the running Agent and the site did not connect: start the previous
+        # Agent again so the site keeps the monitoring it had. A connected site's Agent was
+        # (re)started by finalize itself.
+        if self._agent_paused and not getattr(self, "site_connected", False):
+            self._agent_paused = False
+            try:
+                backend.resume_background_agent()
+            except Exception:  # noqa: BLE001 - closing Setup must never fail
+                pass
+
     def closeEvent(self, event: QCloseEvent):
+        self._resume_agent_if_unfinished()
         # The window X / Alt+F4 does NOT go through cancel(), so it kept the exit_code=1
         # default even on a fully connected site. NSIS treats non-zero as a failed install
         # and Aborts, skipping WriteUninstaller and the Add/Remove Programs keys -- which is
@@ -1306,6 +1386,16 @@ class SetupWindow(QMainWindow):
         if getattr(self, "site_connected", False) and self.exit_code != 0:
             self.exit_code = 0
         event.accept()
+
+
+def _test_with_agent_paused(address: str, username: str, password: str, **kwargs):
+    # run_worker passes hint= and progress= like any worker. Refusing them (5.1.0-5.1.6)
+    # failed the first test before the Agent was stopped, so it kept the recorder busy.
+    progress = kwargs.get("progress")
+    if progress:
+        progress("Stopping the previous WatchLog on this PC…")
+    backend.pause_background_agent()
+    return backend.test_recorder(address, username, password, **kwargs)
 
 
 def _emit_line(line: str) -> None:
@@ -1777,15 +1867,18 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
     """Exercise the exact packaged Qt recorder-selection and installer lifecycle."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    _mark("qapplication")
     old_pd = os.environ.get("PROGRAMDATA")
     try:
         with tempfile.TemporaryDirectory(prefix="wl-ui-selftest-") as td:
             os.environ["PROGRAMDATA"] = td
             window = SetupWindow(Path(td) / "watchlog.ini", installer_child=installer_child)
+            _mark("window_constructed")
             # Show the real window even on the offscreen Qt platform so the lifecycle
             # assertion can prove that installer-child mode actually closes it.
             window.show()
             app.processEvents()
+            _mark("first_visible")
             window.go(2)
             window.show_recorders([{
                 "ip": "10.10.10.2",
@@ -2020,6 +2113,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 app.processEvents()
                 if window.exit_code != 0 or window.isVisible():
                     return 34
+                _mark("installer_child_closed")
 
                 failed = SetupWindow(Path(td) / "watchlog.ini", installer_child=True)
                 failed.show()
@@ -2056,6 +2150,7 @@ def _run_ui_selftest(*, installer_child: bool = False) -> int:
                 timed.close()
             else:
                 window.close()
+            _mark("selftest_done")
             return 0
     finally:
         if old_pd is None:
@@ -2288,6 +2383,12 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
             result["recorders_total"] = len(report)
             if any(entry["credential"] != "ok" for entry in report):
                 raise RuntimeError("a configured recorder credential cannot be decrypted")
+            result["legacy_mirror"] = _legacy_mirror_state(rows)
+            if result["legacy_mirror"] == "differs":
+                # Reported, not fatal: Repair cannot know which login is right. Re-entering
+                # the recorder login in Manage Recorders rewrites both.
+                result["warning"] = ("the original recorder's login differs from the copy older "
+                                     "WatchLog versions use; re-enter it in Manage Recorders")
 
             base = backend.core.Config(Path(config_path), read_only_credentials=True)
             contexts = {ctx.local_id: ctx for ctx in recorder_runtime.load_contexts(base)}
@@ -2307,6 +2408,27 @@ def _run_registry_preflight(config_path: Path, *, mode: str,
     except BaseException as exc:  # noqa: BLE001 - includes SystemExit from strict config
         result["error"] = f"{type(exc).__name__}: {exc}"[:300]
     return _finish(result_path, result)
+
+
+def _legacy_mirror_state(rows: list[dict]) -> str:
+    """Does the continuity recorder's login match the legacy singleton copy (nvr_credential)?
+
+    Both are written together (mirror_legacy); a failed restore can leave them different, and
+    then a rollback to 5.0.x, or the single-recorder runtime, silently uses the other login
+    (credential audit P4-c). matches | differs | absent | unreadable. Read-only."""
+    continuity = next((row for row in rows if row.get("continuity_owner")), None)
+    if continuity is None:
+        return "absent"
+    try:
+        legacy = credential_store.load_nvr_credential_readonly()
+        if legacy is None:
+            return "absent"
+        current = credential_store.load_recorder_credential(continuity["local_id"])
+    except Exception:  # noqa: BLE001 - reported, the per-recorder check above already passed
+        return "unreadable"
+    same = all(str(legacy.get(key) or "") == str(current.get(key) or "")
+               for key in ("username", "password"))
+    return "matches" if same else "differs"
 
 
 def _recorder_blob_names() -> set[str]:
@@ -2471,13 +2593,17 @@ def main() -> int:
     parser.add_argument("--registry-rollback", metavar="LOCAL_ID", default="",
                         help="Repair/Upgrade: undo the registry staged by this repair")
     parser.add_argument("--result-json", default="")
+    parser.add_argument("--connected-marker", default="", help=argparse.SUPPRESS)
     parser.add_argument(ELEVATED_RELAUNCH_ARG, dest="elevated_relaunch", action="store_true",
                         help=argparse.SUPPRESS)
     args, _unknown = parser.parse_known_args()
+    if args.connected_marker:
+        os.environ[backend.CONNECTED_MARKER_ENV] = args.connected_marker
     if args.ui_selftest:
         return _run_ui_selftest(installer_child=args.installer_child)
     if args.version:
-        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION}")
+        import wl_version  # BUILD_SHA is baked into the frozen Setup UI too (build_info)
+        _emit_line(f"watchlog-setup-ui {backend.SETUP_AGENT_VERSION} build_sha={wl_version.BUILD_SHA}")
         return 0
     config_path = Path(args.config) if args.config else Path(sys.executable).resolve().parent / "watchlog.ini"
 

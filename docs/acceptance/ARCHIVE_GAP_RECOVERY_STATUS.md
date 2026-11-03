@@ -1,233 +1,159 @@
-# WatchLog Archive / Gap Recovery — Acceptance Status
+# WatchLog Footage/Archive and Gap/Recovery — Status
 
-## Authority
+Status date: 2026-10-06. Line under test: release candidate **5.1.1** (not promoted, no
+artifact, installed nowhere; `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md` section 0).
 
-Authoritative repository: `Alkalid-security/Watchlog`
+This document holds the footage/archive and gap/recovery status and the physical proofs still
+owed. It does not repeat the install procedure
+(`docs/runbooks/WINDOWS_RECORDER_FIELD_ACCEPTANCE.md`, Stage M runs the proofs below) or the
+release status (source of truth).
 
-Authoritative branch: `main`
-
-Current recovery source version: **5.0.24**
-
-Recovery implementation merge:
-
-`eecdc197468b9bf15ddaf2b3e4b34f8a5ed4d92b`
-
-Current product main at this context update:
-
-`7034e2a1deb0c1909fe68ddbd1f7338a3e82bae7`
-
-Production database migration:
-
-`0120_recovered_snapshot_timestamps.sql`
-
-Production migration status: **APPLIED**
+Status words: NOT STARTED, FIXED LOCALLY, CI VERIFIED, INSTALLER VERIFIED, FIELD VERIFIED,
+PRODUCTION VERIFIED, BLOCKED. CI VERIFIED means the repository CI suite reproduced locally; no
+5.1.1 commit has run on GitHub CI.
 
 ---
 
-## Product contract
+## 1. Four separate states
 
-A WatchLog/Internet/recorder observation gap is DELAYED intelligence, not silently lost
-intelligence, whenever the NVR retained the relevant recording and its archive API can be read.
+Recording, storage, archive availability and gap/recovery are four different facts. WatchLog
+reports each on its own; none is inferred from another, from a heartbeat, or from a still.
+**Unknown stays Unknown**: it is never shown or counted as OK.
 
-For a recoverable gap, WatchLog must:
+| State | Values | What decides it | Never inferred from |
+|---|---|---|---|
+| Recording (per camera) | `recording`, `not_recording`, `storage_fault`, `unknown` | the recorder's own record/storage API (`recording_model.py`) | a still or live image; a recording schedule or mode (configuration only); camera video health; a heartbeat |
+| Storage / HDD (per recorder) | `ok`, `degraded`, `fault`, `unknown` | the recorder's storage API and storage events | a recording state; silence. Low space is `degraded`, not `fault`; unsupported or unreadable is `unknown`, never `ok` |
+| Archive availability (per recorder, camera and window) | archive proof: `verified`, `available_frame_unverified`, `empty`, `unsupported`, `failed`, `unknown` (`site_status.py`); per request: footage delivered, unsupported, or failed (retryable unless the recorder refused) | an actual archive read through the transport the runtime uses (incident clip, archive proof, recovery claim) | recording state (recording now does not prove the archive can be read, and the reverse) |
+| Gap / recovery (per window) | coverage `LIVE`, `RECOVERED`, `UNVERIFIED`; interval outcome `recovered`, `partial`, `unrecoverable` | the recorder's last-live marker, recovery intervals and what the archive actually returned | a cloud heartbeat; an archive that was not read; hours with no recording (those stay unknown, never recovered) |
 
-1. retain the last timestamp at which the **recorder transport** was actually observed;
-2. never advance that marker merely because cloud heartbeat still works;
-3. detect the missed interval after recorder contact returns;
-4. attach the actual camera/channel list;
-5. query the recorder archive read-only;
-6. enumerate recorded segments in bounded chunks;
-7. retrieve a bounded historical clip/frame;
-8. decode a representative JPEG using the bundled FFmpeg;
-9. recover visual checkpoints every **300 seconds by default** across long segments;
-10. preserve quiet/no-detector frames as `recovered_snapshot`;
-11. preserve detected activity as `recovered_activity`;
-12. keep the original footage time as `device_ts`;
-13. upload the JPEG through the normal event spool;
-14. store `snapshots.captured_at = device_ts`;
-15. enqueue the recovered image into the normal visual-review queue;
-16. checkpoint progress after every recovery chunk;
-17. deduplicate by segment + sample timestamp across restart/retry;
-18. yield to live monitoring whenever live backlog is high;
-19. preserve any spool-overflow time range before deleting old local rows;
-20. reconcile that overflow range from NVR archive after connectivity returns;
-21. return `partial` / `unknown` when footage exists but frames cannot be decoded;
-22. never fabricate historical images, activity or successful recovery.
+Further rules from the code:
 
----
+- When the recorder is unreachable or refuses login, recording and storage are `unknown` with
+  that cause. A missing or disabled channel has no recording state (`unknown`, never
+  `not_recording`).
+- A storage `fault` (no usable storage) makes the channel `storage_fault`; `degraded` does not.
+- While the Hikvision live collector stands in for a full recorder read, recording and storage
+  are not re-observed from the stream, and a present-tense fault is reported as not observed.
+- Unmonitored time is never presented as "nothing happened".
 
-## Vendor paths
+## 2. Status at a glance
 
-### Dahua
+| Area | 5.1.1 code | Installer | Field | Evidence |
+|---|---|---|---|---|
+| Recording and storage classification, Unknown kept | CI VERIFIED | NOT STARTED | NOT STARTED | `test_recording_model.py`, `test_recording_health.py`, `test_recording_storage_contract.py`, `test_recording_current_multi_recorder.py` |
+| Incident footage (bounded clip) | CI VERIFIED | NOT STARTED | NOT STARTED | `test_hikvision_archive_*`, `test_dahua_archive_*`, `test_incident_clip_stale_recovery.py` |
+| Incident still on request | CI VERIFIED | NOT STARTED | NOT STARTED | `test_incident_still_stale_recovery.py` |
+| Archive per recorder (breaker, auth back-off, isolation) | CI VERIFIED | NOT STARTED | NOT STARTED | `test_archive_breaker_*`, `test_archive_driver_auth_backoff.py`, `test_hikvision_archive_recorder_isolation.py` |
+| Gap detection (last-live from the event stream) | CI VERIFIED | NOT STARTED | NOT STARTED | `test_shipped_last_live.py`, `test_recovery_rpc_contract.py` |
+| Gap recovery from the archive | CI VERIFIED | NOT STARTED | NOT STARTED | `test_recovery*.py`, `test_spool_recovery_gap.py`, `e2e_recovery_*_pg.py` |
+| Coverage truth (LIVE / RECOVERED / UNVERIFIED) | CI VERIFIED | n/a | NOT STARTED | `test_coverage_model.py`, `e2e_multi_recorder_coverage_pg.py`, `e2e_multi_recorder_reporting_coverage_pg.py` |
+| Database side (recorder-scoped recovery, evidence and coverage; migrations 0146-0157) | n/a | n/a | PRODUCTION VERIFIED (owner, 2026-10-06; schema applied only) | source of truth section 0.7 |
 
-Implemented:
+What production has shown on the fielded Agents (read-only audit, 2026-10-06 08:20-09:30 UTC,
+before the migrations were applied):
 
-- native archive finder/search;
-- bounded `loadfile.cgi` historical clip retrieval;
-- timezone/device-clock normalization;
-- segment enumeration;
-- representative JPEG extraction through bundled FFmpeg;
-- gap snapshot/activity recovery.
+- No recovery interval and no RECOVERED or UNVERIFIED window had ever been written for any site.
+- Al-Khalid's recorder read as reachable and authenticated while it sent no events or stills.
+- Incident clips: Chai Wala (5.0.17) returned "unsupported" with no bytes; HASCO (5.0.26)
+  returned a failure.
+- Chai Wala after the 2026-10-06 migration: 4 `visual_sample` / `periodic_snapshot` events. That
+  proves legacy periodic ingestion only, not native alarms, clip/archive, recovery or recording
+  truth.
 
-Evidence boundary:
+Nothing in this document is FIELD VERIFIED for any 5.x build. The only recorder field evidence on
+record is Dahua DH-XVR1B08-I on Agent 0.4.1 (dahua-cgi, 2026-09-10), where clip retrieval was
+unsupported.
 
-Dahua archive retrieval has prior pilot/field evidence, but the exact promoted 5.0.24 Windows
-candidate must still pass the current field acceptance before fleet promotion.
+## 3. Vendor paths (implemented, not field-proven)
 
-### Hikvision
+Dahua (native CGI): archive search pages through all results, `loadfile.cgi` bounded clip
+retrieval with a total time budget, segment times on the Agent clock, representative JPEG through
+the bundled FFmpeg. On an ONVIF-live Dahua site (Al-Khalid) the native archive is used only for
+cameras with a label-consistent ONVIF-to-native channel map (that equivalence is unverified on
+hardware).
 
-Implemented:
+Hikvision (ISAPI): `/ISAPI/ContentMgmt/search`, recorder-returned `playbackURI`, bounded
+`/ISAPI/ContentMgmt/download` with GET/POST compatibility and by-time fallback, downloads bounded
+to the requested window, 32 MiB clip limit, 90 s total retrieval budget, typed refusal outcomes,
+and archive calls serialised with the live stream by the per-recorder lock.
 
-- ISAPI `/ISAPI/ContentMgmt/search`;
-- recorder-returned `playbackURI`;
-- bounded `/ISAPI/ContentMgmt/download`;
-- GET/POST firmware compatibility;
-- by-time fallback;
-- 32 MiB clip bound;
-- segment enumeration;
-- representative JPEG extraction through bundled FFmpeg;
-- gap snapshot/activity recovery.
+Clip clock (MNVR-035): an incident clip on an event uses the recorder clock unless that clock is
+more than 5 minutes from every civil offset; the claim does not yet carry the event's
+`clock_source` (server side not built), so a recovered event, or one uploaded by an Agent before
+5.0.28, can miss by the recorder's drift (up to 5 minutes).
 
-Evidence boundary:
+## 4. Footage/archive physical proofs (12 points, gate G8)
 
-The recovery code and 5.0.23 packaged decoder are validated, but the exact promoted 5.0.24 candidate on Chai Wala
-`DS-7608NI-Q1` has **not yet physically proven** the new archive-download path.
-Build 69's older path returned unsupported. Do not convert packaged proof into a false
-hardware claim.
+All NOT STARTED. Run per vendor (Hikvision, Dahua) on the exact artifact, under
+`docs/runbooks/WINDOWS_RECORDER_FIELD_ACCEPTANCE.md` Stage M. Record recording state, storage
+state and archive availability separately for every proof.
 
----
+1. Archive search returns the requested channel and time window through the transport the
+   runtime uses.
+2. The per-recorder archive proof (Site Status, or `watchlog-agent.exe --recheck-archive-json`)
+   reports archive availability truthfully (`verified` only with a decoded frame; otherwise
+   `available_frame_unverified`, `empty`, `unsupported`, `failed` or `unknown`).
+3. A bounded incident clip for a known camera and time is returned, and its window contains the
+   event.
+4. The clip comes from the right recorder and camera (on a two-recorder site, from the recorder
+   that owns the camera).
+5. The clip's placement in time is checked against the recorder clock; record the recorder clock
+   (and, on an ONVIF-live site, `event_stream.last_clock_skew_s`) before judging a clip that
+   missed.
+6. The bundled decoder produces a JPEG from that recorder's footage (including DHAV/H.265 where
+   the recorder uses it).
+7. An incident still requested for a camera completes (the fielded Agents completed 0 of 7 at
+   Chai Wala and 0 of 8 at HASCO).
+8. A window with no recording returns an honest empty or unrecoverable result; nothing is
+   fabricated.
+9. A recorder or firmware that does not offer footage returns `unsupported` with customer-safe
+   text (no recorder address, no internal detail).
+10. A refused archive login backs off for that recorder only and does not lock the recorder out
+    or interrupt live events.
+11. Live events keep arriving while a clip downloads (no stream timeouts during retrieval).
+12. On the ONVIF-live Dahua site, an incident clip through the mapped native archive covers the
+    event, and an unmapped camera is refused rather than read from the wrong channel.
 
-## Windows packaged validation — Build 100
+## 5. Gap/recovery physical proofs (15 points, gate G9)
 
-Validation repository:
+All NOT STARTED. Same rules as section 4.
 
-`visioninfinity0007-droid/Watchlog-2`
+1. The recorder's last-live time advances from real event-stream activity (keep-alives included),
+   not from the cloud heartbeat.
+2. A forced recorder-LAN gap longer than 3 minutes (outage threshold 180 s) opens exactly one
+   recovery interval for that recorder, keyed by camera, never by a guessed channel.
+3. A controlled Agent or PC restart gap opens an interval in the same way.
+4. The interval is claimed, and the archive is opened only for a claimed interval.
+5. Segments are read in bounded chunks (one hour per chunk) and progress is checkpointed after
+   each chunk.
+6. Quiet recovered frames are kept as `recovered_snapshot`, one visual checkpoint about every
+   300 s.
+7. Frames with activity are kept as `recovered_activity`.
+8. Recovered items carry their original footage time (`device_ts`, `snapshots.captured_at`) and
+   recorder-archive provenance; nothing recovered is presented as live.
+9. Recovered stills enter the normal review queue at their original time, and an older recovered
+   frame never replaces a newer live camera preview.
+10. Recovery resumes after an Agent restart without duplicates.
+11. Live monitoring keeps priority: live events still arrive promptly while recovery runs.
+12. An Internet drop in the middle of recovery is retried from the checkpoint without
+    duplicates.
+13. A local queue overflow keeps its time range as a recovery gap and that range is reconciled
+    from the archive once connectivity returns.
+14. The interval ends truthfully: `recovered`, `partial` or `unrecoverable`; hours with no
+    recording stay unknown; corrupt or undecodable footage produces no fabricated image; archive
+    read failures back off and close after a bounded number of claims.
+15. The portal and the report show the window as LIVE, RECOVERED or UNVERIFIED to match the
+    above, and on a two-recorder site one recorder's outage opens only that recorder's interval.
 
-Windows Release:
+## 6. Earlier lines (record)
 
-**Build 100 / version 5.0.23**
-
-- source SHA:
-  `377462fbd36d834d52864838803299a2a97eb7af`
-- run id:
-  `36373435504`
-- artifact:
-  `WatchLog-Windows-100`
-- artifact id:
-  `10950610443`
-- artifact ZIP digest:
-  `sha256:35e46bccd8549aa844932970d266c26badcc14ebe358cee50b1c375b73e86a9e`
-- `watchlog-agent.exe` SHA-256:
-  `1EC1C2C685E24907822CA4550FEB057D2D49996159B33C6740683A43AE313B84`
-- `watchlog-setup-ui.exe` SHA-256:
-  `4C88206420F97AC1BDF28A824F4B0F1CAE675F374E1791C1D163911E3CC5F297`
-- `WatchLog-Setup.exe` SHA-256:
-  `D40C5622E6DB30BE064FD273624281A08F404112ADD274B7BACE851A558CD42B`
-
-Release #100 passed.
-
-Its frozen connector self-test explicitly calls `recovery_ai.decoder_selftest()`.
-That test creates a tiny video with the bundled FFmpeg and decodes it back to JPEG.
-Therefore packaged historical-frame decode is **proven inside the Windows EXE**, not inferred
-from source dependencies.
-
----
-
-## Cloud storage / timeline proof
-
-Production `wl_ingest_events` now:
-
-- preserves event `device_ts`;
-- inserts the decoded image into `snapshots`;
-- explicitly sets `snapshots.captured_at` to the same historical `device_ts`;
-- retains the existing 3 MiB snapshot bound.
-
-The existing `snapshots` trigger then enqueues `snapshot_visual_reviews` with
-`captured_at = new.captured_at`.
-
-Therefore recovered archive images use their original footage time in the review/timeline
-pipeline instead of the later recovery/upload time.
-
-The realtime camera-preview signal uses `greatest(existing,new)`, so an old recovered
-historical frame cannot replace a newer live camera preview.
-
----
-
-## Resilience proof
-
-Recovery state is durable:
-
-- local event spool is SQLite WAL;
-- recovery interval checkpoints after each bounded chunk;
-- seen keys survive retry/restart;
-- spool overflow persists a separate recovery-gap interval before rows are trimmed;
-- stale acknowledgement cannot clear a newly extended overflow gap.
-
-Live monitoring has priority over archive backfill.
-
----
-
-## Mandatory physical acceptance before declaring hardware 100%
-
-### Hikvision pilot
-
-Use the exact promoted 5.0.24 Windows candidate on a Hikvision NVR and prove:
-
-- archive search returns the requested channel/time;
-- bounded clip bytes are returned;
-- bundled decoder produces JPEG;
-- a forced >3 minute observation gap opens a recovery interval;
-- recovered snapshots appear at original historical timestamps;
-- a quiet recovered frame is retained;
-- an activity recovered frame is retained;
-- recovery resumes correctly after Agent restart;
-- current live monitoring remains responsive during recovery.
-
-For Chai Wala specifically, the target recorder is `DS-7608NI-Q1`.
-
-### Dahua pilot
-
-Repeat the same acceptance using native Dahua CGI archive retrieval.
-
-### Failure acceptance
-
-Also prove:
-
-- no recording -> honest empty/unrecoverable;
-- unsupported firmware -> honest unsupported/partial;
-- corrupt/unreadable media -> no fabricated snapshot and partial/unknown recovery;
-- Internet drops again mid-recovery -> checkpoint/retry without duplicates.
-
----
-
-## 5.0.24 installer/upgrade integration
-
-The archive/gap-recovery contract itself was completed in 5.0.23 and remains part of 5.0.24.
-
-For existing enrolled sites, the recovery runtime must now be delivered through the staged
-`WatchLog-Repair-Upgrade.exe` path rather than the full setup/discovery wizard.
-
-This matters because the promoted field candidate must prove both:
-- the recorder/archive path still works after upgrade; and
-- the candidate was validated against that recorder before installed files were replaced.
-
-Current Windows validation branch:
-
-`visioninfinity0007-droid/Watchlog-2:fix/existing-site-repair-upgrader-v5`
-
-Head at this context update:
-
-`0f3507483ffd7369134fe8b7aa0c6a7be5946ea9`
-
-No 5.0.24 Repair/Upgrade artifact is yet promoted in this document.
-
-## Promotion rule
-
-Software implementation + packaged decoder: **COMPLETE**
-
-Production timestamp/cloud queue path: **LIVE**
-
-Exact Hikvision and Dahua 5.0.24 hardware acceptance: **REQUIRED BEFORE FLEET PROMOTION**
-
-Build 69 remains the live discovery/connectivity reference until the successor passes the
-full field matrix. Do not replace a working Build-69 site merely to satisfy a version number.
+- 5.0.23 completed the archive/gap-recovery contract in source; Watchlog-2 Build 100 (5.0.23)
+  proved the bundled FFmpeg decoder inside the packaged Windows EXE (frozen self-test). That is
+  packaging proof, not hardware proof.
+- Migration `0120_recovered_snapshot_timestamps.sql` (recovered stills keep their footage time)
+  is applied in production.
+- The 5.0.26-era packaged run loop did not start the automatic recovery worker (fixed from
+  5.0.27, source of truth section 1A), which is consistent with production having no recovery
+  interval.
+- Build 69 / 5.0.17 returned "unsupported" for Hikvision archive download.

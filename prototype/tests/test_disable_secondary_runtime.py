@@ -196,7 +196,7 @@ def test_disable_drains_then_syncs_cloud_before_committing_locally(monkeypatch):
         a, b = _seed_two_bound()
         queue = _queue_for(env.root, b, CLOUD_B, 2)
         cloud = FakeCloud(a, b)
-        monkeypatch.setattr(core, "Cloud", cloud)
+        monkeypatch.setattr(sb.core, "Cloud", cloud)  # Setup's cloud client (agent_core)
         _activation_ok(monkeypatch)
 
         seen_local_state = []
@@ -237,7 +237,7 @@ def test_cloud_refusal_leaves_the_recorder_enabled_locally(monkeypatch):
         a, b = _seed_two_bound()
         cloud = FakeCloud(a, b)
         cloud.fail_sync = True
-        monkeypatch.setattr(core, "Cloud", cloud)
+        monkeypatch.setattr(sb.core, "Cloud", cloud)  # Setup's cloud client (agent_core)
         _activation_ok(monkeypatch)
         before = rr.load_registry()
 
@@ -264,7 +264,7 @@ def test_disable_never_sends_an_unbound_recorder(monkeypatch):
              "continuity_owner": False, "is_configured": True})
         rr.save_registry(reg)
         cloud = FakeCloud(a, b)
-        monkeypatch.setattr(core, "Cloud", cloud)
+        monkeypatch.setattr(sb.core, "Cloud", cloud)  # Setup's cloud client (agent_core)
         _activation_ok(monkeypatch)
 
         sb.disable_managed_recorder(env.ini, b)
@@ -289,7 +289,7 @@ def test_a_partial_echo_is_not_a_confirmation(monkeypatch):
             return out
 
         cloud.call = only_b
-        monkeypatch.setattr(core, "Cloud", cloud)
+        monkeypatch.setattr(sb.core, "Cloud", cloud)  # Setup's cloud client (agent_core)
         _activation_ok(monkeypatch)
         before = rr.load_registry()
 
@@ -315,7 +315,7 @@ def test_undrainable_queue_is_retained_and_reported(monkeypatch):
             return real(name, **kw)
 
         cloud.call = ingest_down
-        monkeypatch.setattr(core, "Cloud", cloud)
+        monkeypatch.setattr(sb.core, "Cloud", cloud)  # Setup's cloud client (agent_core)
         _activation_ok(monkeypatch)
 
         out = sb.disable_managed_recorder(env.ini, b)

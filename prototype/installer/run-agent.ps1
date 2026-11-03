@@ -54,6 +54,75 @@ function Write-AgentLog([string]$Text) {
   } catch { }
 }
 
+function Read-RemoteResult {
+  try {
+    if (Test-Path -LiteralPath $remoteResult) { return (Get-Content -LiteralPath $remoteResult -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop) }
+  } catch { }
+  return $null
+}
+
+function Write-RemoteResult($Result) {
+  $tmp = "$remoteResult.tmp"
+  $Result | ConvertTo-Json -Compress | Set-Content -LiteralPath $tmp -Encoding UTF8 -ErrorAction Stop
+  Move-Item -LiteralPath $tmp -Destination $remoteResult -Force -ErrorAction Stop
+}
+
+function Get-RemoteRollbackReason($Result, [int]$RuntimeSeconds, [datetime]$NowUtc, [bool]$BackupExists) {
+  # Why the just-applied remote update must be undone now, or $null. Only while the rollback
+  # is armed: a rollback image exists and the update is neither committed (proven healthy by
+  # the new Agent) nor already rolled back.
+  if ($null -eq $Result -or -not $BackupExists) { return $null }
+  if ([bool]$Result.committed -or [bool]$Result.rollback_applied -or [bool]$Result.superseded) { return $null }
+  if ([bool]$Result.rollback_requested) {
+    return "the new Agent did not prove its health in the commit window: $([string]$Result.detail)"
+  }
+  if ($Result.ok -ne $true) { return $null }
+  if ($RuntimeSeconds -lt 60) { return "the new Agent exited after $RuntimeSeconds s" }
+  $deadline = $null
+  foreach ($field in @("commit_deadline", "completed_at")) {
+    try {
+      if ($Result.$field) {
+        $deadline = [DateTimeOffset]::Parse([string]$Result.$field).UtcDateTime
+        if ($field -eq "completed_at") { $deadline = $deadline.AddSeconds(900) }
+        break
+      }
+    } catch { }
+  }
+  if ($deadline -and $NowUtc -gt $deadline) { return "the commit window ended without health proof from the new Agent" }
+  return $null
+}
+
+function Invoke-RemoteRollback($Result, [string]$Why) {
+  # Put the previous Agent back from the verified rollback image. The restored Agent then
+  # proves itself (fresh heartbeat + update polling) before it reports the rollback.
+  $now = [DateTimeOffset]::UtcNow.ToString("o")
+  $Result | Add-Member -NotePropertyName ok -NotePropertyValue $false -Force
+  $Result | Add-Member -NotePropertyName completed_at -NotePropertyValue $now -Force
+  try {
+    $expected = [string]$Result.previous_sha256
+    if ($expected -and (Get-FileHash -LiteralPath $remoteBackup -Algorithm SHA256 -ErrorAction Stop).Hash -ne $expected.ToUpperInvariant()) {
+      throw "rollback image does not match the recorded previous Agent"
+    }
+    Copy-Item -LiteralPath $remoteBackup -Destination $agent -Force -ErrorAction Stop
+    if ((Get-FileHash -LiteralPath $agent -Algorithm SHA256 -ErrorAction Stop).Hash -ne (Get-FileHash -LiteralPath $remoteBackup -Algorithm SHA256 -ErrorAction Stop).Hash) {
+      throw "restored Agent does not match the rollback image"
+    }
+    Remove-Item -LiteralPath $remoteBackup -Force -ErrorAction SilentlyContinue
+    $Result | Add-Member -NotePropertyName rollback_applied -NotePropertyValue $true -Force
+    $Result | Add-Member -NotePropertyName rollback_at -NotePropertyValue $now -Force
+    $Result | Add-Member -NotePropertyName applied_version -NotePropertyValue "" -Force
+    $Result | Add-Member -NotePropertyName detail -NotePropertyValue ("remote update rolled back: " + $Why + "; previous version restored") -Force
+    Write-AgentLog "==== remote update rolled back: $Why ===="
+  } catch {
+    # The new Agent stays in place (it is the only complete binary); report the hard failure.
+    $Result | Add-Member -NotePropertyName rollback_failed -NotePropertyValue $true -Force
+    $Result | Add-Member -NotePropertyName detail -NotePropertyValue ("remote update NOT rolled back: " + $Why + "; " + $_.Exception.Message) -Force
+    Write-AgentLog "==== remote update rollback FAILED: $($_.Exception.Message) ===="
+  }
+  $Result | Add-Member -NotePropertyName rollback_requested -NotePropertyValue $false -Force
+  Write-RemoteResult $Result
+}
+
 # From here on nothing is allowed to terminate the script.
 $ErrorActionPreference = "Continue"
 
@@ -97,22 +166,14 @@ while ($true) {
   $runtimeSeconds = [int]((Get-Date) - $startedAt).TotalSeconds
   Write-AgentLog "==== agent exited ($code) after ${runtimeSeconds}s; restarting in 15s $(Get-Date -Format o) ===="
 
-  # If a just-applied remote release cannot stay alive for even 60 seconds, restore
-  # the previous binary automatically. The next healthy agent reports the rollback
-  # result to the cloud and clears the backup.
+  # A just-applied remote release that exits within 60 s, asks to be rolled back (it could not
+  # prove version, heartbeat, update polling and every previously-live recorder in its commit
+  # window), or is still unproven after the window, is undone from the verified image. Once
+  # the new Agent commits, the image is gone and nothing here can revert it later.
   try {
-    if ($runtimeSeconds -lt 60 -and (Test-Path $remoteBackup) -and (Test-Path $remoteResult)) {
-      $rr = Get-Content -LiteralPath $remoteResult -Raw | ConvertFrom-Json
-      if ($rr.ok -eq $true) {
-        Copy-Item -LiteralPath $remoteBackup -Destination $agent -Force
-        $rr.ok = $false
-        $rr.detail = "new agent failed startup health check; previous version restored"
-        $rr.applied_version = ""
-        $rr.completed_at = [DateTimeOffset]::UtcNow.ToString("o")
-        $rr | ConvertTo-Json -Compress | Set-Content -LiteralPath $remoteResult -Encoding UTF8
-        Write-AgentLog "==== remote update rolled back after early runtime exit ===="
-      }
-    }
+    $rr = Read-RemoteResult
+    $why = Get-RemoteRollbackReason $rr $runtimeSeconds ([DateTime]::UtcNow) ([bool](Test-Path -LiteralPath $remoteBackup))
+    if ($why) { Invoke-RemoteRollback $rr $why }
   } catch {
     Write-AgentLog "==== remote update rollback check error: $($_.Exception.Message) ===="
   }

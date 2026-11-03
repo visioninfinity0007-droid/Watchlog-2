@@ -80,6 +80,47 @@ def collect(config_section: dict, *, state: dict = None, setup_log: str = "",
     return files
 
 
+LOG_LINE_MAX_CHARS = 500
+
+
+def _redact_line(line: str) -> str:
+    """Strip URLs, user:pass@ credentials and IPv4 addresses (nvr_health's patterns) from one
+    line, keeping the rest of it."""
+    import nvr_health
+    line = nvr_health._URL_RE.sub("[url]", line)
+    line = nvr_health._CRED_RE.sub("[redacted]", line)
+    return nvr_health._IP_RE.sub("[ip]", line)
+
+
+def redact_text(text: str) -> str:
+    """A bundle file made safe to leave the site through the cloud (remote diagnostics): any
+    secret-shaped line dropped, URLs/credentials/IP addresses replaced on every other line."""
+    return "\n".join(_redact_line(ln) for ln in (text or "").splitlines()
+                     if not _looks_secret(ln))
+
+
+def redact_log_tail(text: str, *, max_bytes: int = 64 * 1024) -> tuple[str, bool]:
+    """The newest lines of a log, redacted like :func:`redact_text`, each line capped at
+    LOG_LINE_MAX_CHARS, the whole tail at most ``max_bytes`` UTF-8 bytes.
+
+    Returns (tail, truncated): truncated is True when older lines were left out."""
+    kept: list[str] = []
+    total = 0
+    lines = (text or "").splitlines()
+    truncated = False
+    for line in reversed(lines):
+        if _looks_secret(line):
+            continue
+        safe = _redact_line(line)[:LOG_LINE_MAX_CHARS]
+        size = len(safe.encode("utf-8")) + 1
+        if total + size > max_bytes:
+            truncated = True
+            break
+        kept.append(safe)
+        total += size
+    return "\n".join(reversed(kept)), truncated
+
+
 def write_zip(dest_dir, files: dict, *, now: datetime = None) -> Path:
     """Write the collected files into a timestamped .zip under ``dest_dir`` and return its path."""
     now = now or datetime.now(timezone.utc)
@@ -92,4 +133,5 @@ def write_zip(dest_dir, files: dict, *, now: datetime = None) -> Path:
     return path
 
 
-__all__ = ["collect", "redact_config", "write_zip", "SAFE_CONFIG_KEYS", "SAFE_STATE_KEYS"]
+__all__ = ["collect", "redact_config", "redact_text", "redact_log_tail", "write_zip",
+           "SAFE_CONFIG_KEYS", "SAFE_STATE_KEYS"]

@@ -59,11 +59,12 @@ accepted.
 ### Installer/release contract
 
 - production build entrypoint is `release_agent.py`.
-- explicit `--setup` cancellation/failure is non-zero.
-- explicit successful `--setup` reaches recorder/enrollment/camera validation but
-  does not enter the infinite runtime.
-- NSIS stops an existing task before upgrade and attempts to resume it on a
-  failed validation.
+- the packaged Agent refuses `--setup` and the automatic console wizard (exit 2,
+  nothing written; `test_console_setup_retired.py`); NSIS runs WatchLog Setup
+  (`watchlog-setup-ui.exe --installer-child`).
+- an upgrade over an existing install runs the `wl-upgrade.ps1` stages
+  (preflight, verify-version, commit, rollback); a connected site is sent to
+  `WatchLog-Repair-Upgrade.exe`.
 - Windows Add/Remove Programs registration occurs only after setup and task
   startup succeed.
 - task registration uses `Register-ScheduledTask -Force`, then proves `Running`.

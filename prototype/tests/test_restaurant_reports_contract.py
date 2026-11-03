@@ -18,7 +18,94 @@ QUALITY=(ROOT/"prototype/supabase/migrations/0128_chaiwala_analytics_quality.sql
 RESTAURANT_HARNESS=(ROOT/"ai-harness/site-types/restaurant.yaml").read_text(encoding="utf-8")
 CHAI_HARNESS=(ROOT/"ai-harness/tenants/chaiwala-chota-bukhari/context.yaml").read_text(encoding="utf-8")
 AGENT=(ROOT/"prototype/agent/analytics_agent.py").read_text(encoding="utf-8")
+BUSINESS=(ROOT/"prototype/supabase/migrations/0158_restaurant_business_session_metrics.sql").read_text(encoding="utf-8")
+CLOUD_WORKER=(ROOT/"prototype/supabase/functions/watchlog-vision-worker/index.ts").read_text(encoding="utf-8")
+PRIVATE_WORKER=(ROOT/"prototype/vision_worker/worker.py").read_text(encoding="utf-8")
+REPORT_SKILL=(ROOT/"ai-harness/skills/restaurant-daily-business-report.md").read_text(encoding="utf-8")
+SETUP_SKILL=(ROOT/"ai-harness/skills/tenant-intelligence-setup.md").read_text(encoding="utf-8")
 
+
+
+
+def test_restaurant_business_intelligence_is_site_type_wide():
+    assert 'const isRestaurant=profile.composer==="restaurant"' in HOOK
+    assert 'if(restaurantLayout&&view==="daily")' in HOOK
+    assert 'if(restaurantLayout&&view==="week")' in HOOK
+    assert 'wl_restaurant_business_day' in HOOK
+    assert 'wl_restaurant_business_period' in HOOK
+    for text in (
+        "Estimated covers in represented period",
+        "Estimated table sessions",
+        "Average party size",
+        "Dining covers & party mix",
+        "New table sessions",
+        "Service responsiveness",
+        "Table turnover",
+    ):
+        assert text in UNIFIED
+
+
+def test_restaurant_harness_requires_business_session_metrics_and_no_demographics():
+    for metric in (
+        "average_party_size",
+        "party_size_mix",
+        "largest_visible_party",
+        "session_starts_by_period",
+        "table_turnover",
+        "served_session_rate",
+        "observed_time_to_first_service_minutes",
+        "visible_table_service_actions",
+    ):
+        assert metric in RESTAURANT_HARNESS
+    for phrase in (
+        "estimated dining covers",
+        "party-size mix",
+        "qualifying sample size",
+        "Do not infer gender, age, ethnicity",
+    ):
+        assert phrase in REPORT_SKILL
+    assert "physical table/zone identities" in SETUP_SKILL
+    assert "Do not configure appearance-derived gender" in SETUP_SKILL
+
+
+def test_both_vision_workers_emit_structured_restaurant_table_contract():
+    for worker in (CLOUD_WORKER, PRIVATE_WORKER):
+        assert "service_interaction_observed" in worker
+        assert "restaurant-vision-v" in worker
+        assert "combined_group" in worker
+        assert "gender" in worker and "demographic" in worker
+    assert 'joined with "+"' in CLOUD_WORKER
+    assert 'joined with "+"' in PRIVATE_WORKER
+
+
+def test_0158_fails_closed_until_physical_table_reconciliation():
+    for text in (
+        "physical_table_key",
+        "metrics_primary",
+        "exactly one metrics view per physical table",
+        "wl_restaurant_business_day",
+        "wl_restaurant_business_period",
+        "estimated_covers",
+        "party_size_mix",
+        "median_time_to_first_service_minutes",
+        "session_starts_by_period",
+        "service_slowdown_vs_demand",
+    ):
+        assert text in BUSINESS
+    assert "A single occupied observation is an observation, not a defensible session." in BUSINESS
+    assert "coalesce(c.is_canonical,true)" in BUSINESS
+    assert "unverified_seconds" in BUSINESS
+    assert "'full_service_day'" in BUSINESS
+    assert "'represented_period'" in BUSINESS
+    assert "gender, age or other demographics" in BUSINESS
+    assert "grant execute on function public.wl_restaurant_business_day(uuid,date) to authenticated,service_role" in BUSINESS
+    assert "grant execute on function public.wl_restaurant_business_period(uuid,integer,date) to authenticated,service_role" in BUSINESS
+
+
+def test_report_ui_never_uses_legacy_unreconciled_covers_for_site_total():
+    assert "older restaurant-period estimated_covers can double-count overlapping dining views" in UNIFIED
+    assert "Site-wide cover/session trends come only from the reconciled physical-table contract." in UNIFIED
+    assert "Unavailable until dining sessions are physically reconciled" in UNIFIED
 
 def test_restaurant_report_uses_real_service_day_rpc():
     assert 'rpc("wl_restaurant_day"' in HOOK
@@ -33,8 +120,9 @@ def test_restaurant_report_labels_camera_derived_metrics_honestly():
         "Peak visible diners",
         "Peak occupied tables",
         "Estimated covers",
-        "Served table sessions",
-        "Median observed time to food",
+        # a52a01ff withholds unreconciled cover trends: sessions are labelled as estimates.
+        "Estimated table sessions",
+        "New table sessions",
         "not unique footfall",
         "not POS data",
     ):
@@ -167,7 +255,8 @@ def test_restaurant_day_has_floor_totals_and_coverage_truth():
 
 def test_chaiwala_has_four_tenant_specific_report_windows():
     assert 'RESTAURANT_VIEWS=[["daily","Today"],["yesterday","Yesterday"],["week","Last 7 days"],["monthly","Last 30 days"]]' in REPORT
-    assert 'report_layout_profile==="chaiwala_restaurant_ops_v1"' in HOOK
+    # Since 74a91984 every restaurant site (not only Chai Wala) gets the restaurant composer.
+    assert 'restaurantLayout=selected.composer==="restaurant"' in HOOK
     assert 'wl_restaurant_period' in HOOK
     assert 'p_days:7' in HOOK
     assert 'p_days:30' in HOOK

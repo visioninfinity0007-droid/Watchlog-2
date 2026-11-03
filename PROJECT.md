@@ -117,7 +117,8 @@ prototype/          agent, drivers, bridge, database, tests
   bridge/           push_bridge.py + Dockerfile  (recorder-push translator)
   reporter/         daily_report.py
   supabase/         15 migrations, 0001 → 0015
-  installer/        Inno Setup + service registration + one-click launcher
+  installer/        NSIS installers (nsis/: Setup, Repair/Upgrade) + service registration,
+                    launcher and upgrade scripts
   tests/            5 suites (below)
   sim/              Hikvision + Dahua protocol simulators
   viewer/           the retired prototype dashboard (kept in git, not deployed)
@@ -127,7 +128,8 @@ deploy/             WordPress image, theme, compose
 brand-assets/       generated logo, icons, site photography
 design-tokens/      Style Dictionary source
 03_Design/          guidelines, site map, pricing, prompts, CONNECTIVITY.md
-tools/              asset builders, make_installer.ps1
+tools/              asset builders, build_windows_release.ps1 (NSIS release;
+                    make_installer.ps1 only delegates to it)
 ```
 
 **Not committed, deliberately** (root `.gitignore`): `_memory/` (internal
@@ -168,8 +170,9 @@ run on a single-tenant DB, and is verified to go red when a leak reopens.
 - **Multi-tenant portal** — overview, health, incidents, events,
   analytics, team + roles, trial. Isolation enforced + gated.
 - **Per-tier snapshot retention** — nightly via pg_cron, proven.
-- **Branded installer** (Inno) + background service + power hardening —
-  authored; needs Inno to compile + a real machine to test the boot cycle.
+- **Branded installer** (NSIS: `WatchLog-Setup.exe` + `WatchLog-Repair-Upgrade.exe`) +
+  background service + power hardening. Current status:
+  `docs/release/WINDOWS_INSTALLER_SOURCE_OF_TRUTH.md`.
 - **Marketing site** — 10 designed pages, real photography, SEO/OG,
   working CTAs.
 
