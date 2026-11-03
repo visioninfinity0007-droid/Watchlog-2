@@ -62,6 +62,10 @@ def defer(cfg, state: dict, cloud, open_fn: Callable, *, recorder_id: str | None
             return
         if sync_once(cfg, state, cloud, open_fn, recorder_id=recorder_id, log=log):
             worker_supervisor.success()
+        # 5.1.11: then make this recorder's detections reach WatchLog (same one-shot worker,
+        # same turn on the recorder; re-sends the census when it changed anything).
+        import recorder_event_setup
+        recorder_event_setup.setup_once(cfg, state, cloud, open_fn, recorder_id=recorder_id, log=log)
         worker_supervisor.complete()
 
     import worker_supervisor

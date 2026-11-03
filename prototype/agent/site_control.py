@@ -131,6 +131,7 @@ WRITE_CAPABILITY = {
 
 _SMD_FIELDS = ("human", "vehicle", "sensitivity", "enable")
 _TIME_FIELDS = ("dst_enabled", "ntp_enabled")
+_MOTION_EVENT_FIELDS = ("motion", "notify_center")
 
 _WRITE_SPECS = {
     "rename_channel": {
@@ -147,6 +148,16 @@ _WRITE_SPECS = {
         "read":    lambda d, p: {k: v for k, v in d.get_clock().items() if k in _TIME_FIELDS},
         "desired": lambda p: {k: p[k] for k in _TIME_FIELDS if k in p},
         "apply":   lambda d, p, v: d.set_time_config(**v),
+    },
+    # 5.1.11: detections reach WatchLog (motion on; on Hikvision, linked to the surveillance
+    # center). Only the fields this driver supports are read, wanted and written. LOCAL ONLY:
+    # run by the Agent's own recorder event setup (recorder_event_setup.py); not in
+    # WRITE_ACTIONS, so the cloud catalog (wl_site_command_propose_write) cannot request it yet.
+    "configure_motion_events": {
+        "read":    lambda d, p: {k: v for k, v in d.get_motion_events(p["channel"]).items()
+                                 if k in _MOTION_EVENT_FIELDS},
+        "desired": lambda p: {k: p[k] for k in _MOTION_EVENT_FIELDS if k in p},
+        "apply":   lambda d, p, v: d.set_motion_events(p["channel"], **v),
     },
 }
 

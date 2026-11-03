@@ -526,6 +526,24 @@ class DahuaDriver(NvrDriver):
                 "vehicle": b("ObjectTypes.Vehicle"),
                 "sensitivity": kv.get(f"table.SmartMotionDetect[{ch}].Sensitivity")}
 
+    # Recorder event setup (5.1.11). Dahua puts every enabled detection on the event stream
+    # WatchLog reads (Al-Khalid, DH-XVR: motion and smart-motion people arrive with no linkage),
+    # so the only switch is detection itself; smart motion uses the configure_smd write.
+    MOTION_EVENT_FIELDS = ("motion",)
+
+    def get_motion_events(self, channel) -> dict:
+        ch = int(str(channel)) - 1
+        kv = _parse_kv(self._get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"))
+        v = kv.get(f"table.MotionDetect[{ch}].Enable")
+        return {"motion": None if v is None else str(v).lower() == "true"}
+
+    def set_motion_events(self, channel, motion=None) -> None:
+        ch = int(str(channel)) - 1
+        if motion is not None:
+            self._get("/cgi-bin/configManager.cgi?action=setConfig&"
+                      f"MotionDetect[{ch}].Enable={'true' if motion else 'false'}")
+
     def set_smd(self, channel, human=None, vehicle=None, sensitivity=None, enable=None) -> None:
         ch = int(str(channel)) - 1
         def tf(v):
