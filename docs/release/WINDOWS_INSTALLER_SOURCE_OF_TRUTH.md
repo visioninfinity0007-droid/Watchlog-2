@@ -183,8 +183,11 @@ update channel.
 
 ## 000F. Release candidate 5.1.11: recorder events set up by WatchLog (branch `release/5.1.11-recorder-events`)
 
-**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
-writing. 5.1.11 is 5.1.10 (section 000E) plus recorder event setup from the background Agent.
+**Status: candidate, not promoted.** First written when no Windows artifact has been built;
+since then run 41695616463 (artifact WatchLog-Windows-176, unsigned; Setup SHA256
+1BC55A1A...D13C, Repair-Upgrade 3521764D...EFE6) was published as the website's latest download
+on 2026-11-04; 5.1.10 is kept as `latest.before-5.1.11`. 5.1.11 is 5.1.10 (section 000E) plus
+recorder event setup from the background Agent.
 
 Field evidence (HASCO DS-7608NI-Q1, 5.1.8 census and 5.1.9 install, 2026-10-30 to 2026-11-03):
 motion detection is on for all 8 channels, yet no motion event ever reached WatchLog; the census
