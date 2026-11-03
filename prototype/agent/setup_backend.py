@@ -11,7 +11,6 @@ import json
 import os
 import platform
 import re
-import socket
 import sys
 import time
 from pathlib import Path
@@ -211,14 +210,9 @@ def _known_recorder_rows(known) -> list[dict]:
         host = discover.host_of(str(raw or "").strip()) if raw else ""
         if not host:
             continue
-        open_ports = []
-        for port in (80, 8000, 37777, 443):
-            try:
-                with socket.create_connection((host, port), timeout=1.0):
-                    open_ports.append(port)
-                    break
-            except OSError:
-                continue
+        # Learn the address first and connect patiently (5.1.9): a 1 s connect gave up on a
+        # recorder this PC had not talked to recently (see discover.warm_host).
+        open_ports = discover.warm_host(host, (80, 8000, 37777, 443), rounds=1)["ports"]
         if open_ports:
             rows.append({"ip": host, "label": "Previously connected recorder", "source": "known",
                          "vendor_hint": _vendor_hint_from_ports(open_ports)})
@@ -257,7 +251,7 @@ def discover_recorders(progress: Callable[[str], None] | None = None,
     except Exception:
         onvif = []
     for t in side_threads:
-        t.join(6.0)
+        t.join(8.0)
     for row in side["known"]:
         results[row["ip"]] = row
     for row in side["vendor"]:
@@ -387,8 +381,13 @@ BACKGROUND_START_TIMEOUT_SECONDS = 40  # registration + task start (no readiness
 # Agent was already running. The outer bound must exceed the script's, and a timeout is
 # never taken as "not started" without looking at the PC (see _background_agent_running).
 BACKGROUND_READY_TIMEOUT_SECONDS = 180
-RECORDER_PROBE_TIMEOUT = 5           # seconds per driver probe
-RECORDER_DEADLINE = 18              # backend target; GUI has a 30s hard UX watchdog
+# Field (Al-Khalid + HASCO, 5.1.7/5.1.8, 2026-11-03): 5 s probes, an 18 s target and a 30 s
+# watchdog that also covered stopping the old Agent cut off logins that a browser completed.
+# The test now first reaches the recorder (discover.warm_host, at most ~9 s), retries a timed-out
+# login once (a cold embedded web server answers the second request), and the GUI watchdog
+# (90 s) covers the Agent pause (<= 30 s) plus this target plus one probe in flight.
+RECORDER_PROBE_TIMEOUT = 8           # seconds per driver probe
+RECORDER_DEADLINE = 40              # backend target, including the reach step
 
 _WEB_PORTS = (80, 8080, 81, 82, 88, 8081, 8888, 443, 8443)
 _HIKVISION_SDK_PORTS = (8000,)
@@ -516,20 +515,11 @@ def plan_recorder_probes(host: str, open_ports, vendor_hint: str | None,
 def _probe_web_ports(host: str, timeout: float | None = None, deadline: float = 6.0) -> list[int]:
     """Targeted rescue for the flaky 0.4s subnet sweep, which frequently finds a Dahua's SDK port
     (37777) but misses its slower embedded HTTP port (80). Re-probe the standard web ports on THIS
-    host with the generous per-host timeout, stopping at the first that answers — one reachable web
-    port is enough to proceed. Returns [] when none respond (a genuine, fail-closed web_unreachable)."""
-    import socket
-    budget = discover.CONNECT_TIMEOUT if timeout is None else timeout
-    start = time.monotonic()
-    for port in _WEB_PORTS:
-        if time.monotonic() - start > deadline:
-            break
-        try:
-            with socket.create_connection((host, port), timeout=budget):
-                return [port]
-        except OSError:
-            continue
-    return []
+    host in parallel with a patient timeout; one reachable web port is enough to proceed. Returns
+    [] when none respond (a genuine, fail-closed web_unreachable). `deadline` bounds the wait."""
+    budget = discover.WARM_CONNECT_TIMEOUT if timeout is None else timeout
+    return discover.warm_host(host, _WEB_PORTS, rounds=1,
+                              connect_timeout=min(budget, deadline))["ports"]
 
 
 def _classify_exception(exc: Exception) -> str:
@@ -585,7 +575,7 @@ def _observed(recorder: dict, key: str) -> str | None:
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
                   hint: dict | None = None, _scan=None, _build=None, _probe=None,
-                  _hik_probe=None) -> dict:
+                  _hik_probe=None, _warm=None) -> dict:
     """Prove recorder identity + credentials + channel list — fast and bounded.
 
     `hint` may carry discovery metadata: {"ports": [...], "vendor_hint": "dahua"}.
@@ -597,6 +587,7 @@ def test_recorder(address: str, username: str, password: str,
     build_fn = _build or build
     probe_fn = _probe or _probe_web_ports
     hik_probe_fn = _hik_probe or discover.probe_hikvision_isapi
+    warm_fn = _warm or discover.warm_host
     if not username.strip() or not password:
         raise ValueError("Enter the recorder username and password.")
 
@@ -610,6 +601,18 @@ def test_recorder(address: str, username: str, password: str,
     integration_state = hint.get("integration_state")
     preferred_web_port = hint.get("preferred_web_port")
     open_ports = list(hint.get("ports") or [])
+
+    # Reach the recorder before anything that has a short timeout (discover.warm_host): this is
+    # the step a browser login did for 5.1.7/5.1.8. Ports it proves join the discovery hint.
+    progress("Reaching the recorder on the network…")
+    try:
+        warm = warm_fn(host) or {}
+    except Exception:  # noqa: BLE001 - the checks below still run and classify the failure
+        warm = {}
+    _setup_log(f"reach host={host} mac={'yes' if warm.get('mac') else 'no'} "
+               f"ports={warm.get('ports')} elapsed={warm.get('elapsed')}s")
+    if open_ports and warm.get("ports"):
+        open_ports = sorted(set(open_ports) | set(warm["ports"]))
 
     if is_url:
         drivers = _ordered_drivers(vendor_hint or _vendor_hint_from_ports(open_ports))
@@ -630,6 +633,8 @@ def test_recorder(address: str, username: str, password: str,
             except Exception as exc:
                 _setup_log(f"scan failed host={host}: {_redact(str(exc), password)}")
                 open_ports = []
+            # The scan's 1.5 s connects can still miss what the patient reach step proved.
+            open_ports = sorted(set(open_ports) | set(warm.get("ports") or []))
         # Targeted web-port rescue: a recorder was found but no web port registered. The fast 0.4s
         # subnet sweep (or a stale discovery hint) commonly misses a Dahua's slower embedded HTTP
         # port (80) while catching its SDK port (37777). Re-probe the standard web ports on THIS host
@@ -672,7 +677,12 @@ def test_recorder(address: str, username: str, password: str,
     last_class = "connect"
     hikvision_auth_rejected = False
     hikvision_api_unavailable = (vendor_hint == "hikvision" and integration_state == "unavailable")
-    for driver_name, url in attempts:
+    attempts = list(attempts)
+    retried: set = set()
+    index = 0
+    while index < len(attempts):
+        driver_name, url = attempts[index]
+        index += 1
         # If ISAPI itself issued an authentication rejection, this host is now a
         # strong Hikvision candidate. Do not let a generic Dahua attempt overwrite
         # that diagnosis with another 401 before we try the standards fallback.
@@ -743,6 +753,13 @@ def test_recorder(address: str, username: str, password: str,
                 raise ValueError(_CUSTOMER_ERROR["wrong_credentials"]) from None
             if driver_name == "hikvision-isapi" and cls == "unsupported" and vendor_hint == "hikvision":
                 hikvision_api_unavailable = True
+            if cls == "timeout" and (driver_name, url) not in retried:
+                # A recorder's embedded web server can take longer than a probe to answer its
+                # first request after a quiet period, then answer the next one at once (what
+                # a browser's patient first load hides). Retry this login once, right away.
+                retried.add((driver_name, url))
+                attempts.insert(index, (driver_name, url))
+                progress("The recorder is slow to answer. Trying again…")
             last_class = cls
         finally:
             if driver:
@@ -1497,11 +1514,18 @@ AGENT_TASK_NAME = "WatchLog Agent"
 _PAUSE_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $want = [System.IO.Path]::GetFullPath((Join-Path $env:WL_INSTALL_DIR 'watchlog-agent.exe'))
-$running = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
-  Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) })
+# Get-Process first: Get-CimInstance can take 10+ s on a slow PC (5.1.8 field). WMI only when
+# an Agent process hides its path.
+$procs = @(Get-Process -Name 'watchlog-agent')
+$running = @($procs | Where-Object { $_.Path -and ([System.IO.Path]::GetFullPath([string]$_.Path) -ieq $want) })
+if ($procs | Where-Object { -not $_.Path }) {
+  $running = @(Get-CimInstance Win32_Process -Filter "Name='watchlog-agent.exe'" |
+    Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $want) } |
+    ForEach-Object { Get-Process -Id $_.ProcessId })
+}
 $task = Get-ScheduledTask -TaskName $env:WL_TASK
 if ($task) { Stop-ScheduledTask -TaskName $env:WL_TASK; Start-Sleep -Milliseconds 500 }
-$running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+$running | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Write-Output ("WL_PAUSED running=" + $running.Count + " task=" + [bool]$task)
 """
 

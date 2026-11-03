@@ -838,9 +838,11 @@ class SetupWindow(QMainWindow):
         self.login_error.setText("")
         self.recorder_user, self.recorder_password = user, password
         self._set_login_loading(True)
-        # The backend normally finishes well before this. Keep 30 seconds as a last-resort
-        # UI watchdog; Builds 70/71 cut this to 24/22 seconds and turned the Build-69
-        # intermittent Dahua path into a repeatable false timeout.
+        # The backend normally finishes well before this; the watchdog is a last resort.
+        # Builds 70/71 cut it to 24/22 seconds and turned the Build-69 intermittent Dahua
+        # path into a repeatable false timeout. 5.1.7/5.1.8 (Al-Khalid + HASCO, 2026-11-03)
+        # spent most of a 30 s limit stopping the old Agent, so the login never finished:
+        # 90 s covers the pause (<= 30 s) plus backend.RECORDER_DEADLINE plus one probe.
         # One process may talk to the recorder at a time (HASCO, Hikvision DS-7608NI-Q1):
         # stop a running Agent before the first login test of this Setup run. Manage
         # Recorders tests a login while the site keeps monitoring, so it never pauses.
@@ -851,8 +853,8 @@ class SetupWindow(QMainWindow):
         self.run_worker(
             test_fn, (address, user, password), self.connection_ok,
             "Testing the recorder connection…", hint=self.recorder_hint,
-            timeout_ms=30000,
-            timeout_message=("The recorder login check reached the 30-second safety limit. "
+            timeout_ms=90000,
+            timeout_message=("The recorder login check reached its safety time limit. "
                              "Your credentials are still here; click Test Connection to retry. "
                              "If the recorder opens in your browser, export the support bundle.")
         )
@@ -1389,6 +1391,9 @@ class SetupWindow(QMainWindow):
 def _test_with_agent_paused(address: str, username: str, password: str, **kwargs):
     # run_worker passes hint= and progress= like any worker. Refusing them (5.1.0-5.1.6)
     # failed the first test before the Agent was stopped, so it kept the recorder busy.
+    progress = kwargs.get("progress")
+    if progress:
+        progress("Stopping the previous WatchLog on this PC…")
     backend.pause_background_agent()
     return backend.test_recorder(address, username, password, **kwargs)
 

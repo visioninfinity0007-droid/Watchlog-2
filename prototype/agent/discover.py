@@ -191,6 +191,88 @@ def scan_port(host: str, port: int, kind: str, note: str) -> PortResult:
     return res
 
 
+# --- Reaching a recorder this PC has never talked to ----------------------------------
+#
+# Field (Al-Khalid DH-XVR1B08-I and HASCO DS-7608NI-Q1, 5.1.7/5.1.8, 2026-11-03): Setup could
+# not scan or log in to the recorder until someone had opened its page in a browser on the
+# same PC; after that it worked. Before Windows can send a packet to a LAN address it must
+# learn the device's hardware address (ARP). If the first ARP request goes unanswered, Windows
+# asks again one second later, so a cold address can take 1-3 s to answer. Setup gave each
+# connection 0.75-1.5 s and gave up before the second ARP request; a browser waits 20 s, which
+# leaves the address learned for the next minutes, so Setup then worked. Setup now learns the
+# address first (resolve_neighbor), then connects patiently (warm_host).
+
+WARM_PORTS = (80, 443, 37777, 8000, 8080, 554)
+WARM_CONNECT_TIMEOUT = 3.0
+
+
+def resolve_neighbor(ip: str) -> str | None:
+    """Ask Windows to learn a LAN address's hardware address (SendARP), with Windows' own ARP
+    retries, and return it as aa:bb:cc:dd:ee:ff. None off Windows, for an address off this
+    PC's networks, or when nothing answers. Never raises; at most a few seconds."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        import struct
+        dest = struct.unpack("I", socket.inet_aton(ip))[0]
+        mac = (ctypes.c_ubyte * 8)()
+        length = ctypes.c_ulong(8)
+        if ctypes.windll.iphlpapi.SendARP(dest, 0, ctypes.byref(mac), ctypes.byref(length)) != 0:
+            return None
+        if length.value != 6:
+            return None
+        return ":".join(f"{b:02x}" for b in mac[:6])
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def warm_host(host: str, ports=WARM_PORTS, *, rounds: int = 2,
+              connect_timeout: float = WARM_CONNECT_TIMEOUT, _resolve=None, _connect=None) -> dict:
+    """Reach one recorder the way a browser does before Setup checks it: learn its hardware
+    address, then connect to its usual ports in parallel with a patient timeout, retrying once
+    when nothing answered. {"mac": str | None, "ports": [open ports], "elapsed": seconds}.
+    Bounded: one ARP resolution plus `rounds` x `connect_timeout`. Never raises."""
+    resolve_fn = _resolve or resolve_neighbor
+    connect_fn = _connect or socket.create_connection
+    started = time.monotonic()
+    mac = resolve_fn(host)
+
+    def probe(port):
+        try:
+            with connect_fn((host, port), timeout=connect_timeout):
+                return port
+        except Exception:                                # noqa: BLE001
+            return None
+
+    found: list[int] = []
+    for _ in range(max(1, rounds)):
+        with ThreadPoolExecutor(max_workers=len(ports)) as pool:
+            found = sorted(p for p in pool.map(probe, ports) if p)
+        if found:
+            break
+    return {"mac": mac, "ports": found, "elapsed": round(time.monotonic() - started, 1)}
+
+
+ARP_PRIME_SUBNETS = 2
+ARP_PRIME_WORKERS = 256
+ARP_PRIME_CONNECT_TIMEOUT = 2.0
+
+
+def prime_neighbors(bases, _resolve=None) -> list[str]:
+    """Learn the hardware address of every live host on this PC's first networks, in parallel.
+    Returns the IPs that answered ARP. Windows keeps what it learned, so the port sweep that
+    follows reaches a cold recorder within its short timeout. Bounded by Windows' own ARP
+    retries (about 3 s) per network."""
+    resolve_fn = _resolve or resolve_neighbor
+    hosts = [f"{base}.{h}" for base in list(bases)[:ARP_PRIME_SUBNETS] for h in range(1, 255)]
+    if not hosts:
+        return []
+    with ThreadPoolExecutor(max_workers=ARP_PRIME_WORKERS) as pool:
+        answered = list(pool.map(lambda ip: ip if resolve_fn(ip) else None, hosts))
+    return [ip for ip in answered if ip]
+
+
 # Every port the rest of the setup stack can actually talk to. This list must stay a
 # superset of setup_backend._WEB_PORTS / vendor-signature ports.
 SWEEP_PORTS = [80, 443, 8000, 8080, 8443, 81, 82, 88, 8081, 8888, 554, 37777, 37778, 34567]
@@ -381,7 +463,7 @@ def _has_recorder_signature(found: dict[str, set[int]]) -> bool:
 
 def sweep(subnet: str | None = None, log=print,
           progress=lambda _message: None, _connect=None,
-          _bases=None, _clock=None) -> list[tuple[str, list[int]]]:
+          _bases=None, _clock=None, _resolve=None) -> list[tuple[str, list[int]]]:
     """Find recorder candidates without ever leaving setup spinning indefinitely.
 
     Automatic discovery is deliberately bounded. It scans up to the same eight local
@@ -428,6 +510,18 @@ def sweep(subnet: str | None = None, log=print,
                     # already-running connects are individually bounded by their socket
                     # timeout, so leaving the context cannot turn into a minutes-long hang.
                     break
+
+    # Phase 0: learn every live host on this PC's first networks (ARP), then check only those
+    # hosts on every recorder port with a patient timeout. A recorder this PC never talked to
+    # answers here even when its first ARP request is missed (see resolve_neighbor). A sweep
+    # driven by an injected connector (tests) skips it unless a resolver is injected too.
+    if _connect is None or _resolve is not None:
+        progress("Finding devices on the local network…")
+        live = prime_neighbors(bases, _resolve=_resolve)
+        if live and clock() < deadline:
+            log(f"  {len(live)} device(s) answered on the local network")
+            run_stage([(ip, port, ARP_PRIME_CONNECT_TIMEOUT) for ip in live for port in SWEEP_PORTS],
+                      "Checking local devices for recorder services…")
 
     # Phase 1: patient probes on the ports that prove most Hikvision/Dahua boxes.
     for index, base in enumerate(bases, 1):

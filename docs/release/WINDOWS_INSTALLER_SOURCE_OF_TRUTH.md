@@ -181,6 +181,41 @@ update channel.
 
 ---
 
+## 000D. Release candidate 5.1.9: Setup reaches a recorder without a browser login first (branch `release/5.1.9-recorder-connect`)
+
+**Status: candidate.** 5.1.9 is 5.1.8 (section 000C) plus the recorder connection fixes from the
+2026-11-03 install attempts at Al-Khalid (DH-XVR1B08-I) and HASCO (DS-7608NI-Q1).
+
+Field evidence (2026-11-03, sat with the client):
+- 5.1.7 stopped at the 30-second limit while checking the recorder's IP; 5.1.8 stopped at the
+  same limit while signing in;
+- both worked only after someone had logged in to the recorder's page in a browser on the PC.
+
+Cause: before the first packet to a LAN device, Windows learns its hardware address (ARP), and a
+missed ARP request is repeated only after one second. Setup's connects allowed 0.75-1.5 s and
+gave up first; a browser waits about 20 s, and Windows then keeps the address for the next minutes,
+so Setup worked afterwards. 5.1.8 also stopped the old Agent inside the same 30-second login
+limit (a WMI process query alone can take 10 s or more on a slow PC).
+
+Changes:
+- **Reach step:** before scanning an address or signing in, Setup asks Windows to learn the
+  recorder's hardware address (`discover.resolve_neighbor`, SendARP) and connects to its usual
+  ports in parallel with a 3 s timeout, once more if nothing answered (`discover.warm_host`). The
+  previously-connected-recorder check and the web-port rescue use it too.
+- **Automatic search:** a phase that learns every live device on the PC's first two networks
+  (`discover.prime_neighbors`, about 4 s) and checks only those on every recorder port with a 2 s
+  timeout runs first, inside the unchanged 32 s search deadline.
+- **Login:** a timed-out sign-in is retried once on the same address; probes allow 8 s; the backend
+  target is 40 s including the reach step; the screen limit is 90 s and shows "Stopping the previous
+  WatchLog on this PC…" while the old Agent stops.
+- **Stopping the old Agent:** `Get-Process` first; WMI only when a process hides its path.
+- Tests: `test_setup_reach_cold_recorder.py` (cold-ARP LAN simulation: the 5.1.8 sweep misses
+  the recorder, 5.1.9 finds it; reach, retry and limit contracts).
+
+Field-only (IMPLEMENTED_UNVERIFIED): a first install at Al-Khalid and HASCO without a browser login.
+
+---
+
 ## 000C. Release candidate 5.1.8: recorded footage from older days (branch `release/5.1.8`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of

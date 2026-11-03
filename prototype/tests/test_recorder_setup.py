@@ -64,7 +64,7 @@ def make_build(rules, shared):
     return _build
 
 
-def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None, probe=None):
+def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None, probe=None, warm=None):
     shared = {"built": []}
     progress = []
     scan = None
@@ -76,10 +76,13 @@ def run(address, hint=None, scan_ports=None, rules=None, vendor_guess=None, prob
     # Default probe does no network I/O (returns no web ports) so tests never touch the LAN; a test
     # opts into the web-port rescue by passing probe=lambda h, **k: [80].
     probe_fn = probe or (lambda _host, **_k: [])
+    # The reach step (discover.warm_host) is offline too unless a test supplies what it proves.
+    warm_fn = warm or (lambda _host: {"mac": None, "ports": [], "elapsed": 0.0})
     try:
         result = backend.test_recorder(address, "admin", "pass1234",
                                        progress=progress.append, hint=hint,
-                                       _scan=scan, _build=build, _probe=probe_fn)
+                                       _scan=scan, _build=build, _probe=probe_fn,
+                                       _warm=warm_fn)
         return {"ok": True, "result": result, "built": shared["built"], "progress": progress}
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "built": shared["built"], "progress": progress}
@@ -223,7 +226,9 @@ def test_progress_sequence_and_error_copy():
         assert msg and "cgi" not in msg.lower() and "http://" not in msg
     # bounded timeouts are sane
     assert backend.RECORDER_PROBE_TIMEOUT <= 8
-    assert backend.RECORDER_DEADLINE <= 20
+    # 5.1.9: the deadline includes the reach step; the GUI watchdog (90 s) must outlast it plus
+    # the Agent pause (<= 30 s) and one probe in flight.
+    assert backend.RECORDER_DEADLINE + 30 + backend.RECORDER_PROBE_TIMEOUT <= 90
 
 
 def _run_all_tests():
