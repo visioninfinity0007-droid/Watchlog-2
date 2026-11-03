@@ -198,7 +198,8 @@ def test_login_watchdog_outlasts_the_pause_and_the_backend_deadline():
     gui = (TESTS.parent / "agent" / "setup_gui.py").read_text(encoding="utf-8")
     block = gui[gui.index("def test_connection(self):"):gui.index("def connection_ok(self, result):")]
     assert "timeout_ms=90000" in block
-    assert 30 + backend.RECORDER_DEADLINE + backend.RECORDER_PROBE_TIMEOUT <= 90
+    assert (30 + backend.RECORDER_DEADLINE + backend.RECORDER_PROBE_TIMEOUT
+            + backend.CHANNEL_READ_BUDGET <= 90)
 
 
 def test_the_paused_login_says_it_is_stopping_the_old_agent(monkeypatch):
@@ -209,3 +210,71 @@ def test_the_paused_login_says_it_is_stopping_the_old_agent(monkeypatch):
     monkeypatch.setattr(gui.backend, "test_recorder", lambda *a, **k: order.append("test") or {})
     gui._test_with_agent_paused(RECORDER, "admin", "pw", hint={}, progress=order.append)
     assert order == ["Stopping the previous WatchLog on this PC…", "pause", "test"]
+
+
+# --- an IP-only Hikvision NVR's camera list (HASCO DS-7608NI-Q1, 5.1.9) -------------------------
+
+def test_hikvision_model_names_state_the_channel_count():
+    assert backend.channels_from_model("DS-7608NI-Q1") == 8
+    assert backend.channels_from_model("DS-7616NI-K2") == 16
+    assert backend.channels_from_model("DS-7732NI-K4") == 32
+    assert backend.channels_from_model("DS-96128NI-I16") == 128
+    assert backend.channels_from_model("DH-XVR1B08-I") is None
+    assert backend.channels_from_model(None) is None
+
+
+def _ip_nvr(model: str, list_channels):
+    def build(name, url, user, password, timeout):
+        class _Driver:
+            verified_against_hardware = False
+
+            def probe(self):
+                return SimpleNamespace(vendor="Hikvision", model=model, firmware="", serial="",
+                                       channel_count=0)   # no analog inputs on an IP-only NVR
+
+            def close(self):
+                pass
+        _Driver.name = name
+        _Driver.list_channels = lambda self: list_channels()
+        return _Driver()
+    return build
+
+
+def _hik_login(model, list_channels, monkeypatch):
+    monkeypatch.setattr(backend, "CHANNEL_READ_BUDGET", 0.2)
+    progress = []
+    result = backend.test_recorder(
+        RECORDER, "admin", "pw", progress=progress.append,
+        hint={"ports": [80, 8000], "vendor_hint": "hikvision"},
+        _scan=lambda _h: [], _probe=lambda _h, **_k: [], _build=_ip_nvr(model, list_channels),
+        _warm=lambda _h: {"mac": "aa:bb:cc:dd:ee:ff", "ports": [80, 8000], "elapsed": 0.1})
+    return result, progress
+
+
+def test_a_stalled_camera_list_uses_the_model_count(monkeypatch):
+    import threading
+    release = threading.Event()
+    try:
+        result, progress = _hik_login("DS-7608NI-Q1", lambda: release.wait(5) and [], monkeypatch)
+    finally:
+        release.set()
+    assert result["driver"] == "hikvision-isapi"
+    assert [c["channel"] for c in result["channels"]] == [str(i) for i in range(1, 9)]
+    assert "Reading camera channels…" in progress
+
+
+def test_a_camera_list_that_answers_keeps_the_real_names(monkeypatch):
+    rows = [SimpleNamespace(channel="1", name="Gate"), SimpleNamespace(channel="2", name="Store")]
+    result, _ = _hik_login("DS-7608NI-Q1", lambda: rows, monkeypatch)
+    assert [c["name"] for c in result["channels"]] == ["Gate", "Store"]
+
+
+def test_a_stalled_list_on_an_unknown_model_fails_as_a_timeout(monkeypatch):
+    import threading
+    release = threading.Event()
+    try:
+        with pytest.raises(ValueError) as caught:
+            _hik_login("NVR-UNKNOWN", lambda: release.wait(5) and [], monkeypatch)
+    finally:
+        release.set()
+    assert str(caught.value) == backend._CUSTOMER_ERROR["timeout"]

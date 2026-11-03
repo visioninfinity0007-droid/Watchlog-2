@@ -388,6 +388,11 @@ BACKGROUND_READY_TIMEOUT_SECONDS = 180
 # (90 s) covers the Agent pause (<= 30 s) plus this target plus one probe in flight.
 RECORDER_PROBE_TIMEOUT = 8           # seconds per driver probe
 RECORDER_DEADLINE = 40              # backend target, including the reach step
+# Field (HASCO DS-7608NI-Q1, 5.1.9, 2026-11-03): an IP-only NVR reports no analog inputs, so the
+# fast path above is skipped and Setup sat on "Reading camera channels…". The list read now has
+# a wall-clock limit; a Hikvision model name then gives the count (DS-7608 = 8) and the
+# background Agent reads the names later.
+CHANNEL_READ_BUDGET = 12            # seconds; the watchdog bound includes it
 
 _WEB_PORTS = (80, 8080, 81, 82, 88, 8081, 8888, 443, 8443)
 _HIKVISION_SDK_PORTS = (8000,)
@@ -572,6 +577,41 @@ def _observed(recorder: dict, key: str) -> str | None:
     return value if value and value != placeholder else None
 
 
+_HIKVISION_MODEL_CHANNELS = re.compile(r"^(?:DS|IDS)-(?:96(\d{3})|[6-9]\d(\d{2}))(?=[A-Z])", re.I)
+
+
+def channels_from_model(model: str | None) -> int | None:
+    """The channel count a Hikvision recorder model name states (DS-7608NI-Q1 -> 8,
+    DS-96128NI -> 128), or None when the name does not follow that scheme."""
+    match = _HIKVISION_MODEL_CHANNELS.match(str(model or "").strip())
+    if not match:
+        return None
+    count = int(match.group(1) or match.group(2))
+    return count if 0 < count <= 256 else None
+
+
+def _bounded_channel_list(driver, budget: float):
+    """driver.list_channels() within `budget` seconds of wall clock: the rows, or None when
+    the recorder had not answered. Per-request timeouts alone do not bound it (several reads,
+    and a slow body keeps a read alive). A late answer is discarded."""
+    import threading
+    box: dict = {}
+
+    def read():
+        try:
+            box["rows"] = driver.list_channels()
+        except Exception as exc:  # noqa: BLE001 - re-raised in the caller's thread
+            box["error"] = exc
+    worker = threading.Thread(target=read, daemon=True, name="setup-channel-read")
+    worker.start()
+    worker.join(budget)
+    if worker.is_alive():
+        return None
+    if "error" in box:
+        raise box["error"]
+    return box["rows"]
+
+
 def test_recorder(address: str, username: str, password: str,
                   progress: Callable[[str], None] | None = None,
                   hint: dict | None = None, _scan=None, _build=None, _probe=None,
@@ -716,7 +756,16 @@ def test_recorder(address: str, username: str, password: str,
                     f"reported_channels={len(channels)}")
             else:
                 progress("Reading camera channels…")
-                channels = driver.list_channels()
+                channels = _bounded_channel_list(driver, CHANNEL_READ_BUDGET)
+                stated = (channels_from_model(info.model)
+                          if driver_name == "hikvision-isapi" and not channels else None)
+                if stated:
+                    _setup_log(f"channel list {'empty' if channels is not None else 'timed out'}; "
+                               f"model={info.model} states {stated} channels")
+                    channels = [SimpleNamespace(channel=str(i), name=f"Camera {i}")
+                                for i in range(1, stated + 1)]
+                elif channels is None:
+                    raise DriverError(f"camera list timed out after {CHANNEL_READ_BUDGET}s")
 
             _setup_log(f"OK driver={driver_name} identity=1 channels={len(channels)} "
                        f"elapsed={time.monotonic() - attempt_started:.1f}s")

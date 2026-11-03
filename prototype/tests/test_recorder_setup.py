@@ -228,7 +228,8 @@ def test_progress_sequence_and_error_copy():
     assert backend.RECORDER_PROBE_TIMEOUT <= 8
     # 5.1.9: the deadline includes the reach step; the GUI watchdog (90 s) must outlast it plus
     # the Agent pause (<= 30 s) and one probe in flight.
-    assert backend.RECORDER_DEADLINE + 30 + backend.RECORDER_PROBE_TIMEOUT <= 90
+    assert (backend.RECORDER_DEADLINE + 30 + backend.RECORDER_PROBE_TIMEOUT
+            + backend.CHANNEL_READ_BUDGET <= 90)
 
 
 def _run_all_tests():

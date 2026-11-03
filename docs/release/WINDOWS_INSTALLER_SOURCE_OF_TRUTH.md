@@ -181,10 +181,40 @@ update channel.
 
 ---
 
-## 000D. Release candidate 5.1.9: Setup reaches a recorder without a browser login first (branch `release/5.1.9-recorder-connect`)
+## 000E. Release candidate 5.1.10: Setup finishes on an IP-only Hikvision NVR (branch `release/5.1.9-recorder-connect`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
-writing. 5.1.9 is 5.1.8 (section 000C) plus the recorder connection fixes from the
+writing. 5.1.10 is 5.1.9 (section 000D) plus a bounded camera-list read in the Setup login test.
+
+Field evidence (2026-11-03, 5.1.9 at HASCO, DS-7608NI-Q1): the recorder was found and signed in,
+then Setup stayed on "Reading camera channels…" and never reached Connect (no `wl_enroll` call on
+the server). An IP-only NVR reports no analog inputs (`videoInputPortNums` 0), so the Setup fast
+path that trusts the reported count was skipped and Setup waited on the full channel list.
+
+Changes:
+- **Camera list:** `driver.list_channels()` now runs within `CHANNEL_READ_BUDGET` (12 s) of wall
+  clock. When a Hikvision recorder's list does not answer or is empty, the count its model name
+  states (`channels_from_model`: DS-7608 = 8, DS-96128 = 128) is used and the background Agent
+  reads the names later; with no such count, a stalled list fails as a timeout. The GUI watchdog
+  (90 s) covers the Agent pause, the 40 s target, one probe and this read.
+- Tests: four new cases in `test_setup_reach_cold_recorder.py`.
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): a first install at HASCO that reaches Connect.
+
+---
+
+## 000D. Release candidate 5.1.9: Setup reaches a recorder without a browser login first (branch `release/5.1.9-recorder-connect`)
+
+**Status: built and published, not promoted.** Run 41600992104 (artifact WatchLog-Windows-174,
+unsigned) was published as the website's latest download on 2026-11-03. Field the same day: the
+recorder was found at HASCO, which then stopped on the camera list (section 000E); one PC's
+Setup exited 0xC0000005, cause not yet read from its setup.log. 5.1.9 is 5.1.8 (section 000C) plus the recorder connection fixes from the
 2026-11-03 install attempts at Al-Khalid (DH-XVR1B08-I) and HASCO (DS-7608NI-Q1).
 
 Field evidence (2026-11-03, sat with the client):
@@ -439,7 +469,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.9**
+**5.1.10**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
