@@ -183,7 +183,8 @@ update channel.
 
 ## 000E. Release candidate 5.1.10: Setup finishes on an IP-only Hikvision NVR (branch `release/5.1.9-recorder-connect`)
 
-**Status: built and published, not promoted.** Run 41616142017 (artifact WatchLog-Windows-175,
+**Status: candidate, not promoted.** First written when no Windows artifact has been built;
+since then run 41616142017 (artifact WatchLog-Windows-175,
 unsigned; Setup SHA256 338AFFD1...0747, Repair-Upgrade 8878672E...615B) was published as the
 website's latest download on 2026-11-03; 5.1.9 is kept as `latest.before-5.1.10`. The same day
 HASCO (15:00 PKT) and Al-Khalid (15:12 PKT) were installed with 5.1.9 and report from 8/8 and
