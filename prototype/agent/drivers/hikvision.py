@@ -913,7 +913,29 @@ class HikvisionDriver(NvrDriver):
                 return float(text) if text.isdigit() else None
         return None
 
-    def get_snapshot(self, channel: str) -> bytes | None:
+    def _main_stream_size(self, ch: int) -> "tuple[int, int] | None":
+        """The camera's main-stream size (cached): /ISAPI/Streaming/channels/{ch}01."""
+        cache = self.__dict__.setdefault("_main_sizes", {})
+        if ch in cache:
+            return cache[ch]
+        size = None
+        try:
+            root = self._xml(f"/ISAPI/Streaming/channels/{ch}01")
+            w = h = None
+            for node in root.iter():
+                tag = node.tag.lower()
+                text = (node.text or "").strip()
+                if tag == "videoresolutionwidth" and text.isdigit():
+                    w = int(text)
+                elif tag == "videoresolutionheight" and text.isdigit():
+                    h = int(text)
+            size = (w, h) if w and h else None
+        except DriverError:
+            size = None
+        cache[ch] = size
+        return size
+
+    def get_snapshot(self, channel: str, quality: str | None = None) -> bytes | None:
         """
         ISAPI still image.
 
@@ -921,11 +943,26 @@ class HikvisionDriver(NvrDriver):
         uses <channel><stream> concatenated, so channel 2 main stream is
         201, not 2. Getting this wrong returns someone else's camera,
         which on a security system is worse than returning nothing.
+
+        Sharp (view_quality.py): ask the NVR for the camera's main-stream size and cap it; any
+        refusal falls through to today's still.
         """
         try:
             ch = int(str(channel))
         except (TypeError, ValueError):
             return None
+        import view_quality                                    # noqa: PLC0415
+        if view_quality.resolve(quality) == "sharp":
+            size = self._main_stream_size(ch)
+            if size:
+                url = (self.base_url + f"/ISAPI/Streaming/channels/{ch}01/picture"
+                       f"?videoResolutionWidth={size[0]}&videoResolutionHeight={size[1]}")
+                try:
+                    r = self._send("GET", url, timeout=SNAPSHOT_TIMEOUT)
+                    if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
+                        return view_quality.cap_jpeg(r.content)
+                except requests.RequestException:
+                    pass
         # None means the recorder affirmatively has no still at these paths (404 and the
         # like, or a body that is not a JPEG). A timeout, reset, 5xx or rejected login is
         # transient and raises, so callers retry instead of recording "unsupported".
@@ -948,6 +985,34 @@ class HikvisionDriver(NvrDriver):
         if transient is not None:
             raise transient
         return None
+
+    def probe_view_quality(self, channels=None) -> dict:
+        """READ-ONLY: per camera, the main-stream size the NVR reports and the still sizes it
+        returns with and without asking for that size. Never changes the recorder."""
+        import view_quality                                    # noqa: PLC0415
+        chans = [str(c) for c in (channels or [c.channel for c in self.list_channels()])][:16]
+
+        def still(url):
+            try:
+                r = self._send("GET", url, timeout=SNAPSHOT_TIMEOUT)
+            except requests.RequestException:
+                return {"size": None, "bytes": 0}
+            img = r.content if r.status_code == 200 and r.content[:2] == JPEG_MAGIC else None
+            return {"size": view_quality.jpeg_size(img), "bytes": len(img) if img else 0}
+
+        rows = []
+        for c in chans:
+            try:
+                ch = int(c)
+            except ValueError:
+                continue
+            size = self._main_stream_size(ch)
+            pic = self.base_url + f"/ISAPI/Streaming/channels/{ch}01/picture"
+            sharp = (still(pic + f"?videoResolutionWidth={size[0]}&videoResolutionHeight={size[1]}")
+                     if size else {"size": None, "bytes": 0})
+            rows.append({"channel": c, "streams": {"main": list(size) if size else None},
+                         "default": still(pic), "sharp": sharp})
+        return {"supported": True, "vendor": "hikvision", "channels": rows}
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         """

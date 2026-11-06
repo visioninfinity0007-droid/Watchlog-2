@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 from drivers.base import DriverError, NvrAuthFailed, NvrUnreachable
+import view_quality
 from health_model import CameraHealthMachine, Health, Inventory, Nvr, Probe, Reason
 
 _JPEG_MAGIC = b"\xff\xd8"
@@ -134,7 +135,7 @@ def make_probe_fn(driver) -> Callable[[str], ProbeResult]:
     Snapshot bytes are inspected for a JPEG header and then dropped — never uploaded."""
     def probe(channel: str) -> ProbeResult:
         try:
-            img = driver.get_snapshot(channel)
+            img = view_quality.snapshot(driver, channel, quality="standard")
         except DriverError:
             img = None
         except Exception:                     # noqa: BLE001 — a broken driver is not a camera fault

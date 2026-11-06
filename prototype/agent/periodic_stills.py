@@ -47,6 +47,7 @@ import requests
 
 import nvr_health
 import server_capture
+import view_quality
 import watchlog_agent as core
 import worker_supervisor
 from drivers import DriverError
@@ -444,7 +445,7 @@ class StreamStillSampler:
             self.paused_logged = False
             self._log("resumed")
         try:
-            raw = self.driver.get_snapshot(channel)
+            raw = view_quality.snapshot(self.driver, channel, quality="standard")
         except Exception as error:                          # noqa: BLE001 — camera-level
             raw = None
             self._log(f"ch{channel} gave no still "
@@ -604,7 +605,7 @@ def periodic_still_worker(cfg, spool, stop: threading.Event, channels=None, *,
                     log("resumed")
 
                 try:
-                    raw = driver.get_snapshot(channel)
+                    raw = view_quality.snapshot(driver, channel, quality="standard")
                 except (NvrUnreachable, NvrAuthFailed, requests.RequestException) as error:
                     # One camera timing out or refused (an account without preview rights on
                     # that channel) is a camera fault unless a recorder re-check fails too,

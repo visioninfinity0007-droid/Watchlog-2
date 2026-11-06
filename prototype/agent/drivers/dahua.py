@@ -703,23 +703,64 @@ class DahuaDriver(NvrDriver):
             rejected.add(path)
         return None
 
-    def get_snapshot(self, channel: str) -> bytes | None:
+    def get_snapshot(self, channel: str, quality: str | None = None) -> bytes | None:
         """
         Dahua still image. The CGI is 1-based here, unlike the event
         stream's `index`, which is 0-based. Same device, two conventions.
+
+        Sharp (view_quality.py): ask for the main stream (``subtype=0``) and cap it; when the
+        recorder refuses, fall back to today's still so a camera never loses its view.
         """
         try:
             ch = int(str(channel))
         except (TypeError, ValueError):
             return None
-        url = f"{self.base_url}/cgi-bin/snapshot.cgi?channel={ch}"
-        try:
-            r = self.s.get(url, timeout=SNAPSHOT_TIMEOUT)
-        except requests.RequestException:
-            return None
-        if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
-            return r.content
+        import view_quality                                    # noqa: PLC0415
+        attempts = []
+        if view_quality.resolve(quality) == "sharp":
+            attempts.append((f"{self.base_url}/cgi-bin/snapshot.cgi?channel={ch}&subtype=0", True))
+        attempts.append((f"{self.base_url}/cgi-bin/snapshot.cgi?channel={ch}", False))
+        for url, sharp in attempts:
+            try:
+                r = self.s.get(url, timeout=SNAPSHOT_TIMEOUT)
+            except requests.RequestException:
+                continue
+            if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
+                return view_quality.cap_jpeg(r.content) if sharp else r.content
         return None
+
+    def probe_view_quality(self, channels=None) -> dict:
+        """READ-ONLY: still sizes per camera (today's, main stream, sub stream) and the
+        recorder's own stream settings. Never changes the recorder."""
+        import view_quality                                    # noqa: PLC0415
+        chans = [str(c) for c in (channels or [c.channel for c in self.list_channels()])][:16]
+        encode: dict = {}
+        encode_error = None
+        try:
+            kv = _parse_kv(self._get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode"))
+            for key, val in kv.items():
+                m = re.match(r"table\.Encode\[(\d+)\]\.(MainFormat|ExtraFormat|SnapFormat)\[0\]\.Video\."
+                             r"(resolution|Width|Height|Compression|FPS)$", key)
+                if m:
+                    encode.setdefault(str(int(m.group(1)) + 1), {}).setdefault(m.group(2), {})[m.group(3)] = val
+        except DriverError as e:
+            encode_error = type(e).__name__
+
+        def still(url):
+            try:
+                r = self.s.get(url, timeout=SNAPSHOT_TIMEOUT)
+            except requests.RequestException:
+                return {"size": None, "bytes": 0}
+            img = r.content if r.status_code == 200 and r.content[:2] == JPEG_MAGIC else None
+            return {"size": view_quality.jpeg_size(img), "bytes": len(img) if img else 0}
+
+        rows = []
+        for ch in chans:
+            base = f"{self.base_url}/cgi-bin/snapshot.cgi?channel={int(ch)}"
+            rows.append({"channel": ch, "streams": encode.get(ch, {}),
+                         "default": still(base), "sharp": still(base + "&subtype=0"),
+                         "sub": still(base + "&subtype=1")})
+        return {"supported": True, "vendor": "dahua", "channels": rows, "encode_error": encode_error}
 
     def stream_events(self, stop: threading.Event) -> Iterator[Event]:
         """

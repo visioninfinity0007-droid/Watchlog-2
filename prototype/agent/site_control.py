@@ -33,6 +33,7 @@ READ_ACTIONS = (
     "get_recorder_identity", "get_channels", "get_clock_config",
     "get_video_loss_state", "get_analytics_config", "get_recording_status",
     "get_storage_status", "request_snapshot", "inspect_recorder",
+    "probe_view_quality",
 ) + MAINTENANCE_ACTIONS
 
 
@@ -55,6 +56,25 @@ def _sanitise(e) -> str:
         return nvr_health.redact(str(e))
     except Exception:                          # noqa: BLE001
         return type(e).__name__
+
+
+def _view_quality(driver, params: dict) -> dict:
+    """Probe the still sizes the recorder can give (read-only). With ``apply: true`` the Agent
+    switches the site's view quality: ``sharp`` only when the probe proved a larger still comes
+    back, ``standard`` always allowed. This changes which still the Agent asks for, never the
+    recorder (view_quality.py)."""
+    import view_quality                                         # noqa: PLC0415
+    prober = getattr(driver, "probe_view_quality", None)
+    probe = prober(params.get("channels")) if callable(prober) else {"supported": False, "channels": []}
+    proven = view_quality.choose_mode(probe)
+    mode = view_quality.current_mode()
+    if params.get("apply"):
+        wanted = params.get("mode") or proven
+        if wanted == "sharp" and proven != "sharp":
+            wanted = "standard"
+        mode = view_quality.save_mode(wanted, {"proven": proven,
+                                               "channels": len(probe.get("channels") or [])})
+    return {"probe": probe, "proven": proven, "mode": mode}
 
 
 def inspect(driver) -> dict:
@@ -105,6 +125,8 @@ def execute_read(driver, action: str, params: "dict | None" = None) -> dict:
             ch = str(params.get("channel") or "1")
             img = driver.get_snapshot(ch)
             data = {"channel": ch, "obtained": bool(img), "bytes": (len(img) if img else 0)}
+        elif action == "probe_view_quality":
+            data = _view_quality(driver, params)
         else:  # inspect_recorder
             data = inspect(driver)
         return {"action": action, "ok": True, "data": data}

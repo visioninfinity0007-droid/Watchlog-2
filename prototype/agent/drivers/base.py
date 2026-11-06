@@ -251,6 +251,14 @@ class NvrDriver:
         """
         return None
 
+    def probe_view_quality(self, channels=None) -> dict:
+        """
+        READ-ONLY: which still sizes this recorder can give per camera (view_quality.py).
+        Each channel row: {"channel", "default": {"size", "bytes"}, "sharp": {"size", "bytes"},
+        plus what the recorder reports about its streams}. Drivers that cannot tell say so.
+        """
+        return {"supported": False, "channels": []}
+
     def get_clip(self, channel: str, start: datetime, end: datetime) -> bytes | None:
         """
         Recorded video covering an incident window.
