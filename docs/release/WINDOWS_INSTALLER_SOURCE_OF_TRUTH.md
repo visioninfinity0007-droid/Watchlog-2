@@ -181,6 +181,43 @@ update channel.
 
 ---
 
+## 000G. Release candidate 5.1.12: sharper camera views (branch `release/5.1.12-sharp-views`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.12 is 5.1.11 (section 000F) plus sharper camera views.
+
+Field evidence (2026-11-06): Al-Khalid's DH-XVR1B08-I returns 352 x 288 stills (`snapshot.cgi`
+with no stream choice gives the recorder's snapshot setting); HASCO's DS-7608NI-Q1 returns
+704 x 576. The cameras record far more, and the review often wrote "too dark / could not be
+confirmed".
+
+Changes:
+- **View quality** (`view_quality.py`, light; `still_resize.py`, Pillow, registered only by the
+  Agent runtime so the Setup UI never bundles Pillow): per-site mode `standard` (default) or
+  `sharp`, kept as local state (`view_quality.json` next to the Agent state).
+  - Dahua: sharp asks `snapshot.cgi?channel=N&subtype=0` (main stream);
+  - Hikvision: sharp asks the picture at the camera's main-stream size
+    (`/ISAPI/Streaming/channels/{ch}01`);
+  - either way a refusal falls back to today's still; sharp stills are capped at 1280 px wide.
+  - The five-minute checks and camera-health stills stay standard (storage, uplink).
+- **Site Control READ action `probe_view_quality`** (cloud catalog migration 0209, applied on the
+  WatchLog server): measures today's, main-stream and sub-stream still sizes plus the recorder's
+  stream settings per camera; `apply: true` switches the site to sharp only when a larger still
+  was proven. It never writes to the recorder.
+- Tests: `test_view_quality.py` (11).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server; plus
+  0209 (the `probe_view_quality` catalog entry), also present there.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): main-stream stills on the DH-XVR1B08-I and the
+DS-7608NI-Q1; the probe result per camera.
+
+---
+
 ## 000F. Release candidate 5.1.11: recorder events set up by WatchLog (branch `release/5.1.11-recorder-events`)
 
 **Status: candidate, not promoted.** First written when no Windows artifact has been built;
@@ -516,7 +553,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.11**
+**5.1.12**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
