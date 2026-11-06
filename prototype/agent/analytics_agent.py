@@ -45,6 +45,11 @@ from drivers.base import NvrAuthFailed
 from lease_client import LeaseClient
 from runtime import AgentRuntime
 from spool import Spool
+import still_resize
+import view_quality
+
+# Sharp camera stills are shrunk to view_quality.SHARP_MAX_WIDTH before upload (Agent only).
+view_quality.register_resizer(still_resize.cap_jpeg)
 
 from wl_version import VERSION as AGENT_VERSION  # single source of truth (was a stale 0.3.0 that overrode core)
 ANALYTICS_UPLOAD_BATCH = 500

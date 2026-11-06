@@ -726,7 +726,7 @@ class DahuaDriver(NvrDriver):
             except requests.RequestException:
                 continue
             if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
-                return view_quality.cap_jpeg(r.content) if sharp else r.content
+                return view_quality.cap(r.content) if sharp else r.content
         return None
 
     def probe_view_quality(self, channels=None) -> dict:

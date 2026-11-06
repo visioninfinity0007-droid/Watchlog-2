@@ -21,7 +21,6 @@ quality="standard")``); alarm and incident stills follow the site's mode.
 from __future__ import annotations
 
 import inspect
-import io
 import json
 import os
 import struct
@@ -108,21 +107,25 @@ def jpeg_size(data: bytes | None) -> tuple[int, int] | None:
     return None
 
 
-def cap_jpeg(data: bytes, max_width: int = SHARP_MAX_WIDTH, quality: int = SHARP_JPEG_QUALITY) -> bytes:
-    """Shrink a still wider than max_width (keeping its shape). Fails open: any error -> original."""
+_resizer = None
+
+
+def register_resizer(fn) -> None:
+    """The Agent registers still_resize.cap_jpeg at start. The drivers are shared with the light
+    Setup UI, which must not bundle Pillow (test_setup_import_graph), so this module never
+    imports it; without a registered resizer a sharp still is kept as it came."""
+    global _resizer
+    _resizer = fn
+
+
+def cap(data: bytes) -> bytes:
+    """Shrink a sharp still to SHARP_MAX_WIDTH when the Agent registered a resizer. Fails open."""
     size = jpeg_size(data)
-    if not size or size[0] <= max_width:
+    if _resizer is None or not size or size[0] <= SHARP_MAX_WIDTH:
         return data
     try:
-        from PIL import Image                                # noqa: PLC0415
-        img = Image.open(io.BytesIO(data))
-        img = img.convert("RGB")
-        h = max(1, round(img.height * max_width / img.width))
-        img = img.resize((max_width, h), Image.LANCZOS)
-        out = io.BytesIO()
-        img.save(out, format="JPEG", quality=quality, optimize=True)
-        smaller = out.getvalue()
-        return smaller if smaller[:2] == b"\xff\xd8" else data
+        out = _resizer(data, SHARP_MAX_WIDTH, SHARP_JPEG_QUALITY)
+        return out if out and out[:2] == b"\xff\xd8" else data
     except Exception:                                       # noqa: BLE001
         return data
 

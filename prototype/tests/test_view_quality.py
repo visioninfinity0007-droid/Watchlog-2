@@ -20,6 +20,7 @@ AGENT = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(AGENT))
 
 import view_quality  # noqa: E402
+import still_resize  # noqa: E402
 import site_control  # noqa: E402
 from drivers.dahua import DahuaDriver  # noqa: E402
 from drivers.hikvision import HikvisionDriver  # noqa: E402
@@ -37,7 +38,9 @@ def jpeg(w: int, h: int) -> bytes:
 def mode_file(tmp_path, monkeypatch):
     monkeypatch.setenv("WATCHLOG_VIEW_QUALITY_FILE", str(tmp_path / "view_quality.json"))
     view_quality._cache.update(at=0.0, mode="standard")
+    view_quality.register_resizer(still_resize.cap_jpeg)
     yield
+    view_quality.register_resizer(None)
 
 
 class Resp:
@@ -98,10 +101,17 @@ def test_jpeg_size_and_cap():
     assert view_quality.jpeg_size(jpeg(352, 288)) == (352, 288)
     assert view_quality.jpeg_size(b"not a jpeg") is None
     big = jpeg(1920, 1080)
-    small = view_quality.cap_jpeg(big)
-    assert view_quality.jpeg_size(small) == (1280, 720)
+    assert view_quality.jpeg_size(view_quality.cap(big)) == (1280, 720)
     keep = jpeg(704, 576)
-    assert view_quality.cap_jpeg(keep) is keep
+    assert view_quality.cap(keep) is keep
+    view_quality.register_resizer(None)
+    assert view_quality.cap(big) is big, "without the Agent's resizer (Setup UI) the still is kept"
+
+
+def test_agent_registers_the_resizer_and_setup_never_reaches_pillow():
+    src = (AGENT / "analytics_agent.py").read_text(encoding="utf-8")
+    assert "view_quality.register_resizer(still_resize.cap_jpeg)" in src
+    assert "PIL" not in (AGENT / "view_quality.py").read_text(encoding="utf-8")
 
 
 def test_mode_is_standard_until_saved_and_survives_reload():

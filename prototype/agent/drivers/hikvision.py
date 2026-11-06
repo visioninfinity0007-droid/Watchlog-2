@@ -960,7 +960,7 @@ class HikvisionDriver(NvrDriver):
                 try:
                     r = self._send("GET", url, timeout=SNAPSHOT_TIMEOUT)
                     if r.status_code == 200 and r.content[:2] == JPEG_MAGIC:
-                        return view_quality.cap_jpeg(r.content)
+                        return view_quality.cap(r.content)
                 except requests.RequestException:
                     pass
         # None means the recorder affirmatively has no still at these paths (404 and the
