@@ -183,8 +183,11 @@ update channel.
 
 ## 000G. Release candidate 5.1.12: sharper camera views (branch `release/5.1.12-sharp-views`)
 
-**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
-writing. 5.1.12 is 5.1.11 (section 000F) plus sharper camera views.
+**Status: candidate, not promoted.** First written when no Windows artifact has been built;
+since then run 42235603899 (artifact WatchLog-Windows-177, unsigned; Setup SHA256
+DCEBEC81...05CF7, Repair-Upgrade A0951A48...0BE16) was put on the website as
+`downloads/watchlog/5.1.12/` on 2026-11-06; `latest` still serves 5.1.11. 5.1.12 is 5.1.11
+(section 000F) plus sharper camera views.
 
 Field evidence (2026-11-06): Al-Khalid's DH-XVR1B08-I returns 352 x 288 stills (`snapshot.cgi`
 with no stream choice gives the recorder's snapshot setting); HASCO's DS-7608NI-Q1 returns
