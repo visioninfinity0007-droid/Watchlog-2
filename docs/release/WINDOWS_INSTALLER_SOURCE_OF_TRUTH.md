@@ -215,6 +215,11 @@ Changes:
 
 Field-only (IMPLEMENTED_UNVERIFIED): the SnapFormat write on the DH-XVR1B08-I.
 
+**Published 2026-11-08** as the website's latest download (`downloads/watchlog/{5.1.13,latest}`;
+5.1.12 kept as `latest.before-5.1.13`). Windows Release run 42478911796 (#178) from b8a35a1, unsigned.
+SHA-256: Repair-Upgrade `46e927e73832d3013ed6c3c037d1cc4dcf99f2820dc76cc0b93dd6ded64e12f0`,
+Setup `f34e09764fe3c74b6bb7432a1166fd86c6b8127b4a376ad3deb12fa7efcd2921` (verified by full HTTPS download).
+
 ---
 
 ## 000G. Release candidate 5.1.12: sharper camera views (branch `release/5.1.12-sharp-views`)
