@@ -66,6 +66,11 @@ def _view_quality(driver, params: dict) -> dict:
     import view_quality                                         # noqa: PLC0415
     prober = getattr(driver, "probe_view_quality", None)
     probe = prober(params.get("channels")) if callable(prober) else {"supported": False, "channels": []}
+    raised = []
+    if params.get("raise_snapshot") and callable(getattr(driver, "set_snapshot_format", None)):
+        raised = _raise_snapshot_sizes(driver, probe)
+        if any(r.get("changed") for r in raised):
+            probe = prober(params.get("channels"))
     proven = view_quality.choose_mode(probe)
     mode = view_quality.current_mode()
     if params.get("apply"):
@@ -74,7 +79,46 @@ def _view_quality(driver, params: dict) -> dict:
             wanted = "standard"
         mode = view_quality.save_mode(wanted, {"proven": proven,
                                                "channels": len(probe.get("channels") or [])})
-    return {"probe": probe, "proven": proven, "mode": mode}
+    out = {"probe": probe, "proven": proven, "mode": mode}
+    if params.get("raise_snapshot"):
+        out["snapshot_raised"] = raised
+    return out
+
+
+SNAPSHOT_MAX_WIDTH = 1920
+
+
+def _raise_snapshot_sizes(driver, probe: dict) -> list:
+    """5.1.13: for each camera whose still is smaller than its main stream, raise the recorder's
+    snapshot size to the main-stream size (at most SNAPSHOT_MAX_WIDTH wide) with the transactional
+    configure_snapshot write: read -> apply -> read-back, rolled back on any mismatch. A camera
+    whose still already matches is left alone. Returns one result per camera."""
+    results = []
+    for row in (probe or {}).get("channels") or []:
+        ch = str(row.get("channel") or "")
+        today = (row.get("default") or {}).get("size")
+        if not ch or not today:
+            continue
+        try:
+            main = driver.get_main_size(ch)
+        except Exception:                                   # noqa: BLE001
+            main = None
+        if not main or main[0] <= today[0] or main[0] > SNAPSHOT_MAX_WIDTH:
+            results.append({"channel": ch, "changed": False, "skipped": "no larger main stream" if not main or main[0] <= today[0] else "main stream too large"})
+            continue
+        try:
+            current = driver.get_snapshot_format(ch)
+        except DriverError as e:
+            results.append({"channel": ch, "changed": False, "error": _sanitise(e)})
+            continue
+        if not current:
+            results.append({"channel": ch, "changed": False, "skipped": "no snapshot setting"})
+            continue
+        size = f"{main[0]}x{main[1]}"
+        res = execute_write(driver, "configure_snapshot", {"channel": ch, "sizes": {k: size for k in current}})
+        results.append({"channel": ch, **{k: res.get(k) for k in ("ok", "changed", "verified", "rolled_back", "before", "after", "error")
+                                          if k in res}})
+    return results
 
 
 def inspect(driver) -> dict:
@@ -170,6 +214,14 @@ _WRITE_SPECS = {
         "read":    lambda d, p: {k: v for k, v in d.get_clock().items() if k in _TIME_FIELDS},
         "desired": lambda p: {k: p[k] for k in _TIME_FIELDS if k in p},
         "apply":   lambda d, p, v: d.set_time_config(**v),
+    },
+    # 5.1.13: the recorder's snapshot size (Dahua SnapFormat), raised to the camera's main-stream
+    # size so stills are sharp. LOCAL ONLY, like configure_motion_events: run by the view-quality
+    # probe when the owner asks for it (raise_snapshot); not in WRITE_ACTIONS.
+    "configure_snapshot": {
+        "read":    lambda d, p: d.get_snapshot_format(p["channel"]),
+        "desired": lambda p: dict(p.get("sizes") or {}),
+        "apply":   lambda d, p, v: d.set_snapshot_format(p["channel"], **v),
     },
     # 5.1.11: detections reach WatchLog (motion on; on Hikvision, linked to the surveillance
     # center). Only the fields this driver supports are read, wanted and written. LOCAL ONLY:

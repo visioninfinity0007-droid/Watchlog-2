@@ -207,3 +207,97 @@ def test_five_minute_checks_stay_standard():
 def test_probe_is_in_the_read_catalog():
     assert "probe_view_quality" in site_control.READ_ACTIONS
     assert "probe_view_quality" not in site_control.WRITE_ACTIONS
+
+
+# --- 5.1.13: raise the Dahua snapshot size through the safe write ---------------------------
+
+class DahuaRecorder:
+    """A Dahua XVR that serves every still at its SnapFormat size and ignores subtype=0, like
+    Al-Khalid's DH-XVR1B08-I. setConfig changes its state unless it refuses that size."""
+
+    def __init__(self, snap=(352, 288), main=(960, 576), refuse=False, ignore=False):
+        self.snap = {0: snap, 1: snap}
+        self.main = main
+        self.refuse = refuse          # answers an error
+        self.ignore = ignore          # answers OK but keeps its old value
+        self.writes = []
+        self.auth = None
+
+    def _encode(self):
+        lines = [f"table.Encode[0].MainFormat[0].Video.Width={self.main[0]}",
+                 f"table.Encode[0].MainFormat[0].Video.Height={self.main[1]}"]
+        for i, (w, h) in self.snap.items():
+            lines += [f"table.Encode[0].SnapFormat[{i}].Video.Width={w}",
+                      f"table.Encode[0].SnapFormat[{i}].Video.Height={h}"]
+        return "\n".join(lines) + "\n"
+
+    def get(self, url, **kw):
+        import re as _re
+        if "action=setConfig" in url:
+            self.writes.append(url)
+            if self.refuse:
+                return Resp(400, b"", "Error")
+            if not self.ignore:
+                for i, key, val in _re.findall(r"Encode\[0\]\.SnapFormat\[(\d)\]\.Video\.(Width|Height)=(\d+)", url):
+                    w, h = self.snap[int(i)]
+                    self.snap[int(i)] = (int(val), h) if key == "Width" else (w, int(val))
+            return Resp(200, b"", "OK")
+        if "name=Encode" in url:
+            return Resp(200, b"", self._encode())
+        if "snapshot.cgi" in url:
+            return Resp(200, jpeg(*self.snap[0]))
+        return Resp(404)
+
+    def request(self, method, url, **kw):
+        return self.get(url, **kw)
+
+
+def dahua_recorder(**kw):
+    d = DahuaDriver.__new__(DahuaDriver)
+    d.base_url = "http://nvr"
+    d.timeout = 5
+    d.username = d.password = "x"
+    d.s = DahuaRecorder(**kw)
+    return d
+
+
+def test_raise_snapshot_sets_main_size_verifies_and_views_get_sharp():
+    d = dahua_recorder()
+    out = site_control.execute_read(d, "probe_view_quality", {"channels": ["1"], "apply": True, "raise_snapshot": True})
+    assert out["ok"] is True, out
+    r = out["data"]["snapshot_raised"][0]
+    assert r["changed"] is True and r["verified"] is True, r
+    assert r["before"] == {"snap0": "352x288", "snap1": "352x288"} and r["after"] == {"snap0": "960x576", "snap1": "960x576"}
+    assert out["data"]["probe"]["channels"][0]["default"]["size"] == (960, 576), "today's still is now the main size"
+    assert view_quality.jpeg_size(d.get_snapshot("1")) == (960, 576)
+
+
+def test_raise_snapshot_rolls_back_when_the_recorder_does_not_take_it():
+    d = dahua_recorder(ignore=True)
+    out = site_control.execute_read(d, "probe_view_quality", {"channels": ["1"], "raise_snapshot": True})
+    r = out["data"]["snapshot_raised"][0]
+    assert r["ok"] is False and r["verified"] is False and r["rolled_back"] is True, r
+    assert d.s.snap[0] == (352, 288)
+    d = dahua_recorder(refuse=True)
+    out = site_control.execute_read(d, "probe_view_quality", {"channels": ["1"], "raise_snapshot": True})
+    r = out["data"]["snapshot_raised"][0]
+    assert r["ok"] is False and d.s.snap[0] == (352, 288), r
+
+
+def test_raise_snapshot_leaves_a_matching_still_and_never_runs_unasked():
+    d = dahua_recorder(snap=(960, 576))
+    out = site_control.execute_read(d, "probe_view_quality", {"channels": ["1"], "raise_snapshot": True})
+    assert out["data"]["snapshot_raised"][0]["changed"] is False and d.s.writes == []
+    d = dahua_recorder()
+    out = site_control.execute_read(d, "probe_view_quality", {"channels": ["1"], "apply": True})
+    assert d.s.writes == [] and "snapshot_raised" not in out["data"], "without raise_snapshot the probe never writes"
+
+
+def test_raise_snapshot_skips_huge_main_streams_and_drivers_without_it():
+    d = dahua_recorder(main=(3840, 2160))
+    out = site_control.execute_read(d, "probe_view_quality", {"channels": ["1"], "raise_snapshot": True})
+    assert out["data"]["snapshot_raised"][0]["changed"] is False and d.s.writes == []
+    h = hik([("Streaming/channels/101/picture", Resp(200, jpeg(1920, 1080))), ("ISAPI/Streaming/channels", Resp(200, jpeg(704, 576)))])
+    out = site_control.execute_read(h, "probe_view_quality", {"channels": ["1"], "raise_snapshot": True})
+    assert out["data"]["snapshot_raised"] == [], "Hikvision already gives sharp stills; nothing to write"
+    assert "configure_snapshot" not in site_control.WRITE_ACTIONS, "local only: the cloud catalog cannot ask for it"
