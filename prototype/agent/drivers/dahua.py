@@ -577,6 +577,52 @@ class DahuaDriver(NvrDriver):
         for p in parts:
             self._get(f"/cgi-bin/configManager.cgi?action=setConfig&{p}")
 
+    # Snapshot size (5.1.13). This XVR family serves every snapshot.cgi still at its SnapFormat
+    # setting (352 x 288 by default) and ignores subtype=0, so sharp views need the setting itself
+    # raised. Read and written only through site_control's "configure_snapshot" safe write
+    # (read -> apply -> read-back -> roll back on mismatch). Index 0 = timed, 1 = event (when present).
+    SNAP_INDEXES = (0, 1, 2)
+
+    def _encode_kv(self) -> dict:
+        return _parse_kv(self._get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode"))
+
+    def get_snapshot_format(self, channel) -> dict:
+        """{"snap0": "352x288", "snap1": ...} for the snapshot formats this channel has."""
+        ch = int(str(channel)) - 1
+        kv = self._encode_kv()
+        out = {}
+        for i in self.SNAP_INDEXES:
+            w = kv.get(f"table.Encode[{ch}].SnapFormat[{i}].Video.Width")
+            h = kv.get(f"table.Encode[{ch}].SnapFormat[{i}].Video.Height")
+            if w is not None and h is not None:
+                try:
+                    out[f"snap{i}"] = f"{int(w)}x{int(h)}"
+                except ValueError:
+                    continue
+        return out
+
+    def get_main_size(self, channel) -> "tuple[int, int] | None":
+        ch = int(str(channel)) - 1
+        kv = self._encode_kv()
+        try:
+            return (int(kv[f"table.Encode[{ch}].MainFormat[0].Video.Width"]),
+                    int(kv[f"table.Encode[{ch}].MainFormat[0].Video.Height"]))
+        except (KeyError, ValueError):
+            return None
+
+    def set_snapshot_format(self, channel, **sizes) -> None:
+        """sizes: snapN="WxH". One setConfig per snapshot format, Width and Height together."""
+        ch = int(str(channel)) - 1
+        for key, value in sizes.items():
+            m = re.fullmatch(r"snap(\d)", str(key))
+            s = re.fullmatch(r"(\d{2,5})x(\d{2,5})", str(value or ""))
+            if not m or not s:
+                raise DriverError(f"bad snapshot size {key}={value}")
+            i = int(m.group(1))
+            self._get("/cgi-bin/configManager.cgi?action=setConfig&"
+                      f"Encode[{ch}].SnapFormat[{i}].Video.Width={int(s.group(1))}&"
+                      f"Encode[{ch}].SnapFormat[{i}].Video.Height={int(s.group(2))}")
+
     def configure_push(self, url: str) -> dict:
         """Fail closed: never rewrite a Dahua recorder's AlarmServer (field W2 925885a4).
 

@@ -181,6 +181,47 @@ update channel.
 
 ---
 
+## 000H. Release candidate 5.1.13: recorder snapshot size raised by the Agent (branch `release/5.1.13-snapshot-setting`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.13 is 5.1.12 (section 000G) plus one recorder setting the Agent can change.
+
+Field evidence (2026-11-08, `probe_view_quality` on the installed 5.1.12): Al-Khalid's
+DH-XVR1B08-I serves every `snapshot.cgi` still at its `SnapFormat` setting (352 x 288) and ignores
+`subtype=0`; its main streams are 960 x 576. HASCO's DS-7608NI-Q1 proved sharp (1920 x 1088) and is
+on sharp since 2026-11-08 10:46 UTC.
+
+Changes:
+- **Dahua snapshot size** (`drivers/dahua.py`: `get_snapshot_format`, `get_main_size`,
+  `set_snapshot_format`; `Encode[ch].SnapFormat[0..2].Video.Width/Height`).
+- **Local safe write `configure_snapshot`** (`site_control._WRITE_SPECS`): read -> apply ->
+  read-back, rolled back and re-verified on any mismatch. LOCAL ONLY, like
+  `configure_motion_events`: not in `WRITE_ACTIONS`, so the cloud write catalog cannot request it.
+- **`probe_view_quality` with `raise_snapshot: true`**: for each camera whose still is smaller than
+  its main stream (main at most 1920 px wide), raise the snapshot size to the main-stream size, then
+  re-probe. Without `raise_snapshot` the probe never writes. On the server only an owner, admin or
+  platform admin may send `raise_snapshot` (migration 0216).
+- On Dahua the five-minute checks use the same snapshot setting, so they become main-stream size too
+  (about 30 KB per still at 960 x 576).
+- Tests: `test_view_quality.py` (15; four new: raise + verify, rollback on ignore/refuse, no write
+  when matching or unasked, huge main stream and Hikvision skipped).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server; plus
+  0209 (the `probe_view_quality` catalog entry) and 0216 (who may send `raise_snapshot`).
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): the SnapFormat write on the DH-XVR1B08-I.
+
+**Published 2026-11-08** as the website's latest download (`downloads/watchlog/{5.1.13,latest}`;
+5.1.12 kept as `latest.before-5.1.13`). Windows Release run 42478911796 (#178) from b8a35a1, unsigned.
+SHA-256: Repair-Upgrade `46e927e73832d3013ed6c3c037d1cc4dcf99f2820dc76cc0b93dd6ded64e12f0`,
+Setup `f34e09764fe3c74b6bb7432a1166fd86c6b8127b4a376ad3deb12fa7efcd2921` (verified by full HTTPS download).
+
+---
+
 ## 000G. Release candidate 5.1.12: sharper camera views (branch `release/5.1.12-sharp-views`)
 
 **Status: candidate, not promoted.** First written when no Windows artifact has been built;
@@ -557,7 +598,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.12**
+**5.1.13**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
