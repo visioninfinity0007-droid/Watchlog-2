@@ -609,7 +609,7 @@ def require_recorder_identity(cfg, info) -> None:
             "the saved recorder; it is not monitored until Setup confirms the recorder")
 
 
-def open_driver(cfg: Config):
+def _open_driver_verified(cfg: Config):
     driver, info = _open_driver_unverified(cfg)
     try:
         require_recorder_identity(cfg, info)
@@ -620,6 +620,300 @@ def open_driver(cfg: Config):
             pass
         raise
     return driver, info
+
+
+def open_driver(cfg: Config):
+    """Open this recorder; find it again when DHCP moved it (5.1.14).
+
+    The configured URL stays authoritative while it works. After repeated non-auth
+    connection failures (including another device answering at the old address), the
+    conservative same-recorder rediscovery runs, at most once per REDISCOVERY_MIN_SECONDS
+    per recorder. An auth failure never triggers it: the address is right, the login is
+    not, and trying other hosts with it would be credential spraying."""
+    _apply_adopted_url(cfg)
+    try:
+        driver, info = _open_driver_verified(cfg)
+    except (DriverError, OSError) as exc:
+        if _is_auth_failure(exc):
+            _note_auth_failure(cfg)
+            raise
+        moved = _maybe_rediscover(cfg)
+        if moved is not None:
+            return moved
+        raise
+    _note_connected(cfg, info)
+    return driver, info
+
+
+# --- same-recorder rediscovery after an address change (5.1.14) -------------
+#
+# Field (17-20 Nov 2026): after a power cut the recorder's DHCP address changes. Before
+# 5.1.14 the running Agent only retried other web ports on the SAME host, so Al-Khalid had
+# to reinstall three times and Chai Wala stayed offline. The rediscovery itself
+# (connector_rediscovery: vendor-filtered candidates, at most MAX_AUTH_CANDIDATES logins,
+# accepted only on the saved serial or a sole vendor+model match) existed but was never
+# called by the running Agent.
+
+_REDISCOVERY_LOCK = threading.Lock()
+_REDISCOVERY: dict[str, dict] = {}       # recorder key -> failures / last attempt / running
+_ADOPTED_URLS: dict[str, tuple[str, str]] = {}   # recorder key -> (old url, proven new url)
+_IDENTITY_CHECKED: set[str] = set()      # recorder keys whose identity file is known present
+_rediscovery_clock = None                # injectable monotonic clock (tests)
+
+
+def _monotonic() -> float:
+    import time as _time
+    return (_rediscovery_clock or _time.monotonic)()
+
+
+def _reset_rediscovery_state() -> None:
+    """Forget counters, adopted addresses and identity checks (tests)."""
+    with _REDISCOVERY_LOCK:
+        _REDISCOVERY.clear()
+        _ADOPTED_URLS.clear()
+        _IDENTITY_CHECKED.clear()
+
+
+def _recorder_key(cfg) -> str:
+    local_id = getattr(cfg, "recorder_local_id", None)
+    return f"recorder:{local_id}" if local_id else "legacy"
+
+
+def _recorder_label(cfg) -> str:
+    return str(getattr(cfg, "recorder_display_name", None) or "recorder")
+
+
+def redact_url(url) -> str:
+    """scheme://host[:port] only: no login, path or query ever reaches the log."""
+    host, port, scheme = _parse_host_port_scheme(url)
+    if not host:
+        return "<no address>"
+    shown = f"[{host}]" if ":" in host else host
+    default = (scheme == "http" and port in (None, 80)) or (scheme == "https" and port in (None, 443))
+    return f"{scheme}://{shown}" if default else f"{scheme}://{shown}:{port}"
+
+
+def _same_endpoint(a, b) -> bool:
+    ha, pa, sa = _parse_host_port_scheme(a)
+    hb, pb, sb = _parse_host_port_scheme(b)
+    return (bool(ha) and ha.lower() == hb.lower()
+            and _effective_scheme_port(sa, pa) == _effective_scheme_port(sb, pb))
+
+
+def _apply_adopted_url(cfg) -> None:
+    """Another worker of this recorder already proved it at a new address: use that."""
+    with _REDISCOVERY_LOCK:
+        adopted = _ADOPTED_URLS.get(_recorder_key(cfg))
+    if adopted and _same_endpoint(getattr(cfg, "nvr_url", ""), adopted[0]):
+        cfg.nvr_url = adopted[1]
+
+
+def _note_auth_failure(cfg) -> None:
+    with _REDISCOVERY_LOCK:
+        state = _REDISCOVERY.get(_recorder_key(cfg))
+        if state is not None:
+            state["failures"] = 0
+
+
+def _note_connected(cfg, info) -> None:
+    with _REDISCOVERY_LOCK:
+        state = _REDISCOVERY.get(_recorder_key(cfg))
+        if state is not None:
+            state["failures"] = 0
+    _ensure_identity_saved(cfg, info)
+
+
+def _ensure_identity_saved(cfg, info) -> None:
+    """Sites installed before identity saving existed have no recorder_identity.json, so
+    rediscovery could never prove their recorder. Save it after the first good connect."""
+    key = _recorder_key(cfg)
+    if key in _IDENTITY_CHECKED:
+        return
+    try:
+        import connector_rediscovery as cr
+        if not (str(getattr(info, "serial", "") or "").strip()
+                or str(getattr(info, "model", "") or "").strip()):
+            return                       # nothing that could prove this recorder later
+        path = cr.identity_path(cfg)
+        if not path.exists():
+            cr.save_identity(cfg, info, cfg.nvr_url)
+            if not path.exists():
+                return                   # write failed; try again on the next connect
+            log(f"recorder identity saved for {_recorder_label(cfg)} "
+                "(used to find it again if its address changes)")
+        _IDENTITY_CHECKED.add(key)
+    except Exception as exc:             # noqa: BLE001 — resilience metadata never fails a connect
+        log(f"recorder identity save skipped ({type(exc).__name__})")
+
+
+def _maybe_rediscover(cfg):
+    """Count a non-auth failure; run rediscovery when due. Returns (driver, info) or None."""
+    import connector_rediscovery as cr
+    key = _recorder_key(cfg)
+    now = _monotonic()
+    with _REDISCOVERY_LOCK:
+        state = _REDISCOVERY.setdefault(key, {"failures": 0, "last_attempt": None,
+                                              "running": False})
+        state["failures"] += 1
+        if state["failures"] < cr.REDISCOVERY_AFTER_FAILURES or state["running"]:
+            return None
+        last = state["last_attempt"]
+        if last is not None and now - last < cr.REDISCOVERY_MIN_SECONDS:
+            return None
+        if (getattr(cfg, "credential_error", None) or getattr(cfg, "legacy_credential_error", None)
+                or not (getattr(cfg, "nvr_username", "") or "")):
+            return None                  # no usable login: a search could only fail logins
+        state["running"] = True
+        state["last_attempt"] = now
+        failures = state["failures"]
+    result = None
+    try:
+        result = _rediscover(cfg, failures)
+    except Exception as exc:             # noqa: BLE001 — rediscovery never masks the real error
+        log(f"recorder rediscovery failed ({type(exc).__name__})")
+        result = None
+    finally:
+        with _REDISCOVERY_LOCK:
+            state["running"] = False
+            if result is not None:
+                state["failures"] = 0
+    return result
+
+
+def _expected_identity(cfg) -> dict:
+    """The identity rediscovery must prove: this recorder's own saved identity, checked
+    against (and completed from) its registry row. A site-level identity is used for a
+    registry recorder only when it was saved for this recorder's serial or address."""
+    import connector_rediscovery as cr
+    expected = cr.load_identity(cfg)
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if not local_id:
+        return expected
+    try:
+        import recorder_registry
+        row = recorder_registry.recorder(local_id) or {}
+    except Exception:                    # noqa: BLE001
+        row = {}
+    row_serial = _fingerprint_serial(row.get("identity_fingerprint")
+                                     or getattr(cfg, "recorder_identity_fingerprint", None))
+    if not expected:
+        site = cr.load_site_identity(cfg)
+        site_serial = str(site.get("serial") or "").strip().upper()
+        if site and ((row_serial and site_serial == row_serial)
+                     or (not row_serial and _same_endpoint(site.get("url"), cfg.nvr_url))):
+            expected = site
+    if expected:
+        serial = str(expected.get("serial") or "").strip().upper()
+        if row_serial and serial and serial != row_serial:
+            expected = {}                # the registry's proven serial wins
+    if not expected and (row_serial or row.get("model")) and row.get("vendor"):
+        expected = {"vendor": row.get("vendor") or "", "model": row.get("model") or "",
+                    "serial": row_serial or "", "driver": row.get("driver") or "",
+                    "url": row.get("url") or ""}
+    if expected and row_serial and not expected.get("serial"):
+        expected = {**expected, "serial": row_serial}
+    if expected and not str(expected.get("serial") or "").strip() and _configured_count() > 1:
+        # Two recorders of one model are common on one site: a model-only match could be
+        # this recorder's sibling. With several recorders only a serial proves identity.
+        return {}
+    return expected
+
+
+def _configured_count() -> int:
+    try:
+        import recorder_registry
+        return sum(1 for row in recorder_registry.recorders() if row.get("is_configured"))
+    except Exception:                    # noqa: BLE001
+        return 0
+
+
+def _serial_of_another_recorder(cfg, info) -> bool:
+    serial = str(getattr(info, "serial", "") or "").strip().upper()
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if not serial or not local_id:
+        return False
+    try:
+        import recorder_registry
+        rows = recorder_registry.recorders()
+    except Exception:                    # noqa: BLE001
+        return True                      # cannot prove it is not a sibling: refuse
+    return any(row["local_id"] != str(local_id)
+               and _fingerprint_serial(row.get("identity_fingerprint")) == serial
+               for row in rows)
+
+
+def _rediscover(cfg, failures: int):
+    import connector_rediscovery as cr
+    label = _recorder_label(cfg)
+    old_url = str(cfg.nvr_url or "").rstrip("/")
+    expected = _expected_identity(cfg)
+    if not expected:
+        log(f"recorder rediscovery skipped for {label}: no saved recorder identity "
+            "(a site with several recorders needs the recorder's serial)")
+        return None
+    log(f"recorder rediscovery: {label} unreachable at {redact_url(old_url)} after "
+        f"{failures} attempts; looking for the same recorder on this network")
+    found = cr.find_same_recorder(cfg, expected, log)
+    if found is None:
+        return None
+    new_url, driver, info = found
+    new_url = str(new_url).rstrip("/")
+    try:
+        require_recorder_identity(cfg, info)
+    except RecorderIdentityMismatch:
+        try:
+            driver.close()
+        except Exception:                # noqa: BLE001
+            pass
+        log(f"recorder rediscovery refused for {label}: serial differs from the saved recorder")
+        return None
+    if _serial_of_another_recorder(cfg, info):
+        try:
+            driver.close()
+        except Exception:                # noqa: BLE001
+            pass
+        log(f"recorder rediscovery refused for {label}: the device found is another "
+            "recorder of this site")
+        return None
+    if _same_endpoint(new_url, old_url):
+        log(f"recorder rediscovery: {label} answers again at {redact_url(new_url)}")
+        return driver, info
+    cfg.nvr_url = new_url
+    with _REDISCOVERY_LOCK:
+        _ADOPTED_URLS[_recorder_key(cfg)] = (old_url, new_url)
+    log(f"recorder rediscovery: same recorder proven at {redact_url(new_url)} "
+        f"({label}, was {redact_url(old_url)})")
+    _persist_moved_recorder(cfg, old_url, new_url, info)
+    return driver, info
+
+
+def _persist_moved_recorder(cfg, old_url: str, new_url: str, info) -> None:
+    """Make restarts use the proven address: the recorder's registry row (registry sites),
+    watchlog.ini where it still names the old address (legacy singleton, or the continuity
+    recorder's mirror), and the recorder's identity file. A failed write is logged; this
+    run keeps the proven address in memory."""
+    import connector_rediscovery as cr
+    label = _recorder_label(cfg)
+    local_id = getattr(cfg, "recorder_local_id", None)
+    if local_id:
+        try:
+            import recorder_registry
+            serial = str(getattr(info, "serial", "") or "").strip()
+            recorder_registry.update_recorder_address(
+                local_id, url=new_url,
+                identity_fingerprint=(f"serial:{serial}" if serial else None))
+            log(f"recorder rediscovery: {label} address saved in the recorder list")
+        except Exception as exc:         # noqa: BLE001
+            log(f"recorder rediscovery: could not save {label}'s new address "
+                f"({type(exc).__name__}); using it for this run only")
+    try:
+        if cr.replace_ini_url(getattr(cfg, "_ini_path", None), old_url, new_url):
+            log("recorder rediscovery: watchlog.ini now names the new recorder address")
+    except Exception as exc:             # noqa: BLE001
+        log(f"recorder rediscovery: could not update watchlog.ini ({type(exc).__name__})")
+    cr.save_identity(cfg, info, new_url)
+    with _REDISCOVERY_LOCK:
+        _IDENTITY_CHECKED.add(_recorder_key(cfg))
 
 
 def _open_driver_unverified(cfg: Config):

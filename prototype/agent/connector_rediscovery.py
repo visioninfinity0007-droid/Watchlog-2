@@ -24,16 +24,41 @@ REDISCOVERY_MIN_SECONDS = 300
 MAX_AUTH_CANDIDATES = 4
 
 
+IDENTITY_FILE = "recorder_identity.json"
+
+
+def site_identity_path(cfg) -> Path:
+    """The site-level identity Setup seeds for the recorder it connected (and the only one
+    a legacy singleton site has)."""
+    return Path(cfg.state_path).parent / IDENTITY_FILE
+
+
 def identity_path(cfg) -> Path:
-    return cfg.state_path.parent / "recorder_identity.json"
+    """Where THIS recorder's identity lives.
+
+    A registry recorder (multi-recorder sites, 5.1.0+) has its own file in its recorder
+    state directory, so one recorder's identity is never used to look for another. A legacy
+    singleton keeps the site-level file."""
+    state_dir = getattr(cfg, "recorder_state_dir", None)
+    if state_dir and getattr(cfg, "recorder_local_id", None):
+        return Path(state_dir) / IDENTITY_FILE
+    return site_identity_path(cfg)
 
 
-def load_identity(cfg) -> dict:
+def _read_identity(path: Path) -> dict:
     try:
-        data = json.loads(identity_path(cfg).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def load_identity(cfg) -> dict:
+    return _read_identity(identity_path(cfg))
+
+
+def load_site_identity(cfg) -> dict:
+    return _read_identity(site_identity_path(cfg))
 
 
 def save_identity(cfg, info, base_url: str) -> None:
@@ -130,14 +155,13 @@ def _persist_public_url(cfg, url: str) -> None:
         pass
 
 
-def rediscover_same_recorder(cfg, log=lambda _m: None):
-    """Return (driver, info) for a proven moved recorder, else None.
+def find_same_recorder(cfg, expected: dict, log=lambda _m: None):
+    """Look for the recorder ``expected`` describes; return (url, driver, info) or None.
 
-    Authentication is attempted only against a small vendor-filtered candidate set. If
-    serial is unavailable, exactly one matching vendor+model device must exist; multiple
-    matches are ambiguous and are rejected.
-    """
-    expected = load_identity(cfg)
+    Authentication is attempted only against a small vendor-filtered candidate set
+    (MAX_AUTH_CANDIDATES). If serial is unavailable, exactly one matching vendor+model
+    device must exist; multiple matches are ambiguous and are rejected. Nothing is
+    persisted here."""
     if not expected:
         log("recorder rediscovery skipped: no previously proven recorder identity")
         return None
@@ -192,8 +216,63 @@ def rediscover_same_recorder(cfg, log=lambda _m: None):
         else:
             log("recorder rediscovery: candidate(s) found but identity did not match")
         return None
+    return matches[0]
 
-    url, driver, info = matches[0]
+
+def _endpoint(url):
+    from urllib.parse import urlsplit
+    text = str(url or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "http://" + text
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").lower()
+        port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+    except ValueError:
+        return None
+    return (parts.scheme.lower(), host, port) if host else None
+
+
+def replace_ini_url(ini_path, old_url: str, new_url: str) -> bool:
+    """Point watchlog.ini's nvr_url at ``new_url`` only where it still names ``old_url``.
+
+    A registry site's watchlog.ini mirrors the continuity recorder; another recorder's move
+    must never overwrite it. Only the public URL is written; the login stays in DPAPI."""
+    if not ini_path:
+        return False
+    path = Path(ini_path)
+    if not path.exists():
+        return False
+    ini = configparser.ConfigParser()
+    ini.read(path, encoding="utf-8-sig")
+    if not ini.has_section("watchlog"):
+        return False
+    current = ini["watchlog"].get("nvr_url", "")
+    if not current or _endpoint(current) != _endpoint(old_url):
+        return False
+    ini["watchlog"]["nvr_url"] = str(new_url).rstrip("/")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+        ini.write(handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    return True
+
+
+def rediscover_same_recorder(cfg, log=lambda _m: None):
+    """Return (driver, info) for a proven moved recorder, else None.
+
+    Legacy singleton entry point: looks for the recorder saved in this config's identity
+    file and, when proven, persists the new public URL to watchlog.ini and the identity.
+    The running Agent uses ``agent_core.open_driver``, which also covers registry
+    recorders."""
+    found = find_same_recorder(cfg, load_identity(cfg), log)
+    if found is None:
+        return None
+    url, driver, info = found
     _persist_public_url(cfg, url)
     save_identity(cfg, info, url)
     log(f"recorder rediscovery: same recorder proven at {url}")

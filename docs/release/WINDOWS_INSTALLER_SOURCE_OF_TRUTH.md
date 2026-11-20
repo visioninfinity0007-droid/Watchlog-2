@@ -181,6 +181,61 @@ update channel.
 
 ---
 
+## 000I. Release candidate 5.1.14: the Agent finds its recorder again after an address change (branch `release/5.1.14-recorder-rediscovery`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.14 is 5.1.13 (section 000H) plus same-recorder rediscovery in the running Agent.
+
+Field evidence (17-20 Nov 2026): after power cuts the recorder's DHCP address changed. Al-Khalid
+had to reinstall WatchLog three times between 17 and 19 Nov; Chai Wala's recorder has been
+unreachable since 16 Nov. The running Agent only retried other web ports on the SAME host
+(`agent_core._open_driver_unverified`, log line "recorder: configured URL failed; trying ...");
+the conservative rediscovery in `connector_rediscovery.py` existed but was never called by the
+running Agent. On-site, a static IP or DHCP reservation for the recorder stays the first fix.
+
+Changes:
+- **Rediscovery in the connect path** (`agent_core.open_driver`, used by every worker of every
+  recorder: collector, health, stills, footage, Site Control, capability sync). After
+  `REDISCOVERY_AFTER_FAILURES` (3) non-auth failures of one recorder, at most once per
+  `REDISCOVERY_MIN_SECONDS` (300 s) per recorder, `connector_rediscovery.find_same_recorder`
+  runs: vendor-native discovery, logins on at most `MAX_AUTH_CANDIDATES` (4) vendor-filtered
+  addresses, accepted only when the saved serial matches (or, on a single-recorder site only, the
+  sole vendor+model match). Never after an auth failure (an auth failure resets the count), and
+  never without a usable login. Another device answering at the old address (serial mismatch)
+  counts as a failure, so a DHCP swap is also recovered.
+- **Persistence so a restart uses the new address:** registry recorders through the new
+  `recorder_registry.update_recorder_address` (the row's url only: local and cloud identity,
+  driver, observed facts and the DPAPI login are kept; another recorder's address or serial is
+  refused); `watchlog.ini` `nvr_url` only where it still names the old address (legacy singleton,
+  or the continuity recorder's mirror; a secondary recorder's move never rewrites it); the
+  recorder's identity file. Other workers of the same recorder switch to the proven address in
+  memory at once. Log: "recorder rediscovery: same recorder proven at <scheme://host[:port]>"
+  (`redact_url`: no login, path or query).
+- **Identity per recorder:** a registry recorder keeps its identity in
+  `recorders\<local_id>\recorder_identity.json`; the site-level file Setup seeds is used for a
+  registry recorder only when it names this recorder's serial or address, and the registry's
+  serial wins over a stale file. On a site with several recorders only a serial proves identity,
+  and a device whose serial belongs to another recorder of the site is refused.
+- **Sites installed before identity saving existed:** when the recorder's identity file is missing
+  it is saved after the first successful connect (vendor, model, serial, driver, url).
+- Tests: `test_agent_recorder_rediscovery.py` (18: matching serial adopted and persisted, other
+  serial refused, auth failure never scans, rate limit, registry row/ini/identity persistence,
+  sibling identity never used, identity saved after first connect).
+- **Update class:** `AGENT_ONLY_COMPATIBLE` from 5.1.13 (only `watchlog-agent.exe` code
+  changed; no installed script, Setup UI source or registry/credential schema changed).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server; plus
+  0209 and 0216 as for 5.1.13. No new migration.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): a real DHCP address change on the DH-XVR1B08-I (Al-Khalid)
+and the DS-7608NI-Q1 (HASCO) recovered without a reinstall.
+
+---
+
 ## 000H. Release candidate 5.1.13: recorder snapshot size raised by the Agent (branch `release/5.1.13-snapshot-setting`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
@@ -598,7 +653,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.13**
+**5.1.14**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous
