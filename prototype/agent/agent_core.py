@@ -232,6 +232,8 @@ class Config:
                 pass
         build_url = section.get("supabase_url", "")
         build_key = section.get("supabase_publishable_key", "")
+        build_update_url = section.get("update_url", "")
+        build_update_key = section.get("update_public_key", "")
 
         if ini_path.exists():
             # utf-8-sig, not utf-8: Notepad and PowerShell's Set-Content
@@ -276,6 +278,21 @@ class Config:
                 log(f"config: {section.get('supabase_url')} is retired; using {build_url}")
                 section["supabase_url"] = build_url
                 section["supabase_publishable_key"] = build_key
+
+        # Update channel move (5.1.14): the retired cloud also served the signed update feed
+        # (watchlog-update-manifest), dead since the server move. A site whose watchlog.ini, or an
+        # old environment override, names a feed on a retired host uses the build's feed and
+        # public key instead, in memory, like the server move above. A feed on any other host
+        # is the site's own choice and is left alone.
+        if retired and build_update_url and server_host(build_update_url) not in retired:
+            if server_host(os.environ.get("WATCHLOG_UPDATE_URL")) in retired:
+                ignore_env |= {"update_url", "update_public_key"}
+                log("config: ignoring WATCHLOG_UPDATE_URL (retired server)")
+            if server_host(section.get("update_url")) in retired:
+                log(f"config: update feed {section.get('update_url')} is retired; using {build_update_url}")
+                section["update_url"] = build_update_url
+                if build_update_key:
+                    section["update_public_key"] = build_update_key
 
         def get(key: str, default: str | None = None) -> str | None:
             env = None if key in ignore_env else os.environ.get("WATCHLOG_" + key.upper())

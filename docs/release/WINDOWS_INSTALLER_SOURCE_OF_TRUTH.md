@@ -218,6 +218,17 @@ Changes:
   and a device whose serial belongs to another recorder of the site is refused.
 - **Sites installed before identity saving existed:** when the recorder's identity file is missing
   it is saved after the first successful connect (vendor, model, serial, driver, url).
+- **Own signed update channel** (owner decision 2026-11-20, route B). The retired cloud feed
+  (`oyvgubyxmjlijiczjona.supabase.co/functions/v1/watchlog-update-manifest`) answers 503: the cloud
+  database and its signing key were wiped. Migration 0236 (`agent_release_channels`,
+  `wl_service_agent_release_manifest`) and the edge function `watchlog-update-manifest` were applied
+  and deployed on the WatchLog server on 2026-11-20 (backup `pre-0236-20261120T081224Z`); the feed
+  answers with a manifest signed by the key the Agents trust (verified with `updater.py`).
+  `prototype/update/production.json` names the server feed; `agent_core.Config` moves a site whose
+  watchlog.ini still names the retired feed to the build's feed in memory
+  (`test_update_manifest_channel.py`). Fielded 5.1.13 Agents cannot reach the new feed by
+  themselves: each site gets 5.1.14 once through `WatchLog-Repair-Upgrade.exe`; later releases go
+  remotely (`agent_update_requests`, owner-approved).
 - Tests: `test_agent_recorder_rediscovery.py` (18: matching serial adopted and persisted, other
   serial refused, auth failure never scans, rate limit, registry row/ini/identity persistence,
   sibling identity never used, identity saved after first connect).
@@ -234,16 +245,7 @@ Changes:
 Field-only (IMPLEMENTED_UNVERIFIED): a real DHCP address change on the DH-XVR1B08-I (Al-Khalid)
 and the DS-7608NI-Q1 (HASCO) recovered without a reinstall.
 
-**Built 2026-11-20** (not published, not offered to any site): Windows Release run 44696339528
-(#179) from f42de49, unsigned; artifacts WatchLog-Windows-179 and WatchLog-Agent-179; update
-contract `AGENT_ONLY_COMPATIBLE` (min components 5.1.0). SHA-256: Repair-Upgrade
-`094ebdbe62cbbb55f69340b5fa69e4ec385ef8dd416500564233c0fd7278c4f0`, Setup
-`e898c2b461297045ffc397add03654f202c669408d7fe364f95ebc1c4f7a6b48`, `watchlog-agent.exe`
-`e015348b2aee3dac3f7dc5b70dc04a61f48d0457b117eae2d9c11795c6d957e8`.
-Update channel on 2026-11-20: the signed manifest
-(`watchlog-update-manifest`, section 8 of `WINDOWS_PACKAGING.md`) answers HTTP 503 "manifest
-signing unavailable", and the WatchLog server hosts no manifest function, so an Agent-only remote
-update cannot be delivered until the feed is restored (owner-approved).
+Superseded build (before the update-channel move): run 44696339528 (#179) from f42de49.
 
 ---
 
