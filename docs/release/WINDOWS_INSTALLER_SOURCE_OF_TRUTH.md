@@ -234,6 +234,17 @@ Changes:
 Field-only (IMPLEMENTED_UNVERIFIED): a real DHCP address change on the DH-XVR1B08-I (Al-Khalid)
 and the DS-7608NI-Q1 (HASCO) recovered without a reinstall.
 
+**Built 2026-11-20** (not published, not offered to any site): Windows Release run 44696339528
+(#179) from f42de49, unsigned; artifacts WatchLog-Windows-179 and WatchLog-Agent-179; update
+contract `AGENT_ONLY_COMPATIBLE` (min components 5.1.0). SHA-256: Repair-Upgrade
+`094ebdbe62cbbb55f69340b5fa69e4ec385ef8dd416500564233c0fd7278c4f0`, Setup
+`e898c2b461297045ffc397add03654f202c669408d7fe364f95ebc1c4f7a6b48`, `watchlog-agent.exe`
+`e015348b2aee3dac3f7dc5b70dc04a61f48d0457b117eae2d9c11795c6d957e8`.
+Update channel on 2026-11-20: the signed manifest
+(`watchlog-update-manifest`, section 8 of `WINDOWS_PACKAGING.md`) answers HTTP 503 "manifest
+signing unavailable", and the WatchLog server hosts no manifest function, so an Agent-only remote
+update cannot be delivered until the feed is restored (owner-approved).
+
 ---
 
 ## 000H. Release candidate 5.1.13: recorder snapshot size raised by the Agent (branch `release/5.1.13-snapshot-setting`)
