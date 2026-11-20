@@ -767,6 +767,39 @@ def update_recorder_connection(local_id: str, *, url: str, driver: str,
         raise
 
 
+def update_recorder_address(local_id: str, *, url: str,
+                            identity_fingerprint: str | None = None) -> dict:
+    """Re-point one recorder at the address its own serial was just proven at (5.1.14).
+
+    Used by the running Agent after a DHCP address change, with the SAME login, so unlike
+    ``update_recorder_connection`` the recorder's login (DPAPI) is not rewritten. Local and
+    cloud identity, driver and observed facts are kept. A known serial is never replaced
+    by another, and an address another recorder of this site holds is refused."""
+    current = load_registry()
+    wanted = str(local_id or "").strip()
+    row = next((r for r in current["recorders"] if r["local_id"] == wanted), None)
+    if row is None:
+        raise ValueError("recorder not found")
+    address = str(url or "").strip().rstrip("/")
+    if not _endpoint(address):
+        raise ValueError("recorder address is not valid")
+    observed = _serial(identity_fingerprint)
+    saved = _serial(row.get("identity_fingerprint"))
+    if observed and saved and observed != saved:
+        raise RecorderIdentityConflict(
+            "the device at the new address reports a different serial number than the "
+            "saved recorder")
+    _reject_duplicate(current["recorders"], address, identity_fingerprint,
+                      ignore_local_id=wanted)
+
+    def update(rec):
+        rec["url"] = address
+        if observed and not saved:
+            rec["identity_fingerprint"] = str(identity_fingerprint).strip()
+
+    return _replace_record(wanted, update)
+
+
 def add_recorder(*, display_name: str, url: str, driver: str,
                  username: str, password: str, is_primary: bool = False,
                  vendor: str | None = None, model: str | None = None,

@@ -181,6 +181,87 @@ update channel.
 
 ---
 
+## 000I. Release candidate 5.1.14: the Agent finds its recorder again after an address change (branch `release/5.1.14-recorder-rediscovery`)
+
+**Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
+writing. 5.1.14 is 5.1.13 (section 000H) plus same-recorder rediscovery in the running Agent.
+
+Field evidence (17-20 Nov 2026): after power cuts the recorder's DHCP address changed. Al-Khalid
+had to reinstall WatchLog three times between 17 and 19 Nov; Chai Wala's recorder has been
+unreachable since 16 Nov. The running Agent only retried other web ports on the SAME host
+(`agent_core._open_driver_unverified`, log line "recorder: configured URL failed; trying ...");
+the conservative rediscovery in `connector_rediscovery.py` existed but was never called by the
+running Agent. On-site, a static IP or DHCP reservation for the recorder stays the first fix.
+
+Changes:
+- **Rediscovery in the connect path** (`agent_core.open_driver`, used by every worker of every
+  recorder: collector, health, stills, footage, Site Control, capability sync). After
+  `REDISCOVERY_AFTER_FAILURES` (3) non-auth failures of one recorder, at most once per
+  `REDISCOVERY_MIN_SECONDS` (300 s) per recorder, `connector_rediscovery.find_same_recorder`
+  runs: vendor-native discovery, logins on at most `MAX_AUTH_CANDIDATES` (4) vendor-filtered
+  addresses, accepted only when the saved serial matches (or, on a single-recorder site only, the
+  sole vendor+model match). Never after an auth failure (an auth failure resets the count), and
+  never without a usable login. Another device answering at the old address (serial mismatch)
+  counts as a failure, so a DHCP swap is also recovered.
+- **Persistence so a restart uses the new address:** registry recorders through the new
+  `recorder_registry.update_recorder_address` (the row's url only: local and cloud identity,
+  driver, observed facts and the DPAPI login are kept; another recorder's address or serial is
+  refused); `watchlog.ini` `nvr_url` only where it still names the old address (legacy singleton,
+  or the continuity recorder's mirror; a secondary recorder's move never rewrites it); the
+  recorder's identity file. Other workers of the same recorder switch to the proven address in
+  memory at once. Log: "recorder rediscovery: same recorder proven at <scheme://host[:port]>"
+  (`redact_url`: no login, path or query).
+- **Identity per recorder:** a registry recorder keeps its identity in
+  `recorders\<local_id>\recorder_identity.json`; the site-level file Setup seeds is used for a
+  registry recorder only when it names this recorder's serial or address, and the registry's
+  serial wins over a stale file. On a site with several recorders only a serial proves identity,
+  and a device whose serial belongs to another recorder of the site is refused.
+- **Sites installed before identity saving existed:** when the recorder's identity file is missing
+  it is saved after the first successful connect (vendor, model, serial, driver, url).
+- **Own signed update channel** (owner decision 2026-11-20, route B). The retired cloud feed
+  (`oyvgubyxmjlijiczjona.supabase.co/functions/v1/watchlog-update-manifest`) answers 503: the cloud
+  database and its signing key were wiped. Migration 0236 (`agent_release_channels`,
+  `wl_service_agent_release_manifest`) and the edge function `watchlog-update-manifest` were applied
+  and deployed on the WatchLog server on 2026-11-20 (backup `pre-0236-20261120T081224Z`); the feed
+  answers with a manifest signed by the key the Agents trust (verified with `updater.py`).
+  `prototype/update/production.json` names the server feed; `agent_core.Config` moves a site whose
+  watchlog.ini still names the retired feed to the build's feed in memory
+  (`test_update_manifest_channel.py`). Fielded 5.1.13 Agents cannot reach the new feed by
+  themselves: each site gets 5.1.14 once through `WatchLog-Repair-Upgrade.exe`; later releases go
+  remotely (`agent_update_requests`, owner-approved).
+- Tests: `test_agent_recorder_rediscovery.py` (18: matching serial adopted and persisted, other
+  serial refused, auth failure never scans, rate limit, registry row/ini/identity persistence,
+  sibling identity never used, identity saved after first connect).
+- **Update class:** `AGENT_ONLY_COMPATIBLE` from 5.1.13 (only `watchlog-agent.exe` code
+  changed; no installed script, Setup UI source or registry/credential schema changed).
+- **Database prerequisite:** unchanged from 5.1.2: contract v4 (`mr/db-contracts` migrations
+  `0146`-`0155`, plus 0156 and 0157) and the 5.1.2 migrations, present on the WatchLog server; plus
+  0209 and 0216 as for 5.1.13. No new migration.
+- **Multi-recorder field acceptance:** the fifteen proofs are listed in section 1C.
+- **Deliberate downgrade to 5.0.x:** the 5.1.0 rule applies unchanged, see
+  `docs/runbooks/WINDOWS_EXISTING_SITE_REPAIR_UPGRADE.md`, section
+  "Deliberate downgrade from 5.1.0 to 5.0.x".
+
+Field-only (IMPLEMENTED_UNVERIFIED): a real DHCP address change on the DH-XVR1B08-I (Al-Khalid)
+and the DS-7608NI-Q1 (HASCO) recovered without a reinstall.
+
+**Built 2026-11-20** (not published, not offered to any site): Windows Release run 44701237698
+(#180) from 0f8c8d2, unsigned; artifacts WatchLog-Windows-180 and WatchLog-Agent-180; the
+installers' defaults name the server feed. Update contract `AGENT_ONLY_COMPATIBLE` (min components
+5.1.0); sites on 5.1.13 still need the Repair package once (their feed is the retired one).
+SHA-256: Repair-Upgrade `0d92f263379b8b2ac5d927eb10634cbb477596bfb61971647aa6f3402898d626`, Setup
+`d74a9766879181bb996fb4282dc5a3c6e4cad26eaf68c6fd9db0e07696035aa8`, `watchlog-agent.exe`
+`3325f8f032d0ca6381c1aa86f8b4785838697088508872363b2f5b6ce160a21a`. Later commits on the branch touch
+only the server's edge function source (not in the installers).
+Superseded build (before the update-channel move): run 44696339528 (#179) from f42de49.
+
+**Published 2026-11-20** (owner go-ahead) as the website's latest download
+(`downloads/watchlog/{5.1.14,latest}`; 5.1.13 kept as `latest.before-5.1.14`), build #180 above;
+both installers verified by full HTTPS download. Not yet installed at any site; nothing is published
+on the update channel (`agent_release_channels` is empty).
+
+---
+
 ## 000H. Release candidate 5.1.13: recorder snapshot size raised by the Agent (branch `release/5.1.13-snapshot-setting`)
 
 **Status: candidate, not promoted.** No Windows artifact has been built from it at the time of
@@ -598,7 +679,7 @@ Authoritative branch:
 
 Current source line under validation:
 
-**5.1.13**
+**5.1.14**
 
 That is the version string the code carries: 5.1.4 (sections 00 and 00A) plus the server move
 (section 000), branch `release/5.1.5-local-server`, not promoted. 5.1.1 (section 0 and 1D) is the previous

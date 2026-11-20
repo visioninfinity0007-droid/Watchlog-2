@@ -521,7 +521,9 @@ def test_release_manifest_records_what_the_spec_requires():
 
 # === 8: committed field update bootstrap =======================================================
 FIELD_KEY = "0OM6vRLc4lCxY7uj2OpnEMNUikyK8uv5arw/04bFOM0="
-FIELD_URL = "https://oyvgubyxmjlijiczjona.supabase.co/functions/v1/watchlog-update-manifest"
+# 5.1.14: the feed moved to the WatchLog server (migration 0236, edge function watchlog-update-manifest);
+# fielded Agents still naming the retired cloud feed move to it in memory (agent_core.Config).
+FIELD_URL = "https://supa.watchlog.161.97.175.15.sslip.io/functions/v1/watchlog-update-manifest"
 
 
 def test_production_update_bootstrap_is_the_field_feed():

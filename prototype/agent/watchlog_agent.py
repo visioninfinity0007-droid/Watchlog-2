@@ -87,6 +87,12 @@ from agent_core import (  # noqa: F401  (re-exported)
     require_recorder_identity, runtime_health_path, save_state, update_runtime_health,
     _runtime_build_sha, upload_once, _row_rejection, _set_aside, _upload_isolating,
     _ROW_REJECTION_CLASSES, _ROW_REJECTION_42501, CLOUD_PROOF, _stale_connection,
+    # same-recorder rediscovery after an address change (5.1.14)
+    _open_driver_verified, _REDISCOVERY, _ADOPTED_URLS, _IDENTITY_CHECKED, _monotonic,
+    _reset_rediscovery_state, _recorder_key, _recorder_label, redact_url, _same_endpoint,
+    _apply_adopted_url, _note_auth_failure, _note_connected, _ensure_identity_saved,
+    _maybe_rediscover, _expected_identity, _configured_count, _serial_of_another_recorder,
+    _rediscover, _persist_moved_recorder,
 )
 
 RECONCILE_BATCH = 500         # max retained transitions/checkpoints per reconcile upload

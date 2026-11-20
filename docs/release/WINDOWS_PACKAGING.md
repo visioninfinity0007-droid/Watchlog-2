@@ -276,7 +276,10 @@ needs a migration):
 
 `prototype/update/production.json` (ported byte-for-byte from the field line, `a3266326`) holds
 the production manifest URL
-`https://oyvgubyxmjlijiczjona.supabase.co/functions/v1/watchlog-update-manifest`, the Ed25519
+`https://supa.watchlog.161.97.175.15.sslip.io/functions/v1/watchlog-update-manifest` (since 5.1.14,
+migration 0236; an Agent whose watchlog.ini still names the retired cloud feed
+`https://oyvgubyxmjlijiczjona.supabase.co/functions/v1/watchlog-update-manifest` uses the build's
+feed and key in memory), the Ed25519
 public key `0OM6vRLc4lCxY7uj2OpnEMNUikyK8uv5arw/04bFOM0=` (32 bytes), release tag
 `watchlog-production` and `min_remote_update_version` 5.0.24. Both are public material. The
 release build uses them when `-UpdateUrl/-UpdatePublicKey`, `WATCHLOG_UPDATE_URL/_PUBLIC_KEY`
