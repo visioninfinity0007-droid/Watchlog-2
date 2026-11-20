@@ -245,6 +245,14 @@ Changes:
 Field-only (IMPLEMENTED_UNVERIFIED): a real DHCP address change on the DH-XVR1B08-I (Al-Khalid)
 and the DS-7608NI-Q1 (HASCO) recovered without a reinstall.
 
+**Built 2026-11-20** (not published, not offered to any site): Windows Release run 44701237698
+(#180) from 0f8c8d2, unsigned; artifacts WatchLog-Windows-180 and WatchLog-Agent-180; the
+installers' defaults name the server feed. Update contract `AGENT_ONLY_COMPATIBLE` (min components
+5.1.0); sites on 5.1.13 still need the Repair package once (their feed is the retired one).
+SHA-256: Repair-Upgrade `0d92f263379b8b2ac5d927eb10634cbb477596bfb61971647aa6f3402898d626`, Setup
+`d74a9766879181bb996fb4282dc5a3c6e4cad26eaf68c6fd9db0e07696035aa8`, `watchlog-agent.exe`
+`3325f8f032d0ca6381c1aa86f8b4785838697088508872363b2f5b6ce160a21a`. Later commits on the branch touch
+only the server's edge function source (not in the installers).
 Superseded build (before the update-channel move): run 44696339528 (#179) from f42de49.
 
 ---
