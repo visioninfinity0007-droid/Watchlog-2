@@ -255,6 +255,11 @@ SHA-256: Repair-Upgrade `0d92f263379b8b2ac5d927eb10634cbb477596bfb61971647aa6f34
 only the server's edge function source (not in the installers).
 Superseded build (before the update-channel move): run 44696339528 (#179) from f42de49.
 
+**Published 2026-11-20** (owner go-ahead) as the website's latest download
+(`downloads/watchlog/{5.1.14,latest}`; 5.1.13 kept as `latest.before-5.1.14`), build #180 above;
+both installers verified by full HTTPS download. Not yet installed at any site; nothing is published
+on the update channel (`agent_release_channels` is empty).
+
 ---
 
 ## 000H. Release candidate 5.1.13: recorder snapshot size raised by the Agent (branch `release/5.1.13-snapshot-setting`)
