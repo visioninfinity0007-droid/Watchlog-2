@@ -1,11 +1,14 @@
 // Sign a release manifest exactly as prototype/agent/updater.py verifies it.
 import { canonicalManifest } from "./canonical.ts";
 
-function b64ToBytes(b64: string): Uint8Array {
+// Returns a plain ArrayBuffer: a BufferSource under every Deno/TypeScript lib, including the
+// stricter Uint8Array<ArrayBufferLike> typing that rejects a Uint8Array in importKey.
+function b64ToBytes(b64: string): ArrayBuffer {
   const raw = atob(b64.trim());
-  const out = new Uint8Array(raw.length);
+  const buf = new ArrayBuffer(raw.length);
+  const out = new Uint8Array(buf);
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
+  return buf;
 }
 
 function bytesToB64(bytes: ArrayBuffer): string {
